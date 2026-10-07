@@ -180,8 +180,10 @@ security question, theme, …), `notes_fts` (FTS5).
 ## 6. Design system — PurpleShade theme
 
 - Dark-first: deep purple-tinted surfaces (`#14101F` base), light mode
-  mirror. Accent violet `#8B5CF6`, success `#22C55E`, warn `#F59E0B`,
-  danger `#EF4444`.
+  mirror. All purple hues anchor to the **brand purple `#310096`** (hue 255°,
+  sampled from `public/brand/*.png` — the logo is the color source of truth).
+  Accent violet `#794DFF` (same hue, lightened for interactive use),
+  success `#22C55E`, warn `#F59E0B`, danger `#EF4444`.
 - All design values live in `src/styles/tokens.css` as CSS variables;
   **no hardcoded colors/spacing/typography in components** (linted, §7).
 - Money and figures always use tabular numerals (`.figure` class).
