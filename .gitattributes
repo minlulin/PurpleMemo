@@ -1,0 +1,6 @@
+# Normalize line endings; scripts must be LF.
+# POSIX sh chokes on CRLF shebangs (`#!/bin/sh\r`) even though
+# Git-for-Windows tolerates them — pin every executable script to LF.
+* text=auto
+.githooks/* text eol=lf
+*.sh text eol=lf

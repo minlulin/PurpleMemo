@@ -26,8 +26,9 @@ Standard personal budget-tracker features:
   Each wallet shows its balance = sum of entries naming it.
 - **Income / Expense entries:** amount, category, wallet, date, note.
   Money is stored as **integer cents** in the DB, shown in major units (MMK).
-- **Categories:** seeded personal set
-  (food, transport, rent, health, education, bills, other) + user-added.
+- **Categories:** expenses seeded (food, transport, rent, health,
+  education, bills, other); income seeded separately (incl.
+  **Business**, §2.2); both user-addable — tables in §4.
 - **Views:** daily list, monthly summary, yearly summary, per-category totals.
 - **Expense limit:** per-category monthly cap; warn at 80%, warn again when
   exceeded. Never blocks entry.
@@ -98,7 +99,8 @@ Lists with checkable items, manual sort order.
 Light app lock (not a login system):
 
 - 6+ character PIN, set on first run (skippable? **No — required**).
-  Stored as a salted PBKDF2 hash in the settings table; the PIN itself is
+  Stored as a salted PBKDF2-SHA256 hash — **600k iterations** (same
+  cost as the vault, §5) — in the settings table; the PIN itself is
   never stored.
 - Lock screen on app launch, manual lock button, auto-lock after
   10 minutes idle (configurable).
@@ -112,7 +114,7 @@ Light app lock (not a login system):
 |---|---|---|
 | Shell | Tauri | **2.12.1** |
 | Tauri CLI / API | @tauri-apps/cli, @tauri-apps/api | 2.12.1 |
-| Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.1 |
+| Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.2 |
 | Notifications | tauri-plugin-notification / @tauri-apps/plugin-notification | 2.5.1 |
 | DB | rusqlite (`bundled-sqlcipher-vendored-openssl`) — SQLite 3.53.2 + SQLCipher | 0.40.2 |
 | Key storage | keyring crate (OS credential store) | 4.2.0 |
@@ -145,23 +147,39 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
 - **Rust IPC surface (9 commands):**
   `db_query`, `db_execute`, `db_batch`, `db_begin`, `db_commit`,
   `db_rollback`, `photo_save`, `photo_read`, `photo_delete`.
+- **Connection model:** one SQLCipher connection behind a mutex — every
+  IPC call serializes through it; no pooling. Multi-statement writes
+  use `db_batch` (committed as a single transaction inside Rust).
+  `db_begin`/`db_commit`/`db_rollback` exist only for short critical
+  sections and are never held across UI awaits.
 - **Photos:** bytes hashed (sha256) → stored at
   `photos/<yyyy>/<mm>/<sha256-hex>.<ext>` under app-data; DB keeps the
   relative path; reads guard against path traversal.
-- **Tests:** TS via `node --test`; Rust via `cargo test`.
+- **Tests:** TS via `node --test` with an explicit
+  `src/**/*.test.ts` glob (§7); Rust via `cargo test`.
 - **Dates:** local `yyyy-mm-dd` everywhere ("today" = user's local date).
 - **Money:** integer cents in DB and in logic (`toCents = Math.round(v*100)`);
   major units only at display/parse edges. Outstanding amounts never
   negative.
 
-### Schema (28 tables, single baseline — no migrations)
+### Schema (29 tables, single baseline — no SQL migrations)
 `notes`, `collections`, `journal_entries`, `wallets`, `income_entries`,
-`expense_entries`, `expense_categories`, `expense_limits`,
-`recurring_payments`, `loans`, `jobs`, `shops`, `payables`,
-`shopping_lists`, `shopping_items`, `habits`, `habit_logs`, `tasks`,
-`reminders`, `contacts`, `contact_channels`, `contact_tags`, `memories`,
-`photos`, `photo_refs`, `vault_items`, `settings` (key-value: PIN hash,
-security question, theme, …), `notes_fts` (FTS5).
+`income_categories`, `expense_entries`, `expense_categories`,
+`expense_limits`, `recurring_payments`, `loans`, `jobs`, `shops`,
+`payables`, `shopping_lists`, `shopping_items`, `habits`, `habit_logs`,
+`tasks`, `reminders`, `contacts`, `contact_channels`, `contact_tags`,
+`memories`, `photos`, `photo_refs`, `vault_items`, `settings`
+(key-value: PIN hash, security question, theme, …), `notes_fts` (FTS5).
+
+- **Income categories** are a table (mirrors `expense_categories`),
+  seeded with **Business** (required by §2.2) + salary/gift/other,
+  plus user-added — income entries FK to it.
+- **`PRAGMA user_version` = 1** stamped on the baseline.
+- **Schema evolution policy:** no SQL migrations, ever. A future
+  schema change ships as: old version exports a backup (§8) → new
+  version imports and transforms it (import already upgrades by file
+  version). The DB file itself is only ever created at
+  `user_version` 1.
 
 ## 5. Security model
 
@@ -174,8 +192,11 @@ security question, theme, …), `notes_fts` (FTS5).
    key from PBKDF2-SHA256 600k iterations (WebCrypto). Salt+IV stored
    per item (plain base64); **no recovery** — the UI says so before the
    password is set. Auto-lock bounds the unlocked window.
-4. **Backup** includes a user-controlled **key-export step** — a DB backup
-   without the key is unopenable, and the UI must say so.
+4. **Backup** offers a separate, user-controlled **key-export step** —
+   the key is written as its **own file, never inside the backup zip**
+   (bundling them would make the zip a plaintext-equivalent copy of
+   the DB). A DB backup without the key is unopenable, and the UI says
+   so before export.
 
 ## 6. Design system — PurpleShade theme
 
@@ -194,35 +215,72 @@ security question, theme, …), `notes_fts` (FTS5).
 No hosted CI is used. The local gate is the enforcement:
 
 **`npm run verify` =**
-`biome check` → `tsc --noEmit` → `node --test` → `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` → `vite build`
+`biome check --error-on-warnings .` → token-lint script → `tsc --noEmit` → `node --test "src/**/*.test.ts"` → `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` → `vite build`
 
-- **Biome:** recommended preset, all as errors, **plus `noExplicitAny`
-  as error**; formatter (2-space, double quotes, semicolons) and
-  organize-imports enforced — `biome check` covers all three.
-- **tsc:** `strict` + `noUncheckedIndexedAccess`.
-- **Rust:** clippy denies warnings; `cargo fmt --check`.
+- **Biome:** recommended preset + **`noExplicitAny` raised to error**;
+  formatter (2-space, double quotes, semicolons) and organize-imports
+  enforced — `biome check` covers all three. The gate runs it with
+  `--error-on-warnings`, so **any** diagnostic (warning or error) fails
+  the gate — the preset's mixed severities can't slip through.
+- **tsc:** `strict` + `noUncheckedIndexedAccess` +
+  `erasableSyntaxOnly` (tests execute via Node's type-stripping;
+  enums, namespaces and parameter properties would crash the runner).
+- **Tests:** explicit glob `node --test "src/**/*.test.ts"` — default
+  discovery is never relied on. With zero test files it exits 0
+  (verified on Node 24), so P0's gate isn't blocked by missing tests.
+- **Rust:** clippy denies warnings; `cargo fmt --check`. P0 assumes
+  `rustup component add clippy rustfmt` has been run once.
+- **Windows / line endings:** one-time `biome check --write .` in P0
+  (under `core.autocrlf=true`) shakes out CRLF/LF churn before the
+  gate is trusted; `.githooks/*` + `*.sh` are pinned to LF by
+  `.gitattributes` (POSIX `sh` chokes on CRLF shebangs even though
+  Git-for-Windows tolerates them).
 - **Pre-push hook** (`.githooks/pre-push`, enabled per clone via
   `git config core.hooksPath .githooks`) runs `npm run verify`.
-  Red never gets pushed.
-- **Token lint:** a script fails the build if hex colors / hardcoded
-  spacing appear outside `tokens.css` (from P4 on).
+  Red never gets pushed. **`--no-verify` is never used** — that is the
+  one rule the Progress log's gate column (Part B) exists to back up.
+  `verify` itself warns when `core.hooksPath` is not `.githooks`.
+- **Token lint:** a script (created in P0, runs inside `verify`) fails
+  the build if hex colors / hardcoded spacing appear outside
+  `tokens.css`. It trivially passes until P3a writes the first
+  components — then it bites from day one instead of a P4 retrofit.
 - Every phase below has its own gate; a phase is done only when its
   gate is green.
 
 ## 8. Backup & same-network view
 
 - **Backup:** zip (fflate) containing `{ app: "purple-memo", version,
-  exportedAt, data }` + the `photos/` tree. Import rejects files not
-  made by this app and upgrades by file version. The user saves the
-  file wherever they want — there is no other backup.
+  exportedAt, data }` + the `photos/` tree — **data only; the
+  encryption key is never inside the zip** (separate key-export file,
+  §5.4). Import rejects files not made by this app and upgrades by
+  file version; this import path **is** the schema-upgrade mechanism
+  (§4 — no SQL migrations). The user saves the file wherever they
+  want — there is no other backup.
 - **Same-network view (P5):** a read-only snapshot endpoint on the LAN
   so the user's phone can view data on the same network. Single writer
   (the desktop), no sync engine, no merge logic.
 
-## 9. In-app updates
+## 9. In-app updates — no CI, releases published by hand
 
-Via GitHub Releases: `tauri-plugin-updater` + release workflow, owner
-signing key as repo secret. (Release mechanics are detailed at P5.)
+**No GitHub Actions is used anywhere in this project.** Updates go
+through GitHub Releases, but artifacts are produced and published
+**locally**:
+
+1. **Sign:** update-signing key generated once with `tauri signer
+   generate`; the private key **stays on the owner's machine** — never
+   in the repo, never in any hosted secret store.
+2. **Build:** `tauri build` emits the installer, the updater
+   artifacts (`.sig`) and the `latest.json` manifest the updater polls.
+3. **Publish:** `gh release create <tag>` (or the GitHub web UI)
+   uploads artifacts + `latest.json` — manual, and done only after a
+   green local gate (§7) and, before the first release, the P6 audit.
+4. **Consume:** `tauri-plugin-updater` is pointed at the repo's
+   Releases URL; the app checks, downloads, verifies the signature,
+   installs.
+
+The local gate (§7) is the *only* check before a release is cut —
+there is no CI to catch anything it missed. (Release mechanics are
+detailed at P5.)
 
 ---
 
@@ -233,8 +291,8 @@ signing key as repo secret. (Release mechanics are detailed at P5.)
 
 | Phase | Scope | Gate |
 |---|---|---|
-| **P0** Scaffold | Vite 8 + React 19 + TS 7 + Tailwind 4 + Tauri 2.12; `tokens.css`; logo in `public/brand/`; updater wiring; Biome + `.githooks/pre-push`; README with gate docs | `npm run verify` green |
-| **P1** Encrypted DB core | SQLCipher via rusqlite, keyring key (mint-once, verify-before-use, WAL, FK on); 28-table schema; 9 IPC commands; photo save/read/delete; `settings` table | `cargo test` + `npm run verify` green |
+| **P0** Scaffold | Vite 8 + React 19 + TS 7 (`erasableSyntaxOnly`) + Tailwind 4 + Tauri 2.12; `tokens.css` + token-lint script; logo in `public/brand/`; updater wiring; Biome + `.githooks/pre-push` + `.gitattributes`/`.gitignore` (hooks pinned LF); `verify` script (explicit test glob, `--error-on-warnings`); README with gate docs | `npm run verify` green; hook proven to run and block a red push |
+| **P1** Encrypted DB core | SQLCipher via rusqlite, keyring key (mint-once, verify-before-use, WAL, FK on); **FTS5-availability test** under SQLCipher (spike: `CREATE VIRTUAL TABLE … USING fts5`); 29-table schema + `PRAGMA user_version` = 1; 9 IPC commands (mutex-serialized connection, `db_batch` for multi-statement writes); photo save/read/delete; `settings` table | `cargo test` + `npm run verify` green |
 | **P2** Data layer | Single Tauri driver; per-domain repositories; money lib (cents, cash-basis rule); crypto module (PIN hash/verify, vault AES-GCM); FTS search helper | unit tests green + `npm run verify` |
 | **P3a** Notes + Journal | Notes CRUD, collections, tags, pin/archive, markdown editor+preview, FTS search; journal day entries + month grid | feature works E2E + verify |
 | **P3b** Budget Tracker | Wallets, income/expense CRUD, categories, monthly/yearly views, expense limits + warnings, recurring payments | feature works E2E + verify |
@@ -242,8 +300,8 @@ signing key as repo secret. (Release mechanics are detailed at P5.)
 | **P3d** Habits + Tasks + Shopping | Habit logs/streaks/week view; tasks + reminders + notifications; shopping lists | feature works E2E + verify |
 | **P3e** Address book + Memories + Gallery + Vault | Contacts/channels/tags/birthdays; memories views; gallery; vault password setup + encrypted items | feature works E2E + verify |
 | **P3f** Dashboard + Settings + More + PIN | Today-view dashboard; settings (theme, PIN + security question, vault pw, key export); lock screen + auto-lock + fallback flow | feature works E2E + verify |
-| **P4** Backup + polish | Export/import UI (in Settings); token lint; empty states; icon/pass; full design review vs §6 | verify + design checklist |
-| **P5** Share + updater | Same-network read-only snapshot endpoint; GitHub Releases updater flow (signed) | E2E on LAN + verify |
+| **P4** Backup + polish | Export/import UI + separate key-export step (in Settings); empty states; icon/pass; full design review vs §6 | verify + design checklist |
+| **P5** Share + updater | Same-network read-only snapshot endpoint; signed updater flow **published by hand** — local `tauri build` + `gh release create`, signing key stays local (§9) | E2E on LAN + verify; app installs a manually published release |
 | **P6** Pre-release audit | Full report-only audit (code, security model, gates); fix wave; release build | audit clean, release cut |
 
 ### Progress log (updated per phase)

@@ -1,0 +1,18 @@
+# Dependencies & builds
+node_modules/
+dist/
+target/
+
+# Generated Tauri schemas
+src-tauri/gen/
+
+# Signing keys — never committed (see plan §9)
+.keys/
+
+# Logs & local state
+*.log
+*.local
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

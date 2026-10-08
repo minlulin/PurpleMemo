@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/*
+ * PurpleShade design tokens — the single source of design values (plan §6).
+ * The token-lint gate allows hex colors and px values ONLY in this file.
+ * Brand anchor: #310096 (hue 255°, sampled from public/brand/*.png).
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces (dark-first) */
+  --color-base: #14101f;
+  --color-surface: #1c1630;
+  --color-surface-raised: #251d3f;
+  --color-border: #342956;
+
+  /* Brand & accent */
+  --color-brand: #310096;
+  --color-accent: #794dff;
+
+  /* Status */
+  --color-success: #22c55e;
+  --color-warn: #f59e0b;
+  --color-danger: #ef4444;
+
+  /* Text */
+  --color-text: #ede9f8;
+  --color-text-muted: #a79dc4;
+  --color-text-inverse: #ffffff;
+
+  /* Spacing scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* Borders & radii */
+  --border-width: 1px;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* Typography */
+  --font-sans:
+    "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+}
+
+/* Light mode mirror — brand/accent/status hues stay identical (§6). */
+[data-theme="light"] {
+  color-scheme: light;
+  --color-base: #f6f3fc;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-border: #ddd3f2;
+  --color-text: #1d1533;
+  --color-text-muted: #5d537d;
+  --color-text-inverse: #ffffff;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-base);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+}
+
+/* Money and figures always use tabular numerals (§6). */
+.figure {
+  font-variant-numeric: tabular-nums;
+}
