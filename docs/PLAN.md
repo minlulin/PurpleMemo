@@ -291,7 +291,7 @@ detailed at P5.)
 
 | Phase | Scope | Gate |
 |---|---|---|
-| **P0** Scaffold | Vite 8 + React 19 + TS 7 (`erasableSyntaxOnly`) + Tailwind 4 + Tauri 2.12; `tokens.css` + token-lint script; logo in `public/brand/`; updater wiring; Biome + `.githooks/pre-push` + `.gitattributes`/`.gitignore` (hooks pinned LF); `verify` script (explicit test glob, `--error-on-warnings`); README with gate docs | `npm run verify` green; hook proven to run and block a red push |
+| **P0** Scaffold | Vite 8 + React 19 + TS 7 (`erasableSyntaxOnly`) + Tailwind 4 + Tauri 2.12; all §3 runtime deps installed (`react-markdown`, `fflate` included); `tokens.css` + token-lint script; logo in `public/brand/`; updater wiring; Biome + `.githooks/pre-push` + `.gitattributes`/`.gitignore` (hooks pinned LF); `verify` script (explicit test glob, `--error-on-warnings`); README with gate docs | `npm run verify` green; hook proven to run and block a red push |
 | **P1** Encrypted DB core | SQLCipher via rusqlite, keyring key (mint-once, verify-before-use, WAL, FK on); **FTS5-availability test** under SQLCipher (spike: `CREATE VIRTUAL TABLE … USING fts5`); 29-table schema + `PRAGMA user_version` = 1; 9 IPC commands (mutex-serialized connection, `db_batch` for multi-statement writes); photo save/read/delete; `settings` table | `cargo test` + `npm run verify` green |
 | **P2** Data layer | Single Tauri driver; per-domain repositories; money lib (cents, cash-basis rule); crypto module (PIN hash/verify, vault AES-GCM); FTS search helper | unit tests green + `npm run verify` |
 | **P3a** Notes + Journal | Notes CRUD, collections, tags, pin/archive, markdown editor+preview, FTS search; journal day entries + month grid | feature works E2E + verify |
@@ -308,7 +308,7 @@ detailed at P5.)
 
 | Phase | Status | Commit | Gate result | Notes |
 |---|---|---|---|---|
-| P0 | done | 42ba66e | `npm run verify` green (8/8 steps); pre-push hook proven: blocked a red probe with exit 1, then passed with exit 0 | Updater keypair minted locally in `.keys/` (gitignored, §9); updater dep 2.13.1 → 2.13.2 per §3 rule 1 (max stable re-checked 2026-10-08) |
+| P0 | done | 42ba66e, 4ed9574 | `npm run verify` green (8/8 steps); pre-push hook proven: blocked a red probe with exit 1, then passed with exit 0 | Updater keypair minted locally in `.keys/` (gitignored, §9); updater dep 2.13.1 → 2.13.2 per §3 rule 1 (max stable re-checked 2026-10-08); `react-markdown` 10.1.0 + `fflate` 0.8.3 installed exact-pinned (versions re-verified, unchanged) |
 | P1 | pending | | | |
 | P2 | pending | | | |
 | P3a | pending | | | |
