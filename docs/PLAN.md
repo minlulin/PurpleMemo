@@ -308,7 +308,7 @@ detailed at P5.)
 
 | Phase | Status | Commit | Gate result | Notes |
 |---|---|---|---|---|
-| P0 | pending | | | |
+| P0 | done | 42ba66e | `npm run verify` green (8/8 steps); pre-push hook proven: blocked a red probe with exit 1, then passed with exit 0 | Updater keypair minted locally in `.keys/` (gitignored, §9); updater dep 2.13.1 → 2.13.2 per §3 rule 1 (max stable re-checked 2026-10-08) |
 | P1 | pending | | | |
 | P2 | pending | | | |
 | P3a | pending | | | |
