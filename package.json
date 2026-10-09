@@ -18,10 +18,13 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"src/**/*.test.ts\"",
     "clippy": "cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
-    "fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"
+    "fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "session:reset": "node scripts/reset-session-memory.mjs",
+    "memory:reset": "node scripts/reset-session-memory.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/api": "2.12.2",
+    "@tauri-apps/plugin-notification": "2.5.1",
     "@tauri-apps/plugin-updater": "2.13.2",
     "fflate": "0.8.3",
     "react": "19.3.0",
@@ -38,6 +41,6 @@
     "@vitejs/plugin-react": "6.1.2",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
-    "vite": "8.3.3"
+    "vite": "8.3.4"
   }
 }
