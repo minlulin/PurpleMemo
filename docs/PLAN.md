@@ -309,7 +309,7 @@ detailed at P5.)
 | Phase | Status | Commit | Gate result | Notes |
 |---|---|---|---|---|
 | P0 | done | 42ba66e, 4ed9574 | `npm run verify` green (8/8 steps); pre-push hook proven: blocked a red probe with exit 1, then passed with exit 0 | Updater keypair minted locally in `.keys/` (gitignored, §9); updater dep 2.13.1 → 2.13.2 per §3 rule 1 (max stable re-checked 2026-10-08); `react-markdown` 10.1.0 + `fflate` 0.8.3 installed exact-pinned (versions re-verified, unchanged) |
-| P1 | pending | | | |
+| P1 | done | 9998ed4 | `cargo test` green (17/17 tests); `npm run verify` green (8/8 steps) | SQLCipher via rusqlite 0.40.2 + keyring 4.2.0 mint-once key (verify-before-use, WAL, FK on); FTS5 spike passed — finding: legacy special `'delete'` INSERT command fails on plain fts5 tables in this build (SQLite 3.51.3), triggers use direct `UPDATE`/`DELETE` statements instead; 29-table baseline at `user_version` 1 incl. `settings`; 9 IPC commands + photos with traversal guard; deps re-checked max-stable 2026-10-09, `getrandom` 0.4.3 added for key minting |
 | P2 | pending | | | |
 | P3a | pending | | | |
 | P3b | pending | | | |
