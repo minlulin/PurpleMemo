@@ -16,3 +16,6 @@ src-tauri/gen/
 # OS / editor noise
 .DS_Store
 Thumbs.db
+
+# executing-plans scratch (ledger, briefs, review packages)
+.superpowers/
