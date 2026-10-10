@@ -18,6 +18,15 @@ import type {
 /** Hard cap on catch-up occurrences per mark-paid call (§2.1). */
 export const CATCHUP_MAX_OCCURRENCES = 60;
 
+/**
+ * Trim a user-supplied wallet/category name; empty or whitespace-only input
+ * is invalid (`null`) so the UI never creates a nameless row.
+ */
+export function cleanName(raw: string): string | null {
+  const name = raw.trim();
+  return name.length > 0 ? name : null;
+}
+
 export interface EntryInput {
   amountCents: number;
   categoryId: number;

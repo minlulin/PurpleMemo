@@ -691,3 +691,64 @@ tbody .week-row {
   padding: var(--space-1) var(--space-2);
   text-align: start;
 }
+
+/* ---- Budget page (P3b, §2.1) ---------------------------------------------- */
+
+.budget-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.budget-viewnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  border-bottom: var(--border-width) solid var(--color-border);
+  padding-bottom: var(--space-2);
+}
+
+.budget-manage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.budget-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.budget-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.inline-form input {
+  flex: 1 1 12rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  font: inherit;
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.budget-todo {
+  color: var(--color-text-muted);
+}

@@ -4,7 +4,7 @@ import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at } from "../test-utils.ts";
-import { createBudgetRepo, limitStatus } from "./budget.ts";
+import { cleanName, createBudgetRepo, limitStatus } from "./budget.ts";
 
 /** Args of the first recorded call to `method` (tests always call it once). */
 function argsOf(driver: MockDriver, method: keyof DataDriver): unknown[] {
@@ -233,4 +233,11 @@ test("updateIncomeEntry writes only the provided fields", async () => {
   const [sql, params] = call.args as [string, unknown[]];
   assert.match(sql, /UPDATE income_entries SET note = \? WHERE id = \?/);
   assert.deepEqual(params, ["bonus", 4]);
+});
+
+test("cleanName trims input and rejects empty/whitespace names", () => {
+  assert.equal(cleanName("  Kpay  "), "Kpay");
+  assert.equal(cleanName("Wave"), "Wave");
+  assert.equal(cleanName(""), null);
+  assert.equal(cleanName("   "), null);
 });
