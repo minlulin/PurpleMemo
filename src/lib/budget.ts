@@ -145,6 +145,83 @@ export function prospectiveStatus(
   return limitStatus(spentCents + Math.max(0, additionalCents), limitCents);
 }
 
+export interface LimitStatusInput {
+  categoryId: number;
+  spentCents: number;
+  limitCents: number | null;
+}
+
+export interface LimitDisplayRow {
+  categoryId: number;
+  name: string;
+  spentCents: number;
+  limitCents: number | null;
+  status: LimitStatus;
+  /** Percent of limit spent, rounded; `null` when no limit is set. */
+  percent: number | null;
+}
+
+const STATUS_RANK: Record<LimitStatus, number> = {
+  exceeded: 0,
+  warn: 1,
+  ok: 2,
+};
+
+/**
+ * Join expense categories with their per-month limit status into display
+ * rows (§2.1 limits view). Worst-offending categories sort first; categories
+ * with no limit sink below limited ones; a category deleted after use keeps
+ * its row under `Category #<id>`.
+ */
+export function limitDisplayRows(
+  categories: Pick<ExpenseCategoryRow, "id" | "name">[],
+  statuses: LimitStatusInput[],
+): LimitDisplayRow[] {
+  const byCategory = new Map(statuses.map((s) => [s.categoryId, s]));
+  const seen = new Set<number>();
+  const rows: LimitDisplayRow[] = categories.map((c) => {
+    const s = byCategory.get(c.id);
+    const limitCents = s?.limitCents ?? null;
+    seen.add(c.id);
+    return {
+      categoryId: c.id,
+      name: c.name,
+      spentCents: s?.spentCents ?? 0,
+      limitCents,
+      status: limitStatus(s?.spentCents ?? 0, limitCents),
+      percent:
+        limitCents !== null && limitCents > 0
+          ? Math.round(((s?.spentCents ?? 0) / limitCents) * 100)
+          : null,
+    };
+  });
+  for (const s of statuses) {
+    if (seen.has(s.categoryId)) continue;
+    rows.push({
+      categoryId: s.categoryId,
+      name: `Category #${s.categoryId}`,
+      spentCents: s.spentCents,
+      limitCents: s.limitCents,
+      status:
+        s.limitCents === null ? "ok" : limitStatus(s.spentCents, s.limitCents),
+      percent:
+        s.limitCents !== null && s.limitCents > 0
+          ? Math.round((s.spentCents / s.limitCents) * 100)
+          : null,
+    });
+  }
+  return rows.sort((a, b) => {
+    const pa = a.percent ?? -1;
+    const pb = b.percent ?? -1;
+    return (
+      STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
+      (a.limitCents === null ? 1 : 0) - (b.limitCents === null ? 1 : 0) ||
+      pb - pa ||
+      a.name.localeCompare(b.name)
+    );
+  });
+}
+
 export interface YearMonthTotals {
   yearMonth: string;
   incomeCents: number;

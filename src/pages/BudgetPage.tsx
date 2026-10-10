@@ -9,6 +9,7 @@ import {
   cleanName,
   type DayEntry,
   type LimitStatus,
+  limitDisplayRows,
   monthSummaryDisplay,
   prospectiveStatus,
   yearDisplay,
@@ -76,6 +77,8 @@ export default function BudgetPage() {
         <MonthView />
       ) : view === "year" ? (
         <YearView />
+      ) : view === "limits" ? (
+        <LimitsView />
       ) : view === "manage" ? (
         <ManageView />
       ) : (
@@ -943,6 +946,152 @@ function YearView() {
           </table>
         </>
       ) : null}
+    </section>
+  );
+}
+
+/** Expense limits: per-category monthly cap with 80%/exceeded warnings (§2.1). */
+function LimitsView() {
+  const [yearMonth, setYearMonth] = useState(() => yearMonthOf(todayLocal()));
+  const [rows, setRows] = useState<ReturnType<typeof limitDisplayRows>>([]);
+  const [drafts, setDrafts] = useState<Map<number, string>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async (ym: string) => {
+    try {
+      const cats = await budgetRepo.listExpenseCategories();
+      const statuses = await Promise.all(
+        cats.map(async (c) => {
+          const info = await budgetRepo.limitStatusFor(c.id, ym);
+          return {
+            categoryId: c.id,
+            spentCents: info.spentCents,
+            limitCents: info.limitCents,
+          };
+        }),
+      );
+      setRows(limitDisplayRows(cats, statuses));
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh(yearMonth);
+  }, [yearMonth, refresh]);
+
+  const saveLimit = async (categoryId: number) => {
+    const cents = parseMMK(drafts.get(categoryId) ?? "");
+    if (cents === null || cents <= 0) return;
+    try {
+      await budgetRepo.setLimit(categoryId, cents);
+      await refresh(yearMonth);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const removeLimit = async (categoryId: number) => {
+    try {
+      await budgetRepo.deleteLimit(categoryId);
+      await refresh(yearMonth);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  return (
+    <section className="budget-limits" aria-label="Expense limits">
+      <div className="day-nav">
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setYearMonth(shiftMonth(yearMonth, -1))}
+        >
+          ◀
+        </button>
+        <h2 className="side-heading month-label">{monthLabel(yearMonth)}</h2>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setYearMonth(shiftMonth(yearMonth, 1))}
+        >
+          ▶
+        </button>
+      </div>
+
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {rows.length === 0 ? (
+        <p className="muted">
+          No expense categories — add one in Manage to set limits.
+        </p>
+      ) : (
+        <ul className="budget-list">
+          {rows.map((r) => (
+            <li key={r.categoryId} className="limit-row">
+              <span className="limit-name">
+                {r.name}
+                {r.status !== "ok" ? (
+                  <span
+                    className={
+                      r.status === "exceeded" ? "limit-exceeded" : "limit-warn"
+                    }
+                    role="status"
+                  >
+                    {r.status === "exceeded" ? " (exceeded)" : " (80%+)"}
+                  </span>
+                ) : null}
+              </span>
+              <span className="muted">
+                spent {formatMMK(r.spentCents)}
+                {r.limitCents !== null
+                  ? ` of ${formatMMK(r.limitCents)}${r.percent !== null ? ` (${r.percent}%)` : ""}`
+                  : " — no limit"}
+              </span>
+              <span className="inline-form">
+                <input
+                  aria-label={`Monthly limit for ${r.name}`}
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={drafts.get(r.categoryId) ?? ""}
+                  onChange={(e) => {
+                    const next = new Map(drafts);
+                    next.set(r.categoryId, e.target.value);
+                    setDrafts(next);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={parseMMK(drafts.get(r.categoryId) ?? "") === null}
+                  onClick={() => void saveLimit(r.categoryId)}
+                >
+                  Set limit
+                </button>
+                {r.limitCents !== null ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => void removeLimit(r.categoryId)}
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

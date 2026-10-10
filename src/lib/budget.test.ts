@@ -7,6 +7,7 @@ import { at } from "../test-utils.ts";
 import {
   cleanName,
   createBudgetRepo,
+  limitDisplayRows,
   limitStatus,
   monthSummaryDisplay,
   prospectiveStatus,
@@ -342,4 +343,43 @@ test("yearDisplay with no entries yields zeroed totals", () => {
   assert.equal(d.totalIncomeCents, 0);
   assert.equal(d.totalExpenseCents, 0);
   assert.equal(d.netCents, 0);
+});
+
+test("limitDisplayRows joins statuses, computes percent, sorts by urgency (§2.1)", () => {
+  const rows = limitDisplayRows(
+    [
+      { id: 1, name: "Food" },
+      { id: 2, name: "Transport" },
+      { id: 3, name: "Rent" },
+    ],
+    [
+      { categoryId: 1, spentCents: 12_000, limitCents: 10_000 },
+      { categoryId: 2, spentCents: 4_000, limitCents: 10_000 },
+      { categoryId: 3, spentCents: 1_000, limitCents: null },
+    ],
+  );
+  assert.deepEqual(
+    rows.map((r) => r.name),
+    ["Food", "Transport", "Rent"],
+  );
+  assert.equal(rows[0]?.status, "exceeded");
+  assert.equal(rows[0]?.percent, 120);
+  assert.equal(rows[1]?.status, "ok");
+  assert.equal(rows[1]?.percent, 40);
+  assert.equal(rows[2]?.limitCents, null);
+  assert.equal(rows[2]?.percent, null);
+});
+
+test("limitDisplayRows handles categories without status and unknown ids", () => {
+  const rows = limitDisplayRows(
+    [{ id: 1, name: "Food" }],
+    [{ categoryId: 7, spentCents: 500, limitCents: null }],
+  );
+  assert.deepEqual(
+    rows.map((r) => [r.name, r.spentCents, r.status]),
+    [
+      ["Category #7", 500, "ok"],
+      ["Food", 0, "ok"],
+    ],
+  );
 });
