@@ -45,7 +45,12 @@ pub struct BatchStatement {
 }
 
 /// Outcome of a single write statement.
+///
+/// Serialized camelCase: Tauri sends command return values through serde
+/// as-is (no renaming), and the JS driver (`src/data/driver.ts`) reads
+/// `rowsAffected` / `lastInsertRowid` — this attribute is the IPC contract.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecuteOutcome {
     pub rows_affected: u64,
     pub last_insert_rowid: i64,
@@ -685,5 +690,22 @@ mod tests {
         // Unsupported param shapes are rejected, not mangled.
         assert!(execute(&conn, "INSERT INTO t (i) VALUES (?1)", &[json!({"a": 1})],).is_err());
         assert!(execute(&conn, "INSERT INTO t (b) VALUES (?1)", &[json!([1, 300])],).is_err());
+    }
+
+    // -- IPC contract with the JS driver (src/data/driver.ts) ----------------
+
+    #[test]
+    fn execute_outcome_serializes_camel_case_for_the_js_driver() {
+        let outcome = ExecuteOutcome {
+            rows_affected: 3,
+            last_insert_rowid: 42,
+        };
+        let v = serde_json::to_value(&outcome).expect("serialize outcome");
+        assert_eq!(v.get("rowsAffected"), Some(&json!(3)));
+        assert_eq!(v.get("lastInsertRowid"), Some(&json!(42)));
+        assert!(
+            v.get("rows_affected").is_none() && v.get("last_insert_rowid").is_none(),
+            "snake_case keys must not cross the IPC boundary: {v}"
+        );
     }
 }

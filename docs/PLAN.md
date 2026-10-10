@@ -108,18 +108,18 @@ Light app lock (not a login system):
   with the PIN; correct answer allows setting a new PIN. No online
   recovery exists — the UI states this plainly at setup.
 
-## 3. Tech stack — locked versions (verified 2026-10-07, semver-sorted)
+## 3. Tech stack — locked versions (verified 2026-10-07; max-stable re-verified 2026-10-10, semver-sorted)
 
 | Layer | Choice | Version |
 |---|---|---|
-| Shell | Tauri | **2.12.1** |
-| Tauri CLI / API | @tauri-apps/cli, @tauri-apps/api | 2.12.1 |
+| Shell | Tauri | **2.12.2** |
+| Tauri CLI / API | @tauri-apps/cli / @tauri-apps/api | 2.12.1 / 2.12.2 |
 | Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.2 |
 | Notifications | tauri-plugin-notification / @tauri-apps/plugin-notification | 2.5.1 |
 | DB | rusqlite (`bundled-sqlcipher-vendored-openssl`) — SQLite 3.53.2 + SQLCipher | 0.40.2 |
 | Key storage | keyring crate (OS credential store) | 4.2.0 |
 | UI | React + react-dom | 19.3.0 |
-| Build | Vite / @vitejs/plugin-react | 8.3.3 / 6.1.2 |
+| Build | Vite / @vitejs/plugin-react | 8.3.4 / 6.1.2 |
 | Styling | Tailwind CSS / @tailwindcss/vite | 4.3.3 |
 | Language | TypeScript (native port) | 7.0.2 |
 | Node | >= 24 | 24.20.0 |
@@ -310,8 +310,7 @@ detailed at P5.)
 |---|---|---|---|---|
 | P0 | done | 42ba66e, 4ed9574, 19be80f | `npm run verify` green (8/8 steps); pre-push hook proven: blocked a red probe with exit 1, then passed with exit 0 | Updater keypair minted locally in `.keys/` (gitignored, §9); updater dep 2.13.1 → 2.13.2 per §3 rule 1 (max stable re-checked 2026-10-08); `react-markdown` 10.1.0 + `fflate` 0.8.3 installed exact-pinned (versions re-verified, unchanged); P2 review found `tsconfig.json` checked out with CRLF (autocrlf churn) — fixed durably by pinning `*.json text eol=lf` in `.gitattributes` (commit 19be80f) |
 | P1 | done | 9998ed4 | `cargo test` green (17/17 tests); `npm run verify` green (8/8 steps) | SQLCipher via rusqlite 0.40.2 + keyring 4.2.0 mint-once key (verify-before-use, WAL, FK on); FTS5 spike passed — finding: legacy special `'delete'` INSERT command fails on plain fts5 tables in this build (SQLite 3.51.3), triggers use direct `UPDATE`/`DELETE` statements instead; 29-table baseline at `user_version` 1 incl. `settings`; 9 IPC commands + photos with traversal guard; deps re-checked max-stable 2026-10-09, `getrandom` 0.4.3 added for key minting |
-| P2 | done | 924fd83d | `npm run verify` green (8/8 steps); 67/67 unit tests | Single Tauri driver (`src/data/driver.ts`) + recording mock driver (`src/data/mock-driver.ts`) so repos are testable without Tauri; 13 per-domain repositories (notes, journal, budget, business, loans, shopping, habits, tasks, contacts, memories, gallery, vault, settings) over `types.ts`; money lib (integer cents, cash-basis `outstandingCents` never negative, `applyPayment` clamps); crypto module (PIN PBKDF2-SHA256 600k + normalized `verifyAnswer`; vault AES-256-GCM with **per-item** salt+IV, no recovery); FTS search helper (MATCH query builder + notes search); dates lib (local `yyyy-mm-dd` everywhere — `toISOString()` was caught and replaced); `allowImportingTsExtensions` added to `tsconfig.json` so Node type-stripping runs the tests; `noNonNullAssertion` + `noUncheckedIndexedAccess` enforced by the gate — tests use a runtime-checked `at()`/`first()` helper instead of `!`; P0/P1 review: gates re-run green after the tsconfig fix |
-| P3a | pending | | | |
+| P2 | done | 924fd83d | `npm run verify` green (8/8 steps); 67/67 unit tests | Single Tauri driver (`src/data/driver.ts`) + recording mock driver (`src/data/mock-driver.ts`) so repos are testable without Tauri; 13 per-domain repositories (notes, journal, budget, business, loans, shopping, habits, tasks, contacts, memories, gallery, vault, settings) over `types.ts`; money lib (integer cents, cash-basis `outstandingCents` never negative, `applyPayment` clamps); crypto module (PIN PBKDF2-SHA256 600k + normalized `verifyAnswer`; vault AES-256-GCM with **per-item** salt+IV, no recovery); FTS search helper (MATCH query builder + notes search); dates lib (local `yyyy-mm-dd` everywhere — `toISOString()` was caught and replaced); `allowImportingTsExtensions` added to `tsconfig.json` so Node type-stripping runs the tests; `noNonNullAssertion` + `noUncheckedIndexedAccess` enforced by the gate — tests use a runtime-checked `at()`/`first()` helper instead of `!`; P0/P1 review: gates re-run green after the tsconfig fix; P0–P2 plan-vs-code review 2026-10-10: fixed `db_execute` outcome casing (Rust serialized snake_case; Tauri does not rename command return values, so every `lastInsertRowid` would have been `undefined` in the real app) — added `#[serde(rename_all = "camelCase")]` + regression test; added the missing `updater:default` capability (P0 updater wiring); §3 table re-synced to max stable (tauri/api 2.12.2, vite 8.3.4); duplicate P3a row removed; gates re-run green |
 | P3a | pending | | | |
 | P3b | pending | | | |
 | P3c | pending | | | |
