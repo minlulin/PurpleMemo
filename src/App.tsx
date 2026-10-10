@@ -1,42 +1,46 @@
+import { useState } from "react";
+import JournalPage from "./pages/JournalPage";
+import NotesPage from "./pages/NotesPage";
+
+type PageKey = "notes" | "journal";
+
+const TABS: { key: PageKey; label: string }[] = [
+  { key: "notes", label: "Notes" },
+  { key: "journal", label: "Journal" },
+];
+
+/**
+ * App shell (§2.4/§2.5 scope for P3a): header + section tabs. Navigation is
+ * state-based — §3 locks the stack and has no router dependency. The Dashboard
+ * becomes the landing page in P3f; Notes is the placeholder landing here.
+ */
 export default function App() {
+  const [page, setPage] = useState<PageKey>("notes");
+
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "var(--space-6)",
-      }}
-    >
-      <section
-        style={{
-          backgroundColor: "var(--color-surface)",
-          border: "var(--border-width) solid var(--color-border)",
-          borderRadius: "var(--radius-lg)",
-          padding: "var(--space-8)",
-          maxWidth: "36rem",
-          textAlign: "center",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "var(--space-5)",
-        }}
-      >
-        <img
-          src="/brand/purple-memo-logo.png"
-          alt="Purple Memo logo"
-          style={{ width: "min(60vw, 11rem)", height: "auto" }}
-        />
-        <h1 style={{ margin: 0, fontSize: "var(--text-xl)" }}>Purple Memo</h1>
-        <p style={{ margin: 0, color: "var(--color-text-muted)" }}>
-          Personal offline notebook and life/money manager — desktop-only, fully
-          offline, encrypted local database.
-        </p>
-        <p className="figure" style={{ color: "var(--color-accent)" }}>
-          Phase P0 — scaffold ready. Local gate: npm run verify
-        </p>
-      </section>
-    </main>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="app-brand">
+          <img className="app-mark" src="/brand/purple-memo-mark.png" alt="" />
+          <span className="app-name">Purple Memo</span>
+        </div>
+        <nav className="app-nav" aria-label="Sections">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              className={page === tab.key ? "nav-tab is-active" : "nav-tab"}
+              aria-current={page === tab.key ? "page" : undefined}
+              onClick={() => setPage(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+      <main className="app-main">
+        {page === "notes" ? <NotesPage /> : <JournalPage />}
+      </main>
+    </div>
   );
 }

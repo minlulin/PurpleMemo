@@ -1,8 +1,59 @@
 // Journal repository (§2.5): one entry per calendar day, month navigation.
 
 import type { DataDriver } from "../data/driver.ts";
-import { todayLocal } from "./dates.ts";
+import { datesInMonth, todayLocal } from "./dates.ts";
 import type { JournalEntryRow } from "./types.ts";
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+/** One cell of the month grid: a date with its entry marker, or a blank. */
+export type MonthGridCell = { date: string; hasEntry: boolean } | null;
+
+/**
+ * Build the month grid for `yyyy-mm` (§2.5): weeks of 7 cells,
+ * **Sunday-start** (English UI, `getDay()` 0=Sunday), leading/trailing `null`
+ * blanks, `hasEntry` flagging days that have a journal entry. Invalid
+ * year-month strings yield `[]`.
+ */
+export function buildMonthGrid(
+  yearMonth: string,
+  entryDates: Iterable<string>,
+): MonthGridCell[][] {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(yearMonth)) return [];
+  const entries = new Set(entryDates);
+  const days = datesInMonth(yearMonth);
+  const firstDay =
+    days[0] !== undefined ? new Date(`${days[0]}T00:00:00`).getDay() : 0;
+  const cells: MonthGridCell[] = Array.from({ length: firstDay }, () => null);
+  for (const date of days) cells.push({ date, hasEntry: entries.has(date) });
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks: MonthGridCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+/** English month label for the grid header ("October 2026"), "" if invalid. */
+export function monthLabel(yearMonth: string): string {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(yearMonth);
+  const month = match?.[2];
+  const year = match?.[1];
+  if (month === undefined || year === undefined) return "";
+  const name = MONTH_NAMES[Number(month) - 1];
+  return name === undefined ? "" : `${name} ${year}`;
+}
 
 export function createJournalRepo(driver: DataDriver) {
   return {

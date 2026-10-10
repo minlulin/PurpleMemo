@@ -18,6 +18,46 @@ export interface NoteFilter {
   includeArchived?: boolean;
 }
 
+/** Plain-text excerpt cap for list views (§2.4 — 140 chars, ellipsis included). */
+export const EXCERPT_MAX_CHARS = 140;
+
+/**
+ * Markdown → plain-text excerpt capped at `maxChars` (§2.4). Strips the common
+ * CommonMark syntax (fences keep their body, images collapse to alt text,
+ * links to their label), collapses whitespace, and truncates on a word
+ * boundary with a trailing ellipsis. Deliberately regex-based and approximate —
+ * an excerpt only needs to read cleanly, not to be a full parser.
+ */
+export function noteExcerpt(
+  content: string,
+  maxChars = EXCERPT_MAX_CHARS,
+): string {
+  const plain = content
+    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1") // fenced code: keep body
+    .replace(/^\s*```.*$/gm, "") // unclosed fence markers
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // images -> alt text
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // links -> label
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // ATX headings
+    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
+    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, "") // horizontal rules
+    .replace(/^\s*[-*+]\s+/gm, "") // unordered list bullets
+    .replace(/^\s*\d+\.\s+/gm, "") // ordered list numbers
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // bold
+    .replace(/__([^_]+)__/g, "$1") // bold (underscore)
+    .replace(/\*([^*]+)\*/g, "$1") // italic
+    .replace(/\b_([^_\s]+)_\b/g, "$1") // italic (underscore, word-bounded
+    //                                 // so snake_case_names survive)
+    .replace(/\B~+([^~]+)~+\B/g, "$1") // strikethrough
+    .replace(/\s+/g, " ")
+    .trim();
+  if (plain.length <= maxChars) return plain;
+  const cut = plain.slice(0, Math.max(1, maxChars - 1));
+  const boundary = cut.lastIndexOf(" ");
+  const head = (boundary > 0 ? cut.slice(0, boundary) : cut).trimEnd();
+  return `${head}…`;
+}
+
 export function createNotesRepo(driver: DataDriver) {
   return {
     async listCollections(): Promise<CollectionRow[]> {
