@@ -9,129 +9,129 @@ import { createKeyedMutex } from "./mutex.ts";
 import type { LoanDirection, LoanRow, LoanState } from "./types.ts";
 
 export interface LoanInput {
-	counterparty: string;
-	direction: LoanDirection;
-	amountCents: number;
-	dueDate?: string | null;
-	note?: string;
+  counterparty: string;
+  direction: LoanDirection;
+  amountCents: number;
+  dueDate?: string | null;
+  note?: string;
 }
 
 /** Derive a loan's state from its row + today's local date (§2.3). */
 export function deriveLoanState(
-	loan: Pick<LoanRow, "amount_cents" | "repaid_cents" | "due_date">,
-	today: string,
+  loan: Pick<LoanRow, "amount_cents" | "repaid_cents" | "due_date">,
+  today: string,
 ): LoanState {
-	if (loan.repaid_cents >= loan.amount_cents) return "closed";
-	if (loan.due_date !== null && loan.due_date < today) return "overdue";
-	if (loan.repaid_cents > 0) return "partial";
-	return "open";
+  if (loan.repaid_cents >= loan.amount_cents) return "closed";
+  if (loan.due_date !== null && loan.due_date < today) return "overdue";
+  if (loan.repaid_cents > 0) return "partial";
+  return "open";
 }
 
 export function createLoansRepo(driver: DataDriver) {
-	/**
-	 * Serializes repayments per loan (§4) — same read-modify-write race as
-	 * job payments: two rapid repayments must not clobber each other's
-	 * `repaid_cents`.
-	 */
-	const mutex = createKeyedMutex();
-	return {
-		async listLoans(): Promise<LoanRow[]> {
-			return driver.query<LoanRow>("SELECT * FROM loans ORDER BY id");
-		},
+  /**
+   * Serializes repayments per loan (§4) — same read-modify-write race as
+   * job payments: two rapid repayments must not clobber each other's
+   * `repaid_cents`.
+   */
+  const mutex = createKeyedMutex();
+  return {
+    async listLoans(): Promise<LoanRow[]> {
+      return driver.query<LoanRow>("SELECT * FROM loans ORDER BY id");
+    },
 
-		async getLoan(id: number): Promise<LoanRow | undefined> {
-			const rows = await driver.query<LoanRow>(
-				"SELECT * FROM loans WHERE id = ?",
-				[id],
-			);
-			return rows[0];
-		},
+    async getLoan(id: number): Promise<LoanRow | undefined> {
+      const rows = await driver.query<LoanRow>(
+        "SELECT * FROM loans WHERE id = ?",
+        [id],
+      );
+      return rows[0];
+    },
 
-		async createLoan(input: LoanInput): Promise<number> {
-			const r = await driver.execute(
-				`INSERT INTO loans (counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at)
+    async createLoan(input: LoanInput): Promise<number> {
+      const r = await driver.execute(
+        `INSERT INTO loans (counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at)
          VALUES (?, ?, ?, 0, ?, ?, ?)`,
-				[
-					input.counterparty,
-					input.direction,
-					input.amountCents,
-					input.dueDate ?? null,
-					input.note ?? "",
-					todayLocal(),
-				],
-			);
-			return r.lastInsertRowid;
-		},
+        [
+          input.counterparty,
+          input.direction,
+          input.amountCents,
+          input.dueDate ?? null,
+          input.note ?? "",
+          todayLocal(),
+        ],
+      );
+      return r.lastInsertRowid;
+    },
 
-		async updateLoan(id: number, fields: Partial<LoanInput>): Promise<void> {
-			const sets: string[] = [];
-			const params: unknown[] = [];
-			if (fields.counterparty !== undefined) {
-				sets.push("counterparty = ?");
-				params.push(fields.counterparty);
-			}
-			if (fields.direction !== undefined) {
-				sets.push("direction = ?");
-				params.push(fields.direction);
-			}
-			if (fields.amountCents !== undefined) {
-				sets.push("amount_cents = ?");
-				params.push(fields.amountCents);
-			}
-			if (fields.dueDate !== undefined) {
-				sets.push("due_date = ?");
-				params.push(fields.dueDate);
-			}
-			if (fields.note !== undefined) {
-				sets.push("note = ?");
-				params.push(fields.note);
-			}
-			if (sets.length === 0) return;
-			params.push(id);
-			await driver.execute(
-				`UPDATE loans SET ${sets.join(", ")} WHERE id = ?`,
-				params,
-			);
-		},
+    async updateLoan(id: number, fields: Partial<LoanInput>): Promise<void> {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (fields.counterparty !== undefined) {
+        sets.push("counterparty = ?");
+        params.push(fields.counterparty);
+      }
+      if (fields.direction !== undefined) {
+        sets.push("direction = ?");
+        params.push(fields.direction);
+      }
+      if (fields.amountCents !== undefined) {
+        sets.push("amount_cents = ?");
+        params.push(fields.amountCents);
+      }
+      if (fields.dueDate !== undefined) {
+        sets.push("due_date = ?");
+        params.push(fields.dueDate);
+      }
+      if (fields.note !== undefined) {
+        sets.push("note = ?");
+        params.push(fields.note);
+      }
+      if (sets.length === 0) return;
+      params.push(id);
+      await driver.execute(
+        `UPDATE loans SET ${sets.join(", ")} WHERE id = ?`,
+        params,
+      );
+    },
 
-		/**
-		 * Record a repayment — never overpays (§4). Returns applied cents.
-		 * Serialized per loan so concurrent repayments can't overwrite each other.
-		 */
-		async recordRepayment(id: number, amountCents: number): Promise<number> {
-			return mutex.withLock(`loan:${id}`, async () => {
-				const loan = await this.getLoan(id);
-				if (!loan) throw new Error(`loan ${id} not found`);
-				const { newPaidCents, appliedCents } = applyPayment(
-					loan.amount_cents,
-					loan.repaid_cents,
-					amountCents,
-				);
-				if (appliedCents === 0) return 0;
-				await driver.execute("UPDATE loans SET repaid_cents = ? WHERE id = ?", [
-					newPaidCents,
-					id,
-				]);
-				return appliedCents;
-			});
-		},
+    /**
+     * Record a repayment — never overpays (§4). Returns applied cents.
+     * Serialized per loan so concurrent repayments can't overwrite each other.
+     */
+    async recordRepayment(id: number, amountCents: number): Promise<number> {
+      return mutex.withLock(`loan:${id}`, async () => {
+        const loan = await this.getLoan(id);
+        if (!loan) throw new Error(`loan ${id} not found`);
+        const { newPaidCents, appliedCents } = applyPayment(
+          loan.amount_cents,
+          loan.repaid_cents,
+          amountCents,
+        );
+        if (appliedCents === 0) return 0;
+        await driver.execute("UPDATE loans SET repaid_cents = ? WHERE id = ?", [
+          newPaidCents,
+          id,
+        ]);
+        return appliedCents;
+      });
+    },
 
-		async deleteLoan(id: number): Promise<void> {
-			await driver.execute("DELETE FROM loans WHERE id = ?", [id]);
-		},
+    async deleteLoan(id: number): Promise<void> {
+      await driver.execute("DELETE FROM loans WHERE id = ?", [id]);
+    },
 
-		/** Loans with their derived state + remaining balance, for list views. */
-		async listLoansWithState(
-			today: string,
-		): Promise<(LoanRow & { state: LoanState; remaining_cents: number })[]> {
-			const loans = await this.listLoans();
-			return loans.map((loan) => ({
-				...loan,
-				state: deriveLoanState(loan, today),
-				remaining_cents: Math.max(0, loan.amount_cents - loan.repaid_cents),
-			}));
-		},
-	};
+    /** Loans with their derived state + remaining balance, for list views. */
+    async listLoansWithState(
+      today: string,
+    ): Promise<(LoanRow & { state: LoanState; remaining_cents: number })[]> {
+      const loans = await this.listLoans();
+      return loans.map((loan) => ({
+        ...loan,
+        state: deriveLoanState(loan, today),
+        remaining_cents: Math.max(0, loan.amount_cents - loan.repaid_cents),
+      }));
+    },
+  };
 }
 
 export type LoansRepo = ReturnType<typeof createLoansRepo>;

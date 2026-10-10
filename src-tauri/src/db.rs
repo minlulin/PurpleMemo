@@ -269,11 +269,9 @@ fn reject_txn_control(sql: &str) -> Result<(), String> {
         .unwrap_or("")
         .to_ascii_uppercase();
     match first.as_str() {
-        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "SAVEPOINT" | "RELEASE" => {
-            Err(format!(
-                "transaction-control statements are not allowed here: {first}"
-            ))
-        }
+        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "SAVEPOINT" | "RELEASE" => Err(format!(
+            "transaction-control statements are not allowed here: {first}"
+        )),
         _ => Ok(()),
     }
 }
@@ -298,7 +296,8 @@ pub fn execute(
 /// Run several writes as a single transaction — all-or-nothing (§4).
 pub fn batch(conn: &Connection, statements: &[BatchStatement]) -> Result<(), String> {
     for (idx, stmt) in statements.iter().enumerate() {
-        reject_txn_control(&stmt.sql).map_err(|e| format!("batch statement {idx} rejected: {e}"))?;
+        reject_txn_control(&stmt.sql)
+            .map_err(|e| format!("batch statement {idx} rejected: {e}"))?;
     }
     conn.execute_batch("BEGIN")
         .map_err(|e| format!("batch begin failed: {e}"))?;

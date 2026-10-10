@@ -6,35 +6,35 @@
 // withLock calls with the same key — it would deadlock.
 
 export interface KeyedMutex {
-	withLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  withLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
 }
 
 export function createKeyedMutex(): KeyedMutex {
-	const tails = new Map<string, Promise<void>>();
+  const tails = new Map<string, Promise<void>>();
 
-	async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-		const prev = tails.get(key) ?? Promise.resolve();
-		let release: () => void = () => {};
-		const gate = new Promise<void>((res) => {
-			release = res;
-		});
-		// The tail never rejects: a failed critical section releases the gate
-		// but must not poison the lock for the next waiter.
-		const mine: Promise<void> = prev
-			.then(() => gate)
-			.then(
-				() => undefined,
-				() => undefined,
-			);
-		tails.set(key, mine);
-		await prev;
-		try {
-			return await fn();
-		} finally {
-			release();
-			if (tails.get(key) === mine) tails.delete(key);
-		}
-	}
+  async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = tails.get(key) ?? Promise.resolve();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    // The tail never rejects: a failed critical section releases the gate
+    // but must not poison the lock for the next waiter.
+    const mine: Promise<void> = prev
+      .then(() => gate)
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+    tails.set(key, mine);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (tails.get(key) === mine) tails.delete(key);
+    }
+  }
 
-	return { withLock };
+  return { withLock };
 }

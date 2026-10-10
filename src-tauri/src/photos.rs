@@ -53,10 +53,14 @@ pub fn save_photo(
         // Hash mismatch: partial or corrupt file — rewrite it atomically below.
     }
     let tmp_path = abs_path.with_extension(format!("{ext}.tmp"));
-    fs::write(&tmp_path, bytes)
-        .map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
-    fs::rename(&tmp_path, &abs_path)
-        .map_err(|e| format!("rename {} -> {}: {e}", tmp_path.display(), abs_path.display()))?;
+    fs::write(&tmp_path, bytes).map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &abs_path).map_err(|e| {
+        format!(
+            "rename {} -> {}: {e}",
+            tmp_path.display(),
+            abs_path.display()
+        )
+    })?;
     Ok(rel_path)
 }
 

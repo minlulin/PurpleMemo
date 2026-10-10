@@ -7,3 +7,5 @@
 # Biome's formatter requires LF; a CRLF checkout of a JSON config fails
 # the gate (plan §7). Pin the configs it checks so fresh clones stay LF.
 *.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
