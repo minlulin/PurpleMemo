@@ -7,6 +7,19 @@ export function toCents(major: number): number {
   return Math.round(major * 100);
 }
 
+const AMOUNT_INPUT = /^\d+(?:\.\d{1,2})?$/;
+
+/**
+ * Parse user-typed major-unit input ("1,234.56") to integer cents at the
+ * display edge (§4). Accepts optional thousands commas and up to two
+ * decimals; anything else (empty, negative, malformed) is `null`.
+ */
+export function parseMMK(raw: string): number | null {
+  const normalized = raw.trim().replace(/,/g, "");
+  if (!AMOUNT_INPUT.test(normalized)) return null;
+  return Math.round(Number(normalized) * 100);
+}
+
 /** Integer cents -> major units (number, for further logic — not display). */
 export function fromCents(cents: number): number {
   return cents / 100;

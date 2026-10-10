@@ -4,7 +4,12 @@ import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at } from "../test-utils.ts";
-import { cleanName, createBudgetRepo, limitStatus } from "./budget.ts";
+import {
+  cleanName,
+  createBudgetRepo,
+  limitStatus,
+  prospectiveStatus,
+} from "./budget.ts";
 
 /** Args of the first recorded call to `method` (tests always call it once). */
 function argsOf(driver: MockDriver, method: keyof DataDriver): unknown[] {
@@ -240,4 +245,16 @@ test("cleanName trims input and rejects empty/whitespace names", () => {
   assert.equal(cleanName("Wave"), "Wave");
   assert.equal(cleanName(""), null);
   assert.equal(cleanName("   "), null);
+});
+
+test("prospectiveStatus warns when a new entry crosses 80%/100% (§2.1)", () => {
+  assert.equal(prospectiveStatus(0, 10_000, 7_999), "ok");
+  assert.equal(prospectiveStatus(7_500, 10_000, 500), "warn");
+  assert.equal(prospectiveStatus(9_500, 10_000, 600), "exceeded");
+  assert.equal(prospectiveStatus(0, null, 99_999), "ok", "no limit -> ok");
+  assert.equal(
+    prospectiveStatus(50_000, 10_000, 1),
+    "exceeded",
+    "already over",
+  );
 });

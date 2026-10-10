@@ -77,6 +77,19 @@ export function limitStatus(
   return "ok";
 }
 
+/**
+ * Status the limit would reach if `additionalCents` were added to the spend
+ * (§2.1 entry-form warning: the 80%/exceeded warnings never block an entry,
+ * they only tell the user before they save).
+ */
+export function prospectiveStatus(
+  spentCents: number,
+  limitCents: number | null,
+  additionalCents: number,
+): LimitStatus {
+  return limitStatus(spentCents + Math.max(0, additionalCents), limitCents);
+}
+
 export interface RecurringInput {
   title: string;
   amountCents: number;

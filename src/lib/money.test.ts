@@ -6,6 +6,7 @@ import {
   formatMMK,
   fromCents,
   outstandingCents,
+  parseMMK,
   toCents,
 } from "./money.ts";
 
@@ -53,4 +54,19 @@ test("applyPayment never overpays and reports what counted (§2.1)", () => {
     newPaidCents: 10_000,
     appliedCents: 0,
   });
+});
+
+test("parseMMK parses user amount input to integer cents (§4 edge)", () => {
+  assert.equal(parseMMK("1234.56"), 123456);
+  assert.equal(parseMMK("1234"), 123400);
+  assert.equal(parseMMK("1,234.56"), 123456);
+  assert.equal(parseMMK("  50  "), 5000);
+  assert.equal(parseMMK("0.05"), 5);
+  assert.equal(parseMMK("12.3"), 1230);
+  assert.equal(parseMMK(""), null);
+  assert.equal(parseMMK("    "), null);
+  assert.equal(parseMMK("abc"), null);
+  assert.equal(parseMMK("-5"), null);
+  assert.equal(parseMMK("1.2.3"), null);
+  assert.equal(parseMMK("1.505"), null);
 });

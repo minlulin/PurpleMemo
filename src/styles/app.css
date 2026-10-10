@@ -752,3 +752,83 @@ tbody .week-row {
 .budget-todo {
   color: var(--color-text-muted);
 }
+
+.day-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.day-nav input {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+}
+
+.budget-entries,
+.entry-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.entry-form {
+  background: var(--color-surface);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.entry-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.entry-form input,
+.entry-form select {
+  background: var(--color-base);
+  color: var(--color-text);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  font: inherit;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.amount-income {
+  color: var(--color-success);
+}
+
+.amount-expense {
+  color: var(--color-danger);
+}
+
+.limit-warn {
+  color: var(--color-warn);
+  font-size: var(--text-sm);
+}
+
+.limit-exceeded {
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.kind-toggle {
+  display: flex;
+  gap: var(--space-2);
+  border: none;
+  margin: 0;
+  padding: 0;
+}
