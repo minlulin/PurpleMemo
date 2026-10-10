@@ -5,44 +5,22 @@
 > only what matters for the next session.
 
 ## Current Goal
-- [x] **P2 — Data layer — DONE** (commit pending)
-- [ ] **P3a — Notes + Journal** (next phase)
+- [x] **P3a — Notes + Journal — DONE** (commits 48b8a5a, cb55f19; see PLAN.md progress log)
+- [ ] **P3b — Budget Tracker** (next phase — starting now, inline via executing-plans skill)
 
 ## What Was Done (this session, Oct 10)
-1. **P0/P1 review — gates re-run green.** Both match the plan. One P0 defect
-   surfaced and fixed: `tsconfig.json` checked out with CRLF (autocrlf churn
-   returned after P0's one-time normalization) failed the biome format check.
-   Fixed durably by pinning `*.json text eol=lf` in `.gitattributes`
-   (commit `19be80f`). P0/P1 gates now green 8/8.
-2. **P2 — Data layer — DONE, gate green (8/8), 67/67 unit tests.**
-   - `src/data/driver.ts`: single Tauri driver over the 9 IPC commands
-     (`createTauriDriver`); `query<T extends object>` — `Row` was
-     `Record<string, unknown>` and rejected plain interfaces, so the
-     constraint is `Queryable = object` instead.
-   - `src/data/mock-driver.ts`: recording driver for tests — records every
-     call, returns scripted query results FIFO, scripted execute outcome +
-     auto rowids, scripted errors (consumed once).
-   - `src/lib/types.ts`: row/domain types for all 29 tables (money stays cents,
-     dates stay `yyyy-mm-dd`).
-   - `src/lib/money.ts`: `toCents`, `formatMMK`, `outstandingCents` (never
-     negative), `applyPayment` (cash-basis clamp).
-   - `src/lib/dates.ts`: local-date helpers. **Caught myself twice using
-     `new Date().toISOString()` (UTC) instead of local `yyyy-mm-dd`** —
-     §4 forbids that; replaced everywhere with `todayLocal()`.
-   - `src/lib/crypto.ts`: PIN PBKDF2-SHA256 600k + `verifyAnswer` (security
-     answers normalize case/whitespace; PINs stay exact); vault AES-256-GCM
-     with **per-item** salt+IV (matches §5.3 and the `vault_items.salt`
-     column), `changePassword` re-encrypts every item under a fresh salt.
-   - `src/lib/search.ts`: FTS5 MATCH query builder (quoted tokens + prefix
-     `*`) + `searchNotes` (rank-ordered, excludes archived).
-   - 13 repositories: notes, journal, budget, business, loans, shopping,
-     habits, tasks, contacts, memories, gallery, vault, settings.
-   - `src/test-utils.ts`: `at()`/`first()` runtime-checked accessors — the
-     gate enforces `noNonNullAssertion` + `noUncheckedIndexedAccess`, so
-     `!` is banned everywhere (including `budget.ts`/`crypto.ts` source).
-3. Housekeeping: `tsconfig.json` `allowImportingTsExtensions` (Node type-
-   stripping needs `.ts` extensions in relative imports); `.gitattributes`
-   `*.json text eol=lf`; PLAN.md progress log updated.
+1. **Verify gate restored — commit `8cda15b`.** `npm run verify` had been failing:
+   - Biome format: 20 TS/TSX files (src/lib/*, src/data/mock-driver.ts,
+     src/pages/NotesPage.tsx) were committed with **tab indent + CRLF** while
+     biome.json pins `indentStyle: space` + LF. Fixed via `npm run lint:fix`;
+     `git diff -w` confirmed whitespace-only.
+   - `cargo fmt --check`: drift in `src-tauri/src/db.rs` + `photos.rs` — fixed via `cargo fmt`.
+   - Root cause made durable: `*.ts text eol=lf` + `*.tsx text eol=lf` added to
+     `.gitattributes` (same convention as the existing `*.json`/`*.sh` pins;
+     `core.autocrlf=true` on this machine re-CRLFs unpinned files on checkout).
+   - Full `npm run verify` green 8/8 afterwards (77→98 tests by then; 98/98 pass).
+2. **P3a closed out:** status `gate_pass` → `done` in PLAN.md progress log, with
+   cb55f19 (final-review fixes: races, vault, updater, photos, CSP) and 8cda15b recorded.
 
 ## Decisions & Constraints
 - `docs/PLAN.md` is the single source of truth. **One phase at a time**; never
@@ -58,7 +36,9 @@
   calls repos, never the driver directly.
 - Biome's recommended preset + `noExplicitAny: error` + `--error-on-warnings`
   means **warnings fail the gate**. `noNonNullAssertion` is a warning, so
-  non-null assertions are banned project-wide.
+  non-null assertions are banned project-wide (use `at()`/`first()` helpers).
+- `.gitignore` has an **uncommitted** local edit (`/.freebuff` line, not made by
+  the agent) — leave it for the user to commit.
 - Session memory is overwritten each session — never appended.
 
 ## How to reset
