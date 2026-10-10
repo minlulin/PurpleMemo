@@ -14,6 +14,12 @@ use sha2::{Digest, Sha256};
 ///
 /// Content-addressed: identical bytes always map to the same path, so a
 /// duplicate save is a no-op write.
+///
+/// The write is atomic: bytes go to a temp file in the same directory and
+/// are renamed into place, so a crash can never leave a partial file at the
+/// final path. If a file already exists there, its hash is verified first —
+/// a previous crash mid-write (before this atomic scheme) could have left a
+/// partial file that a bare `exists()` check would wrongly accept.
 pub fn save_photo(
     data_dir: &Path,
     year_month: &str,
@@ -34,9 +40,23 @@ pub fn save_photo(
     if let Some(parent) = abs_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    if !abs_path.exists() {
-        fs::write(&abs_path, bytes).map_err(|e| format!("write {}: {e}", abs_path.display()))?;
+    if abs_path.exists() {
+        let existing =
+            fs::read(&abs_path).map_err(|e| format!("read {}: {e}", abs_path.display()))?;
+        let existing_hash: String = Sha256::digest(&existing)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if existing_hash == hash {
+            return Ok(rel_path);
+        }
+        // Hash mismatch: partial or corrupt file — rewrite it atomically below.
     }
+    let tmp_path = abs_path.with_extension(format!("{ext}.tmp"));
+    fs::write(&tmp_path, bytes)
+        .map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &abs_path)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp_path.display(), abs_path.display()))?;
     Ok(rel_path)
 }
 
