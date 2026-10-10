@@ -12,6 +12,7 @@ import {
   limitDisplayRows,
   monthSummaryDisplay,
   prospectiveStatus,
+  recurringDisplay,
   yearDisplay,
 } from "../lib/budget.ts";
 import { addDays, todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -20,6 +21,8 @@ import { formatMMK, parseMMK } from "../lib/money.ts";
 import type {
   ExpenseCategoryRow,
   IncomeCategoryRow,
+  RecurringFrequency,
+  RecurringPaymentRow,
   WalletRow,
 } from "../lib/types.ts";
 
@@ -79,6 +82,8 @@ export default function BudgetPage() {
         <YearView />
       ) : view === "limits" ? (
         <LimitsView />
+      ) : view === "recurring" ? (
+        <RecurringView />
       ) : view === "manage" ? (
         <ManageView />
       ) : (
@@ -1092,6 +1097,311 @@ function LimitsView() {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/** Recurring payments: rules list, mark-paid with capped catch-up (§2.1). */
+function RecurringView() {
+  const today = todayLocal();
+  const [rules, setRules] = useState<RecurringPaymentRow[]>([]);
+  const [expenseCats, setExpenseCats] = useState<ExpenseCategoryRow[]>([]);
+  const [wallets, setWallets] = useState<WalletRow[]>([]);
+  const [showInactive, setShowInactive] = useState(false);
+  const [fallbackCategoryId, setFallbackCategoryId] = useState<number | "">("");
+  const [fallbackWalletId, setFallbackWalletId] = useState<number | "">("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const [title, setTitle] = useState("");
+  const [amountRaw, setAmountRaw] = useState("");
+  const [frequency, setFrequency] = useState<RecurringFrequency>("monthly");
+  const [nextDue, setNextDue] = useState(today);
+  const [ruleCategory, setRuleCategory] = useState<number | "">("");
+  const [ruleWallet, setRuleWallet] = useState<number | "">("");
+
+  const refresh = useCallback(async (includeInactive: boolean) => {
+    try {
+      const [rs, ec, ws] = await Promise.all([
+        budgetRepo.listRecurring(includeInactive),
+        budgetRepo.listExpenseCategories(),
+        budgetRepo.listWallets(),
+      ]);
+      setRules(rs);
+      setExpenseCats(ec);
+      setWallets(ws);
+      setFallbackCategoryId((prev) => (prev === "" ? (ec[0]?.id ?? "") : prev));
+      setFallbackWalletId((prev) => (prev === "" ? (ws[0]?.id ?? "") : prev));
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh(showInactive);
+  }, [showInactive, refresh]);
+
+  const markPaid = async (rule: RecurringPaymentRow) => {
+    if (
+      typeof fallbackCategoryId !== "number" ||
+      typeof fallbackWalletId !== "number"
+    ) {
+      setError("Pick a fallback category and wallet first.");
+      return;
+    }
+    setBusyId(rule.id);
+    try {
+      await budgetRepo.markRecurringPaid(rule.id, today, {
+        categoryId: fallbackCategoryId,
+        walletId: fallbackWalletId,
+      });
+      await refresh(showInactive);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const setActive = async (rule: RecurringPaymentRow, active: boolean) => {
+    try {
+      await budgetRepo.setRecurringActive(rule.id, active);
+      await refresh(showInactive);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const createRule = async () => {
+    const amountCents = parseMMK(amountRaw);
+    const name = cleanName(title);
+    if (amountCents === null || amountCents <= 0 || !name || !nextDue) return;
+    try {
+      await budgetRepo.createRecurring({
+        title: name,
+        amountCents,
+        categoryId: ruleCategory === "" ? null : ruleCategory,
+        walletId: ruleWallet === "" ? null : ruleWallet,
+        frequency,
+        nextDueDate: nextDue,
+      });
+      setTitle("");
+      setAmountRaw("");
+      setRuleCategory("");
+      setRuleWallet("");
+      await refresh(showInactive);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  return (
+    <section className="budget-recurring" aria-label="Recurring payments">
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="inline-form">
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />{" "}
+          Show paused
+        </label>
+        <label className="muted">
+          Fallback category{" "}
+          <select
+            aria-label="Fallback expense category"
+            value={fallbackCategoryId === "" ? "" : String(fallbackCategoryId)}
+            onChange={(e) =>
+              setFallbackCategoryId(
+                e.target.value === "" ? "" : Number(e.target.value),
+              )
+            }
+          >
+            <option value="">Choose…</option>
+            {expenseCats.map((c) => (
+              <option key={c.id} value={String(c.id)}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="muted">
+          Fallback wallet{" "}
+          <select
+            aria-label="Fallback wallet"
+            value={fallbackWalletId === "" ? "" : String(fallbackWalletId)}
+            onChange={(e) =>
+              setFallbackWalletId(
+                e.target.value === "" ? "" : Number(e.target.value),
+              )
+            }
+          >
+            <option value="">Choose…</option>
+            {wallets.map((w) => (
+              <option key={w.id} value={String(w.id)}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {rules.length === 0 ? (
+        <p className="muted">No recurring payments yet — add one below.</p>
+      ) : (
+        <ul className="budget-list">
+          {rules.map((r) => {
+            const d = recurringDisplay(r, today);
+            return (
+              <li key={r.id} className="limit-row">
+                <span>
+                  {r.title}
+                  {r.active ? null : <span className="muted"> (paused)</span>}
+                  {d.overdue ? (
+                    <span className="limit-exceeded" role="status">
+                      {" "}
+                      (overdue)
+                    </span>
+                  ) : null}
+                </span>
+                <span className="muted">
+                  {formatMMK(r.amount_cents)} · {r.frequency} · next{" "}
+                  {r.next_due_date}
+                </span>
+                <span className="row-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busyId === r.id || d.occurrences.length === 0}
+                    onClick={() => void markPaid(r)}
+                  >
+                    {d.occurrences.length > 1
+                      ? `Mark paid (${d.occurrences.length} occurrences)`
+                      : "Mark paid"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => void setActive(r, !r.active)}
+                  >
+                    {r.active ? "Pause" : "Resume"}
+                  </button>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <form
+        className="entry-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void createRule();
+        }}
+      >
+        <h2 className="side-heading">New recurring payment</h2>
+        <label>
+          Title
+          <input
+            value={title}
+            placeholder="e.g. Rent"
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+        <label>
+          Amount (MMK)
+          <input
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amountRaw}
+            onChange={(e) => setAmountRaw(e.target.value)}
+          />
+        </label>
+        <label>
+          Frequency
+          <select
+            aria-label="Frequency"
+            value={frequency}
+            onChange={(e) => setFrequency(e.target.value as RecurringFrequency)}
+          >
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="yearly">Yearly</option>
+          </select>
+        </label>
+        <label>
+          Next due date
+          <input
+            type="date"
+            aria-label="Next due date"
+            value={nextDue}
+            onChange={(e) => setNextDue(e.target.value)}
+          />
+        </label>
+        <label>
+          Category (optional — falls back when marking paid)
+          <select
+            aria-label="Rule category"
+            value={ruleCategory === "" ? "" : String(ruleCategory)}
+            onChange={(e) =>
+              setRuleCategory(
+                e.target.value === "" ? "" : Number(e.target.value),
+              )
+            }
+          >
+            <option value="">None</option>
+            {expenseCats.map((c) => (
+              <option key={c.id} value={String(c.id)}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Wallet (optional — falls back when marking paid)
+          <select
+            aria-label="Rule wallet"
+            value={ruleWallet === "" ? "" : String(ruleWallet)}
+            onChange={(e) =>
+              setRuleWallet(e.target.value === "" ? "" : Number(e.target.value))
+            }
+          >
+            <option value="">None</option>
+            {wallets.map((w) => (
+              <option key={w.id} value={String(w.id)}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="row-actions">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={
+              cleanName(title) === null ||
+              parseMMK(amountRaw) === null ||
+              (parseMMK(amountRaw) ?? 0) <= 0 ||
+              !nextDue
+            }
+          >
+            Add rule
+          </button>
+        </div>
+      </form>
     </section>
   );
 }

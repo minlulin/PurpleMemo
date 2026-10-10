@@ -11,6 +11,7 @@ import {
   limitStatus,
   monthSummaryDisplay,
   prospectiveStatus,
+  recurringDisplay,
   yearDisplay,
 } from "./budget.ts";
 
@@ -382,4 +383,31 @@ test("limitDisplayRows handles categories without status and unknown ids", () =>
       ["Food", 0, "ok"],
     ],
   );
+});
+
+test("recurringDisplay reports due occurrences and overdue state (§2.1)", () => {
+  const notDue = recurringDisplay(
+    { frequency: "monthly", next_due_date: "2026-11-01" },
+    "2026-10-10",
+  );
+  assert.deepEqual(notDue.occurrences, []);
+  assert.equal(notDue.overdue, false);
+
+  const dueToday = recurringDisplay(
+    { frequency: "weekly", next_due_date: "2026-10-10" },
+    "2026-10-10",
+  );
+  assert.deepEqual(dueToday.occurrences, ["2026-10-10"]);
+  assert.equal(dueToday.overdue, false, "due today is due, not overdue");
+
+  const behind = recurringDisplay(
+    { frequency: "monthly", next_due_date: "2026-08-01" },
+    "2026-10-10",
+  );
+  assert.deepEqual(behind.occurrences, [
+    "2026-08-01",
+    "2026-09-01",
+    "2026-10-01",
+  ]);
+  assert.equal(behind.overdue, true);
 });

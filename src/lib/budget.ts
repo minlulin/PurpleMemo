@@ -261,6 +261,46 @@ export function yearDisplay(
   };
 }
 
+export interface RecurringDisplay {
+  /** Due occurrences on/before `onDate`, oldest first, catch-up capped. */
+  occurrences: string[];
+  /** `next_due_date` is strictly before `onDate` — the same rule as §2.3 loans. */
+  overdue: boolean;
+}
+
+/**
+ * Display state for one recurring rule against a date: which occurrences
+ * marking-paid would create (same capped walk `markRecurringPaid` performs)
+ * and whether the rule is already overdue.
+ */
+export function recurringDisplay(
+  rule: Pick<RecurringPaymentRow, "frequency" | "next_due_date">,
+  onDate: string,
+): RecurringDisplay {
+  return {
+    occurrences: dueOccurrences(rule, onDate),
+    overdue: rule.next_due_date < onDate,
+  };
+}
+
+/**
+ * Occurrences due on/before `onDate`, oldest first, hard-capped at
+ * CATCHUP_MAX_OCCURRENCES (§2.1 — never an unbounded loop). Computed in
+ * JS from the rule's frequency so the cap is explicit and testable.
+ */
+export function dueOccurrences(
+  rule: Pick<RecurringPaymentRow, "frequency" | "next_due_date">,
+  onDate: string,
+): string[] {
+  const out: string[] = [];
+  let due = rule.next_due_date;
+  while (due <= onDate && out.length < CATCHUP_MAX_OCCURRENCES) {
+    out.push(due);
+    due = advanceDate(due, rule.frequency);
+  }
+  return out;
+}
+
 export interface RecurringInput {
   title: string;
   amountCents: number;
@@ -597,22 +637,12 @@ export function createBudgetRepo(driver: DataDriver) {
       );
     },
 
-    /**
-     * Occurrences due on/before `onDate`, oldest first, hard-capped at
-     * CATCHUP_MAX_OCCURRENCES (§2.1 — never an unbounded loop). Computed in
-     * JS from the rule's frequency so the cap is explicit and testable.
-     */
+    /** See {@link dueOccurrences} — same capped walk, kept on the repo API. */
     occurrencesDue(
       rule: Pick<RecurringPaymentRow, "frequency" | "next_due_date">,
       onDate: string,
     ): string[] {
-      const out: string[] = [];
-      let due = rule.next_due_date;
-      while (due <= onDate && out.length < CATCHUP_MAX_OCCURRENCES) {
-        out.push(due);
-        due = advanceDate(due, rule.frequency);
-      }
-      return out;
+      return dueOccurrences(rule, onDate);
     },
 
     /**
