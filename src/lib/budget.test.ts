@@ -8,6 +8,7 @@ import {
   cleanName,
   createBudgetRepo,
   limitStatus,
+  monthSummaryDisplay,
   prospectiveStatus,
 } from "./budget.ts";
 
@@ -257,4 +258,51 @@ test("prospectiveStatus warns when a new entry crosses 80%/100% (§2.1)", () => 
     "exceeded",
     "already over",
   );
+});
+
+test("monthSummaryDisplay sorts categories by total and labels unknown ids (§2.1)", () => {
+  const display = monthSummaryDisplay(
+    {
+      incomeCents: 20_000,
+      expenseCents: 20_500,
+      incomeByCategory: [
+        { category_id: 1, total_cents: 5_000 },
+        { category_id: 2, total_cents: 15_000 },
+      ],
+      expenseByCategory: [
+        { category_id: 1, total_cents: 20_000 },
+        { category_id: 9, total_cents: 500 },
+      ],
+    },
+    [
+      { id: 2, name: "Business" },
+      { id: 1, name: "Salary" },
+    ],
+    [{ id: 1, name: "Food" }],
+  );
+  assert.equal(display.netCents, -500);
+  assert.deepEqual(display.incomeRows, [
+    { name: "Business", totalCents: 15_000 },
+    { name: "Salary", totalCents: 5_000 },
+  ]);
+  assert.deepEqual(display.expenseRows, [
+    { name: "Food", totalCents: 20_000 },
+    { name: "Category #9", totalCents: 500 },
+  ]);
+});
+
+test("monthSummaryDisplay with no entries yields zeroed display", () => {
+  const display = monthSummaryDisplay(
+    {
+      incomeCents: 0,
+      expenseCents: 0,
+      incomeByCategory: [],
+      expenseByCategory: [],
+    },
+    [],
+    [],
+  );
+  assert.equal(display.netCents, 0);
+  assert.deepEqual(display.incomeRows, []);
+  assert.deepEqual(display.expenseRows, []);
 });

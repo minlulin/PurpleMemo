@@ -9,9 +9,11 @@ import {
   cleanName,
   type DayEntry,
   type LimitStatus,
+  monthSummaryDisplay,
   prospectiveStatus,
 } from "../lib/budget.ts";
 import { addDays, todayLocal, yearMonthOf } from "../lib/dates.ts";
+import { monthLabel } from "../lib/journal.ts";
 import { formatMMK, parseMMK } from "../lib/money.ts";
 import type {
   ExpenseCategoryRow,
@@ -21,6 +23,15 @@ import type {
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+function shiftMonth(yearMonth: string, delta: number): string {
+  const [y, m] = yearMonth.split("-").map(Number);
+  if (!y || !m) return yearMonth;
+  const d = new Date(y, m - 1 + delta, 1);
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${yy}-${mm}`;
 }
 
 type BudgetView =
@@ -60,6 +71,8 @@ export default function BudgetPage() {
       </nav>
       {view === "entries" ? (
         <EntriesView />
+      ) : view === "month" ? (
+        <MonthView />
       ) : view === "manage" ? (
         <ManageView />
       ) : (
@@ -651,6 +664,142 @@ function EntriesView() {
           ) : null}
         </div>
       </form>
+    </section>
+  );
+}
+
+/** Monthly summary: totals + per-category breakdown, month navigation (§2.1). */
+function MonthView() {
+  const [yearMonth, setYearMonth] = useState(() => yearMonthOf(todayLocal()));
+  const [display, setDisplay] = useState<ReturnType<
+    typeof monthSummaryDisplay
+  > | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [summary, ec, ic] = await Promise.all([
+          budgetRepo.monthlySummary(yearMonth),
+          budgetRepo.listExpenseCategories(),
+          budgetRepo.listIncomeCategories(),
+        ]);
+        if (cancelled) return;
+        setDisplay(monthSummaryDisplay(summary, ic, ec));
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError(errText(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [yearMonth]);
+
+  const label = monthLabel(yearMonth);
+
+  return (
+    <section className="budget-month" aria-label="Monthly summary">
+      <div className="day-nav">
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setYearMonth(shiftMonth(yearMonth, -1))}
+        >
+          ◀
+        </button>
+        <h2 className="side-heading month-label">{label}</h2>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setYearMonth(shiftMonth(yearMonth, 1))}
+        >
+          ▶
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setYearMonth(yearMonthOf(todayLocal()))}
+        >
+          This month
+        </button>
+      </div>
+
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {display ? (
+        <>
+          <div className="summary-figures">
+            <div>
+              <span className="muted">Income</span>
+              <span className="figure amount-income">
+                +{formatMMK(display.incomeCents)}
+              </span>
+            </div>
+            <div>
+              <span className="muted">Expense</span>
+              <span className="figure amount-expense">
+                −{formatMMK(display.expenseCents)}
+              </span>
+            </div>
+            <div>
+              <span className="muted">Net</span>
+              <span
+                className={
+                  display.netCents > 0
+                    ? "figure amount-income"
+                    : display.netCents < 0
+                      ? "figure amount-expense"
+                      : "figure"
+                }
+              >
+                {formatMMK(display.netCents)}
+              </span>
+            </div>
+          </div>
+          <div className="summary-breakdowns">
+            <section aria-label="Expense by category">
+              <h3 className="side-heading">Expenses by category</h3>
+              {display.expenseRows.length === 0 ? (
+                <p className="muted">No expenses this month.</p>
+              ) : (
+                <ul className="budget-list">
+                  {display.expenseRows.map((r) => (
+                    <li key={r.name} className="budget-row">
+                      <span>{r.name}</span>
+                      <span className="figure">{formatMMK(r.totalCents)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section aria-label="Income by category">
+              <h3 className="side-heading">Income by category</h3>
+              {display.incomeRows.length === 0 ? (
+                <p className="muted">No income this month.</p>
+              ) : (
+                <ul className="budget-list">
+                  {display.incomeRows.map((r) => (
+                    <li key={r.name} className="budget-row">
+                      <span>{r.name}</span>
+                      <span className="figure">{formatMMK(r.totalCents)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+        </>
+      ) : null}
     </section>
   );
 }

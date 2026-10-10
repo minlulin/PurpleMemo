@@ -65,6 +65,61 @@ export interface MonthSummary {
 
 export type LimitStatus = "ok" | "warn" | "exceeded";
 
+export interface SummaryCategoryRow {
+  name: string;
+  totalCents: number;
+}
+
+export interface MonthDisplay {
+  incomeCents: number;
+  expenseCents: number;
+  netCents: number;
+  /** Per-category income totals, largest first. */
+  incomeRows: SummaryCategoryRow[];
+  /** Per-category expense totals, largest first. */
+  expenseRows: SummaryCategoryRow[];
+}
+
+function toDisplayRows(
+  totals: CategoryTotal[],
+  names: Map<number, string>,
+): SummaryCategoryRow[] {
+  return totals
+    .map((t) => ({
+      name: names.get(t.category_id) ?? `Category #${t.category_id}`,
+      totalCents: t.total_cents,
+    }))
+    .sort(
+      (a, b) => b.totalCents - a.totalCents || a.name.localeCompare(b.name),
+    );
+}
+
+/**
+ * Turn a MonthSummary into display rows (§2.1 monthly view + per-category
+ * totals). Income and expense categories are labelled from their own tables
+ * (independent id spaces); a category deleted after use keeps its total under
+ * a `Category #<id>` label rather than disappearing from the summary.
+ */
+export function monthSummaryDisplay(
+  summary: MonthSummary,
+  incomeCategories: Pick<IncomeCategoryRow, "id" | "name">[],
+  expenseCategories: Pick<ExpenseCategoryRow, "id" | "name">[],
+): MonthDisplay {
+  return {
+    incomeCents: summary.incomeCents,
+    expenseCents: summary.expenseCents,
+    netCents: summary.incomeCents - summary.expenseCents,
+    incomeRows: toDisplayRows(
+      summary.incomeByCategory,
+      new Map(incomeCategories.map((c) => [c.id, c.name])),
+    ),
+    expenseRows: toDisplayRows(
+      summary.expenseByCategory,
+      new Map(expenseCategories.map((c) => [c.id, c.name])),
+    ),
+  };
+}
+
 /** Warning thresholds (§2.1): warn at 80%, warn again when exceeded. */
 export function limitStatus(
   spentCents: number,
