@@ -10,6 +10,7 @@ import {
   limitStatus,
   monthSummaryDisplay,
   prospectiveStatus,
+  yearDisplay,
 } from "./budget.ts";
 
 /** Args of the first recorded call to `method` (tests always call it once). */
@@ -305,4 +306,40 @@ test("monthSummaryDisplay with no entries yields zeroed display", () => {
   assert.equal(display.netCents, 0);
   assert.deepEqual(display.incomeRows, []);
   assert.deepEqual(display.expenseRows, []);
+});
+
+test("yearDisplay aggregates monthly totals and nets each month (§2.1)", () => {
+  const months = Array.from({ length: 12 }, () => ({
+    incomeCents: 0,
+    expenseCents: 0,
+  }));
+  months[0] = { incomeCents: 10_000, expenseCents: 4_000 };
+  months[11] = { incomeCents: 5_000, expenseCents: 7_000 };
+  const d = yearDisplay("2026", months);
+  assert.equal(d.totalIncomeCents, 15_000);
+  assert.equal(d.totalExpenseCents, 11_000);
+  assert.equal(d.netCents, 4_000);
+  assert.equal(d.months.length, 12);
+  assert.deepEqual(d.months[0], {
+    yearMonth: "2026-01",
+    incomeCents: 10_000,
+    expenseCents: 4_000,
+    netCents: 6_000,
+  });
+  assert.deepEqual(d.months[11], {
+    yearMonth: "2026-12",
+    incomeCents: 5_000,
+    expenseCents: 7_000,
+    netCents: -2_000,
+  });
+});
+
+test("yearDisplay with no entries yields zeroed totals", () => {
+  const d = yearDisplay(
+    "2026",
+    Array.from({ length: 12 }, () => ({ incomeCents: 0, expenseCents: 0 })),
+  );
+  assert.equal(d.totalIncomeCents, 0);
+  assert.equal(d.totalExpenseCents, 0);
+  assert.equal(d.netCents, 0);
 });

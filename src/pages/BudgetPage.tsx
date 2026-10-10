@@ -11,6 +11,7 @@ import {
   type LimitStatus,
   monthSummaryDisplay,
   prospectiveStatus,
+  yearDisplay,
 } from "../lib/budget.ts";
 import { addDays, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { monthLabel } from "../lib/journal.ts";
@@ -73,6 +74,8 @@ export default function BudgetPage() {
         <EntriesView />
       ) : view === "month" ? (
         <MonthView />
+      ) : view === "year" ? (
+        <YearView />
       ) : view === "manage" ? (
         <ManageView />
       ) : (
@@ -798,6 +801,146 @@ function MonthView() {
               )}
             </section>
           </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+/** Yearly summary: year totals + per-month income/expense/net rows (§2.1). */
+function YearView() {
+  const [year, setYear] = useState(() => todayLocal().slice(0, 4));
+  const [display, setDisplay] = useState<ReturnType<typeof yearDisplay> | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const monthly = await Promise.all(
+          Array.from({ length: 12 }, (_, i) =>
+            budgetRepo.monthlySummary(
+              `${year}-${String(i + 1).padStart(2, "0")}`,
+            ),
+          ),
+        );
+        if (cancelled) return;
+        setDisplay(yearDisplay(year, monthly));
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError(errText(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [year]);
+
+  const currentYear = todayLocal().slice(0, 4);
+  const shiftYear = (delta: number) => {
+    const y = Number(year);
+    if (!Number.isNaN(y)) setYear(String(y + delta));
+  };
+
+  return (
+    <section className="budget-year" aria-label="Yearly summary">
+      <div className="day-nav">
+        <button type="button" className="btn" onClick={() => shiftYear(-1)}>
+          ◀
+        </button>
+        <h2 className="side-heading month-label">{year}</h2>
+        <button type="button" className="btn" onClick={() => shiftYear(1)}>
+          ▶
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setYear(currentYear)}
+        >
+          This year
+        </button>
+      </div>
+
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {display ? (
+        <>
+          <div className="summary-figures">
+            <div>
+              <span className="muted">Income</span>
+              <span className="figure amount-income">
+                +{formatMMK(display.totalIncomeCents)}
+              </span>
+            </div>
+            <div>
+              <span className="muted">Expense</span>
+              <span className="figure amount-expense">
+                −{formatMMK(display.totalExpenseCents)}
+              </span>
+            </div>
+            <div>
+              <span className="muted">Net</span>
+              <span
+                className={
+                  display.netCents > 0
+                    ? "figure amount-income"
+                    : display.netCents < 0
+                      ? "figure amount-expense"
+                      : "figure"
+                }
+              >
+                {formatMMK(display.netCents)}
+              </span>
+            </div>
+          </div>
+          <table className="year-table">
+            <caption className="visually-hidden">Months of {year}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Month</th>
+                <th scope="col">Income</th>
+                <th scope="col">Expense</th>
+                <th scope="col">Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {display.months.map((m) => {
+                const empty = m.incomeCents === 0 && m.expenseCents === 0;
+                return (
+                  <tr
+                    key={m.yearMonth}
+                    className={empty ? "is-empty" : undefined}
+                  >
+                    <th scope="row">{monthLabel(m.yearMonth)}</th>
+                    <td className="figure">{formatMMK(m.incomeCents)}</td>
+                    <td className="figure">{formatMMK(m.expenseCents)}</td>
+                    <td
+                      className={
+                        m.netCents > 0
+                          ? "figure amount-income"
+                          : m.netCents < 0
+                            ? "figure amount-expense"
+                            : "figure"
+                      }
+                    >
+                      {formatMMK(m.netCents)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </>
       ) : null}
     </section>

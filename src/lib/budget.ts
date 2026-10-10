@@ -145,6 +145,45 @@ export function prospectiveStatus(
   return limitStatus(spentCents + Math.max(0, additionalCents), limitCents);
 }
 
+export interface YearMonthTotals {
+  yearMonth: string;
+  incomeCents: number;
+  expenseCents: number;
+  netCents: number;
+}
+
+export interface YearDisplay {
+  totalIncomeCents: number;
+  totalExpenseCents: number;
+  netCents: number;
+  months: YearMonthTotals[];
+}
+
+/**
+ * Aggregate per-month totals into the yearly view (§2.1). `monthly` is
+ * indexed by month (0 = January); a shorter array just means the later
+ * months are not listed yet.
+ */
+export function yearDisplay(
+  year: string,
+  monthly: { incomeCents: number; expenseCents: number }[],
+): YearDisplay {
+  const months: YearMonthTotals[] = monthly.map((m, i) => ({
+    yearMonth: `${year}-${String(i + 1).padStart(2, "0")}`,
+    incomeCents: m.incomeCents,
+    expenseCents: m.expenseCents,
+    netCents: m.incomeCents - m.expenseCents,
+  }));
+  const totalIncomeCents = months.reduce((s, m) => s + m.incomeCents, 0);
+  const totalExpenseCents = months.reduce((s, m) => s + m.expenseCents, 0);
+  return {
+    totalIncomeCents,
+    totalExpenseCents,
+    netCents: totalIncomeCents - totalExpenseCents,
+    months,
+  };
+}
+
 export interface RecurringInput {
   title: string;
   amountCents: number;

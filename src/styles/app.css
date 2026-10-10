@@ -851,3 +851,29 @@ tbody .week-row {
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   gap: var(--space-6);
 }
+
+.year-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.year-table th,
+.year-table td {
+  border-bottom: var(--border-width) solid var(--color-border);
+  padding: var(--space-2);
+  text-align: end;
+}
+
+.year-table th:first-child,
+.year-table td:first-child {
+  text-align: start;
+}
+
+.year-table thead th {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.year-table tr.is-empty {
+  color: var(--color-text-muted);
+}
