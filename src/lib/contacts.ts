@@ -1,0 +1,226 @@
+// Address book repository (§2.7): contacts, phone/email channels (primary
+// flag, order), tags, birthdays (full date or month-day).
+
+import type { DataDriver } from "../data/driver.ts";
+import { todayLocal } from "./dates.ts";
+import type {
+  ContactChannelKind,
+  ContactChannelRow,
+  ContactRow,
+  ContactTagRow,
+} from "./types.ts";
+
+export interface ContactInput {
+  name: string;
+  address?: string;
+  birthday?: string | null;
+  notes?: string;
+}
+
+export interface ChannelInput {
+  contactId: number;
+  kind: ContactChannelKind;
+  value: string;
+  isPrimary?: boolean;
+}
+
+/** Birthdays within `days` of today, wrapping the year (month-day match). */
+export function upcomingBirthday(
+  birthday: string,
+  today: string,
+  days = 14,
+): boolean {
+  // Full date "yyyy-MM-dd" -> slice(5); month-day "MM-DD" -> the whole string.
+  const mmdd = birthday.length >= 10 ? birthday.slice(5) : birthday;
+  if (mmdd < today.slice(5)) return false; // already passed this year
+  const diff = Math.round(
+    (new Date(`${today.slice(0, 5)}${mmdd}T00:00:00`).getTime() -
+      new Date(`${today}T00:00:00`).getTime()) /
+      86_400_000,
+  );
+  return diff <= days;
+}
+
+export function createContactsRepo(driver: DataDriver) {
+  return {
+    // -- Contacts ------------------------------------------------------------------
+    async listContacts(): Promise<ContactRow[]> {
+      return driver.query<ContactRow>("SELECT * FROM contacts ORDER BY name");
+    },
+
+    async getContact(id: number): Promise<ContactRow | undefined> {
+      const rows = await driver.query<ContactRow>(
+        "SELECT * FROM contacts WHERE id = ?",
+        [id],
+      );
+      return rows[0];
+    },
+
+    async createContact(input: ContactInput): Promise<number> {
+      const r = await driver.execute(
+        "INSERT INTO contacts (name, address, birthday, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+        [
+          input.name,
+          input.address ?? "",
+          input.birthday ?? null,
+          input.notes ?? "",
+          todayLocal(),
+        ],
+      );
+      return r.lastInsertRowid;
+    },
+
+    async updateContact(
+      id: number,
+      fields: Partial<ContactInput>,
+    ): Promise<void> {
+      await driver.execute(
+        "UPDATE contacts SET name = ?, address = ?, birthday = ?, notes = ? WHERE id = ?",
+        [
+          fields.name ?? null,
+          fields.address ?? null,
+          fields.birthday ?? null,
+          fields.notes ?? null,
+          id,
+        ],
+      );
+    },
+
+    async deleteContact(id: number): Promise<void> {
+      await driver.execute("DELETE FROM contacts WHERE id = ?", [id]);
+    },
+
+    // -- Channels (§2.7: phone/email/other, primary flag, order) ---------------------
+    async listChannels(contactId: number): Promise<ContactChannelRow[]> {
+      return driver.query<ContactChannelRow>(
+        "SELECT * FROM contact_channels WHERE contact_id = ? ORDER BY sort_order, id",
+        [contactId],
+      );
+    },
+
+    async addChannel(input: ChannelInput): Promise<number> {
+      const maxRows = await driver.query<{ max_order: number | null }>(
+        "SELECT MAX(sort_order) AS max_order FROM contact_channels WHERE contact_id = ?",
+        [input.contactId],
+      );
+      const nextOrder = (maxRows[0]?.max_order ?? -1) + 1;
+      const statements = [];
+      if (input.isPrimary) {
+        statements.push({
+          sql: "UPDATE contact_channels SET is_primary = 0 WHERE contact_id = ?",
+          params: [input.contactId],
+        });
+      }
+      statements.push({
+        sql: "INSERT INTO contact_channels (contact_id, kind, value, is_primary, sort_order) VALUES (?, ?, ?, ?, ?)",
+        params: [
+          input.contactId,
+          input.kind,
+          input.value,
+          input.isPrimary ? 1 : 0,
+          nextOrder,
+        ],
+      });
+      await driver.batch(statements);
+      const rows = await driver.query<{ id: number }>(
+        "SELECT last_insert_rowid() AS id",
+      );
+      return rows[0]?.id ?? 0;
+    },
+
+    async updateChannel(
+      id: number,
+      fields: Partial<ChannelInput>,
+    ): Promise<void> {
+      await driver.execute(
+        "UPDATE contact_channels SET kind = ?, value = ? WHERE id = ?",
+        [fields.kind ?? null, fields.value ?? null, id],
+      );
+    },
+
+    /** Make a channel the primary one — the others are unset (one batch). */
+    async setPrimaryChannel(
+      contactId: number,
+      channelId: number,
+    ): Promise<void> {
+      await driver.batch([
+        {
+          sql: "UPDATE contact_channels SET is_primary = 0 WHERE contact_id = ?",
+          params: [contactId],
+        },
+        {
+          sql: "UPDATE contact_channels SET is_primary = 1 WHERE id = ?",
+          params: [channelId],
+        },
+      ]);
+    },
+
+    async deleteChannel(id: number): Promise<void> {
+      await driver.execute("DELETE FROM contact_channels WHERE id = ?", [id]);
+    },
+
+    // -- Tags --------------------------------------------------------------------------
+    async listTags(contactId: number): Promise<string[]> {
+      const rows = await driver.query<ContactTagRow>(
+        "SELECT * FROM contact_tags WHERE contact_id = ? ORDER BY tag",
+        [contactId],
+      );
+      return rows.map((r) => r.tag);
+    },
+
+    async addTag(contactId: number, tag: string): Promise<void> {
+      await driver.execute(
+        "INSERT OR IGNORE INTO contact_tags (contact_id, tag) VALUES (?, ?)",
+        [contactId, tag],
+      );
+    },
+
+    async removeTag(contactId: number, tag: string): Promise<void> {
+      await driver.execute(
+        "DELETE FROM contact_tags WHERE contact_id = ? AND tag = ?",
+        [contactId, tag],
+      );
+    },
+
+    // -- Birthdays (§2.7) -----------------------------------------------------------------
+    /** Contacts whose birthday falls within `days` of today. */
+    async upcomingBirthdays(
+      days = 14,
+      today = todayLocal(),
+    ): Promise<ContactRow[]> {
+      const all = await this.listContacts();
+      return all.filter(
+        (c) => c.birthday !== null && upcomingBirthday(c.birthday, today, days),
+      );
+    },
+
+    /** Birthdays on exactly today's month-day (surfaced in Memories, §2.7). */
+    async birthdaysOn(today = todayLocal()): Promise<ContactRow[]> {
+      const mmdd = today.slice(5);
+      // substr is 1-based: MM-DD of "yyyy-MM-dd" starts at position 6.
+      return driver.query<ContactRow>(
+        `SELECT * FROM contacts
+         WHERE (length(birthday) = 5  AND birthday = ?)
+            OR (length(birthday) = 10 AND substr(birthday, 6, 5) = ?)
+         ORDER BY name`,
+        [mmdd, mmdd],
+      );
+    },
+
+    /** Contact with channels + tags — the contact detail view. */
+    async getContactDetail(contactId: number): Promise<{
+      contact: ContactRow | undefined;
+      channels: ContactChannelRow[];
+      tags: string[];
+    }> {
+      const [contact, channels, tags] = await Promise.all([
+        this.getContact(contactId),
+        this.listChannels(contactId),
+        this.listTags(contactId),
+      ]);
+      return { contact, channels, tags };
+    },
+  };
+}
+
+export type ContactsRepo = ReturnType<typeof createContactsRepo>;
