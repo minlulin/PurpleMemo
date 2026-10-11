@@ -33,9 +33,11 @@ export interface DataDriver {
   savePhoto(bytes: number[], ext: string): Promise<string>;
   readPhoto(relPath: string): Promise<number[]>;
   deletePhoto(relPath: string): Promise<void>;
+  /** Read-only keyring read for the Settings key-export step (§5.4). */
+  exportDbKey(): Promise<string>;
 }
 
-/** The one production driver: Tauri IPC commands (§4 — 9 commands). */
+/** The one production driver: Tauri IPC commands (§4 — 10 commands). */
 export function createTauriDriver(): DataDriver {
   return {
     query: (sql, params) => invoke("db_query", { sql, params }),
@@ -47,5 +49,6 @@ export function createTauriDriver(): DataDriver {
     savePhoto: (bytes, ext) => invoke("photo_save", { bytes, ext }),
     readPhoto: (relPath) => invoke("photo_read", { relPath }),
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
+    exportDbKey: () => invoke("db_key_export"),
   };
 }

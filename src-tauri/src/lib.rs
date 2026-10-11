@@ -38,6 +38,7 @@ pub fn run() {
             commands::photo_save,
             commands::photo_read,
             commands::photo_delete,
+            commands::db_key_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Purple Memo");

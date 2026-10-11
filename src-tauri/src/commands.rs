@@ -1,6 +1,6 @@
-//! The 9 Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
+//! The 10 Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
 //! `db_begin`, `db_commit`, `db_rollback`, `photo_save`, `photo_read`,
-//! `photo_delete`.
+//! `photo_delete`, `db_key_export` (read-only keyring read, §5.4).
 //!
 //! Every command serializes through the single mutex-protected connection
 //! (§4 — no pooling). UI pages never call these directly; they go through
@@ -124,4 +124,13 @@ pub fn photo_read(state: State<'_, AppState>, rel_path: String) -> CmdResult<Vec
 #[tauri::command]
 pub fn photo_delete(state: State<'_, AppState>, rel_path: String) -> CmdResult<()> {
     photos::delete_photo(&state.data_dir, &rel_path)
+}
+
+/// Read the DB encryption key back out of the OS credential store for the
+/// Settings key-export step (§2.8, §5.4). Read-only: never mints, never
+/// touches the DB connection — the UI copies the key into its own file,
+/// never into the backup zip.
+#[tauri::command]
+pub fn db_key_export() -> CmdResult<String> {
+    db::read_db_key()
 }

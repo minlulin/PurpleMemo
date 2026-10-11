@@ -54,12 +54,14 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
         hashPin(draft.pin),
         hashAnswer(draft.answer),
       ]);
-      await settingsRepo.setJSON(SETTING_KEYS.pinHash, pinHash);
-      await settingsRepo.setJSON(
-        SETTING_KEYS.securityQuestion,
-        draft.question.trim(),
-      );
-      await settingsRepo.setJSON(SETTING_KEYS.securityAnswerHash, answerHash);
+      await settingsRepo.setManyJSON([
+        { key: SETTING_KEYS.pinHash, value: pinHash },
+        {
+          key: SETTING_KEYS.securityQuestion,
+          value: draft.question.trim(),
+        },
+        { key: SETTING_KEYS.securityAnswerHash, value: answerHash },
+      ]);
       onDone();
     } catch (e) {
       setError(errText(e));
@@ -185,10 +187,9 @@ export function LockScreen(p: LockScreenProps) {
         setError("Wrong answer.");
         return;
       }
-      await settingsRepo.setJSON(
-        SETTING_KEYS.pinHash,
-        await hashPin(draft.pin),
-      );
+      await settingsRepo.setManyJSON([
+        { key: SETTING_KEYS.pinHash, value: await hashPin(draft.pin) },
+      ]);
       p.onUnlock();
     } catch (e) {
       setError(errText(e));

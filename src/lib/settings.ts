@@ -39,6 +39,19 @@ export function createSettingsRepo(driver: DataDriver) {
       );
     },
 
+    /** Atomically update related settings values. */
+    async setManyJSON(
+      entries: { key: string; value: unknown }[],
+    ): Promise<void> {
+      await driver.batch(
+        entries.map(({ key, value }) => ({
+          sql: `INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          params: [key, JSON.stringify(value)],
+        })),
+      );
+    },
+
     async remove(key: string): Promise<void> {
       await driver.execute("DELETE FROM settings WHERE key = ?", [key]);
     },
@@ -58,6 +71,14 @@ export function createSettingsRepo(driver: DataDriver) {
 
     async setAutoLockMinutes(minutes: number): Promise<void> {
       await this.setJSON(SETTING_KEYS.autoLockMinutes, minutes);
+    },
+
+    /**
+     * Read-only DB key export for the Settings key-export step (§2.8, §5.4).
+     * The UI copies the key into its own file — never into the backup zip.
+     */
+    async exportDatabaseKey(): Promise<string> {
+      return driver.exportDbKey();
     },
   };
 }

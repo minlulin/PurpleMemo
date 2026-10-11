@@ -96,6 +96,10 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     async deletePhoto(relPath: string): Promise<void> {
       record("deletePhoto", [relPath]);
     },
+    async exportDbKey(): Promise<string> {
+      record("exportDbKey", []);
+      return "00".repeat(32);
+    },
     callsTo(method: keyof DataDriver): RecordedCall[] {
       return calls.filter((c) => c.method === method);
     },

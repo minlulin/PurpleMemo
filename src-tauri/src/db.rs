@@ -67,19 +67,36 @@ pub fn mint_key_hex() -> Result<String, String> {
     Ok(bytes_to_hex(&buf))
 }
 
+/// Validate a key read back from the credential store. Pure (no keyring
+/// I/O) so it is unit-testable: the shape check is the whole contract.
+pub fn validate_stored_key(key: &str) -> Result<String, String> {
+    if is_key_hex(key) {
+        Ok(key.to_string())
+    } else {
+        Err("stored DB encryption key is malformed".to_string())
+    }
+}
+
+/// Read the DB key back out of the OS credential store for the Settings
+/// key-export step (§2.8, §5.4). Read-only: unlike [`load_or_mint_db_key`]
+/// it never mints — a missing entry is an error, not a fresh key.
+pub fn read_db_key() -> Result<String, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
+    match entry.get_password() {
+        Ok(key) => validate_stored_key(&key),
+        Err(keyring::Error::NoEntry) => Err("no DB encryption key stored".to_string()),
+        Err(e) => Err(format!("failed to read DB key from credential store: {e}")),
+    }
+}
+
 /// Load the DB key from the OS credential store; mint and store one on first
 /// run. Never re-mints over an existing entry.
 pub fn load_or_mint_db_key() -> Result<String, String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
         .map_err(|e| format!("keyring entry unavailable: {e}"))?;
     match entry.get_password() {
-        Ok(key) => {
-            if is_key_hex(&key) {
-                Ok(key)
-            } else {
-                Err("stored DB encryption key is malformed".to_string())
-            }
-        }
+        Ok(key) => validate_stored_key(&key),
         Err(keyring::Error::NoEntry) => {
             let key = mint_key_hex()?;
             entry
@@ -433,6 +450,24 @@ mod tests {
         assert!(is_key_hex(&key), "key must be 64 hex chars: {key}");
         let key2 = mint_key_hex().expect("mint");
         assert_ne!(key, key2, "distinct mints must be distinct keys");
+    }
+
+    #[test]
+    fn validate_stored_key_accepts_64_hex_and_rejects_garbage() {
+        let good = mint_key_hex().expect("mint");
+        assert_eq!(validate_stored_key(&good).expect("valid key"), good);
+        for bad in [
+            "",
+            "short",
+            &"zz".repeat(32),
+            &"0".repeat(63),
+            &"0".repeat(65),
+        ] {
+            assert!(
+                validate_stored_key(bad).is_err(),
+                "must reject malformed key: {bad}"
+            );
+        }
     }
 
     #[test]

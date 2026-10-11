@@ -9,47 +9,33 @@ import { settingsRepo, tasksRepo, vaultRepo } from "./data/app.ts";
 import { DEFAULT_AUTO_LOCK_MINUTES, isIdle } from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
 import { localISODateTime } from "./lib/dates.ts";
+import type { PageKey } from "./lib/navigation.ts";
 import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
 import BudgetPage from "./pages/BudgetPage";
 import BusinessPage from "./pages/BusinessPage";
 import ContactsPage from "./pages/ContactsPage";
+import DashboardPage from "./pages/DashboardPage";
 import GalleryPage from "./pages/GalleryPage";
 import HabitsPage from "./pages/HabitsPage";
 import JournalPage from "./pages/JournalPage";
 import LoansPage from "./pages/LoansPage";
 import MemoriesPage from "./pages/MemoriesPage";
+import MorePage from "./pages/MorePage";
 import NotesPage from "./pages/NotesPage";
+import SettingsPage from "./pages/SettingsPage";
 import ShoppingPage from "./pages/ShoppingPage";
 import TasksPage from "./pages/TasksPage";
 import VaultPage from "./pages/VaultPage";
 
-type PageKey =
-  | "notes"
-  | "journal"
-  | "budget"
-  | "business"
-  | "loans"
-  | "habits"
-  | "tasks"
-  | "shopping"
-  | "contacts"
-  | "memories"
-  | "gallery"
-  | "vault";
-
 const TABS: { key: PageKey; label: string }[] = [
+  { key: "dashboard", label: "Dashboard" },
   { key: "notes", label: "Notes" },
   { key: "journal", label: "Journal" },
   { key: "budget", label: "Budget" },
   { key: "business", label: "Business" },
   { key: "loans", label: "Loans" },
-  { key: "habits", label: "Habits" },
-  { key: "tasks", label: "Tasks" },
-  { key: "shopping", label: "Shopping" },
-  { key: "contacts", label: "Contacts" },
-  { key: "memories", label: "Memories" },
-  { key: "gallery", label: "Gallery" },
-  { key: "vault", label: "Vault" },
+  { key: "more", label: "More" },
+  { key: "settings", label: "Settings" },
 ];
 
 /**
@@ -196,7 +182,7 @@ export default function App() {
     autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
   });
   const [unlocked, setUnlocked] = useState(false);
-  const [page, setPage] = useState<PageKey>("notes");
+  const [page, setPage] = useState<PageKey>("dashboard");
   const [notifyNote, setNotifyNote] = useState<string | null>(null);
   const lastActivity = useRef(Date.now());
 
@@ -328,7 +314,9 @@ export default function App() {
         </button>
       </header>
       <main className="app-main">
-        {page === "notes" ? (
+        {page === "dashboard" ? (
+          <DashboardPage onNavigate={setPage} notifyNote={notifyNote} />
+        ) : page === "notes" ? (
           <NotesPage />
         ) : page === "journal" ? (
           <JournalPage />
@@ -338,6 +326,15 @@ export default function App() {
           <BusinessPage />
         ) : page === "loans" ? (
           <LoansPage />
+        ) : page === "more" ? (
+          <MorePage onNavigate={setPage} />
+        ) : page === "settings" ? (
+          <SettingsPage
+            theme={boot.theme ?? "dark"}
+            autoLockMinutes={boot.autoLockMinutes}
+            onChanged={() => void loadSecurity()}
+            onNavigate={setPage}
+          />
         ) : page === "habits" ? (
           <HabitsPage />
         ) : page === "tasks" ? (
