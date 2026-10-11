@@ -3,9 +3,13 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import { useEffect, useState } from "react";
-import { tasksRepo } from "./data/app.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
+import { settingsRepo, tasksRepo, vaultRepo } from "./data/app.ts";
+import { DEFAULT_AUTO_LOCK_MINUTES, isIdle } from "./lib/appLock.ts";
+import type { PinHash } from "./lib/crypto.ts";
 import { localISODateTime } from "./lib/dates.ts";
+import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
 import BudgetPage from "./pages/BudgetPage";
 import BusinessPage from "./pages/BusinessPage";
 import ContactsPage from "./pages/ContactsPage";
@@ -110,10 +114,16 @@ function rollReminderForward(
  * Reminder notification loop (§2.7). Lives in the app shell — not in
  * TasksPage — so navigating to another section never stops the polling.
  * Polls for due reminders, fires a local notification, marks fired.
- * Repeating reminders re-arm to their next future occurrence.
+ * Repeating reminders re-arm to their next future occurrence. Paused while
+ * the app is locked (§2.9) so notifications never surface over the lock
+ * screen.
  */
-function useReminderPoll(setNotifyNote: (note: string | null) => void): void {
+function useReminderPoll(
+  setNotifyNote: (note: string | null) => void,
+  enabled: boolean,
+): void {
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     let requested = false;
     const tick = async () => {
@@ -156,13 +166,137 @@ function useReminderPoll(setNotifyNote: (note: string | null) => void): void {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [setNotifyNote]);
+  }, [setNotifyNote, enabled]);
 }
 
+interface BootState {
+  ready: boolean;
+  pinHash: PinHash | null;
+  answerHash: PinHash | null;
+  question: string;
+  theme: Theme;
+  autoLockMinutes: number;
+}
+
+/**
+ * App shell (§2.8/§2.9): PIN lock gates everything — first run requires
+ * setting a PIN + security question, later launches show the lock screen
+ * (with the question fallback). Unlocked, the shell holds the header nav,
+ * the reminder poll (paused while locked) and the configurable idle
+ * auto-lock. Navigation is state-based — §3 locks the stack and has no
+ * router dependency.
+ */
 export default function App() {
+  const [boot, setBoot] = useState<BootState>({
+    ready: false,
+    pinHash: null,
+    answerHash: null,
+    question: "",
+    theme: "dark",
+    autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
+  });
+  const [unlocked, setUnlocked] = useState(false);
   const [page, setPage] = useState<PageKey>("notes");
   const [notifyNote, setNotifyNote] = useState<string | null>(null);
-  useReminderPoll(setNotifyNote);
+  const lastActivity = useRef(Date.now());
+
+  const loadSecurity = useCallback(async () => {
+    try {
+      const [pinHash, answerHash, question, theme, minutes] = await Promise.all(
+        [
+          settingsRepo.getJSON<PinHash>(SETTING_KEYS.pinHash),
+          settingsRepo.getJSON<PinHash>(SETTING_KEYS.securityAnswerHash),
+          settingsRepo.getJSON<string>(SETTING_KEYS.securityQuestion),
+          settingsRepo.getTheme(),
+          settingsRepo.getAutoLockMinutes(),
+        ],
+      );
+      const t = theme ?? "dark";
+      document.documentElement.dataset.theme = t;
+      setBoot({
+        ready: true,
+        pinHash,
+        answerHash,
+        question:
+          typeof question === "string" && question.length > 0
+            ? question
+            : "Security question",
+        theme: t,
+        autoLockMinutes: minutes ?? DEFAULT_AUTO_LOCK_MINUTES,
+      });
+    } catch {
+      // The lock must not deadlock the app on a settings read failure —
+      // fall through to first-run setup, which will surface the error.
+      setBoot((b) => ({ ...b, ready: true }));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSecurity();
+  }, [loadSecurity]);
+
+  /** Lock now (§2.9): drop the vault keys too (§5.3 auto-lock bounds). */
+  const lockNow = useCallback(() => {
+    vaultRepo.lockVault();
+    setUnlocked(false);
+  }, []);
+
+  const handleUnlock = useCallback(() => {
+    lastActivity.current = Date.now();
+    setUnlocked(true);
+  }, []);
+
+  const handleSetupDone = useCallback(async () => {
+    await loadSecurity();
+    lastActivity.current = Date.now();
+    setUnlocked(true);
+  }, [loadSecurity]);
+
+  // Idle auto-lock (§2.9): any pointer/keyboard activity resets the clock;
+  // a tick every 15 s checks the configured window (0 = never).
+  useEffect(() => {
+    if (!unlocked) return;
+    lastActivity.current = Date.now();
+    const markActive = () => {
+      lastActivity.current = Date.now();
+    };
+    window.addEventListener("pointerdown", markActive);
+    window.addEventListener("keydown", markActive);
+    const timer = setInterval(() => {
+      if (isIdle(lastActivity.current, Date.now(), boot.autoLockMinutes)) {
+        lockNow();
+      }
+    }, 15_000);
+    return () => {
+      window.removeEventListener("pointerdown", markActive);
+      window.removeEventListener("keydown", markActive);
+      clearInterval(timer);
+    };
+  }, [unlocked, boot.autoLockMinutes, lockNow]);
+
+  useReminderPoll(setNotifyNote, unlocked);
+
+  if (!boot.ready) {
+    return (
+      <div className="app-shell">
+        <p className="muted lock-loading">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!unlocked) {
+    if (boot.pinHash !== null && boot.answerHash !== null) {
+      return (
+        <LockScreen
+          pinHash={boot.pinHash}
+          question={boot.question}
+          answerHash={boot.answerHash}
+          onUnlock={handleUnlock}
+        />
+      );
+    }
+    return <SetupScreen onDone={() => void handleSetupDone()} />;
+  }
 
   return (
     <div className="app-shell">
@@ -184,6 +318,14 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          title="Lock the app now (§2.9)"
+          onClick={lockNow}
+        >
+          Lock
+        </button>
       </header>
       <main className="app-main">
         {page === "notes" ? (

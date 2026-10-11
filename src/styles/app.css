@@ -994,3 +994,18 @@ tbody .week-row {
   overflow-wrap: break-word;
   white-space: pre-wrap;
 }
+
+/* ---- Lock shell (P3f, §2.9) ----------------------------------------------- */
+
+.lock-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+}
+
+.lock-loading {
+  margin: var(--space-8) auto;
+  text-align: center;
+}
