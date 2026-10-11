@@ -1,63 +1,51 @@
-# SESSION MEMORY — 2026-10-10
+# SESSION MEMORY — 2026-10-11
 
 > This file is **rewritten fresh every session** via `npm run session:reset`.
 > Never append indefinitely — overwrite to keep it small. Agent should keep
 > only what matters for the next session.
 
 ## Current Goal
-- [x] **P3a — Notes + Journal — DONE** (see progress log)
-- [x] **P3b — Budget Tracker — DONE** (gate green, see progress log)
-- [ ] **P3c — Business + Loans** (next phase)
+- [x] **P3b — Budget Tracker — DONE** (see progress log)
+- [x] **P3c — Business + Loans — DONE** (gate green, see progress log)
+- [ ] **P3d — Habits + Tasks + Shopping** (next phase)
 
-## What Was Done (this session, Oct 10)
-1. **P3a close-out** — PLAN.md row flipped to done, session memory refreshed,
-   committed (`c991509`); P2 ledger archived to
-   `.superpowers/sdd/PLAN/progress-P3a.md`.
-2. **P3b — Budget Tracker — DONE**, 6 TDD tasks + final review, gate green:
-   - T1 `90d1195` — BudgetPage shell + Manage view (wallets with live
-     balances, expense/income category create); shared `cleanName` in lib.
-   - T2 `b4bb4c6` — daily Entries view: income/expense CRUD with kind
-     toggle, strict `parseMMK` (2-decimal, comma-tolerant), prospective
-     80%/exceeded limit warning via `prospectiveStatus` (never blocks).
-   - T3 `430414d` — monthly summary: `monthSummaryDisplay` (totals, net,
-     per-category rows sorted desc with deleted-category `Category #<id>`
-     labels), month nav.
-   - T4 `1bd964b` — yearly summary: `yearDisplay` (year totals + 12-month
-     table with per-month net, empty months dimmed).
-   - T5 `6e396b8` — limits view: `limitDisplayRows` (urgency sort
-     exceeded→warn→ok, no-limit sinks, percent chips).
-   - T6 `bcc834a` — recurring view: `recurringDisplay` + extracted
-     `dueOccurrences` (capped catch-up, shared with the repo method);
-     mark-paid with fallback category/wallet, pause/resume, create form.
-   - Final self-review of `c991509..bcc834a` (no subagent tool available —
-     weaker than a fresh reviewer, flagged to the human): no Critical/
-     Important; 3 deferred minors ledgered in
-     `.superpowers/sdd/PLAN/progress.md`.
-   - Gates: `npm run verify` 8/8 (108/108 unit tests), `cargo test` 18/18,
-     E2E `tauri dev` boot clean.
+## What Was Done (this session, Oct 11)
+1. **P3c — Business + Loans — DONE**, 5 TDD tasks + fix pass:
+   - Dep re-check `78a60c2`: tauri 2.12.3, updater 2.13.3, notification
+     2.6.0 (+ npm twins); §3 table re-synced.
+   - T1 `d0a2171` — BusinessPage shell + Shops view; `shopReceivableRows`
+     (deleted-shop labels, deterministic sort); Business/Loans tabs wired.
+   - T2 `a8be43d` — JobsView (inline payments, warranty chips via
+     `warrantyEndDate`/`inWarranty`) + ReceivableView (per-customer totals).
+   - T3 `22c9712` — HistoryView + plain-text voucher copy-to-clipboard.
+   - T4 `670c8c2` — PayablesView (`payableDueStatus` chips; mark-paid
+     books the expense entry with category + wallet pickers).
+   - T5 `602b6fc` — LoansPage (state chips from `deriveLoanState`,
+     inline repayment, delete, lent/borrowed create form).
+   - Fix pass `f317a26` (final-review Important): shopless jobs were
+     labeled "Deleted shop #null" with live buttons on an id-0 row —
+     now "No shop" group; `shopReceivableTotals` typed
+     `shop_id: number | null` (SQL GROUP BY can return NULL).
+   - Gates: verify 8/8 (113/113 unit tests), cargo test 18/18, E2E
+     `tauri dev` boot clean twice.
 
 ## Decisions & Constraints
 - `docs/PLAN.md` is the single source of truth. **One phase at a time**; never
   start the next phase before the current gate is green.
-- Never `git push --no-verify`. The Progress log's gate column is the only CI
-  evidence this project has.
-- §3 dependency rules: latest STABLE only, re-check max stable at phase start;
-  exact pins; lockfile committed.
-- No SQL migrations ever — schema changes ship via backup export/import (§4).
-  Baseline is `user_version = 1`; `init_schema` refuses newer versions.
-- Money = integer cents; dates = local `yyyy-mm-dd`; UI never touches the DB
-  directly (§4). Pages call repos from `src/data/app.ts`, never the driver.
-- Biome's recommended preset + `noExplicitAny: error` + `--error-on-warnings`
-  means **warnings fail the gate**; `!` is banned — use `at()`/`first()`.
-- Long file appends: use small heredoc chunks — one giant heredoc gets
-  truncated by the tool; `node -e` string `replace` fails silently (verify
-  with grep after).
-- Session memory is overwritten each session — never appended.
-
-## Deferred minors (P3b, ledgered — fix on sight if touching those views)
-- Clearing the Entries date input then clicking ◀/▶ yields a NaN date string.
-- `EntriesView.remove` resets the edit form on id match without comparing kind.
-- RecurringView fallback selectors keep a stale auto-picked id after deletion.
+- §3 dependency rules: latest STABLE only, re-check max stable at phase
+  start (semver-aware — `cargo search` shows 3.0.0-alpha; use
+  `cargo info <crate>@2` to resolve max stable 2.x); exact pins; lockfile
+  committed.
+- Never `git push --no-verify`. No SQL migrations ever. Money = integer
+  cents; dates = local `yyyy-mm-dd`; pages call repos from
+  `src/data/app.ts` only.
+- Biome `--error-on-warnings` + `noExplicitAny: error`; `!` banned —
+  use `at()`/`first()`.
+- Heredoc appends: keep chunks small; `node -e` string `replace` fails
+  silently — verify with grep after every replacement.
+- tsc runs BEFORE committing: once caught a dropped import that the
+  commit had already staged — always `npx tsc --noEmit` in the gate
+  chain and only commit after it passes.
 
 ## How to reset
 ```bash
