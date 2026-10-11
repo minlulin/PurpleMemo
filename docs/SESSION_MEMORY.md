@@ -5,22 +5,36 @@
 > only what matters for the next session.
 
 ## Current Goal
-- [x] **P3a — Notes + Journal — DONE** (commits 48b8a5a, cb55f19; see PLAN.md progress log)
-- [ ] **P3b — Budget Tracker** (next phase — starting now, inline via executing-plans skill)
+- [x] **P3a — Notes + Journal — DONE** (see progress log)
+- [x] **P3b — Budget Tracker — DONE** (gate green, see progress log)
+- [ ] **P3c — Business + Loans** (next phase)
 
 ## What Was Done (this session, Oct 10)
-1. **Verify gate restored — commit `8cda15b`.** `npm run verify` had been failing:
-   - Biome format: 20 TS/TSX files (src/lib/*, src/data/mock-driver.ts,
-     src/pages/NotesPage.tsx) were committed with **tab indent + CRLF** while
-     biome.json pins `indentStyle: space` + LF. Fixed via `npm run lint:fix`;
-     `git diff -w` confirmed whitespace-only.
-   - `cargo fmt --check`: drift in `src-tauri/src/db.rs` + `photos.rs` — fixed via `cargo fmt`.
-   - Root cause made durable: `*.ts text eol=lf` + `*.tsx text eol=lf` added to
-     `.gitattributes` (same convention as the existing `*.json`/`*.sh` pins;
-     `core.autocrlf=true` on this machine re-CRLFs unpinned files on checkout).
-   - Full `npm run verify` green 8/8 afterwards (77→98 tests by then; 98/98 pass).
-2. **P3a closed out:** status `gate_pass` → `done` in PLAN.md progress log, with
-   cb55f19 (final-review fixes: races, vault, updater, photos, CSP) and 8cda15b recorded.
+1. **P3a close-out** — PLAN.md row flipped to done, session memory refreshed,
+   committed (`c991509`); P2 ledger archived to
+   `.superpowers/sdd/PLAN/progress-P3a.md`.
+2. **P3b — Budget Tracker — DONE**, 6 TDD tasks + final review, gate green:
+   - T1 `90d1195` — BudgetPage shell + Manage view (wallets with live
+     balances, expense/income category create); shared `cleanName` in lib.
+   - T2 `b4bb4c6` — daily Entries view: income/expense CRUD with kind
+     toggle, strict `parseMMK` (2-decimal, comma-tolerant), prospective
+     80%/exceeded limit warning via `prospectiveStatus` (never blocks).
+   - T3 `430414d` — monthly summary: `monthSummaryDisplay` (totals, net,
+     per-category rows sorted desc with deleted-category `Category #<id>`
+     labels), month nav.
+   - T4 `1bd964b` — yearly summary: `yearDisplay` (year totals + 12-month
+     table with per-month net, empty months dimmed).
+   - T5 `6e396b8` — limits view: `limitDisplayRows` (urgency sort
+     exceeded→warn→ok, no-limit sinks, percent chips).
+   - T6 `bcc834a` — recurring view: `recurringDisplay` + extracted
+     `dueOccurrences` (capped catch-up, shared with the repo method);
+     mark-paid with fallback category/wallet, pause/resume, create form.
+   - Final self-review of `c991509..bcc834a` (no subagent tool available —
+     weaker than a fresh reviewer, flagged to the human): no Critical/
+     Important; 3 deferred minors ledgered in
+     `.superpowers/sdd/PLAN/progress.md`.
+   - Gates: `npm run verify` 8/8 (108/108 unit tests), `cargo test` 18/18,
+     E2E `tauri dev` boot clean.
 
 ## Decisions & Constraints
 - `docs/PLAN.md` is the single source of truth. **One phase at a time**; never
@@ -32,14 +46,18 @@
 - No SQL migrations ever — schema changes ship via backup export/import (§4).
   Baseline is `user_version = 1`; `init_schema` refuses newer versions.
 - Money = integer cents; dates = local `yyyy-mm-dd`; UI never touches the DB
-  directly (§4). Repositories take a `DataDriver` (Tauri or mock) — the UI
-  calls repos, never the driver directly.
+  directly (§4). Pages call repos from `src/data/app.ts`, never the driver.
 - Biome's recommended preset + `noExplicitAny: error` + `--error-on-warnings`
-  means **warnings fail the gate**. `noNonNullAssertion` is a warning, so
-  non-null assertions are banned project-wide (use `at()`/`first()` helpers).
-- `.gitignore` has an **uncommitted** local edit (`/.freebuff` line, not made by
-  the agent) — leave it for the user to commit.
+  means **warnings fail the gate**; `!` is banned — use `at()`/`first()`.
+- Long file appends: use small heredoc chunks — one giant heredoc gets
+  truncated by the tool; `node -e` string `replace` fails silently (verify
+  with grep after).
 - Session memory is overwritten each session — never appended.
+
+## Deferred minors (P3b, ledgered — fix on sight if touching those views)
+- Clearing the Entries date input then clicking ◀/▶ yields a NaN date string.
+- `EntriesView.remove` resets the edit form on id match without comparing kind.
+- RecurringView fallback selectors keep a stale auto-picked id after deletion.
 
 ## How to reset
 ```bash
