@@ -12,6 +12,7 @@ import {
   monthSummaryDisplay,
   prospectiveStatus,
   recurringDisplay,
+  resolveEntryDate,
   yearDisplay,
 } from "./budget.ts";
 
@@ -57,6 +58,26 @@ test("createExpenseEntry stores integer cents (§4)", async () => {
   const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
   assert.match(sql, /INSERT INTO expense_entries/);
   assert.deepEqual(params, [1500, 1, 2, "2026-10-10", "lunch", params[5]]);
+});
+
+test("a cleared entry date saves and refreshes against the same local day", async () => {
+  const driver = createMockDriver();
+  const budget = createBudgetRepo(driver);
+  const entryDate = resolveEntryDate("", "2026-10-11");
+
+  await budget.createExpenseEntry({
+    amountCents: 1500,
+    categoryId: 1,
+    walletId: 2,
+    entryDate,
+  });
+  await budget.listDayEntries(entryDate);
+
+  const [, insertParams] = argsOf(driver, "execute") as [string, unknown[]];
+  assert.equal(insertParams[3], "2026-10-11");
+  const dayQuery = driver.callsTo("query")[0];
+  assert.ok(dayQuery);
+  assert.deepEqual(dayQuery.args[1], ["2026-10-11", "2026-10-11"]);
 });
 
 test("listDayEntries UNIONs both kinds for the daily view (§2.1)", async () => {

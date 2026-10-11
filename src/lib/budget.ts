@@ -27,6 +27,11 @@ export function cleanName(raw: string): string | null {
   return name.length > 0 ? name : null;
 }
 
+/** Resolve a cleared date input to the supplied local day before saving. */
+export function resolveEntryDate(entryDate: string, today: string): string {
+  return entryDate || today;
+}
+
 export interface EntryInput {
   amountCents: number;
   categoryId: number;
