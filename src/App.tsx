@@ -1,11 +1,22 @@
 import { useState } from "react";
 import BudgetPage from "./pages/BudgetPage";
 import BusinessPage from "./pages/BusinessPage";
+import HabitsPage from "./pages/HabitsPage";
 import JournalPage from "./pages/JournalPage";
 import LoansPage from "./pages/LoansPage";
 import NotesPage from "./pages/NotesPage";
+import ShoppingPage from "./pages/ShoppingPage";
+import TasksPage from "./pages/TasksPage";
 
-type PageKey = "notes" | "journal" | "budget" | "business" | "loans";
+type PageKey =
+  | "notes"
+  | "journal"
+  | "budget"
+  | "business"
+  | "loans"
+  | "habits"
+  | "tasks"
+  | "shopping";
 
 const TABS: { key: PageKey; label: string }[] = [
   { key: "notes", label: "Notes" },
@@ -13,6 +24,9 @@ const TABS: { key: PageKey; label: string }[] = [
   { key: "budget", label: "Budget" },
   { key: "business", label: "Business" },
   { key: "loans", label: "Loans" },
+  { key: "habits", label: "Habits" },
+  { key: "tasks", label: "Tasks" },
+  { key: "shopping", label: "Shopping" },
 ];
 
 /**
@@ -53,8 +67,14 @@ export default function App() {
           <BudgetPage />
         ) : page === "business" ? (
           <BusinessPage />
-        ) : (
+        ) : page === "loans" ? (
           <LoansPage />
+        ) : page === "habits" ? (
+          <HabitsPage />
+        ) : page === "tasks" ? (
+          <TasksPage />
+        ) : (
+          <ShoppingPage />
         )}
       </main>
     </div>
