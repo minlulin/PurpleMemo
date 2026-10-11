@@ -13,7 +13,7 @@ import {
 } from "../lib/business.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { formatMMK, parseMMK } from "../lib/money.ts";
-import type { ShopRow, WalletRow } from "../lib/types.ts";
+import type { JobRow, ShopRow, WalletRow } from "../lib/types.ts";
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -53,6 +53,8 @@ export default function BusinessPage() {
         <JobsView />
       ) : view === "receivable" ? (
         <ReceivableView />
+      ) : view === "history" ? (
+        <HistoryView />
       ) : (
         <p className="muted">
           The {VIEWS.find((v) => v.key === view)?.label} view lands in a later
@@ -614,6 +616,20 @@ function ReceivableView() {
     };
   }, []);
 
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [voucherError, setVoucherError] = useState<string | null>(null);
+
+  const copyVoucher = async (shopId: number) => {
+    try {
+      const text = await businessRepo.voucherText(shopId);
+      await navigator.clipboard.writeText(text);
+      setCopiedId(shopId);
+      setVoucherError(null);
+    } catch (e) {
+      setVoucherError(errText(e));
+    }
+  };
+
   const total = rows.reduce((s, r) => s + r.remaining_cents, 0);
 
   return (
@@ -622,6 +638,11 @@ function ReceivableView() {
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
+        </p>
+      ) : null}
+      {voucherError ? (
+        <p className="limit-warn" role="status">
+          Could not copy voucher: {voucherError}
         </p>
       ) : null}
 
@@ -635,6 +656,15 @@ function ReceivableView() {
                 <span>{r.name}</span>
                 <span className="figure amount-expense">
                   {formatMMK(r.remaining_cents)}
+                </span>
+                <span className="row-actions">
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => void copyVoucher(r.id)}
+                  >
+                    {copiedId === r.id ? "Copied ✓" : "Copy voucher"}
+                  </button>
                 </span>
               </li>
             ))}
@@ -650,6 +680,71 @@ function ReceivableView() {
             books Business income) when fully paid.
           </p>
         </>
+      )}
+    </section>
+  );
+}
+
+/** Paid/closed jobs — read-only History (§2.2). */
+function HistoryView() {
+  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [shops, setShops] = useState<ShopRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [js, ss] = await Promise.all([
+          businessRepo.listHistory(),
+          businessRepo.listShops(),
+        ]);
+        if (cancelled) return;
+        setJobs(js);
+        setShops(ss);
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError(errText(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const shopName = (id: number | null): string =>
+    shops.find((s) => s.id === id)?.name ?? "—";
+
+  return (
+    <section className="budget-manage" aria-label="Job history">
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {jobs.length === 0 ? (
+        <p className="muted">No completed jobs yet.</p>
+      ) : (
+        <ul className="budget-list">
+          {jobs.map((j) => (
+            <li key={j.id} className="budget-row">
+              <span>
+                {j.title}
+                <span className="muted"> · {shopName(j.shop_id)}</span>
+                <span className="muted"> · {j.job_date}</span>
+                {j.note ? <span className="muted"> — {j.note}</span> : null}
+              </span>
+              <span className="figure amount-income">
+                {formatMMK(j.total_cents)}
+              </span>
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
