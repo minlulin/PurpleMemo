@@ -14,6 +14,17 @@ export function todayLocal(): string {
   return toISODate(new Date());
 }
 
+/**
+ * Local date-time as `yyyy-mm-ddTHH:mm` — the format `datetime-local`
+ * inputs produce and the reminders table stores. Never UTC: a
+ * `toISOString()` here would shift reminders by the timezone offset
+ * (§4: local time everywhere).
+ */
+export function localISODateTime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${toISODate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /** `yyyy-mm-dd` -> `yyyy-mm` (month bucket for summaries). */
 export function yearMonthOf(isoDate: string): string {
   return isoDate.slice(0, 7);

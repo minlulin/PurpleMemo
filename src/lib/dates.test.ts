@@ -7,6 +7,7 @@ import {
   advanceDate,
   datesInMonth,
   daysBetween,
+  localISODateTime,
   todayLocal,
   toISODate,
   yearMonthOf,
@@ -62,4 +63,13 @@ test("datesInMonth lists every day of the month oldest first", () => {
   assert.equal(feb[feb.length - 1], "2026-02-28");
   assert.equal(datesInMonth("2024-02").length, 29, "leap year");
   assert.deepEqual(datesInMonth("bogus"), []);
+});
+
+test("localISODateTime: formats a Date as local yyyy-mm-ddTHH:mm, never UTC", () => {
+  // Constructed in local time — the formatter must echo those fields back,
+  // whatever the machine's timezone is (an ISO/UTC formatter would drift).
+  const d = new Date(2026, 0, 5, 23, 5);
+  assert.equal(localISODateTime(d), "2026-01-05T23:05");
+  const late = new Date(2026, 11, 31, 0, 0);
+  assert.equal(localISODateTime(late), "2026-12-31T00:00");
 });

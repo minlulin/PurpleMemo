@@ -10,7 +10,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { useCallback, useEffect, useState } from "react";
 import { tasksRepo } from "../data/app.ts";
-import { todayLocal } from "../lib/dates.ts";
+import { localISODateTime, todayLocal } from "../lib/dates.ts";
 import { nextDueDate } from "../lib/tasks.ts";
 import type { ReminderRow, TaskRow } from "../lib/types.ts";
 
@@ -76,9 +76,7 @@ export default function TasksPage() {
     let requested = false;
     const tick = async () => {
       try {
-        const due = await tasksRepo.dueReminders(
-          new Date().toISOString().slice(0, 16),
-        );
+        const due = await tasksRepo.dueReminders(localISODateTime(new Date()));
         if (due.length === 0 || cancelled) return;
         if (!requested) {
           requested = true;
