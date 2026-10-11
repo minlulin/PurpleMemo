@@ -4,7 +4,7 @@ import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at, first } from "../test-utils.ts";
-import { createBusinessRepo } from "./business.ts";
+import { createBusinessRepo, shopReceivableRows } from "./business.ts";
 
 /** Args of the first recorded call to `method` (tests always call it once). */
 function argsOf(driver: MockDriver, method: keyof DataDriver): unknown[] {
@@ -297,4 +297,41 @@ test("recordJobPayment: concurrent double-submit creates only one income entry",
     /INSERT INTO income_entries/.test(s.sql),
   );
   assert.equal(incomeInserts.length, 1);
+});
+
+test("shopReceivableRows joins totals onto shops; deleted shop's total survives under a label (§2.2)", () => {
+  const shops = [
+    {
+      id: 1,
+      name: "Alpha",
+      phone: "",
+      address: "",
+      notes: "",
+      created_at: "2026-10-10",
+    },
+    {
+      id: 2,
+      name: "Beta",
+      phone: "",
+      address: "",
+      notes: "",
+      created_at: "2026-10-10",
+    },
+  ];
+  const rows = shopReceivableRows(shops, [
+    { shop_id: 1, remaining_cents: 5_000 },
+    { shop_id: 3, remaining_cents: 900 },
+  ]);
+  assert.equal(rows.length, 3);
+  const alpha = rows.find((r) => r.name === "Alpha");
+  assert.equal(alpha?.remaining_cents, 5_000);
+  const beta = rows.find((r) => r.name === "Beta");
+  assert.equal(beta?.remaining_cents, 0, "shop without totals is 0");
+  const orphan = rows.find((r) => r.remaining_cents === 900);
+  assert.equal(orphan?.name, "Deleted shop #3", "orphaned total keeps a label");
+  // Deterministic order: with a balance first (largest first), then no-balance alphabetically.
+  assert.deepEqual(
+    rows.map((r) => r.name),
+    ["Alpha", "Deleted shop #3", "Beta"],
+  );
 });

@@ -51,6 +51,46 @@ export interface ReceivableJob extends JobRow {
   remaining_cents: number;
 }
 
+export interface ShopReceivableRow extends ShopRow {
+  remaining_cents: number;
+}
+
+/**
+ * Join shops with their per-customer receivable totals (§2.2). A shop with
+ * no open jobs shows 0; a total whose shop was deleted keeps its row under a
+ * `Deleted shop #<id>` label rather than vanishing from the receivable
+ * picture. Order: balances first (largest first), then no-balance shops
+ * alphabetically.
+ */
+export function shopReceivableRows(
+  shops: ShopRow[],
+  totals: { shop_id: number; remaining_cents: number }[],
+): ShopReceivableRow[] {
+  const byShop = new Map(totals.map((t) => [t.shop_id, t.remaining_cents]));
+  const rows: ShopReceivableRow[] = shops.map((s) => ({
+    ...s,
+    remaining_cents: Math.max(0, byShop.get(s.id) ?? 0),
+  }));
+  for (const t of totals) {
+    if (shops.some((s) => s.id === t.shop_id)) continue;
+    rows.push({
+      id: t.shop_id,
+      name: `Deleted shop #${t.shop_id}`,
+      phone: "",
+      address: "",
+      notes: "",
+      created_at: "",
+      remaining_cents: Math.max(0, t.remaining_cents),
+    });
+  }
+  return rows.sort(
+    (a, b) =>
+      (b.remaining_cents > 0 ? 1 : 0) - (a.remaining_cents > 0 ? 1 : 0) ||
+      b.remaining_cents - a.remaining_cents ||
+      a.name.localeCompare(b.name),
+  );
+}
+
 export function createBusinessRepo(driver: DataDriver) {
   /**
    * Serializes read-modify-write sequences per job/payable (§4). Two rapid

@@ -1,14 +1,18 @@
 import { useState } from "react";
 import BudgetPage from "./pages/BudgetPage";
+import BusinessPage from "./pages/BusinessPage";
 import JournalPage from "./pages/JournalPage";
+import LoansPage from "./pages/LoansPage";
 import NotesPage from "./pages/NotesPage";
 
-type PageKey = "notes" | "journal" | "budget";
+type PageKey = "notes" | "journal" | "budget" | "business" | "loans";
 
 const TABS: { key: PageKey; label: string }[] = [
   { key: "notes", label: "Notes" },
   { key: "journal", label: "Journal" },
   { key: "budget", label: "Budget" },
+  { key: "business", label: "Business" },
+  { key: "loans", label: "Loans" },
 ];
 
 /**
@@ -45,8 +49,12 @@ export default function App() {
           <NotesPage />
         ) : page === "journal" ? (
           <JournalPage />
-        ) : (
+        ) : page === "budget" ? (
           <BudgetPage />
+        ) : page === "business" ? (
+          <BusinessPage />
+        ) : (
+          <LoansPage />
         )}
       </main>
     </div>
