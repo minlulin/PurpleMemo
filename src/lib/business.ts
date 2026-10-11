@@ -4,7 +4,7 @@
 // job in Receivable with the remaining balance (never negative, §4).
 
 import type { DataDriver } from "../data/driver.ts";
-import { todayLocal } from "./dates.ts";
+import { addDays, todayLocal } from "./dates.ts";
 import { applyPayment, formatMMK, outstandingCents } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import type { JobRow, JobStatus, PayableRow, ShopRow } from "./types.ts";
@@ -53,6 +53,26 @@ export interface ReceivableJob extends JobRow {
 
 export interface ShopReceivableRow extends ShopRow {
   remaining_cents: number;
+}
+
+/**
+ * Last day the job is covered by warranty (§2.2): job date + warranty
+ * days. `null` when the job carries no warranty.
+ */
+export function warrantyEndDate(
+  job: Pick<JobRow, "job_date" | "warranty_days">,
+): string | null {
+  if (job.warranty_days === null || job.warranty_days <= 0) return null;
+  return addDays(job.job_date, job.warranty_days);
+}
+
+/** True while `today` is on or before the warranty end day (§2.2). */
+export function inWarranty(
+  job: Pick<JobRow, "job_date" | "warranty_days">,
+  today: string,
+): boolean {
+  const end = warrantyEndDate(job);
+  return end !== null && today <= end;
 }
 
 /**

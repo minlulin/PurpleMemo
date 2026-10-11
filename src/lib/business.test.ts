@@ -4,7 +4,12 @@ import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at, first } from "../test-utils.ts";
-import { createBusinessRepo, shopReceivableRows } from "./business.ts";
+import {
+  createBusinessRepo,
+  inWarranty,
+  shopReceivableRows,
+  warrantyEndDate,
+} from "./business.ts";
 
 /** Args of the first recorded call to `method` (tests always call it once). */
 function argsOf(driver: MockDriver, method: keyof DataDriver): unknown[] {
@@ -333,5 +338,38 @@ test("shopReceivableRows joins totals onto shops; deleted shop's total survives 
   assert.deepEqual(
     rows.map((r) => r.name),
     ["Alpha", "Deleted shop #3", "Beta"],
+  );
+});
+
+test("warrantyEndDate: null without warranty, else job_date + warranty_days (§2.2)", () => {
+  assert.equal(
+    warrantyEndDate({ job_date: "2026-10-10", warranty_days: null }),
+    null,
+  );
+  assert.equal(
+    warrantyEndDate({ job_date: "2026-10-10", warranty_days: 0 }),
+    null,
+  );
+  assert.equal(
+    warrantyEndDate({ job_date: "2026-10-10", warranty_days: 30 }),
+    "2026-11-09",
+  );
+  assert.equal(
+    warrantyEndDate({ job_date: "2026-12-20", warranty_days: 30 }),
+    "2027-01-19",
+  );
+  assert.equal(
+    warrantyEndDate({ job_date: "2026-02-28", warranty_days: 1 }),
+    "2026-03-01",
+  );
+});
+
+test("inWarranty: true while today is on or before the warranty end (§2.2)", () => {
+  const job = { job_date: "2026-10-10", warranty_days: 30 as number | null };
+  assert.equal(inWarranty(job, "2026-11-09"), true, "end day still covered");
+  assert.equal(inWarranty(job, "2026-11-10"), false);
+  assert.equal(
+    inWarranty({ job_date: "2026-10-10", warranty_days: null }, "2026-10-11"),
+    false,
   );
 });

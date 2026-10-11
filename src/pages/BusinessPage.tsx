@@ -3,10 +3,17 @@
 // this file starts with the shell + Shops view and gains one view per task.
 
 import { useCallback, useEffect, useState } from "react";
-import { businessRepo } from "../data/app.ts";
-import { shopReceivableRows } from "../lib/business.ts";
-import { formatMMK } from "../lib/money.ts";
-import type { ShopRow } from "../lib/types.ts";
+import { budgetRepo, businessRepo } from "../data/app.ts";
+import {
+  inWarranty,
+  type ReceivableJob,
+  type ShopReceivableRow,
+  shopReceivableRows,
+  warrantyEndDate,
+} from "../lib/business.ts";
+import { todayLocal } from "../lib/dates.ts";
+import { formatMMK, parseMMK } from "../lib/money.ts";
+import type { ShopRow, WalletRow } from "../lib/types.ts";
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -39,9 +46,13 @@ export default function BusinessPage() {
             {v.label}
           </button>
         ))}
-      </nav>
+      </nav>{" "}
       {view === "shops" ? (
         <ShopsView />
+      ) : view === "jobs" ? (
+        <JobsView />
+      ) : view === "receivable" ? (
+        <ReceivableView />
       ) : (
         <p className="muted">
           The {VIEWS.find((v) => v.key === view)?.label} view lands in a later
@@ -297,6 +308,349 @@ function ShopsView() {
           </button>
         </div>
       </form>
+    </section>
+  );
+}
+
+/** Open jobs with remaining balance + inline payment (§2.2 Receivable). */
+function JobsView() {
+  const [jobs, setJobs] = useState<ReceivableJob[]>([]);
+  const [shops, setShops] = useState<ShopRow[]>([]);
+  const [wallets, setWallets] = useState<WalletRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [payFor, setPayFor] = useState<number | null>(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [payWallet, setPayWallet] = useState<number | "">("");
+
+  const [title, setTitle] = useState("");
+  const [amountRaw, setAmountRaw] = useState("");
+  const [shopId, setShopId] = useState<number | "">("");
+  const [jobDate, setJobDate] = useState(todayLocal());
+  const [warrantyDays, setWarrantyDays] = useState("");
+  const [note, setNote] = useState("");
+
+  const reload = useCallback(async () => {
+    try {
+      const [js, ss, ws] = await Promise.all([
+        businessRepo.listReceivable(),
+        businessRepo.listShops(),
+        budgetRepo.listWallets(),
+      ]);
+      setJobs(js);
+      setShops(ss);
+      setWallets(ws);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const shopName = (id: number | null): string =>
+    shops.find((s) => s.id === id)?.name ?? "—";
+
+  const amountCents = parseMMK(amountRaw);
+  const warranty = Number(warrantyDays);
+  const titleOk = title.trim().length > 0;
+
+  const addJob = async () => {
+    if (amountCents === null || amountCents <= 0 || !titleOk || !jobDate)
+      return;
+    try {
+      await businessRepo.createJob({
+        title: title.trim(),
+        shopId: shopId === "" ? null : shopId,
+        totalCents: amountCents,
+        jobDate,
+        warrantyDays:
+          warrantyDays.trim() !== "" &&
+          Number.isInteger(warranty) &&
+          warranty > 0
+            ? warranty
+            : null,
+        note: note.trim(),
+      });
+      setTitle("");
+      setAmountRaw("");
+      setWarrantyDays("");
+      setNote("");
+      await reload();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const pay = async (jobId: number) => {
+    const cents = parseMMK(payAmount);
+    if (cents === null || cents <= 0 || typeof payWallet !== "number") return;
+    try {
+      await businessRepo.recordJobPayment({
+        jobId,
+        amountCents: cents,
+        walletId: payWallet,
+        date: todayLocal(),
+      });
+      setPayFor(null);
+      setPayAmount("");
+      await reload();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  return (
+    <section className="budget-manage" aria-label="Open jobs">
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {jobs.length === 0 ? (
+        <p className="muted">No open jobs — create one below.</p>
+      ) : (
+        <ul className="budget-list">
+          {jobs.map((j) => (
+            <li key={j.id} className="budget-row">
+              <span>
+                {j.title}
+                <span className="muted"> · {shopName(j.shop_id)}</span>
+                {j.note ? <span className="muted"> — {j.note}</span> : null}
+              </span>
+              <span className="muted figure">
+                {formatMMK(j.paid_cents)} / {formatMMK(j.total_cents)}
+              </span>
+              <span className="muted figure">
+                {formatMMK(j.remaining_cents)} left
+              </span>
+              {warrantyEndDate(j) !== null ? (
+                <span className="muted">
+                  {inWarranty(j, todayLocal())
+                    ? `warranty until ${warrantyEndDate(j)}`
+                    : `warranty ended ${warrantyEndDate(j)}`}
+                </span>
+              ) : null}
+              <span className="row-actions">
+                {payFor === j.id ? (
+                  <>
+                    <input
+                      aria-label={`Payment amount for ${j.title}`}
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      value={payAmount}
+                      onChange={(e) => setPayAmount(e.target.value)}
+                    />
+                    <select
+                      aria-label="Payment wallet"
+                      value={payWallet === "" ? "" : String(payWallet)}
+                      onChange={(e) =>
+                        setPayWallet(
+                          e.target.value === "" ? "" : Number(e.target.value),
+                        )
+                      }
+                    >
+                      <option value="">Wallet…</option>
+                      {wallets.map((w) => (
+                        <option key={w.id} value={String(w.id)}>
+                          {w.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={
+                        parseMMK(payAmount) === null ||
+                        (parseMMK(payAmount) ?? 0) <= 0 ||
+                        payWallet === ""
+                      }
+                      onClick={() => void pay(j.id)}
+                    >
+                      Save payment
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => setPayFor(null)}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => {
+                      setPayFor(j.id);
+                      setPayAmount((j.remaining_cents / 100).toFixed(2));
+                      setPayWallet("");
+                    }}
+                  >
+                    Record payment
+                  </button>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form
+        className="entry-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void addJob();
+        }}
+      >
+        <h2 className="side-heading">New job</h2>
+        <label>
+          Title
+          <input
+            value={title}
+            placeholder="e.g. Fix fan"
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+        <label>
+          Customer shop (optional)
+          <select
+            aria-label="Customer shop"
+            value={shopId === "" ? "" : String(shopId)}
+            onChange={(e) =>
+              setShopId(e.target.value === "" ? "" : Number(e.target.value))
+            }
+          >
+            <option value="">None</option>
+            {shops.map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Total amount (MMK)
+          <input
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amountRaw}
+            onChange={(e) => setAmountRaw(e.target.value)}
+          />
+        </label>
+        <label>
+          Job date
+          <input
+            type="date"
+            aria-label="Job date"
+            value={jobDate}
+            onChange={(e) => setJobDate(e.target.value)}
+          />
+        </label>
+        <label>
+          Warranty days (optional — repair jobs)
+          <input
+            inputMode="numeric"
+            placeholder="e.g. 30"
+            value={warrantyDays}
+            onChange={(e) => setWarrantyDays(e.target.value)}
+          />
+        </label>
+        <label>
+          Note (optional)
+          <input value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <div className="row-actions">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={
+              !titleOk || amountCents === null || amountCents <= 0 || !jobDate
+            }
+          >
+            Add job
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/** Receivable grouped per customer with totals (§2.2). */
+function ReceivableView() {
+  const [rows, setRows] = useState<ShopReceivableRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [shops, totals] = await Promise.all([
+          businessRepo.listShops(),
+          businessRepo.shopReceivableTotals(),
+        ]);
+        if (!cancelled)
+          setRows(
+            shopReceivableRows(shops, totals).filter(
+              (r) => r.remaining_cents > 0,
+            ),
+          );
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError(errText(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const total = rows.reduce((s, r) => s + r.remaining_cents, 0);
+
+  return (
+    <section className="budget-manage" aria-label="Receivable by customer">
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {rows.length === 0 ? (
+        <p className="muted">Nothing outstanding — no receivables.</p>
+      ) : (
+        <>
+          <ul className="budget-list">
+            {rows.map((r) => (
+              <li key={r.id} className="budget-row">
+                <span>{r.name}</span>
+                <span className="figure amount-expense">
+                  {formatMMK(r.remaining_cents)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="budget-row">
+            <strong>Total outstanding</strong>
+            <strong className="figure amount-expense">
+              {formatMMK(total)}
+            </strong>
+          </p>
+          <p className="muted">
+            Record partial payments from the Jobs view; a job joins History (and
+            books Business income) when fully paid.
+          </p>
+        </>
+      )}
     </section>
   );
 }
