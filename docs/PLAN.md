@@ -118,7 +118,7 @@ Light app lock (not a login system):
 | Tauri CLI / API | @tauri-apps/cli / @tauri-apps/api | 2.12.2 / 2.12.3 |
 | Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.3 |
 | Notifications | tauri-plugin-notification / @tauri-apps/plugin-notification | 2.6.0 |
-| DB | rusqlite (`bundled-sqlcipher-vendored-openssl`) — SQLite 3.53.2 + SQLCipher | 0.40.2 |
+| DB | rusqlite (`bundled-sqlcipher-vendored-openssl`) — SQLite 3.51.3 + SQLCipher | 0.40.2 |
 | Key storage | keyring crate (OS credential store) | 4.2.0 |
 | UI | React + react-dom | 19.3.0 |
 | Build | Vite / @vitejs/plugin-react | 8.3.4 / 6.1.2 |
