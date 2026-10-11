@@ -5,47 +5,47 @@
 > only what matters for the next session.
 
 ## Current Goal
-- [x] **P3b — Budget Tracker — DONE** (see progress log)
-- [x] **P3c — Business + Loans — DONE** (gate green, see progress log)
-- [ ] **P3d — Habits + Tasks + Shopping** (next phase)
+- [x] **P3c — Business + Loans — DONE** (see progress log)
+- [x] **P3d — Habits + Tasks + Shopping — DONE** (gate green, see progress log)
+- [ ] **P3e — Address book + Memories + Gallery + Vault** (next phase)
 
 ## What Was Done (this session, Oct 11)
-1. **P3c — Business + Loans — DONE**, 5 TDD tasks + fix pass:
-   - Dep re-check `78a60c2`: tauri 2.12.3, updater 2.13.3, notification
-     2.6.0 (+ npm twins); §3 table re-synced.
-   - T1 `d0a2171` — BusinessPage shell + Shops view; `shopReceivableRows`
-     (deleted-shop labels, deterministic sort); Business/Loans tabs wired.
-   - T2 `a8be43d` — JobsView (inline payments, warranty chips via
-     `warrantyEndDate`/`inWarranty`) + ReceivableView (per-customer totals).
-   - T3 `22c9712` — HistoryView + plain-text voucher copy-to-clipboard.
-   - T4 `670c8c2` — PayablesView (`payableDueStatus` chips; mark-paid
-     books the expense entry with category + wallet pickers).
-   - T5 `602b6fc` — LoansPage (state chips from `deriveLoanState`,
-     inline repayment, delete, lent/borrowed create form).
-   - Fix pass `f317a26` (final-review Important): shopless jobs were
-     labeled "Deleted shop #null" with live buttons on an id-0 row —
-     now "No shop" group; `shopReceivableTotals` typed
-     `shop_id: number | null` (SQL GROUP BY can return NULL).
-   - Gates: verify 8/8 (113/113 unit tests), cargo test 18/18, E2E
+1. **P3d — Habits + Tasks + Shopping — DONE**, 4 TDD tasks + fix pass:
+   - Dep re-check: no bumps (tauri 3.x is alpha — rule 1; @types/node
+     stays on 24.x to match the Node runtime) — ledgered ruling.
+   - T1 `0619bca` — HabitsPage (today toggle, current/best streaks,
+     7-day week row, month grid reusing journal `buildMonthGrid`);
+     habits/tasks/shopping repos wired + tabs; placeholders for T2/T4.
+   - T2+T3 `05ca248` — TasksPage: open/done, overdue chips, repeat
+     badges; `nextDueDate` (TDD) rolls repeating tasks forward on
+     completion. Reminders section with 30s notification poll
+     (permission asked once; repeating re-arm). **Added the missing
+     `notification:default` capability** — the plugin was registered in
+     Rust since P1 but had no capability, so notifications would all
+     have failed at runtime.
+   - T4 `dd7732d` — ShoppingPage: list tabs (select/rename/delete),
+     checkable items, `moveItem` (TDD) ▲/▼ reorder.
+   - Fix pass `be47a1e` (final-review Important): reminder poll used
+     `toISOString()` (UTC) against local `remind_at` — added
+     `localISODateTime` (TDD) and used it in the poll.
+   - Gates: verify 8/8 (116/116 unit tests), cargo test green, E2E
      `tauri dev` boot clean twice.
 
 ## Decisions & Constraints
-- `docs/PLAN.md` is the single source of truth. **One phase at a time**; never
-  start the next phase before the current gate is green.
-- §3 dependency rules: latest STABLE only, re-check max stable at phase
-  start (semver-aware — `cargo search` shows 3.0.0-alpha; use
-  `cargo info <crate>@2` to resolve max stable 2.x); exact pins; lockfile
-  committed.
-- Never `git push --no-verify`. No SQL migrations ever. Money = integer
-  cents; dates = local `yyyy-mm-dd`; pages call repos from
-  `src/data/app.ts` only.
-- Biome `--error-on-warnings` + `noExplicitAny: error`; `!` banned —
-  use `at()`/`first()`.
-- Heredoc appends: keep chunks small; `node -e` string `replace` fails
-  silently — verify with grep after every replacement.
-- tsc runs BEFORE committing: once caught a dropped import that the
-  commit had already staged — always `npx tsc --noEmit` in the gate
-  chain and only commit after it passes.
+- `docs/PLAN.md` is the single source of truth. **One phase at a time**.
+- §3: latest STABLE only, re-check at phase start. `cargo search` shows
+  3.0.0-alpha for tauri — use `cargo info <crate>` to see; stay on 2.x
+  stable. `@types/node` stays on the 24.x line matching the Node runtime.
+- Never `git push --no-verify`. No SQL migrations. Money = integer cents;
+  **dates AND date-times are local** (`localISODateTime` for
+  `datetime-local` values — `toISOString()` is UTC and has bitten twice).
+- Pages call repos from `src/data/app.ts` only. `!` banned — `at()`/`first()`.
+- New Tauri plugin permissions need BOTH the Rust `.plugin()` init AND a
+  `permissions` entry in `src-tauri/capabilities/default.json` — check
+  both when wiring plugin calls.
+- Heredoc appends: small chunks; `node -e` replace fails silently — grep
+  after. Run tsc in the gate chain BEFORE committing (dropped imports
+  have slipped past an early commit once).
 
 ## How to reset
 ```bash
