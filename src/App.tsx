@@ -17,6 +17,7 @@ import MemoriesPage from "./pages/MemoriesPage";
 import NotesPage from "./pages/NotesPage";
 import ShoppingPage from "./pages/ShoppingPage";
 import TasksPage from "./pages/TasksPage";
+import VaultPage from "./pages/VaultPage";
 
 type PageKey =
   | "notes"
@@ -29,7 +30,8 @@ type PageKey =
   | "shopping"
   | "contacts"
   | "memories"
-  | "gallery";
+  | "gallery"
+  | "vault";
 
 const TABS: { key: PageKey; label: string }[] = [
   { key: "notes", label: "Notes" },
@@ -43,6 +45,7 @@ const TABS: { key: PageKey; label: string }[] = [
   { key: "contacts", label: "Contacts" },
   { key: "memories", label: "Memories" },
   { key: "gallery", label: "Gallery" },
+  { key: "vault", label: "Vault" },
 ];
 
 /**
@@ -203,8 +206,10 @@ export default function App() {
           <ContactsPage />
         ) : page === "memories" ? (
           <MemoriesPage />
-        ) : (
+        ) : page === "gallery" ? (
           <GalleryPage />
+        ) : (
+          <VaultPage />
         )}
       </main>
     </div>

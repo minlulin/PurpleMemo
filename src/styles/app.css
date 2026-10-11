@@ -978,3 +978,19 @@ tbody .week-row {
   border-radius: var(--radius-md);
   border: var(--border-width) solid var(--color-border);
 }
+
+/* ---- Vault (P3e, §5.3) ----------------------------------------------------- */
+
+.vault-narrow {
+  max-width: 28rem;
+}
+
+.vault-secret {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-accent);
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}

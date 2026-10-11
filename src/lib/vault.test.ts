@@ -89,3 +89,26 @@ test("changePassword migrates every item in one atomic batch", async () => {
   driver2.pushResults([[newRow], [{ salt: newRow.salt }]]);
   await assert.rejects(vault2.getItem(newRow.id, "old-pass"));
 });
+
+test("setupVault refuses a second setup — the marker is written once", async () => {
+  const driver = createMockDriver({
+    results: [[{ key: "vault_setup" }]], // isSetUp: marker already present
+  });
+  const vault = createVaultRepo(driver);
+  await assert.rejects(vault.setupVault("any-pass"), /already set up/);
+  assert.equal(driver.callsTo("execute").length, 0);
+});
+
+test("listItems never selects ciphertext, salt or iv (§5.3)", async () => {
+  const driver = createMockDriver();
+  const vault = createVaultRepo(driver);
+  await vault.listItems();
+  const call = driver.lastCall();
+  assert.ok(call);
+  const [sql] = call.args as [string];
+  assert.match(
+    sql,
+    /SELECT id, title, created_at, updated_at FROM vault_items/,
+  );
+  assert.ok(!/ciphertext|salt|\biv\b/.test(sql));
+});

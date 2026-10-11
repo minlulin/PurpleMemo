@@ -64,29 +64,40 @@ export default function GalleryPage() {
     }
   }, []);
 
-  const loadThumbnails = useCallback(async (list: PhotoRow[]) => {
-    const next = new Map<number, string>();
-    for (const photo of list) {
-      try {
-        const bytes = await galleryRepo.readPhotoBytes(photo.id);
-        if (bytes) next.set(photo.id, bytesUrl(bytes));
-      } catch {
-        // A missing file shows as a placeholder — never break the grid.
+  const loadThumbnails = useCallback(
+    async (list: PhotoRow[], isCancelled?: () => boolean) => {
+      const next = new Map<number, string>();
+      for (const photo of list) {
+        if (isCancelled?.()) {
+          for (const url of next.values()) URL.revokeObjectURL(url);
+          return;
+        }
+        try {
+          const bytes = await galleryRepo.readPhotoBytes(photo.id);
+          if (bytes) next.set(photo.id, bytesUrl(bytes));
+        } catch {
+          // A missing file shows as a placeholder — never break the grid.
+        }
       }
-    }
-    for (const [id, url] of urlsRef.current) {
-      if (!next.has(id)) URL.revokeObjectURL(url);
-    }
-    urlsRef.current = next;
-    setUrls(next);
-  }, []);
+      if (isCancelled?.()) {
+        for (const url of next.values()) URL.revokeObjectURL(url);
+        return;
+      }
+      for (const [id, url] of urlsRef.current) {
+        if (!next.has(id)) URL.revokeObjectURL(url);
+      }
+      urlsRef.current = next;
+      setUrls(next);
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const list = await reload();
       if (cancelled) return;
-      await loadThumbnails(list);
+      await loadThumbnails(list, () => cancelled);
       if (cancelled) return;
       try {
         const [ns, ms, js] = await Promise.all([
