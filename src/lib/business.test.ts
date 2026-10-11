@@ -7,6 +7,7 @@ import { at, first } from "../test-utils.ts";
 import {
   createBusinessRepo,
   inWarranty,
+  payableDueStatus,
   shopReceivableRows,
   warrantyEndDate,
 } from "./business.ts";
@@ -372,4 +373,11 @@ test("inWarranty: true while today is on or before the warranty end (§2.2)", ()
     inWarranty({ job_date: "2026-10-10", warranty_days: null }, "2026-10-11"),
     false,
   );
+});
+
+test("payableDueStatus: overdue past due date, due on the day, none without (§2.2)", () => {
+  assert.equal(payableDueStatus(null, "2026-10-11"), "none");
+  assert.equal(payableDueStatus("2026-10-10", "2026-10-11"), "overdue");
+  assert.equal(payableDueStatus("2026-10-11", "2026-10-11"), "due");
+  assert.equal(payableDueStatus("2026-10-12", "2026-10-11"), "upcoming");
 });

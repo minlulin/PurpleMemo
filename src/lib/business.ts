@@ -56,6 +56,22 @@ export interface ShopReceivableRow extends ShopRow {
 }
 
 /**
+ * Due-date status for a payable (§2.2 display chip): `overdue` when the
+ * due date passed, `due` on the day itself, `upcoming` ahead, `none`
+ * when no due date is set. Paid payables are filtered out before this
+ * runs — the chip never marks a settled debt.
+ */
+export function payableDueStatus(
+  dueDate: string | null,
+  today: string,
+): "none" | "overdue" | "due" | "upcoming" {
+  if (dueDate === null) return "none";
+  if (dueDate < today) return "overdue";
+  if (dueDate === today) return "due";
+  return "upcoming";
+}
+
+/**
  * Last day the job is covered by warranty (§2.2): job date + warranty
  * days. `null` when the job carries no warranty.
  */

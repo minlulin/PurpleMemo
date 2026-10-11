@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { budgetRepo, businessRepo } from "../data/app.ts";
 import {
   inWarranty,
+  payableDueStatus,
   type ReceivableJob,
   type ShopReceivableRow,
   shopReceivableRows,
@@ -13,7 +14,13 @@ import {
 } from "../lib/business.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { formatMMK, parseMMK } from "../lib/money.ts";
-import type { JobRow, ShopRow, WalletRow } from "../lib/types.ts";
+import type {
+  ExpenseCategoryRow,
+  JobRow,
+  PayableRow,
+  ShopRow,
+  WalletRow,
+} from "../lib/types.ts";
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -55,6 +62,8 @@ export default function BusinessPage() {
         <ReceivableView />
       ) : view === "history" ? (
         <HistoryView />
+      ) : view === "payables" ? (
+        <PayablesView />
       ) : (
         <p className="muted">
           The {VIEWS.find((v) => v.key === view)?.label} view lands in a later
@@ -746,6 +755,287 @@ function HistoryView() {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/** Payables we owe: list with due chips, mark paid -> expense entry (§2.2). */
+function PayablesView() {
+  const today = todayLocal();
+  const [payables, setPayables] = useState<PayableRow[]>([]);
+  const [shops, setShops] = useState<ShopRow[]>([]);
+  const [wallets, setWallets] = useState<WalletRow[]>([]);
+  const [expenseCats, setExpenseCats] = useState<ExpenseCategoryRow[]>([]);
+  const [showPaid, setShowPaid] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [payFor, setPayFor] = useState<number | null>(null);
+  const [payWallet, setPayWallet] = useState<number | "">("");
+  const [payCategory, setPayCategory] = useState<number | "">("");
+
+  const [title, setTitle] = useState("");
+  const [amountRaw, setAmountRaw] = useState("");
+  const [shopId, setShopId] = useState<number | "">("");
+  const [dueDate, setDueDate] = useState("");
+  const [note, setNote] = useState("");
+
+  const reload = useCallback(async () => {
+    try {
+      const [ps, ss, ws, ec] = await Promise.all([
+        businessRepo.listPayables(showPaid),
+        businessRepo.listShops(),
+        budgetRepo.listWallets(),
+        budgetRepo.listExpenseCategories(),
+      ]);
+      setPayables(ps);
+      setShops(ss);
+      setWallets(ws);
+      setExpenseCats(ec);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [showPaid]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const shopName = (id: number | null): string =>
+    shops.find((s) => s.id === id)?.name ?? "—";
+
+  const amountCents = parseMMK(amountRaw);
+  const titleOk = title.trim().length > 0;
+
+  const addPayable = async () => {
+    if (amountCents === null || amountCents <= 0 || !titleOk) return;
+    try {
+      await businessRepo.createPayable({
+        title: title.trim(),
+        amountCents,
+        shopId: shopId === "" ? null : shopId,
+        dueDate: dueDate === "" ? null : dueDate,
+        note: note.trim(),
+      });
+      setTitle("");
+      setAmountRaw("");
+      setDueDate("");
+      setNote("");
+      await reload();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const pay = async (payableId: number) => {
+    if (typeof payWallet !== "number" || typeof payCategory !== "number")
+      return;
+    try {
+      await businessRepo.markPayablePaid({
+        payableId,
+        walletId: payWallet,
+        categoryId: payCategory,
+        date: today,
+      });
+      setPayFor(null);
+      await reload();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  return (
+    <section className="budget-manage" aria-label="Payables">
+      {loading ? <p className="muted">Loading…</p> : null}
+      {error ? (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      <label className="muted">
+        <input
+          type="checkbox"
+          checked={showPaid}
+          onChange={(e) => setShowPaid(e.target.checked)}
+        />{" "}
+        Show paid
+      </label>
+
+      {payables.length === 0 ? (
+        <p className="muted">No payables — add one below.</p>
+      ) : (
+        <ul className="budget-list">
+          {payables.map((p) => {
+            const status =
+              p.paid === 1 ? "none" : payableDueStatus(p.due_date, today);
+            return (
+              <li key={p.id} className="budget-row">
+                <span>
+                  {p.title}
+                  {p.paid === 1 ? <span className="muted"> (paid)</span> : null}
+                  {status === "overdue" ? (
+                    <span className="limit-exceeded" role="status">
+                      {" "}
+                      (overdue)
+                    </span>
+                  ) : status === "due" ? (
+                    <span className="limit-warn" role="status">
+                      {" "}
+                      (due today)
+                    </span>
+                  ) : null}
+                  <span className="muted"> · {shopName(p.shop_id)}</span>
+                  {p.due_date ? (
+                    <span className="muted"> · due {p.due_date}</span>
+                  ) : null}
+                  {p.note ? <span className="muted"> — {p.note}</span> : null}
+                </span>
+                <span className="figure">{formatMMK(p.amount_cents)}</span>
+                {p.paid === 0 ? (
+                  <span className="row-actions">
+                    {payFor === p.id ? (
+                      <>
+                        <select
+                          aria-label="Expense category"
+                          value={payCategory === "" ? "" : String(payCategory)}
+                          onChange={(e) =>
+                            setPayCategory(
+                              e.target.value === ""
+                                ? ""
+                                : Number(e.target.value),
+                            )
+                          }
+                        >
+                          <option value="">Category…</option>
+                          {expenseCats.map((c) => (
+                            <option key={c.id} value={String(c.id)}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label="Paid from wallet"
+                          value={payWallet === "" ? "" : String(payWallet)}
+                          onChange={(e) =>
+                            setPayWallet(
+                              e.target.value === ""
+                                ? ""
+                                : Number(e.target.value),
+                            )
+                          }
+                        >
+                          <option value="">Wallet…</option>
+                          {wallets.map((w) => (
+                            <option key={w.id} value={String(w.id)}>
+                              {w.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          disabled={payCategory === "" || payWallet === ""}
+                          onClick={() => void pay(p.id)}
+                        >
+                          Confirm paid
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setPayFor(null)}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => {
+                          setPayFor(p.id);
+                          setPayCategory("");
+                          setPayWallet("");
+                        }}
+                      >
+                        Mark paid
+                      </button>
+                    )}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <form
+        className="entry-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void addPayable();
+        }}
+      >
+        <h2 className="side-heading">New payable</h2>
+        <label>
+          Title
+          <input
+            value={title}
+            placeholder="e.g. Parts supplier"
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+        <label>
+          Amount (MMK)
+          <input
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amountRaw}
+            onChange={(e) => setAmountRaw(e.target.value)}
+          />
+        </label>
+        <label>
+          Supplier shop (optional)
+          <select
+            aria-label="Supplier shop"
+            value={shopId === "" ? "" : String(shopId)}
+            onChange={(e) =>
+              setShopId(e.target.value === "" ? "" : Number(e.target.value))
+            }
+          >
+            <option value="">None</option>
+            {shops.map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Due date (optional)
+          <input
+            type="date"
+            aria-label="Due date"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+          />
+        </label>
+        <label>
+          Note (optional)
+          <input value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <div className="row-actions">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!titleOk || amountCents === null || amountCents <= 0}
+          >
+            Add payable
+          </button>
+        </div>
+      </form>
     </section>
   );
 }
