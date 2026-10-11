@@ -96,3 +96,18 @@ export function createMemoriesRepo(driver: DataDriver) {
 }
 
 export type MemoriesRepo = ReturnType<typeof createMemoriesRepo>;
+
+/**
+ * Shift a `yyyy-mm` bucket by whole months (month-grid navigation, §2.7).
+ * Malformed input falls through unchanged instead of producing garbage.
+ */
+export function shiftYearMonth(yearMonth: string, delta: number): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(yearMonth);
+  const year = m ? Number(m[1]) : NaN;
+  const month = m ? Number(m[2]) : NaN;
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return yearMonth;
+  const total = year * 12 + (month - 1) + delta;
+  const nextYear = Math.floor(total / 12);
+  const nextMonth = (total % 12) + 1;
+  return `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}`;
+}

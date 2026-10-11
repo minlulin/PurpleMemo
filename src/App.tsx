@@ -12,6 +12,7 @@ import ContactsPage from "./pages/ContactsPage";
 import HabitsPage from "./pages/HabitsPage";
 import JournalPage from "./pages/JournalPage";
 import LoansPage from "./pages/LoansPage";
+import MemoriesPage from "./pages/MemoriesPage";
 import NotesPage from "./pages/NotesPage";
 import ShoppingPage from "./pages/ShoppingPage";
 import TasksPage from "./pages/TasksPage";
@@ -25,7 +26,8 @@ type PageKey =
   | "habits"
   | "tasks"
   | "shopping"
-  | "contacts";
+  | "contacts"
+  | "memories";
 
 const TABS: { key: PageKey; label: string }[] = [
   { key: "notes", label: "Notes" },
@@ -37,6 +39,7 @@ const TABS: { key: PageKey; label: string }[] = [
   { key: "tasks", label: "Tasks" },
   { key: "shopping", label: "Shopping" },
   { key: "contacts", label: "Contacts" },
+  { key: "memories", label: "Memories" },
 ];
 
 /**
@@ -193,8 +196,10 @@ export default function App() {
           <TasksPage notifyNote={notifyNote} />
         ) : page === "shopping" ? (
           <ShoppingPage />
-        ) : (
+        ) : page === "contacts" ? (
           <ContactsPage />
+        ) : (
+          <MemoriesPage />
         )}
       </main>
     </div>
