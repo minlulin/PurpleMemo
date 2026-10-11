@@ -5,6 +5,28 @@ import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import type { ShoppingItemRow, ShoppingListRow } from "./types.ts";
 
+/**
+ * Move an item one step up/down in the manual order (§2.6). Returns the
+ * new id order; moving past either end is a no-op (same array semantics,
+ * new copy). The caller persists via `reorderItems`.
+ */
+export function moveItem(
+  orderedIds: number[],
+  index: number,
+  direction: "up" | "down",
+): number[] {
+  const swap = direction === "up" ? index - 1 : index + 1;
+  if (index < 0 || index >= orderedIds.length) return [...orderedIds];
+  if (swap < 0 || swap >= orderedIds.length) return [...orderedIds];
+  const out = [...orderedIds];
+  const a = out[index];
+  const b = out[swap];
+  if (a === undefined || b === undefined) return out;
+  out[index] = b;
+  out[swap] = a;
+  return out;
+}
+
 export function createShoppingRepo(driver: DataDriver) {
   return {
     async listLists(): Promise<ShoppingListRow[]> {
