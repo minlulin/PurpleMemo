@@ -7,29 +7,31 @@
 ## Current Goal
 - [x] **P3c — Business + Loans — DONE** (see progress log)
 - [x] **P3d — Habits + Tasks + Shopping — DONE** (gate green, see progress log)
-- [ ] **P3e — Address book + Memories + Gallery + Vault** (next phase)
+- [x] **P3e — Address book + Memories + Gallery + Vault — DONE** (gate green, see progress log)
+- [ ] **P3f — Dashboard + Settings + More + PIN** (next phase)
 
 ## What Was Done (this session, Oct 11)
-1. **P3d — Habits + Tasks + Shopping — DONE**, 4 TDD tasks + fix pass:
-   - Dep re-check: no bumps (tauri 3.x is alpha — rule 1; @types/node
-     stays on 24.x to match the Node runtime) — ledgered ruling.
-   - T1 `0619bca` — HabitsPage (today toggle, current/best streaks,
-     7-day week row, month grid reusing journal `buildMonthGrid`);
-     habits/tasks/shopping repos wired + tabs; placeholders for T2/T4.
-   - T2+T3 `05ca248` — TasksPage: open/done, overdue chips, repeat
-     badges; `nextDueDate` (TDD) rolls repeating tasks forward on
-     completion. Reminders section with 30s notification poll
-     (permission asked once; repeating re-arm). **Added the missing
-     `notification:default` capability** — the plugin was registered in
-     Rust since P1 but had no capability, so notifications would all
-     have failed at runtime.
-   - T4 `dd7732d` — ShoppingPage: list tabs (select/rename/delete),
-     checkable items, `moveItem` (TDD) ▲/▼ reorder.
-   - Fix pass `be47a1e` (final-review Important): reminder poll used
-     `toISOString()` (UTC) against local `remind_at` — added
-     `localISODateTime` (TDD) and used it in the poll.
-   - Gates: verify 8/8 (116/116 unit tests), cargo test green, E2E
-     `tauri dev` boot clean twice.
+1. **P3e — Address book + Memories + Gallery + Vault — DONE**, 4 TDD tasks
+   + review fix:
+   - Dep re-check: only `@types/node` behind latest major — standing ruling:
+     stays on the 24.x line matching the Node runtime. No bumps.
+   - T1 `b21f7a9` — ContactsPage (search, channels w/ primary, tags,
+     birthday modes); helpers `birthdayLabel`, `normalizeMonthDay`,
+     `searchContacts` TDD'd; `contactsRepo` wired + tab.
+   - T2 `029e585` — MemoriesPage: Upcoming/On-this-day with contact
+     birthdays surfaced (§2.7), month feed (`shiftYearMonth` TDD'd), All +
+     shared CRUD form; memories + contacts repos wired + tab.
+   - T3 `cbd6d31` — GalleryPage: file picker → `savePhoto`, object-URL
+     thumbnails, note/taken-date (`updatePhoto` TDD), `listRefsForPhoto`
+     (TDD) + link/unlink to notes/memories/jobs; `photoExtFromName` TDD'd.
+   - T4 `88b45f0` — VaultPage: setup screen with **no-recovery warning**
+     before password set, unlock via GCM canary, item CRUD with in-memory
+     password, reveal/hide, change-password re-encrypt; repo tests for
+     double-setup refusal + `listItems` never selecting ciphertext/salt/iv;
+     included review fix: gallery thumbnail URLs revoked when unmounting
+     mid-load.
+   - Gates: verify 8/8 (131/131 unit tests), cargo test 18/18, E2E
+     `tauri dev` boot clean.
 
 ## Decisions & Constraints
 - `docs/PLAN.md` is the single source of truth. **One phase at a time**.
