@@ -108,14 +108,14 @@ Light app lock (not a login system):
   with the PIN; correct answer allows setting a new PIN. No online
   recovery exists — the UI states this plainly at setup.
 
-## 3. Tech stack — locked versions (verified 2026-10-07; max-stable re-verified 2026-10-10, semver-sorted)
+## 3. Tech stack — locked versions (verified 2026-10-07; max-stable re-verified 2026-10-11, semver-sorted)
 
 | Layer | Choice | Version |
 |---|---|---|
-| Shell | Tauri | **2.12.2** |
-| Tauri CLI / API | @tauri-apps/cli / @tauri-apps/api | 2.12.1 / 2.12.2 |
-| Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.2 |
-| Notifications | tauri-plugin-notification / @tauri-apps/plugin-notification | 2.5.1 |
+| Shell | Tauri | **2.12.3** |
+| Tauri CLI / API | @tauri-apps/cli / @tauri-apps/api | 2.12.2 / 2.12.3 |
+| Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.3 |
+| Notifications | tauri-plugin-notification / @tauri-apps/plugin-notification | 2.6.0 |
 | DB | rusqlite (`bundled-sqlcipher-vendored-openssl`) — SQLite 3.53.2 + SQLCipher | 0.40.2 |
 | Key storage | keyring crate (OS credential store) | 4.2.0 |
 | UI | React + react-dom | 19.3.0 |

@@ -23,9 +23,9 @@
     "memory:reset": "node scripts/reset-session-memory.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.12.2",
-    "@tauri-apps/plugin-notification": "2.5.1",
-    "@tauri-apps/plugin-updater": "2.13.2",
+    "@tauri-apps/api": "2.12.3",
+    "@tauri-apps/plugin-notification": "2.6.0",
+    "@tauri-apps/plugin-updater": "2.13.3",
     "fflate": "0.8.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -34,8 +34,8 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@tailwindcss/vite": "4.3.3",
-    "@tauri-apps/cli": "2.12.1",
-    "@types/node": "^24.0.0",
+    "@tauri-apps/cli": "2.12.2",
+    "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
