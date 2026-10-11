@@ -47,8 +47,10 @@ Jobs, shops, receivables, payables.
 - **Paid in full at once** → status becomes `paid`, the job moves to
   **History**, and an **Income entry is created in the Budget Tracker**
   under the **Business category**, in the wallet the money arrived in.
-- **Not fully paid** → the job stays in **Receivable** with the remaining
-  balance; per-customer receivable totals.
+- **Partial payments (cash basis, §2.1):** every receipt creates its own
+  **Income entry** under the **Business category** in the wallet it arrived
+  in, when it arrives. The job stays in **Receivable** with the remaining
+  balance until fully paid; per-customer receivable totals.
 - **Payable:** amounts the user owes (suppliers etc.) — title, amount,
   due date; marking paid creates the expense entry.
 - **Shops:** customer/supplier directory (name, phone, address, notes).
