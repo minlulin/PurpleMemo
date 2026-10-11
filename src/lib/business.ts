@@ -100,15 +100,33 @@ export function inWarranty(
  */
 export function shopReceivableRows(
   shops: ShopRow[],
-  totals: { shop_id: number; remaining_cents: number }[],
+  totals: { shop_id: number | null; remaining_cents: number }[],
 ): ShopReceivableRow[] {
-  const byShop = new Map(totals.map((t) => [t.shop_id, t.remaining_cents]));
+  const byShop = new Map(
+    totals
+      .filter((t) => t.shop_id !== null)
+      .map((t) => [t.shop_id, t.remaining_cents]),
+  );
   const rows: ShopReceivableRow[] = shops.map((s) => ({
     ...s,
     remaining_cents: Math.max(0, byShop.get(s.id) ?? 0),
   }));
+  // Jobs created without a shop (§2.2: the shop field is optional) group
+  // under "No shop" — never an orphan label.
+  const loose = totals.find((t) => t.shop_id === null);
+  if (loose !== undefined && loose.remaining_cents > 0) {
+    rows.push({
+      id: 0,
+      name: "No shop",
+      phone: "",
+      address: "",
+      notes: "",
+      created_at: "",
+      remaining_cents: Math.max(0, loose.remaining_cents),
+    });
+  }
   for (const t of totals) {
-    if (shops.some((s) => s.id === t.shop_id)) continue;
+    if (t.shop_id === null || shops.some((s) => s.id === t.shop_id)) continue;
     rows.push({
       id: t.shop_id,
       name: `Deleted shop #${t.shop_id}`,
@@ -261,9 +279,13 @@ export function createBusinessRepo(driver: DataDriver) {
       );
     },
 
-    /** Per-customer receivable totals (§2.2). */
+    /**
+     * Per-customer receivable totals (§2.2). `shop_id` is null for jobs
+     * created without a shop — the display layer groups those under
+     * "No shop".
+     */
     async shopReceivableTotals(): Promise<
-      { shop_id: number; remaining_cents: number }[]
+      { shop_id: number | null; remaining_cents: number }[]
     > {
       return driver.query(
         `SELECT shop_id, SUM(total_cents - paid_cents) AS remaining_cents

@@ -253,20 +253,24 @@ function ShopsView() {
                       : ""}
                   </span>
                   <span className="row-actions">
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={() => startEdit(s)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={() => void removeShop(s.id)}
-                    >
-                      Delete
-                    </button>
+                    {s.id !== 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => startEdit(s)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => void removeShop(s.id)}
+                        >
+                          Delete
+                        </button>
+                      </>
+                    ) : null}
                   </span>
                 </>
               )}
@@ -667,13 +671,15 @@ function ReceivableView() {
                   {formatMMK(r.remaining_cents)}
                 </span>
                 <span className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={() => void copyVoucher(r.id)}
-                  >
-                    {copiedId === r.id ? "Copied ✓" : "Copy voucher"}
-                  </button>
+                  {r.id !== 0 ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void copyVoucher(r.id)}
+                    >
+                      {copiedId === r.id ? "Copied ✓" : "Copy voucher"}
+                    </button>
+                  ) : null}
                 </span>
               </li>
             ))}

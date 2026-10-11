@@ -381,3 +381,28 @@ test("payableDueStatus: overdue past due date, due on the day, none without (§2
   assert.equal(payableDueStatus("2026-10-11", "2026-10-11"), "due");
   assert.equal(payableDueStatus("2026-10-12", "2026-10-11"), "upcoming");
 });
+
+test("shopReceivableRows: jobs without a shop group under 'No shop', not an orphan (§2.2)", () => {
+  const shops = [
+    {
+      id: 1,
+      name: "Alpha",
+      phone: "",
+      address: "",
+      notes: "",
+      created_at: "2026-10-10",
+    },
+  ];
+  const rows = shopReceivableRows(shops, [
+    { shop_id: null, remaining_cents: 700 },
+    { shop_id: 1, remaining_cents: 100 },
+  ]);
+  assert.equal(rows.length, 2);
+  const loose = rows.find((r) => r.name === "No shop");
+  assert.equal(loose?.remaining_cents, 700, "shopless jobs get a sane label");
+  assert.equal(
+    rows.find((r) => r.name.startsWith("Deleted")),
+    undefined,
+    "null shop_id must never become 'Deleted shop #null'",
+  );
+});
