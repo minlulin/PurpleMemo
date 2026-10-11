@@ -3,8 +3,40 @@
 // UI concern — this layer stores and queries them).
 
 import type { DataDriver } from "../data/driver.ts";
-import { todayLocal } from "./dates.ts";
+import { addDays, addMonths, todayLocal } from "./dates.ts";
 import type { ReminderRow, TaskRow } from "./types.ts";
+
+/** Hard cap on catch-up steps when rolling an overdue repeat forward. */
+export const REPEAT_ROLL_MAX_STEPS = 1000;
+
+/**
+ * Next due date after marking a repeating task done (§2.7). `none` repeats
+ * never roll (the task simply stays done). Every other repeat advances the
+ * due date by one period per step until it lands strictly after `today` —
+ * completing an overdue task re-arms it in the future instead of leaving it
+ * immediately overdue again. The walk is hard-capped.
+ */
+export function nextDueDate(
+  dueDate: string | null,
+  repeat: TaskRow["repeat"],
+  today: string,
+): string | null {
+  if (repeat === "none") return null;
+  const step = (d: string): string => {
+    if (repeat === "daily") return addDays(d, 1);
+    if (repeat === "weekly") return addDays(d, 7);
+    return addMonths(d, 1);
+  };
+  // Roll from whichever is later: the due date or today (a task with no
+  // due date or one far in the past starts from today).
+  let next = dueDate !== null && dueDate > today ? dueDate : today;
+  for (let i = 0; i < REPEAT_ROLL_MAX_STEPS; i++) {
+    next = step(next);
+    if (next > today) return next;
+  }
+  // Pathological (a decade of daily catch-up) — re-arm one period out.
+  return next;
+}
 
 export interface TaskInput {
   title: string;
