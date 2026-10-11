@@ -9,6 +9,7 @@ import { localISODateTime } from "./lib/dates.ts";
 import BudgetPage from "./pages/BudgetPage";
 import BusinessPage from "./pages/BusinessPage";
 import ContactsPage from "./pages/ContactsPage";
+import GalleryPage from "./pages/GalleryPage";
 import HabitsPage from "./pages/HabitsPage";
 import JournalPage from "./pages/JournalPage";
 import LoansPage from "./pages/LoansPage";
@@ -27,7 +28,8 @@ type PageKey =
   | "tasks"
   | "shopping"
   | "contacts"
-  | "memories";
+  | "memories"
+  | "gallery";
 
 const TABS: { key: PageKey; label: string }[] = [
   { key: "notes", label: "Notes" },
@@ -40,6 +42,7 @@ const TABS: { key: PageKey; label: string }[] = [
   { key: "shopping", label: "Shopping" },
   { key: "contacts", label: "Contacts" },
   { key: "memories", label: "Memories" },
+  { key: "gallery", label: "Gallery" },
 ];
 
 /**
@@ -198,8 +201,10 @@ export default function App() {
           <ShoppingPage />
         ) : page === "contacts" ? (
           <ContactsPage />
-        ) : (
+        ) : page === "memories" ? (
           <MemoriesPage />
+        ) : (
+          <GalleryPage />
         )}
       </main>
     </div>

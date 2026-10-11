@@ -14,6 +14,19 @@ export interface SavePhotoInput {
   note?: string;
 }
 
+/**
+ * Extension for a picked file: the last dot segment, lowercased, when it is
+ * alphanumeric and short enough to be a real extension; anything missing or
+ * hostile (`"noext"`, `"weird.<script>"`) falls back to `"bin"` so a file
+ * name can never steer the storage path (§4 photos are content-addressed).
+ */
+export function photoExtFromName(fileName: string): string {
+  const dot = fileName.lastIndexOf(".");
+  if (dot < 0) return "bin";
+  const ext = fileName.slice(dot + 1).toLowerCase();
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : "bin";
+}
+
 async function sha256Hex(bytes: number[]): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -66,6 +79,32 @@ export function createGalleryRepo(driver: DataDriver) {
         [id],
       );
       return rows[0];
+    },
+
+    /**
+     * Partial update: only the provided fields are written (`undefined`
+     * leaves the column unchanged).
+     */
+    async updatePhoto(
+      id: number,
+      fields: { note?: string; takenDate?: string | null },
+    ): Promise<void> {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (fields.note !== undefined) {
+        sets.push("note = ?");
+        params.push(fields.note);
+      }
+      if (fields.takenDate !== undefined) {
+        sets.push("taken_date = ?");
+        params.push(fields.takenDate);
+      }
+      if (sets.length === 0) return;
+      params.push(id);
+      await driver.execute(
+        `UPDATE photos SET ${sets.join(", ")} WHERE id = ?`,
+        params,
+      );
     },
 
     /** Read photo bytes by row id (rel_path -> photo_read command). */
@@ -122,6 +161,14 @@ export function createGalleryRepo(driver: DataDriver) {
          WHERE r.entity_type = ? AND r.entity_id = ?
          ORDER BY r.id`,
         [entityType, entityId],
+      );
+    },
+
+    /** Links a single photo points to — the gallery detail view. */
+    async listRefsForPhoto(photoId: number): Promise<PhotoRefRow[]> {
+      return driver.query<PhotoRefRow>(
+        "SELECT * FROM photo_refs WHERE photo_id = ? ORDER BY id",
+        [photoId],
       );
     },
   };
