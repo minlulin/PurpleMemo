@@ -8,6 +8,7 @@ import { tasksRepo } from "./data/app.ts";
 import { localISODateTime } from "./lib/dates.ts";
 import BudgetPage from "./pages/BudgetPage";
 import BusinessPage from "./pages/BusinessPage";
+import ContactsPage from "./pages/ContactsPage";
 import HabitsPage from "./pages/HabitsPage";
 import JournalPage from "./pages/JournalPage";
 import LoansPage from "./pages/LoansPage";
@@ -23,7 +24,8 @@ type PageKey =
   | "loans"
   | "habits"
   | "tasks"
-  | "shopping";
+  | "shopping"
+  | "contacts";
 
 const TABS: { key: PageKey; label: string }[] = [
   { key: "notes", label: "Notes" },
@@ -34,6 +36,7 @@ const TABS: { key: PageKey; label: string }[] = [
   { key: "habits", label: "Habits" },
   { key: "tasks", label: "Tasks" },
   { key: "shopping", label: "Shopping" },
+  { key: "contacts", label: "Contacts" },
 ];
 
 /**
@@ -188,8 +191,10 @@ export default function App() {
           <HabitsPage />
         ) : page === "tasks" ? (
           <TasksPage notifyNote={notifyNote} />
-        ) : (
+        ) : page === "shopping" ? (
           <ShoppingPage />
+        ) : (
+          <ContactsPage />
         )}
       </main>
     </div>

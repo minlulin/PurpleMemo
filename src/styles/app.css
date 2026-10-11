@@ -41,6 +41,7 @@
 
 .app-nav {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1);
   margin-inline-start: auto;
 }
@@ -890,4 +891,46 @@ tbody .week-row {
 
 .limit-name {
   font-weight: 600;
+}
+
+/* ---- Address book (P3e, §2.7) --------------------------------------------- */
+
+.contacts-layout {
+  display: grid;
+  grid-template-columns: 16rem 1fr;
+  gap: var(--space-5);
+  align-items: start;
+  min-height: 0;
+}
+
+.contacts-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: sticky;
+  top: var(--space-12);
+}
+
+.contacts-sidebar .side-btn {
+  width: 100%;
+  text-align: start;
+}
+
+.contacts-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.contact-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.contact-section .chip {
+  margin-inline-end: var(--space-2);
 }

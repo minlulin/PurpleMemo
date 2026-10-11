@@ -4,6 +4,7 @@
 
 import { createBudgetRepo } from "../lib/budget.ts";
 import { createBusinessRepo } from "../lib/business.ts";
+import { createContactsRepo } from "../lib/contacts.ts";
 import { createHabitsRepo } from "../lib/habits.ts";
 import { createJournalRepo } from "../lib/journal.ts";
 import { createLoansRepo } from "../lib/loans.ts";
@@ -22,3 +23,4 @@ export const loansRepo = createLoansRepo(driver);
 export const habitsRepo = createHabitsRepo(driver);
 export const tasksRepo = createTasksRepo(driver);
 export const shoppingRepo = createShoppingRepo(driver);
+export const contactsRepo = createContactsRepo(driver);

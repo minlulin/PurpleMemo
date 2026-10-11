@@ -47,6 +47,73 @@ export function upcomingBirthday(
   return diff >= 0 && diff <= days;
 }
 
+const MONTH_SHORT = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+/**
+ * Display label for a birthday: "Oct 20, 1990" for a full date,
+ * "Oct 20" for a month-day (§2.7). Malformed input degrades to a
+ * placeholder instead of throwing — the label sits in list rows.
+ */
+export function birthdayLabel(birthday: string): string {
+  if (birthday.length === 0) return "";
+  const mmdd = birthday.length >= 10 ? birthday.slice(5) : birthday;
+  const month = Number(mmdd.slice(0, 2));
+  const day = Number(mmdd.slice(3, 5));
+  const monthLabel = MONTH_SHORT[month - 1] ?? "??";
+  const dayLabel = Number.isFinite(day) ? day : "?";
+  const base = `${monthLabel} ${dayLabel}`;
+  return birthday.length >= 10 ? `${base}, ${birthday.slice(0, 4)}` : base;
+}
+
+/**
+ * Normalize user input for a month-day birthday to strict "MM-DD".
+ * Accepts "M-D", "MM-DD", "MM/DD" (pads zeros); returns null for
+ * impossible dates (month 13, Feb 30) or malformed input.
+ */
+export function normalizeMonthDay(raw: string): string | null {
+  const m = /^(\d{1,2})[-/](\d{1,2})$/.exec(raw.trim());
+  const month = m ? Number(m[1]) : NaN;
+  const day = m ? Number(m[2]) : NaN;
+  if (!Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  // Reject day numbers that don't exist in that month (Feb 30, Apr 31).
+  const probe = new Date(2024, month - 1, day); // leap year — Feb 29 stays valid
+  if (probe.getMonth() !== month - 1 || probe.getDate() !== day) return null;
+  return `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * Case-insensitive contact filter over name, address and notes (tags live in
+ * their own table and are not loaded here — the search box filters the list
+ * that is already on screen). A blank query returns everything unchanged.
+ */
+export function searchContacts(
+  contacts: ContactRow[],
+  query: string,
+): ContactRow[] {
+  const q = query.trim().toLowerCase();
+  if (q.length === 0) return contacts;
+  return contacts.filter((c) =>
+    [c.name, c.address, c.notes].some((field) =>
+      field.toLowerCase().includes(q),
+    ),
+  );
+}
+
 export function createContactsRepo(driver: DataDriver) {
   return {
     // -- Contacts ------------------------------------------------------------------
