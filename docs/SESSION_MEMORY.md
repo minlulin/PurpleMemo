@@ -1,53 +1,67 @@
-# SESSION MEMORY — 2026-10-11
+# SESSION MEMORY — 2026-10-12
 
 > This file is **rewritten fresh every session** via `npm run session:reset`.
 > Never append indefinitely — overwrite to keep it small. Agent should keep
 > only what matters for the next session.
 
 ## Current Goal
-- [x] **P3c — Business + Loans — DONE** (see progress log)
-- [x] **P3d — Habits + Tasks + Shopping — DONE** (gate green, see progress log)
-- [x] **P3e — Address book + Memories + Gallery + Vault — DONE** (gate green, see progress log)
-- [ ] **P3f — Dashboard + Settings + More + PIN** (next phase)
+- [x] **P0–P4 rechecked** — tree clean at `005b815`, gate green before any work.
+- [ ] **P5 — Share + updater — IN PROGRESS** (share done, updater prepared,
+      uncommitted; see the progress log for the two gate items still open)
+- [ ] **P6 — pre-release audit** (next phase after P5's gate closes)
 
-## What Was Done (this session, Oct 11)
-1. **P3e — Address book + Memories + Gallery + Vault — DONE**, 4 TDD tasks
-   + review fix:
-   - Dep re-check: only `@types/node` behind latest major — standing ruling:
-     stays on the 24.x line matching the Node runtime. No bumps.
-   - T1 `b21f7a9` — ContactsPage (search, channels w/ primary, tags,
-     birthday modes); helpers `birthdayLabel`, `normalizeMonthDay`,
-     `searchContacts` TDD'd; `contactsRepo` wired + tab.
-   - T2 `029e585` — MemoriesPage: Upcoming/On-this-day with contact
-     birthdays surfaced (§2.7), month feed (`shiftYearMonth` TDD'd), All +
-     shared CRUD form; memories + contacts repos wired + tab.
-   - T3 `cbd6d31` — GalleryPage: file picker → `savePhoto`, object-URL
-     thumbnails, note/taken-date (`updatePhoto` TDD), `listRefsForPhoto`
-     (TDD) + link/unlink to notes/memories/jobs; `photoExtFromName` TDD'd.
-   - T4 `88b45f0` — VaultPage: setup screen with **no-recovery warning**
-     before password set, unlock via GCM canary, item CRUD with in-memory
-     password, reveal/hide, change-password re-encrypt; repo tests for
-     double-setup refusal + `listItems` never selecting ciphertext/salt/iv;
-     included review fix: gallery thumbnail URLs revoked when unmounting
-     mid-load.
-   - Gates: verify 8/8 (131/131 unit tests), cargo test 18/18, E2E
-     `tauri dev` boot clean.
+## What Was Done (this session, Oct 12)
+1. **Recheck first:** `npm run verify` green (155/155 then), `cargo test`
+   19/19, 29 tables, WAL/FK/mutex, `requireIdentifier`, boot-error path all
+   confirmed against the plan. §3 dep re-check clean (`cargo info <crate>@2`
+   shows the pinned tauri 2.12.3 / updater 2.13.3 / notification 2.6.0 ARE
+   max stable 2.x; JS only `@types/node` behind = standing 24.x ruling).
+2. **P5 T1 — read-only LAN share (§8)**, TDD:
+   - The load-bearing split: `src/lib/share.ts` (pure `buildShareSnapshot` +
+     `createShareRepo`) and `src-tauri/src/share.rs` (`ShareState` +
+     `tiny_http` listener). 8 new TS tests, 13 new Rust tests.
+   - Opt-in per session, 6-char pairing code (`23456789ABCDEFGHJKLMNPQRSTUVWXYZ`,
+     `byte % 32` is uniform), constant-time compare, 10 wrong codes → server
+     shuts itself down and `ShareInfo.note` explains why in the app.
+   - The network path never touches SQL/keyring/filesystem — it serves only the
+     payload `share_publish` validated. Snapshot is built in TS, bounded, and
+     display-ready (phone page paints, never formats).
+   - Phone page: `src-tauri/share/share.html`, tokens inlined at compile time
+     from `src/styles/tokens.css` (Tailwind `@import` stripped), `textContent`
+     only — no innerHTML.
+   - Settings → "Share to this network"; app shell re-publishes every 30 s.
+3. **P5 T2 — updater (§9), prepare only**: `src/lib/update.ts` (6 tests),
+   Settings → Updates (check/install/progress), `src/lib/release.ts` +
+   `scripts/make-latest-json.mjs` (4 tests) and `docs/RELEASE.md`.
 
 ## Decisions & Constraints
 - `docs/PLAN.md` is the single source of truth. **One phase at a time**.
-- §3: latest STABLE only, re-check at phase start. `cargo search` shows
-  3.0.0-alpha for tauri — use `cargo info <crate>` to see; stay on 2.x
-  stable. `@types/node` stays on the 24.x line matching the Node runtime.
+- §3: latest STABLE only. `cargo info <crate>` shows prereleases — use
+  `cargo info <crate>@<major>` for the max stable line. `@types/node` stays 24.x.
 - Never `git push --no-verify`. No SQL migrations. Money = integer cents;
-  **dates AND date-times are local** (`localISODateTime` for
-  `datetime-local` values — `toISOString()` is UTC and has bitten twice).
+  dates are **local** (`localISODateTime`); the only UTC values are
+  interchange formats (backup `exportedAt`, release `pub_date`).
 - Pages call repos from `src/data/app.ts` only. `!` banned — `at()`/`first()`.
-- New Tauri plugin permissions need BOTH the Rust `.plugin()` init AND a
-  `permissions` entry in `src-tauri/capabilities/default.json` — check
-  both when wiring plugin calls.
-- Heredoc appends: small chunks; `node -e` replace fails silently — grep
-  after. Run tsc in the gate chain BEFORE committing (dropped imports
-  have slipped past an early commit once).
+- New Tauri plugin permissions need BOTH `.plugin()` in Rust AND a
+  `permissions` entry in `src-tauri/capabilities/default.json`. Custom
+  `#[tauri::command]`s need no capability entry.
+- Rust commands return camelCase via `#[serde(rename_all = "camelCase")]` —
+  Tauri does not rename return values. JS args are camelCase, Rust params
+  snake_case (Tauri converts).
+- `std::sync::Mutex` is NOT reentrant: never call a helper that re-locks while
+  a guard is alive (cost this session a hung test run).
+- `tauri build` does **not** write `latest.json` — build it with
+  `scripts/make-latest-json.mjs`, never by hand.
+- `tauri dev` E2E can only prove a clean boot: the native window cannot be
+  driven from these tools, and the dev webview has no Tauri IPC.
+
+## Open / Next
+- [ ] P5 gate: (a) open the share link from a real phone on the LAN against a
+      release build; (b) install a hand-published signed release from an older
+      build (`gh` is not installed here — the web UI works too).
+- [ ] Consider a QR code for the share link (phone typing a 40-char URL is the
+      weak part of the flow) — needs a small dep, §3 rule 3 ruling first.
+- [ ] P6: full report-only audit of P0–P5, then the first release.
 
 ## How to reset
 ```bash
@@ -56,5 +70,4 @@ npm run session:reset
 ```
 
 ---
-
 Generated by scripts/reset-session-memory.mjs — edit after reset with the current session summary.
