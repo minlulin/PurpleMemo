@@ -2,6 +2,7 @@
 // wired into the per-domain repositories. Pages import the repos from here —
 // they never touch the driver or Tauri IPC directly.
 
+import { createBackupRepo } from "../lib/backup.ts";
 import { createBudgetRepo } from "../lib/budget.ts";
 import { createBusinessRepo } from "../lib/business.ts";
 import { createContactsRepo } from "../lib/contacts.ts";
@@ -19,6 +20,7 @@ import { createTauriDriver } from "./driver.ts";
 
 const driver = createTauriDriver();
 
+export const backupRepo = createBackupRepo(driver);
 export const notesRepo = createNotesRepo(driver);
 export const journalRepo = createJournalRepo(driver);
 export const budgetRepo = createBudgetRepo(driver);

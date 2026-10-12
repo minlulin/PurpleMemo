@@ -21,6 +21,8 @@ export interface MockScript {
   outcome?: ExecuteOutcome;
   /** Thrown by the next `query`/`execute` when set — consumed once. */
   error?: Error;
+  /** Thrown by the next `batch` when set — consumed once. */
+  batchError?: Error;
 }
 
 export interface MockDriver extends DataDriver {
@@ -75,6 +77,11 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     },
     async batch(statements: BatchStatement[]): Promise<void> {
       record("batch", [statements]);
+      if (script.batchError) {
+        const e = script.batchError;
+        script.batchError = undefined;
+        throw e;
+      }
     },
     async begin(): Promise<void> {
       record("begin", []);
