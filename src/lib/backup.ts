@@ -286,49 +286,57 @@ export async function applyBackup(
   const photoRows: Row[] = (parsed.payload.data.photos ?? []).map((r) => ({
     ...r,
   }));
-  for (const row of photoRows) {
-    const relPath = row.rel_path as string;
-    const ext = row.ext as string;
-    const entry = byPath.get(relPath);
-    if (!entry) {
-      throw new Error(
-        `Backup is missing the file for ${relPath} — import cancelled.`,
-      );
-    }
-    const saved = await driver.savePhoto(entry.bytes, ext);
-    if (saved !== relPath) {
-      // The bytes in the zip disagree with the manifest (tampered or
-      // corrupted entry), so the content-addressed path moved. Re-point the
-      // row AND correct the columns that describe those bytes — a row whose
-      // sha256/size_bytes still describe the old content is internally
-      // inconsistent, and the schema does not catch it.
-      row.rel_path = saved;
-      row.sha256 = await sha256HexBytes(Uint8Array.from(entry.bytes));
-      row.size_bytes = entry.bytes.length;
-    }
-    kept.add(saved);
-    photoCount++;
-  }
-
-  const data: Record<string, Row[]> = {
-    ...parsed.payload.data,
-    photos: photoRows,
-  };
-
-  await driver.execute("PRAGMA foreign_keys = OFF");
+  const created = new Set<string>();
   try {
-    const statements: BatchStatement[] = BACKUP_TABLES.map((table) => ({
-      sql: `DELETE FROM ${table}`,
-    }));
-    for (const table of BACKUP_TABLES) {
-      for (const row of data[table] ?? []) {
-        statements.push(insertStatement(table, row));
-        rows++;
+    for (const row of photoRows) {
+      const relPath = row.rel_path as string;
+      const ext = row.ext as string;
+      const entry = byPath.get(relPath);
+      if (!entry) {
+        throw new Error(
+          `Backup is missing the file for ${relPath} — import cancelled.`,
+        );
       }
+      const saved = await driver.savePhoto(entry.bytes, ext);
+      if (!oldPaths.includes(saved)) created.add(saved);
+      if (saved !== relPath) {
+        // The bytes in the zip disagree with the manifest (tampered or
+        // corrupted entry), so the content-addressed path moved. Re-point the
+        // row AND correct the columns that describe those bytes — a row whose
+        // sha256/size_bytes still describe the old content is internally
+        // inconsistent, and the schema does not catch it.
+        row.rel_path = saved;
+        row.sha256 = await sha256HexBytes(Uint8Array.from(entry.bytes));
+        row.size_bytes = entry.bytes.length;
+      }
+      kept.add(saved);
+      photoCount++;
     }
-    await driver.batch(statements);
-  } finally {
-    await driver.execute("PRAGMA foreign_keys = ON");
+
+    const data: Record<string, Row[]> = {
+      ...parsed.payload.data,
+      photos: photoRows,
+    };
+
+    await driver.execute("PRAGMA foreign_keys = OFF");
+    try {
+      const statements: BatchStatement[] = BACKUP_TABLES.map((table) => ({
+        sql: `DELETE FROM ${table}`,
+      }));
+      for (const table of BACKUP_TABLES) {
+        for (const row of data[table] ?? []) {
+          statements.push(insertStatement(table, row));
+          rows++;
+        }
+      }
+      await driver.batch(statements);
+    } finally {
+      await driver.execute("PRAGMA foreign_keys = ON");
+    }
+  } catch (error) {
+    for (const path of created)
+      await driver.deletePhoto(path).catch(() => undefined);
+    throw error;
   }
 
   // Files the imported backup no longer references are orphans now — they

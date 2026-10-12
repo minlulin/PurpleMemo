@@ -7,8 +7,14 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
+
+/// Serialize content-addressed writes. The destination path is derived from
+/// the bytes, so concurrent saves of the same photo would otherwise race on
+/// the same temporary and final paths.
+static PHOTO_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Save photo bytes; returns the relative path to store in the DB.
 ///
@@ -26,6 +32,9 @@ pub fn save_photo(
     bytes: &[u8],
     ext: &str,
 ) -> Result<String, String> {
+    let _write_guard = PHOTO_WRITE_LOCK
+        .lock()
+        .map_err(|_| "photo write mutex poisoned".to_string())?;
     let ext = ext.to_ascii_lowercase();
     if !is_valid_ext(&ext) {
         return Err(format!(
@@ -54,6 +63,14 @@ pub fn save_photo(
     }
     let tmp_path = abs_path.with_extension(format!("{ext}.tmp"));
     fs::write(&tmp_path, bytes).map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
+    // `rename` replaces an existing destination on Unix but not on Windows.
+    // Remove a known-bad destination first so corruption recovery behaves the
+    // same on every supported platform. The write lock prevents another save
+    // from observing the short remove/rename window.
+    if abs_path.exists() {
+        fs::remove_file(&abs_path)
+            .map_err(|e| format!("remove corrupt {}: {e}", abs_path.display()))?;
+    }
     fs::rename(&tmp_path, &abs_path).map_err(|e| {
         format!(
             "rename {} -> {}: {e}",
@@ -200,6 +217,18 @@ mod tests {
         // Different bytes -> different path.
         let rel3 = save_photo(&dir.0, "2026/10", b"other", "png").expect("third");
         assert_ne!(rel1, rel3);
+    }
+
+    #[test]
+    fn corrupt_existing_file_is_replaced() {
+        let dir = TempDir::new();
+        let bytes = b"correct bytes";
+        let rel = save_photo(&dir.0, "2026/10", bytes, "jpg").expect("seed");
+        fs::write(dir.0.join(&rel), b"corrupt").expect("corrupt file");
+
+        let repaired = save_photo(&dir.0, "2026/10", bytes, "jpg").expect("repair");
+        assert_eq!(repaired, rel);
+        assert_eq!(read_photo(&dir.0, &rel).expect("read repaired"), bytes);
     }
 
     #[test]

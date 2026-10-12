@@ -48,3 +48,16 @@ test("nextDueDate: repeat rolls the due date to the next future occurrence (§2.
     "2026-02-28",
   );
 });
+
+test("rescheduleReminder updates in place so repeating reminders cannot be lost", async () => {
+  const driver = createMockDriver();
+  const tasks = createTasksRepo(driver);
+  await tasks.rescheduleReminder(7, "2026-10-13T09:00");
+  const call = driver.lastCall();
+  assert.ok(call);
+  assert.equal(call.method, "execute");
+  assert.deepEqual(call.args, [
+    "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
+    ["2026-10-13T09:00", 7],
+  ]);
+});

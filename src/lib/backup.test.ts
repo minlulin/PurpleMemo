@@ -248,6 +248,35 @@ test("applyBackup cancels before any DB write when a photo file is missing", asy
   assert.equal(driver.callsTo("batch").length, 0);
 });
 
+test("applyBackup removes newly written photos when the DB import fails", async () => {
+  const driver = createMockDriver({ batchError: new Error("batch failed") });
+  driver.pushResults([[{ rel_path: "photos/2026/01/old.jpg" }]]);
+  const parsed: ParsedBackup = {
+    payload: {
+      ...samplePayload(),
+      data: {
+        notes: [],
+        photos: [
+          {
+            id: 1,
+            rel_path: "photos/2026/10/new.jpg",
+            sha256: "old",
+            ext: "jpg",
+            size_bytes: 99,
+          },
+        ],
+      },
+    },
+    photos: [{ path: "photos/2026/10/new.jpg", bytes: [1, 2, 3] }],
+  };
+
+  await assert.rejects(applyBackup(driver, parsed), /batch failed/);
+  assert.deepEqual(
+    driver.callsTo("deletePhoto").map((c) => c.args),
+    [["photos/2026/10/jpg.3"]],
+  );
+});
+
 test("applyBackup restores FK on even when the batch fails", async () => {
   const driver = createMockDriver({
     batchError: new Error("insert failed"),

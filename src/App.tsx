@@ -102,8 +102,11 @@ function useReminderPoll(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    let inFlight = false;
     let requested = false;
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const now = localISODateTime(new Date());
         const due = await tasksRepo.dueReminders(now);
@@ -123,18 +126,17 @@ function useReminderPoll(
           if (r.repeat === "none") {
             await tasksRepo.markReminderFired(r.id);
           } else {
-            await tasksRepo.deleteReminder(r.id);
-            await tasksRepo.createReminder({
-              title: r.title,
-              remindAt: rollReminderForward(r.remind_at, r.repeat, now),
-              repeat: r.repeat,
-              note: r.note,
-            });
+            await tasksRepo.rescheduleReminder(
+              r.id,
+              rollReminderForward(r.remind_at, r.repeat, now),
+            );
           }
         }
       } catch {
         // The notification loop must never break the app (§2.7 wiring
         // is best-effort; the reminders list itself is the source of truth).
+      } finally {
+        inFlight = false;
       }
     };
     void tick();

@@ -168,6 +168,14 @@ export function createTasksRepo(driver: DataDriver) {
       await driver.execute("UPDATE reminders SET fired = 1 WHERE id = ?", [id]);
     },
 
+    /** Re-arm a repeating reminder without a delete/insert gap. */
+    async rescheduleReminder(id: number, remindAt: string): Promise<void> {
+      await driver.execute(
+        "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
+        [remindAt, id],
+      );
+    },
+
     async deleteReminder(id: number): Promise<void> {
       await driver.execute("DELETE FROM reminders WHERE id = ?", [id]);
     },
