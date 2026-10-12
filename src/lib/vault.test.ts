@@ -99,6 +99,63 @@ test("setupVault refuses a second setup — the marker is written once", async (
   assert.equal(driver.callsTo("execute").length, 0);
 });
 
+// Pre-release audit: with no items yet there was nothing to decrypt, so
+// unlock() trusted any password. A user who set the vault up, added nothing,
+// and then typed a different password was told "unlocked" — and their first
+// secret became encrypted under a password they do not believe they used.
+test("setupVault stores a password verifier so the password is proven immediately", async () => {
+  const driver = createMockDriver({ results: [[]] }); // isSetUp: no marker
+  const vault = createVaultRepo(driver);
+  await vault.setupVault("correct-horse");
+  const writes = driver
+    .callsTo("execute")
+    .map((c) => c.args as [string, unknown[]]);
+  const verifier = writes.find(([, params]) => params[0] === "vault_verify");
+  assert.ok(verifier, "a verifier must be written at setup");
+  // Same shape as a vault item: salt + iv + ciphertext, never the password.
+  const stored = JSON.parse(verifier[1][1] as string) as {
+    salt: string;
+    iv: string;
+    ciphertext: string;
+  };
+  assert.ok(stored.salt && stored.iv && stored.ciphertext);
+  assert.ok(!JSON.stringify(stored).includes("correct-horse"));
+});
+
+test("unlock with no items still verifies the stored verifier, rejecting a wrong password", async () => {
+  // The verifier was written by a real setup run below, then replayed here.
+  const driver = createMockDriver({ results: [[]] });
+  const vault = createVaultRepo(driver);
+  await vault.setupVault("correct-horse");
+  const writes = driver
+    .callsTo("execute")
+    .map((c) => c.args as [string, unknown[]]);
+  const verifierRaw = writes.find(
+    ([, p]) => p[0] === "vault_verify",
+  )?.[1][1] as string;
+  assert.ok(verifierRaw.includes("ciphertext"), "verifier must be sealed");
+
+  // No items, correct password: the verifier decrypts, unlock succeeds.
+  const okDriver = createMockDriver();
+  okDriver.pushResults([
+    [], // vault_items: none
+    [{ value: verifierRaw }], // settings: the verifier
+  ]);
+  const okVault = createVaultRepo(okDriver);
+  await okVault.unlock("correct-horse");
+
+  // No items, WRONG password: must be rejected, not waved through. The setup
+  // marker is present whenever a verifier is (both are written at setup).
+  const badDriver = createMockDriver();
+  badDriver.pushResults([
+    [], // vault_items: none
+    [{ value: verifierRaw }], // settings: the verifier
+    [{ key: "vault_setup" }], // settings: setup marker -> must throw
+  ]);
+  const badVault = createVaultRepo(badDriver);
+  await assert.rejects(() => badVault.unlock("not-the-password"), /password/i);
+});
+
 test("listItems never selects ciphertext, salt or iv (§5.3)", async () => {
   const driver = createMockDriver();
   const vault = createVaultRepo(driver);

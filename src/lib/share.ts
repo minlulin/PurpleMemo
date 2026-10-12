@@ -37,6 +37,7 @@ export const SHARE_SNAPSHOT_VERSION = 1;
  * bounded payload keeps the LAN response small and the phone page fast.
  */
 export const SHARE_LIMITS = {
+  wallets: 20,
   tasks: 10,
   reminders: 10,
   habits: 20,
@@ -108,7 +109,7 @@ export function buildShareSnapshot(input: ShareSnapshotInput): ShareSnapshot {
       income: formatMMK(money.incomeCents),
       expense: formatMMK(money.expenseCents),
     },
-    wallets: input.walletBalances.map((w) => ({
+    wallets: input.walletBalances.slice(0, SHARE_LIMITS.wallets).map((w) => ({
       name: w.name,
       balance: formatMMK(w.balanceCents),
     })),

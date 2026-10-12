@@ -6,7 +6,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
 import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
-import { DEFAULT_AUTO_LOCK_MINUTES, isIdle } from "./lib/appLock.ts";
+import { DEFAULT_AUTO_LOCK_MINUTES, isIdle, lockGate } from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
 import {
   addDaysToDateTime,
@@ -326,17 +326,23 @@ export default function App() {
   }
 
   if (!unlocked) {
-    if (boot.pinHash !== null && boot.answerHash !== null) {
-      return (
-        <LockScreen
-          pinHash={boot.pinHash}
-          question={boot.question}
-          answerHash={boot.answerHash}
-          onUnlock={handleUnlock}
-        />
-      );
+    // Fail closed (§2.9): the setup screen overwrites the PIN without
+    // verifying the old one, so it is reachable ONLY when no PIN has ever
+    // been stored. Keying off the answer hash as well used to let a partial
+    // settings row (corrupt value, or an import that replaced settings)
+    // drop a locked app into first-run setup.
+    const gate = lockGate(boot.pinHash, boot.answerHash);
+    if (gate === "setup") {
+      return <SetupScreen onDone={() => void handleSetupDone()} />;
     }
-    return <SetupScreen onDone={() => void handleSetupDone()} />;
+    return (
+      <LockScreen
+        pinHash={boot.pinHash as PinHash}
+        question={boot.question}
+        answerHash={boot.answerHash}
+        onUnlock={handleUnlock}
+      />
+    );
   }
 
   return (

@@ -425,6 +425,22 @@ fn serve(
     }
 }
 
+/// A `Host` header is acceptable only when its host part is a bare IP
+/// literal or `localhost` — i.e. exactly the address this listener is
+/// reached at. This is the standard cheap defence against DNS rebinding: a
+/// public name that resolves to a LAN address must not be treated as
+/// same-origin by a browser, and a request naming some other host is not one
+/// we ever issued a link for.
+fn host_is_allowed(host: &str) -> bool {
+    // Strip the port; brackets cover IPv6 literals like [::1]:8080.
+    let name = match host.rsplit_once(':') {
+        Some((before, port)) if port.chars().all(|c| c.is_ascii_digit()) => before,
+        _ => host,
+    };
+    let name = name.trim_start_matches('[').trim_end_matches(']');
+    name.eq_ignore_ascii_case("localhost") || name.parse::<std::net::IpAddr>().is_ok()
+}
+
 /// Serve one request. Returns false when the loop must end.
 fn handle(
     request: Request,
@@ -435,6 +451,19 @@ fn handle(
     if request.method() != &Method::Get {
         let _ = request.respond(plain(405, "only GET is served here\n"));
         return true;
+    }
+    match request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Host") && host_is_allowed(h.value.as_str()))
+    {
+        Some(_) => {}
+        // Reject BEFORE the pairing-code check so a rebound host cannot even
+        // burn one of the ten attempts.
+        None => {
+            let _ = request.respond(plain(421, "unexpected host\n"));
+            return true;
+        }
     }
     let url = request.url().to_string();
     let (path, query) = match url.split_once('?') {
@@ -590,6 +619,28 @@ mod tests {
         assert_eq!(again.port, Some(port), "the live listener is reused");
         assert_eq!(again.code, Some(code));
         assert!(!state.stop().expect("stop").running);
+    }
+
+    #[test]
+    fn host_header_guard_accepts_ips_and_localhost_only() {
+        for ok in [
+            "127.0.0.1",
+            "127.0.0.1:8765",
+            "10.0.0.4:8765",
+            "localhost:8765",
+            "LOCALHOST",
+            "[::1]:8765",
+        ] {
+            assert!(host_is_allowed(ok), "{ok} should be allowed");
+        }
+        for bad in [
+            "evil.example.com",
+            "evil.example.com:8765",
+            "purple-memo.attacker.test",
+            "",
+        ] {
+            assert!(!host_is_allowed(bad), "{bad} must be rejected");
+        }
     }
 
     #[test]

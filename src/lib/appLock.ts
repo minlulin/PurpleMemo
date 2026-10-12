@@ -22,3 +22,24 @@ export function isIdle(
 
 /** The idle-timeout choices offered in Settings (§2.9, minutes; 0 = never). */
 export const AUTO_LOCK_CHOICES = [5, 10, 15, 30, 0] as const;
+
+/**
+ * Which gate the app shows before the shell (§2.9).
+ *
+ * - `setup`    — first run: no PIN has ever been stored.
+ * - `pin`      — locked, with the security-question fallback available.
+ * - `pin-only` — locked, fallback unavailable (the answer hash is missing).
+ *
+ * The rule is deliberately fail-closed: the setup screen writes a new PIN
+ * WITHOUT verifying any existing one, so it must be reachable only when no
+ * PIN exists at all. Keying off both hashes instead would let a partially
+ * written settings row — a corrupt value (`getJSON` returns null on a parse
+ * failure) or a backup import whose settings table lacks one key — drop a
+ * locked app straight into first-run setup, which is a full lock bypass.
+ */
+export type LockGate = "setup" | "pin" | "pin-only";
+
+export function lockGate(pinHash: unknown, answerHash: unknown): LockGate {
+  if (pinHash === null || pinHash === undefined) return "setup";
+  return answerHash === null || answerHash === undefined ? "pin-only" : "pin";
+}

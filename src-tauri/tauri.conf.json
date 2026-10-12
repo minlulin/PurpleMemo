@@ -41,7 +41,8 @@
       "endpoints": [
         "https://github.com/minlulin/PurpleMemo/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFGNTA4Q0VGMUZEMUMyOTcKUldTWHd0RWY3NHhRSHdyS0FVSCtzK0dEL2xkZzR0aTVEa2hRQ21HcXYvM2JqZ2VTY28ycFZRNksK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFGNTA4Q0VGMUZENUMyOTcKUldTWHd0RWY3NHhRSHdyS0FVSCtzK0dEL2xkZzR0aTVEa2hRQ21HcXYvM2JqZ2VTY28ycFZRNksK",
+      "requireSignedVersion": true
     }
   }
 }

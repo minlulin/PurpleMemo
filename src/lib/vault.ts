@@ -19,6 +19,72 @@ import type { VaultItemRow } from "./types.ts";
 /** Settings marker — its presence means the vault password has been set up. */
 export const VAULT_SETUP_KEY = "vault_setup";
 
+/**
+ * Settings key holding a verifier: a known string encrypted under the vault
+ * password with its own salt + IV. Without it, a vault that has been set up
+ * but holds no items has nothing to decrypt, so `unlock` would have to accept
+ * any password — and the user's first secret would end up encrypted under a
+ * password they never chose.
+ */
+export const VAULT_VERIFY_KEY = "vault_verify";
+
+const VERIFIER_PLAINTEXT = "purple-memo/vault/verifier/v1";
+
+interface VaultVerifier {
+  salt: string;
+  iv: string;
+  ciphertext: string;
+}
+
+async function sealVerifier(
+  driver: DataDriver,
+  password: string,
+): Promise<void> {
+  const salt = randomSaltB64();
+  const key = await deriveVaultKey(password, salt);
+  const cipher = await encryptWithKey(key, VERIFIER_PLAINTEXT);
+  const verifier: VaultVerifier = {
+    salt,
+    iv: cipher.iv,
+    ciphertext: cipher.ciphertext,
+  };
+  await driver.execute("INSERT INTO settings (key, value) VALUES (?, ?)", [
+    VAULT_VERIFY_KEY,
+    JSON.stringify(verifier),
+  ]);
+}
+
+async function checkVerifier(
+  driver: DataDriver,
+  password: string,
+): Promise<boolean> {
+  const rows = await driver.query<{ value: string }>(
+    "SELECT value FROM settings WHERE key = ?",
+    [VAULT_VERIFY_KEY],
+  );
+  const raw = rows[0]?.value;
+  if (!raw) return false; // nothing stored — nothing to check
+  let verifier: VaultVerifier;
+  try {
+    verifier = JSON.parse(raw) as VaultVerifier;
+  } catch {
+    throw new Error("stored vault verifier is corrupt");
+  }
+  // A wrong password fails the GCM auth tag. Translate that into "this
+  // password did not open the verifier" rather than leaking a raw WebCrypto
+  // OperationError to the caller.
+  const key = await deriveVaultKey(password, verifier.salt);
+  try {
+    const plain = await decryptWithKey(key, {
+      ciphertext: verifier.ciphertext,
+      iv: verifier.iv,
+    });
+    return plain === VERIFIER_PLAINTEXT;
+  } catch {
+    return false;
+  }
+}
+
 export function createVaultRepo(driver: DataDriver) {
   /**
    * In-memory derived keys (item id -> {salt, key, pwdHash}); cleared by
@@ -70,25 +136,43 @@ export function createVaultRepo(driver: DataDriver) {
         VAULT_SETUP_KEY,
         JSON.stringify({ version: 1 }),
       ]);
+      // Seal the verifier FIRST: if this throws, the marker above is never
+      // followed by a usable vault, and setupVault rejects.
+      await sealVerifier(driver, password);
       await this.unlock(password);
     },
 
     /**
-     * Unlock: verifies the password by decrypting the verifier item (item id
-     * 1 doubles as the canary) and pre-derives its key. Fails on a wrong
-     * password (GCM auth tag mismatch).
+     * Unlock: the password is proven against the sealed verifier (always
+     * present after setup) and, once items exist, against the first item's
+     * GCM tag too. A wrong password fails closed — an empty vault no longer
+     * accepts any password at all.
      */
     async unlock(password: string): Promise<void> {
       const rows = await driver.query<VaultItemRow>(
         "SELECT * FROM vault_items WHERE id = (SELECT MIN(id) FROM vault_items) LIMIT 1",
       );
       const first = rows[0];
-      if (!first) {
-        // No items yet — nothing to verify against; trust the marker.
+      if (first) {
+        const { key } = await deriveItemKey(first.id, password);
+        await decryptWithKey(key, {
+          ciphertext: first.ciphertext,
+          iv: first.iv,
+        });
         return;
       }
-      const { key } = await deriveItemKey(first.id, password);
-      await decryptWithKey(key, { ciphertext: first.ciphertext, iv: first.iv });
+      // No items: the sealed verifier is the only proof available. A vault
+      // that has been set up MUST reject a wrong password here rather than
+      // waving it through — otherwise the first secret would be encrypted
+      // under a password the user never chose.
+      if (await checkVerifier(driver, password)) return;
+      const marker = await driver.query<{ key: string }>(
+        "SELECT key FROM settings WHERE key = ?",
+        [VAULT_SETUP_KEY],
+      );
+      if (marker[0]) {
+        throw new Error("wrong vault password");
+      }
     },
 
     /** Drop all in-memory keys (auto-lock bounds the unlocked window, §5.3). */
@@ -190,6 +274,11 @@ export function createVaultRepo(driver: DataDriver) {
       const items = await driver.query<VaultItemRow>(
         "SELECT * FROM vault_items ORDER BY id",
       );
+      // With no items the loop below cannot prove the old password, so the
+      // verifier does it instead.
+      if (items.length === 0 && !(await checkVerifier(driver, oldPassword))) {
+        throw new Error("wrong current password");
+      }
       const migrated: {
         id: number;
         ciphertext: string;
@@ -220,6 +309,9 @@ export function createVaultRepo(driver: DataDriver) {
           params: [m.ciphertext, m.salt, m.iv, todayLocal(), m.id],
         })),
       );
+      // Re-seal the verifier under the new password, so a later unlock proves
+      // against the NEW password rather than the one just replaced.
+      await sealVerifier(driver, newPassword);
       const newPwdHash = await sha256HexText(newPassword);
       for (const m of migrated) {
         keyCache.set(m.id, { salt: m.salt, key: m.key, pwdHash: newPwdHash });

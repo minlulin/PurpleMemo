@@ -602,6 +602,13 @@ export default function SettingsPage(p: SettingsPageProps) {
           sharing never survives a restart, and it keeps running while the app
           is locked.
         </p>
+        {shareState?.running && (
+          <p className="alert alert-note" role="status">
+            Sharing is live. Locking Purple Memo does <b>not</b> stop it —
+            anyone holding the link keeps reading this snapshot until you press
+            Stop.
+          </p>
+        )}
         {shareState?.running ? (
           <div className="side-form">
             <label>

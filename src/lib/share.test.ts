@@ -111,6 +111,20 @@ test("buildShareSnapshot: lists are capped, order-preserving (§8 snapshot stays
   assert.ok(SHARE_LIMITS.notes < 40, "the cap must actually bite at 40 rows");
 });
 
+test("wallets are capped too — the whole snapshot is a bounded glance", () => {
+  const wallets = Array.from({ length: 40 }, (_, i) => ({
+    name: `wallet ${i}`,
+    balanceCents: i * 100,
+  }));
+  const snap = buildShareSnapshot({ ...emptyInput(), walletBalances: wallets });
+  assert.equal(snap.wallets.length, SHARE_LIMITS.wallets);
+  assert.equal(first(snap.wallets, "wallets").name, "wallet 0");
+  assert.ok(
+    SHARE_LIMITS.wallets < 40,
+    "the wallet cap must actually bite at 40 rows",
+  );
+});
+
 test("buildShareSnapshot: notes carry plain-text excerpts, never raw markdown (§2.4)", () => {
   const snap = buildShareSnapshot({
     ...emptyInput(),

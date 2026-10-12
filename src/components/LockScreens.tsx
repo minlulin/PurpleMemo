@@ -137,7 +137,13 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
 interface LockScreenProps {
   pinHash: PinHash;
   question: string;
-  answerHash: PinHash;
+  /**
+   * May be null when the stored settings lost the answer hash (corrupt row or
+   * an import that replaced settings). The screen then fails closed: the PIN
+   * is still required and the recovery fallback is simply unavailable —
+   * never a route back to first-run setup.
+   */
+  answerHash: PinHash | null;
   onUnlock: () => void;
 }
 
@@ -170,6 +176,12 @@ export function LockScreen(p: LockScreenProps) {
   };
 
   const resetPin = async () => {
+    if (p.answerHash === null) {
+      setError(
+        "The recovery fallback is unavailable for this install — the stored PIN is the only way in.",
+      );
+      return;
+    }
     if (draft.pin.length < MIN_PIN_LENGTH) {
       setError(`New PIN must be at least ${MIN_PIN_LENGTH} characters.`);
       return;
@@ -233,6 +245,12 @@ export function LockScreen(p: LockScreenProps) {
               type="button"
               className="btn btn-ghost"
               onClick={() => {
+                if (p.answerHash === null) {
+                  setError(
+                    "No security answer is stored for this install — the PIN cannot be reset.",
+                  );
+                  return;
+                }
                 setMode("forgot");
                 setError(null);
               }}
