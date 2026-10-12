@@ -1,13 +1,18 @@
-// P3f Settings page (§2.8): theme, PIN + security question change,
-// auto-lock window, vault entry point, backup placeholder (P4), about.
+// Settings page (§2.8): theme, PIN + security question change, auto-lock
+// window, vault entry point, encryption key export, backup & restore, about.
 // No accounts, no sync, no cloud settings — they never exist (§2.8).
 // The PIN change verifies the current PIN first and re-hashes with
 // PBKDF2-SHA256 (600k, §2.9); the PIN itself is never stored.
+// Backup (§8) exports/imports a zip of all data + photos — the encryption
+// key is never inside it; import replaces ALL current data, so the UI
+// confirms before applying and reloads afterwards.
 
 import { useState } from "react";
-import { settingsRepo } from "../data/app.ts";
+import { IconDownload, IconUpload } from "../components/icons.tsx";
+import { backupRepo, settingsRepo } from "../data/app.ts";
 import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
 import { hashAnswer, hashPin, type PinHash, verifyPin } from "../lib/crypto.ts";
+import { todayLocal } from "../lib/dates.ts";
 import type { PageKey } from "../lib/navigation.ts";
 import { SETTING_KEYS, type Theme } from "../lib/settings.ts";
 
@@ -114,6 +119,78 @@ export default function SettingsPage(p: SettingsPageProps) {
   const [keyAck, setKeyAck] = useState(false);
   const [exportedKey, setExportedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // -- Backup & restore (§8) ----------------------------------------------------
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [pending, setPending] = useState<{
+    bytes: Uint8Array;
+    summary: {
+      exportedAt: string;
+      tableCount: number;
+      rowCount: number;
+      photoCount: number;
+    };
+  } | null>(null);
+
+  const doExport = async () => {
+    setNote(null);
+    setError(null);
+    setPending(null);
+    setBackupBusy(true);
+    try {
+      const { bytes, summary } = await backupRepo.exportBackup();
+      const blob = new Blob([new Uint8Array(bytes)], {
+        type: "application/zip",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `purple-memo-backup-${todayLocal()}.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setNote(
+        `Backup saved (${summary.rowCount} rows, ${summary.photoCount} photos) — keep it with your key file, somewhere safe.`,
+      );
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const onPickBackup = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setError(null);
+    setNote(null);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const { summary } = await backupRepo.inspectBackup(bytes);
+      setPending({ bytes, summary });
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!pending) return;
+    setImportBusy(true);
+    setError(null);
+    try {
+      const result = await backupRepo.importBackup(pending.bytes);
+      setPending(null);
+      setNote(
+        `Imported ${result.rows} rows and ${result.photos} photos — reloading…`,
+      );
+      // The imported backup carries its own settings (theme, PIN, …), so
+      // the app re-boots from the database instead of trusting live state.
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (e) {
+      setError(errText(e));
+      setImportBusy(false);
+    }
+  };
 
   const exportKey = async () => {
     setNote(null);
@@ -287,8 +364,8 @@ export default function SettingsPage(p: SettingsPageProps) {
         <p className="muted">
           A database backup without this key is unopenable — and this key on its
           own opens your data. Save it as its own file, stored apart from any
-          backup, and never send it anywhere. Full backup export and import
-          arrive in the next phase.
+          backup, and never send it anywhere. Backup export and import live
+          below.
         </p>
         <label className="settings-check">
           <input
@@ -334,6 +411,69 @@ export default function SettingsPage(p: SettingsPageProps) {
             value={exportedKey}
             onFocus={(e) => e.target.select()}
           />
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h3 className="settings-heading">Backup &amp; restore</h3>
+        <p className="muted">
+          Export everything — every table and photo — into one zip file, saved
+          wherever you like. The encryption key is never inside the backup.
+          Importing a backup replaces ALL current data with the backup&apos;s.
+        </p>
+        <div className="editor-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={backupBusy || pending !== null}
+            onClick={() => void doExport()}
+          >
+            <IconDownload className="icon" />
+            {backupBusy ? "Exporting…" : "Export backup"}
+          </button>
+          <label className="btn btn-ghost">
+            <IconUpload className="icon" />
+            {importBusy ? "Importing…" : "Import backup"}
+            <input
+              className="visually-hidden"
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              disabled={importBusy || pending !== null}
+              onChange={(e) => {
+                void onPickBackup(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+        {pending !== null && (
+          <div>
+            <p className="alert alert-note">
+              Backup from{" "}
+              {new Date(pending.summary.exportedAt).toLocaleString()}:{" "}
+              {pending.summary.rowCount} rows across{" "}
+              {pending.summary.tableCount} tables, {pending.summary.photoCount}{" "}
+              photos. Continuing replaces ALL current data.
+            </p>
+            <div className="editor-row">
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={importBusy}
+                onClick={() => void confirmImport()}
+              >
+                {importBusy ? "Importing…" : "Replace all data"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={importBusy}
+                onClick={() => setPending(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
       </section>
 
