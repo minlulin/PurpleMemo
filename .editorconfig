@@ -1,0 +1,31 @@
+# Editor conventions for Purple Memo — enforced by `npm run verify` (§7).
+#
+# This file exists because formatter drift has now bitten the project more
+# than once: an editor with no config here falls back to tab indentation,
+# and Biome's formatter (`indentStyle: "space"`, `indentWidth: 2` in
+# biome.json) then fails the whole gate on files nobody meant to reformat.
+# Biome wins — these values mirror biome.json and rustfmt's defaults so an
+# editor and the formatter agree instead of fighting.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{ts,tsx,css,json,mjs,js}]
+indent_style = space
+indent_size = 2
+
+# Biome's default line width (80) — the formatter wraps beyond this.
+max_line_length = 80
+
+[*.rs]
+indent_style = space
+indent_size = 4
+
+[*.md]
+# Two trailing spaces are meaningful (hard line breaks) in Markdown.
+trim_trailing_whitespace = false

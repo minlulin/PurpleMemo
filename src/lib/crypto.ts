@@ -12,19 +12,19 @@ const IV_BYTES = 12;
 // ---------------------------------------------------------------------------
 
 export function bytesToB64(bytes: Uint8Array): string {
-	let bin = "";
-	const CHUNK = 0x8000;
-	for (let i = 0; i < bytes.length; i += CHUNK) {
-		bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-	}
-	return btoa(bin);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
 }
 
 export function b64ToBytes(b64: string): Uint8Array {
-	const bin = atob(b64);
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-	return out;
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -33,21 +33,21 @@ export function b64ToBytes(b64: string): Uint8Array {
 
 /** SHA-256 of bytes -> lowercase hex. */
 export async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-	return [...new Uint8Array(digest)]
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /** SHA-256 of a UTF-8 string -> lowercase hex. */
 export async function sha256HexText(text: string): Promise<string> {
-	return sha256HexBytes(new TextEncoder().encode(text));
+  return sha256HexBytes(new TextEncoder().encode(text));
 }
 
 function randomBytes(len: number): Uint8Array {
-	const bytes = new Uint8Array(len);
-	crypto.getRandomValues(bytes);
-	return bytes;
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return bytes;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,23 +55,23 @@ function randomBytes(len: number): Uint8Array {
 // ---------------------------------------------------------------------------
 
 async function pbkdf2Sha256(
-	password: string,
-	salt: Uint8Array,
-	iterations: number,
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
 ): Promise<Uint8Array> {
-	const keyMaterial = await crypto.subtle.importKey(
-		"raw",
-		new TextEncoder().encode(password),
-		"PBKDF2",
-		false,
-		["deriveBits"],
-	);
-	const bits = await crypto.subtle.deriveBits(
-		{ name: "PBKDF2", hash: "SHA-256", salt: salt as BufferSource, iterations },
-		keyMaterial,
-		256,
-	);
-	return new Uint8Array(bits);
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: salt as BufferSource, iterations },
+    keyMaterial,
+    256,
+  );
+  return new Uint8Array(bits);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,56 +79,56 @@ async function pbkdf2Sha256(
 // ---------------------------------------------------------------------------
 
 export interface PinHash {
-	salt: string; // base64
-	hash: string; // base64
-	iterations: number;
+  salt: string; // base64
+  hash: string; // base64
+  iterations: number;
 }
 
 export async function hashPin(pin: string): Promise<PinHash> {
-	const salt = randomBytes(SALT_BYTES);
-	const hash = await pbkdf2Sha256(pin, salt, PBKDF2_ITERATIONS);
-	return {
-		salt: bytesToB64(salt),
-		hash: bytesToB64(hash),
-		iterations: PBKDF2_ITERATIONS,
-	};
+  const salt = randomBytes(SALT_BYTES);
+  const hash = await pbkdf2Sha256(pin, salt, PBKDF2_ITERATIONS);
+  return {
+    salt: bytesToB64(salt),
+    hash: bytesToB64(hash),
+    iterations: PBKDF2_ITERATIONS,
+  };
 }
 
 export async function verifyPin(
-	pin: string,
-	stored: PinHash,
+  pin: string,
+  stored: PinHash,
 ): Promise<boolean> {
-	const hash = await pbkdf2Sha256(
-		pin,
-		b64ToBytes(stored.salt),
-		stored.iterations,
-	);
-	const expected = b64ToBytes(stored.hash);
-	if (hash.length !== expected.length) return false;
-	let diff = 0;
-	for (let i = 0; i < hash.length; i++) {
-		const h = hash[i];
-		const e = expected[i];
-		if (h === undefined || e === undefined) return false;
-		diff |= h ^ e;
-	}
-	return diff === 0;
+  const hash = await pbkdf2Sha256(
+    pin,
+    b64ToBytes(stored.salt),
+    stored.iterations,
+  );
+  const expected = b64ToBytes(stored.hash);
+  if (hash.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < hash.length; i++) {
+    const h = hash[i];
+    const e = expected[i];
+    if (h === undefined || e === undefined) return false;
+    diff |= h ^ e;
+  }
+  return diff === 0;
 }
 
 /** Security-question answers are compared case/space-insensitively. */
 export function normalizeAnswer(answer: string): string {
-	return answer.trim().toLowerCase().replace(/\s+/g, " ");
+  return answer.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 export async function hashAnswer(answer: string): Promise<PinHash> {
-	return hashPin(normalizeAnswer(answer));
+  return hashPin(normalizeAnswer(answer));
 }
 
 export async function verifyAnswer(
-	answer: string,
-	stored: PinHash,
+  answer: string,
+  stored: PinHash,
 ): Promise<boolean> {
-	return verifyPin(normalizeAnswer(answer), stored);
+  return verifyPin(normalizeAnswer(answer), stored);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,70 +136,70 @@ export async function verifyAnswer(
 // ---------------------------------------------------------------------------
 
 export interface VaultKey {
-	key: CryptoKey;
-	salt: string; // base64 password salt (stored in settings)
+  key: CryptoKey;
+  salt: string; // base64 password salt (stored in settings)
 }
 
 /** Derive a vault key from a password + the setup salt. */
 export async function deriveVaultKey(
-	password: string,
-	saltB64: string,
+  password: string,
+  saltB64: string,
 ): Promise<CryptoKey> {
-	const salt = b64ToBytes(saltB64);
-	const keyMaterial = await crypto.subtle.importKey(
-		"raw",
-		new TextEncoder().encode(password),
-		"PBKDF2",
-		false,
-		["deriveKey"],
-	);
-	return crypto.subtle.deriveKey(
-		{
-			name: "PBKDF2",
-			hash: "SHA-256",
-			salt: salt as BufferSource,
-			iterations: PBKDF2_ITERATIONS,
-		},
-		keyMaterial,
-		{ name: "AES-GCM", length: 256 },
-		false,
-		["encrypt", "decrypt"],
-	);
+  const salt = b64ToBytes(saltB64);
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: salt as BufferSource,
+      iterations: PBKDF2_ITERATIONS,
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
 }
 
 /** Create a fresh vault: new password salt + derived key (the key is never stored). */
 export async function createVaultKey(password: string): Promise<VaultKey> {
-	const salt = randomBytes(SALT_BYTES);
-	const key = await deriveVaultKey(password, bytesToB64(salt));
-	return { key, salt: bytesToB64(salt) };
+  const salt = randomBytes(SALT_BYTES);
+  const key = await deriveVaultKey(password, bytesToB64(salt));
+  return { key, salt: bytesToB64(salt) };
 }
 
 export interface VaultCipher {
-	ciphertext: string; // base64
-	iv: string; // base64, per-item
+  ciphertext: string; // base64
+  iv: string; // base64, per-item
 }
 
 export async function encryptWithKey(
-	key: CryptoKey,
-	plaintext: string,
+  key: CryptoKey,
+  plaintext: string,
 ): Promise<VaultCipher> {
-	const iv = randomBytes(IV_BYTES);
-	const sealed = await crypto.subtle.encrypt(
-		{ name: "AES-GCM", iv: iv as BufferSource },
-		key,
-		new TextEncoder().encode(plaintext) as BufferSource,
-	);
-	return { ciphertext: bytesToB64(new Uint8Array(sealed)), iv: bytesToB64(iv) };
+  const iv = randomBytes(IV_BYTES);
+  const sealed = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv as BufferSource },
+    key,
+    new TextEncoder().encode(plaintext) as BufferSource,
+  );
+  return { ciphertext: bytesToB64(new Uint8Array(sealed)), iv: bytesToB64(iv) };
 }
 
 export async function decryptWithKey(
-	key: CryptoKey,
-	cipher: VaultCipher,
+  key: CryptoKey,
+  cipher: VaultCipher,
 ): Promise<string> {
-	const plain = await crypto.subtle.decrypt(
-		{ name: "AES-GCM", iv: b64ToBytes(cipher.iv) as BufferSource },
-		key,
-		b64ToBytes(cipher.ciphertext) as BufferSource,
-	);
-	return new TextDecoder().decode(plain);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: b64ToBytes(cipher.iv) as BufferSource },
+    key,
+    b64ToBytes(cipher.ciphertext) as BufferSource,
+  );
+  return new TextDecoder().decode(plain);
 }
