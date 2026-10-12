@@ -155,8 +155,14 @@ function useReminderPoll(
   }, [setNotifyNote, enabled]);
 }
 
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 interface BootState {
   ready: boolean;
+  /** Set when the settings read itself failed — distinct from "no PIN set". */
+  error: string | null;
   pinHash: PinHash | null;
   answerHash: PinHash | null;
   question: string;
@@ -175,6 +181,7 @@ interface BootState {
 export default function App() {
   const [boot, setBoot] = useState<BootState>({
     ready: false,
+    error: null,
     pinHash: null,
     answerHash: null,
     question: "",
@@ -201,6 +208,7 @@ export default function App() {
       document.documentElement.dataset.theme = t;
       setBoot({
         ready: true,
+        error: null,
         pinHash,
         answerHash,
         question:
@@ -210,10 +218,15 @@ export default function App() {
         theme: t,
         autoLockMinutes: minutes ?? DEFAULT_AUTO_LOCK_MINUTES,
       });
-    } catch {
-      // The lock must not deadlock the app on a settings read failure —
-      // fall through to first-run setup, which will surface the error.
-      setBoot((b) => ({ ...b, ready: true }));
+    } catch (e) {
+      // A failed settings read is NOT "first run". Falling through to the
+      // setup screen would invite a PIN overwrite — e.g. right after a
+      // backup import reload. Surface the failure instead (§2.9).
+      setBoot((b) => ({
+        ...b,
+        ready: true,
+        error: `Could not read the encrypted database: ${errText(e)}`,
+      }));
     }
   }, []);
 
@@ -266,6 +279,18 @@ export default function App() {
     return (
       <div className="app-shell">
         <p className="muted lock-loading">Loading…</p>
+      </div>
+    );
+  }
+
+  // Locked + the settings read failed: show the error, never the setup
+  // screen — setup would overwrite an existing PIN.
+  if (!unlocked && boot.error !== null) {
+    return (
+      <div className="app-shell">
+        <p className="alert alert-error" role="alert">
+          {boot.error} Restart Purple Memo and try again.
+        </p>
       </div>
     );
   }
