@@ -234,5 +234,3 @@ export function createShareRepo(driver: DataDriver) {
     },
   };
 }
-
-export type ShareRepo = ReturnType<typeof createShareRepo>;

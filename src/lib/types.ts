@@ -46,26 +46,6 @@ export interface ExpenseCategoryRow {
   created_at: string;
 }
 
-export interface IncomeEntryRow {
-  id: number;
-  amount_cents: number;
-  category_id: number;
-  wallet_id: number;
-  entry_date: string;
-  note: string;
-  created_at: string;
-}
-
-export interface ExpenseEntryRow {
-  id: number;
-  amount_cents: number;
-  category_id: number;
-  wallet_id: number;
-  entry_date: string;
-  note: string;
-  created_at: string;
-}
-
 export interface ExpenseLimitRow {
   id: number;
   category_id: number;
@@ -245,9 +225,4 @@ export interface VaultItemRow {
   iv: string; // base64, per-item IV
   created_at: string;
   updated_at: string;
-}
-
-export interface SettingsRow {
-  key: string;
-  value: string;
 }

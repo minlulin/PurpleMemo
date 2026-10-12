@@ -91,5 +91,3 @@ export function createJournalRepo(driver: DataDriver) {
     },
   };
 }
-
-export type JournalRepo = ReturnType<typeof createJournalRepo>;

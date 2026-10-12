@@ -6,12 +6,9 @@ import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
 import type { HabitRow } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 interface HabitProgress {
   habit: HabitRow | undefined;

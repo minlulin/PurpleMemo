@@ -6,10 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { vaultRepo } from "../data/app.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errText } from "../lib/errors.ts";
 
 type VaultPhase = "loading" | "setup" | "unlock" | "open";
 

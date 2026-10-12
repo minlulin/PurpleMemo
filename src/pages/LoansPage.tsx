@@ -5,12 +5,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { loansRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { formatMMK, fromCents, parseMMK } from "../lib/money.ts";
 import type { LoanDirection, LoanRow, LoanState } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 type LoanListItem = LoanRow & { state: LoanState; remaining_cents: number };
 

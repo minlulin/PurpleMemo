@@ -14,6 +14,7 @@ import {
   warrantyEndDate,
 } from "../lib/business.ts";
 import { todayLocal } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { formatMMK, fromCents, parseMMK } from "../lib/money.ts";
 import type {
   ExpenseCategoryRow,
@@ -22,10 +23,6 @@ import type {
   ShopRow,
   WalletRow,
 } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 type BusinessView = "jobs" | "receivable" | "payables" | "history" | "shops";
 

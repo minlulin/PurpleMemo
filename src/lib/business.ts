@@ -451,5 +451,3 @@ export function createBusinessRepo(driver: DataDriver) {
     },
   };
 }
-
-export type BusinessRepo = ReturnType<typeof createBusinessRepo>;

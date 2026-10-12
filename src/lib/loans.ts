@@ -133,5 +133,3 @@ export function createLoansRepo(driver: DataDriver) {
     },
   };
 }
-
-export type LoansRepo = ReturnType<typeof createLoansRepo>;

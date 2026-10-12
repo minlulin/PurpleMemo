@@ -13,6 +13,7 @@ import {
   addMonthsToDateTime,
   localISODateTime,
 } from "./lib/dates.ts";
+import { errText } from "./lib/errors.ts";
 import type { PageKey } from "./lib/navigation.ts";
 import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
 import { REPEAT_ROLL_MAX_STEPS } from "./lib/tasks.ts";
@@ -43,11 +44,6 @@ const TABS: { key: PageKey; label: string }[] = [
   { key: "settings", label: "Settings" },
 ];
 
-/**
- * App shell (§2.4/§2.5 scope for P3a): header + section tabs. Navigation is
- * state-based — §3 locks the stack and has no router dependency. The Dashboard
- * becomes the landing page in P3f; Notes is the placeholder landing here.
- */
 /** Ask once for notification permission; false when denied (§2.7). */
 async function ensureNotifyPermission(): Promise<boolean> {
   try {
@@ -148,10 +144,6 @@ function useReminderPoll(
       clearInterval(timer);
     };
   }, [setNotifyNote, enabled]);
-}
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /**
@@ -393,7 +385,7 @@ export default function App() {
           <MorePage onNavigate={setPage} />
         ) : page === "settings" ? (
           <SettingsPage
-            theme={boot.theme ?? "dark"}
+            theme={boot.theme}
             autoLockMinutes={boot.autoLockMinutes}
             onChanged={() => void loadSecurity()}
             onNavigate={setPage}

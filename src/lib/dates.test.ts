@@ -81,7 +81,24 @@ test("shiftYearMonth shifts yyyy-mm buckets", () => {
   assert.equal(shiftYearMonth("2026-01", 1), "2026-02");
   assert.equal(shiftYearMonth("2026-12", 1), "2027-01");
   assert.equal(shiftYearMonth("2026-01", -1), "2025-12");
+  assert.equal(shiftYearMonth("2026-10", -3), "2026-07");
+  assert.equal(shiftYearMonth("2026-10", 12), "2027-10");
+});
+
+// Month navigation lives here for every page (Budget, Habits, Journal,
+// Memories), so the edge cases that once diverged between two copies are
+// pinned: `new Date(y, ...)` maps years 0-99 into the 1900s, and a loose
+// split used to accept "2026-6".
+test("shiftYearMonth does not fall into the 1900s for small years", () => {
+  assert.equal(shiftYearMonth("0050-06", 1), "0050-07");
+  assert.equal(shiftYearMonth("0001-01", -1), "0000-12");
+});
+
+test("shiftYearMonth returns malformed input unchanged", () => {
   assert.equal(shiftYearMonth("bad", 1), "bad");
+  assert.equal(shiftYearMonth("2026", 1), "2026");
+  assert.equal(shiftYearMonth("2026-6", 1), "2026-6");
+  assert.equal(shiftYearMonth("", 1), "");
 });
 
 test("addDaysToDateTime keeps yyyy-mm-ddTHH:mm format", () => {

@@ -5,12 +5,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { shoppingRepo } from "../data/app.ts";
+import { errText } from "../lib/errors.ts";
 import { moveItem } from "../lib/shopping.ts";
 import type { ShoppingItemRow, ShoppingListRow } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 export default function ShoppingPage() {
   const [lists, setLists] = useState<ShoppingListRow[]>([]);

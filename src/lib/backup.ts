@@ -13,6 +13,7 @@
 
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import type { BatchStatement, DataDriver, Row } from "../data/driver.ts";
+import { sha256HexBytes } from "./crypto.ts";
 
 export const BACKUP_APP = "purple-memo";
 export const BACKUP_FORMAT_VERSION = 1;
@@ -295,7 +296,16 @@ export async function applyBackup(
       );
     }
     const saved = await driver.savePhoto(entry.bytes, ext);
-    if (saved !== relPath) row.rel_path = saved;
+    if (saved !== relPath) {
+      // The bytes in the zip disagree with the manifest (tampered or
+      // corrupted entry), so the content-addressed path moved. Re-point the
+      // row AND correct the columns that describe those bytes — a row whose
+      // sha256/size_bytes still describe the old content is internally
+      // inconsistent, and the schema does not catch it.
+      row.rel_path = saved;
+      row.sha256 = await sha256HexBytes(Uint8Array.from(entry.bytes));
+      row.size_bytes = entry.bytes.length;
+    }
     kept.add(saved);
     photoCount++;
   }
@@ -361,5 +371,3 @@ export function createBackupRepo(driver: DataDriver) {
     },
   };
 }
-
-export type BackupRepo = ReturnType<typeof createBackupRepo>;

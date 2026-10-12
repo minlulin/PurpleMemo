@@ -14,6 +14,7 @@ import type { ShareInfo } from "../data/driver.ts";
 import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
 import { hashAnswer, hashPin, type PinHash, verifyPin } from "../lib/crypto.ts";
 import { todayLocal } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import type { PageKey } from "../lib/navigation.ts";
 import { SETTING_KEYS, type Theme } from "../lib/settings.ts";
 import {
@@ -23,10 +24,6 @@ import {
   notesExcerpt,
   type UpdateHandle,
 } from "../lib/update.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 interface SettingsPageProps {
   theme: Theme;

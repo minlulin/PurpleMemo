@@ -82,5 +82,3 @@ export function createSettingsRepo(driver: DataDriver) {
     },
   };
 }
-
-export type SettingsRepo = ReturnType<typeof createSettingsRepo>;

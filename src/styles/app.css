@@ -180,16 +180,6 @@
   vertical-align: -0.15em;
 }
 
-.error-bar {
-  margin: var(--space-3) var(--space-5);
-  padding: var(--space-2) var(--space-4);
-  color: var(--color-danger);
-  background: var(--color-surface);
-  border: var(--border-width) solid var(--color-danger);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-}
-
 .chip {
   display: inline-flex;
   align-items: center;
@@ -221,23 +211,6 @@ button.chip:focus-visible {
 /* ---------------------------------------------------------------------------
  * Notes (§2.4): sidebar (collections) + list + editor
  * ------------------------------------------------------------------------- */
-
-.notes-layout {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 15rem 1fr;
-  min-height: 0;
-}
-
-.notes-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  padding: var(--space-4) var(--space-3);
-  background: var(--color-base);
-  border-inline-end: var(--border-width) solid var(--color-border);
-  overflow-y: auto;
-}
 
 .side-heading {
   margin: 0 0 var(--space-2);

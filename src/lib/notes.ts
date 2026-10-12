@@ -174,5 +174,3 @@ export function createNotesRepo(driver: DataDriver) {
     },
   };
 }
-
-export type NotesRepo = ReturnType<typeof createNotesRepo>;

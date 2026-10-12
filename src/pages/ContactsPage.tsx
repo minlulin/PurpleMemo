@@ -10,15 +10,12 @@ import {
   normalizeMonthDay,
   searchContacts,
 } from "../lib/contacts.ts";
+import { errText } from "../lib/errors.ts";
 import type {
   ContactChannelKind,
   ContactChannelRow,
   ContactRow,
 } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 type BirthdayMode = "none" | "date" | "monthday";
 

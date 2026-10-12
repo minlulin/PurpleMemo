@@ -14,6 +14,7 @@ import {
 } from "../data/app.ts";
 import { dayMoneyTotals, expiringWarranties } from "../lib/dashboard.ts";
 import { localISODateTime, todayLocal } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { formatMMK } from "../lib/money.ts";
 import type { PageKey } from "../lib/navigation.ts";
 import type {
@@ -24,10 +25,6 @@ import type {
   ReminderRow,
   TaskRow,
 } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 interface DashboardPageProps {
   notifyNote: string | null;

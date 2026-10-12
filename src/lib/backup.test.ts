@@ -349,6 +349,43 @@ test("applyBackup emits only plain identifiers in its SQL", async () => {
   }
 });
 
+test("applyBackup corrects sha256 + size_bytes when a zip entry does not match the manifest", async () => {
+  // PHOTO_ROW claims sha256 "aa" and size 3, but the zip entry carries
+  // different bytes, so savePhoto lands them at a new content-addressed
+  // path. Every column that describes the bytes must move together.
+  const driver = createMockDriver();
+  await applyBackup(driver, {
+    payload: samplePayload(),
+    photos: samplePhotos(),
+  });
+  const statements = first(driver.callsTo("batch"), "batch").args[0] as {
+    sql: string;
+    params?: unknown[];
+  }[];
+  const photoInsert = statements.find((s) =>
+    s.sql.startsWith("INSERT INTO photos"),
+  );
+  assert.ok(photoInsert);
+  const relIdx = photoInsert.sql.indexOf("rel_path");
+  assert.ok(relIdx > 0);
+  const cols = photoInsert.sql
+    .slice(
+      photoInsert.sql.indexOf("(") + 1,
+      photoInsert.sql.indexOf(") VALUES"),
+    )
+    .split(",")
+    .map((c) => c.trim());
+  const get = (name: string) => photoInsert.params?.[cols.indexOf(name)];
+
+  assert.equal(get("rel_path"), "photos/2026/10/jpg.3");
+  // sha256 of the actual bytes [9,9,9], and the actual byte length.
+  assert.equal(
+    get("sha256"),
+    "e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584",
+  );
+  assert.equal(get("size_bytes"), 3);
+});
+
 test("summarizeBackup counts rows and photos for the import summary", () => {
   const summary = summarizeBackup({
     payload: samplePayload(),

@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { journalRepo, notesRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { noteExcerpt } from "../lib/notes.ts";
 import type { CollectionRow, NoteRow } from "../lib/types.ts";
 
@@ -166,7 +167,7 @@ export default function NotesPage() {
       setCollections(cols);
       setNotes(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     } finally {
       setLoading(false);
     }
@@ -204,7 +205,7 @@ export default function NotesPage() {
       await refresh();
       setSelectedId(id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 
@@ -221,7 +222,7 @@ export default function NotesPage() {
       });
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     } finally {
       setSaving(false);
     }
@@ -233,7 +234,7 @@ export default function NotesPage() {
       await notesRepo.setPinned(note.id, note.pinned === 0);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 
@@ -243,7 +244,7 @@ export default function NotesPage() {
       await notesRepo.setArchived(note.id, note.archived === 0);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 
@@ -254,7 +255,7 @@ export default function NotesPage() {
       setSelectedId(null);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 
@@ -267,7 +268,7 @@ export default function NotesPage() {
       setNewCollection("");
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 
@@ -278,7 +279,7 @@ export default function NotesPage() {
       if (activeCollection === id) setActiveCollection("all");
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 
@@ -302,7 +303,7 @@ export default function NotesPage() {
           : block,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
   const listBody =

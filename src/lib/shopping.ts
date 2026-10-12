@@ -119,5 +119,3 @@ export function createShoppingRepo(driver: DataDriver) {
     },
   };
 }
-
-export type ShoppingRepo = ReturnType<typeof createShoppingRepo>;

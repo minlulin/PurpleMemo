@@ -164,5 +164,3 @@ export function createGalleryRepo(driver: DataDriver) {
     },
   };
 }
-
-export type GalleryRepo = ReturnType<typeof createGalleryRepo>;

@@ -7,10 +7,10 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import {
-  bytesToB64,
   decryptWithKey,
   deriveVaultKey,
   encryptWithKey,
+  randomSaltB64,
   sha256HexText,
 } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
@@ -101,9 +101,7 @@ export function createVaultRepo(driver: DataDriver) {
       plaintext: string,
       password: string,
     ): Promise<number> {
-      const saltBytes = new Uint8Array(16);
-      crypto.getRandomValues(saltBytes);
-      const salt = bytesToB64(saltBytes);
+      const salt = randomSaltB64();
       const key = await deriveVaultKey(password, salt);
       const cipher = await encryptWithKey(key, plaintext);
       const r = await driver.execute(
@@ -205,9 +203,7 @@ export function createVaultRepo(driver: DataDriver) {
           ciphertext: item.ciphertext,
           iv: item.iv,
         });
-        const newSaltBytes = new Uint8Array(16);
-        crypto.getRandomValues(newSaltBytes);
-        const salt = bytesToB64(newSaltBytes);
+        const salt = randomSaltB64();
         const newKey = await deriveVaultKey(newPassword, salt);
         const cipher = await encryptWithKey(newKey, plaintext);
         migrated.push({
@@ -236,5 +232,3 @@ export function createVaultRepo(driver: DataDriver) {
     },
   };
 }
-
-export type VaultRepo = ReturnType<typeof createVaultRepo>;

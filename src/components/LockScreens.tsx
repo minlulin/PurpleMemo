@@ -14,11 +14,8 @@ import {
   verifyAnswer,
   verifyPin,
 } from "../lib/crypto.ts";
+import { errText } from "../lib/errors.ts";
 import { SETTING_KEYS } from "../lib/settings.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 /** First-run flow (§2.9): PIN + security question, both required. */
 export function SetupScreen({ onDone }: { onDone: () => void }) {

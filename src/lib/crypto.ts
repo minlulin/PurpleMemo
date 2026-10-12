@@ -4,7 +4,7 @@
 // primitives are WebCrypto — available in the browser and in Node 24 tests.
 
 export const PBKDF2_ITERATIONS = 600_000;
-const SALT_BYTES = 16;
+export const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
 // ---------------------------------------------------------------------------
@@ -44,10 +44,20 @@ export async function sha256HexText(text: string): Promise<string> {
   return sha256HexBytes(new TextEncoder().encode(text));
 }
 
-function randomBytes(len: number): Uint8Array {
+/**
+ * Cryptographically random bytes from the OS source. Exported so salt and IV
+ * generation has exactly one implementation — the vault repo used to
+ * hand-roll its own copies of this and hard-code the 16-byte length.
+ */
+export function randomBytes(len: number): Uint8Array {
   const bytes = new Uint8Array(len);
   crypto.getRandomValues(bytes);
   return bytes;
+}
+
+/** A fresh base64 salt of `SALT_BYTES`, as stored in the DB. */
+export function randomSaltB64(): string {
+  return bytesToB64(randomBytes(SALT_BYTES));
 }
 
 // ---------------------------------------------------------------------------

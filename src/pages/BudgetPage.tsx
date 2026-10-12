@@ -22,6 +22,7 @@ import {
   todayLocal,
   yearMonthOf,
 } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { monthLabel } from "../lib/journal.ts";
 import { formatMMK, fromCents, parseMMK } from "../lib/money.ts";
 import type {
@@ -31,10 +32,6 @@ import type {
   RecurringPaymentRow,
   WalletRow,
 } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 type BudgetView =
   | "entries"
@@ -125,7 +122,7 @@ function ManageView() {
       setIncomeCats(ic);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     } finally {
       setLoading(false);
     }

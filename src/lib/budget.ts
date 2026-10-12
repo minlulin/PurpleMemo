@@ -699,5 +699,3 @@ export function createBudgetRepo(driver: DataDriver) {
     },
   };
 }
-
-export type BudgetRepo = ReturnType<typeof createBudgetRepo>;

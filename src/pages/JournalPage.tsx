@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { journalRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
 
 const WEEKDAY_HEADS = [
@@ -30,7 +31,7 @@ export default function JournalPage() {
     try {
       setEntryDates(await journalRepo.datesInMonth(ym));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }, []);
 
@@ -41,7 +42,7 @@ export default function JournalPage() {
       const row = await journalRepo.getEntry(date);
       setContent(row?.content ?? "");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     } finally {
       setLoading(false);
     }
@@ -62,7 +63,7 @@ export default function JournalPage() {
       await journalRepo.upsertEntry(activeDate, content);
       await refreshGrid(yearMonthOf(activeDate));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     } finally {
       setSaving(false);
     }
@@ -75,7 +76,7 @@ export default function JournalPage() {
       setContent("");
       await refreshGrid(yearMonthOf(activeDate));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 

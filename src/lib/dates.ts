@@ -50,15 +50,23 @@ export function addMonths(isoDate: string, months: number): string {
 
 /**
  * Shift a `yyyy-mm` month bucket by `delta` months (e.g. "2026-01" + 1 ->
- * "2026-02"). Single shared copy — was triplicated across pages.
+ * "2026-02"). Single shared copy — Budget, Habits, Journal and Memories all
+ * month-navigate through this one function.
+ *
+ * Done with plain arithmetic rather than `new Date(y, m - 1 + delta, 1)`:
+ * the Date constructor maps years 0-99 into the 1900s, so "0050-06" would
+ * come back as 1950. Anything not shaped exactly `yyyy-mm` is returned
+ * unchanged.
  */
 export function shiftYearMonth(yearMonth: string, delta: number): string {
-  const [y, m] = yearMonth.split("-").map(Number);
-  if (!y || !m) return yearMonth;
-  const d = new Date(y, m - 1 + delta, 1);
-  const yy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${yy}-${mm}`;
+  const match = /^(\d{4})-(\d{2})$/.exec(yearMonth);
+  if (!match) return yearMonth;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const total = year * 12 + (month - 1) + delta;
+  const nextYear = Math.floor(total / 12);
+  const nextMonth = (((total % 12) + 12) % 12) + 1;
+  return `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}`;
 }
 
 /**

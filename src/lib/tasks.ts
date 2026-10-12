@@ -181,5 +181,3 @@ export function createTasksRepo(driver: DataDriver) {
     },
   };
 }
-
-export type TasksRepo = ReturnType<typeof createTasksRepo>;

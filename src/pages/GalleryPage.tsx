@@ -11,6 +11,7 @@ import {
   memoriesRepo,
   notesRepo,
 } from "../data/app.ts";
+import { errText } from "../lib/errors.ts";
 import { photoExtFromName } from "../lib/gallery.ts";
 import type {
   JobRow,
@@ -20,10 +21,6 @@ import type {
   PhotoRefRow,
   PhotoRow,
 } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 const ENTITY_LABELS: { key: PhotoRefEntity; label: string }[] = [
   { key: "note", label: "Note" },

@@ -130,5 +130,3 @@ export function createHabitsRepo(driver: DataDriver) {
     },
   };
 }
-
-export type HabitsRepo = ReturnType<typeof createHabitsRepo>;

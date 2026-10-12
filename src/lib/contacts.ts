@@ -337,5 +337,3 @@ export function createContactsRepo(driver: DataDriver) {
     },
   };
 }
-
-export type ContactsRepo = ReturnType<typeof createContactsRepo>;

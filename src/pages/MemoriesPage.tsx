@@ -7,14 +7,10 @@ import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
-import { todayLocal, yearMonthOf } from "../lib/dates.ts";
+import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
+import { errText } from "../lib/errors.ts";
 import { monthLabel } from "../lib/journal.ts";
-import { shiftYearMonth } from "../lib/memories.ts";
 import type { ContactRow, MemoryRow } from "../lib/types.ts";
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 type MemoryView = "upcoming" | "onthisday" | "month" | "all";
 
