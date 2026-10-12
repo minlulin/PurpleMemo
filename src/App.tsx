@@ -5,7 +5,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
-import { settingsRepo, tasksRepo, vaultRepo } from "./data/app.ts";
+import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
 import { DEFAULT_AUTO_LOCK_MINUTES, isIdle } from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
 import { localISODateTime } from "./lib/dates.ts";
@@ -159,6 +159,48 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Keeps the LAN snapshot current (§8, P5). It lives in the app shell — not in
+ * SettingsPage — so navigating away never freezes what the phone sees, and it
+ * pauses while locked (§2.9) exactly like the reminder poll. The desktop stays
+ * the only writer: this only re-reads rows and re-publishes them.
+ *
+ * A server that stopped itself (too many wrong pairing codes) is surfaced
+ * through the same in-app note channel as notifications.
+ */
+function useSharePublisher(
+  setNotifyNote: (note: string | null) => void,
+  enabled: boolean,
+): void {
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    let wasRunning = false;
+    const tick = async () => {
+      try {
+        const info = await shareRepo.status();
+        if (cancelled) return;
+        if (!info.running) {
+          if (wasRunning && info.note) setNotifyNote(info.note);
+          wasRunning = false;
+          return;
+        }
+        wasRunning = true;
+        await shareRepo.publishSnapshot();
+      } catch {
+        // Sharing is best-effort: the database is the source of truth, and a
+        // failed publish must never break the app.
+      }
+    };
+    void tick();
+    const timer = setInterval(() => void tick(), 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [setNotifyNote, enabled]);
+}
+
 interface BootState {
   ready: boolean;
   /** Set when the settings read itself failed — distinct from "no PIN set". */
@@ -274,6 +316,7 @@ export default function App() {
   }, [unlocked, boot.autoLockMinutes, lockNow]);
 
   useReminderPoll(setNotifyNote, unlocked);
+  useSharePublisher(setNotifyNote, unlocked);
 
   if (!boot.ready) {
     return (

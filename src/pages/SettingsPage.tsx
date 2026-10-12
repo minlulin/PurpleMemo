@@ -7,14 +7,22 @@
 // key is never inside it; import replaces ALL current data, so the UI
 // confirms before applying and reloads afterwards.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconDownload, IconUpload } from "../components/icons.tsx";
-import { backupRepo, settingsRepo } from "../data/app.ts";
+import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
+import type { ShareInfo } from "../data/driver.ts";
 import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
 import { hashAnswer, hashPin, type PinHash, verifyPin } from "../lib/crypto.ts";
 import { todayLocal } from "../lib/dates.ts";
 import type { PageKey } from "../lib/navigation.ts";
 import { SETTING_KEYS, type Theme } from "../lib/settings.ts";
+import {
+  checkForUpdate,
+  describeUpdate,
+  installUpdate,
+  notesExcerpt,
+  type UpdateHandle,
+} from "../lib/update.ts";
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -178,6 +186,9 @@ export default function SettingsPage(p: SettingsPageProps) {
     setImportBusy(true);
     setError(null);
     try {
+      // Sharing must stop BEFORE the data is replaced: the listener would
+      // otherwise keep serving the pre-import snapshot to the phone (§8).
+      await shareRepo.stop();
       const result = await backupRepo.importBackup(pending.bytes);
       setPending(null);
       setNote(
@@ -234,6 +245,113 @@ export default function SettingsPage(p: SettingsPageProps) {
     setNote(
       "Encryption key file download started. Store it separately from backups.",
     );
+  };
+
+  // -- Same-network read-only share (§8, P5) ------------------------------------
+  const [shareState, setShareState] = useState<ShareInfo | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  // The app shell keeps re-publishing while sharing; this mirrors the state
+  // here (including a server that stopped itself after wrong pairing codes).
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const info = await shareRepo.status();
+        if (!cancelled) setShareState(info);
+      } catch {
+        // Keep the last known state — the buttons report real errors.
+      }
+    };
+    void sync();
+    const timer = setInterval(() => void sync(), 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const startShare = async () => {
+    setError(null);
+    setNote(null);
+    setShareCopied(false);
+    setShareBusy(true);
+    try {
+      setShareState(await shareRepo.start());
+      // Publish at once so the phone has data before the shell's next tick.
+      setShareState(await shareRepo.publishSnapshot());
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const stopShare = async () => {
+    setError(null);
+    setShareCopied(false);
+    setShareBusy(true);
+    try {
+      setShareState(await shareRepo.stop());
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const copyShareLink = async () => {
+    const url = shareState?.url;
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+    } catch {
+      setError("Copy failed — select the link text and copy it manually.");
+    }
+  };
+
+  // -- In-app updates (§9) ------------------------------------------------------
+  const [update, setUpdate] = useState<UpdateHandle | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateChecked, setUpdateChecked] = useState(false);
+  const [updatePercent, setUpdatePercent] = useState<number | null>(null);
+  const [updateDone, setUpdateDone] = useState(false);
+
+  const checkUpdates = async () => {
+    setError(null);
+    setNote(null);
+    setUpdateDone(false);
+    setUpdatePercent(null);
+    setUpdateBusy(true);
+    try {
+      setUpdate(await checkForUpdate());
+    } catch (e) {
+      // No release published yet is the expected answer before the first
+      // hand-made release (§9) — report it plainly instead of hiding it.
+      setUpdate(null);
+      setError(`Could not check for updates: ${errText(e)}`);
+    } finally {
+      setUpdateChecked(true);
+      setUpdateBusy(false);
+    }
+  };
+
+  const installNow = async () => {
+    if (update === null) return;
+    setError(null);
+    setNote(null);
+    setUpdateBusy(true);
+    setUpdateDone(false);
+    try {
+      await installUpdate(update, setUpdatePercent);
+      setUpdateDone(true);
+    } catch (e) {
+      setError(`Update failed: ${errText(e)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
   };
 
   return (
@@ -474,6 +592,128 @@ export default function SettingsPage(p: SettingsPageProps) {
               </button>
             </div>
           </div>
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h3 className="settings-heading">Share to this network</h3>
+        <p className="muted">
+          A read-only view of your dashboard for a phone on the same Wi-Fi:
+          money, wallets, due items, habits, upcoming dates and recent notes.
+          The vault, settings and photos are never part of it. Anyone the link
+          reaches can read that snapshot, so turn it off when you are done —
+          sharing never survives a restart, and it keeps running while the app
+          is locked.
+        </p>
+        {shareState?.running ? (
+          <div className="side-form">
+            <label>
+              Open this on the phone (it carries the pairing code)
+              <input
+                className="input"
+                readOnly
+                value={shareState.url ?? ""}
+                onFocus={(e) => e.target.select()}
+              />
+            </label>
+            <p className="muted">
+              Pairing code <b>{shareState.code}</b> · port{" "}
+              {shareState.port ?? "?"}
+              {shareState.publishedAt !== null
+                ? ` · last snapshot ${shareState.publishedAt.replace("T", " ")}`
+                : " · waiting for the first snapshot…"}
+            </p>
+            <div className="editor-row">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void copyShareLink()}
+              >
+                {shareCopied ? "Copied" : "Copy link"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={shareBusy}
+                onClick={() => void stopShare()}
+              >
+                {shareBusy ? "Stopping…" : "Stop sharing"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="editor-row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={shareBusy}
+              onClick={() => void startShare()}
+            >
+              {shareBusy ? "Starting…" : "Start sharing"}
+            </button>
+          </div>
+        )}
+        {shareState !== null &&
+          !shareState.running &&
+          shareState.note !== null && (
+            <p className="alert alert-note">{shareState.note}</p>
+          )}
+      </section>
+
+      <section className="settings-section">
+        <h3 className="settings-heading">Updates</h3>
+        <p className="muted">
+          Releases are built, signed and published by hand, so Purple Memo only
+          checks the release feed when you ask it to. A downloaded update is
+          verified against the bundled public key before it is installed.
+        </p>
+        <div className="editor-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={updateBusy}
+            onClick={() => void checkUpdates()}
+          >
+            {updateBusy && update === null ? "Checking…" : "Check for updates"}
+          </button>
+          {update !== null && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={updateBusy}
+              onClick={() => void installNow()}
+            >
+              {updateBusy ? "Downloading…" : `Install ${update.version}`}
+            </button>
+          )}
+        </div>
+        {update !== null && (
+          <div>
+            <p className="figure">{describeUpdate(update)}</p>
+            {update.date ? (
+              <p className="muted">
+                Published {new Date(update.date).toLocaleString()}
+              </p>
+            ) : null}
+            {notesExcerpt(update.body).length > 0 && (
+              <pre className="update-notes">{notesExcerpt(update.body)}</pre>
+            )}
+            {updateBusy && (
+              <p className="muted">
+                {updatePercent === null
+                  ? "Downloading…"
+                  : `Downloading… ${updatePercent}%`}
+              </p>
+            )}
+          </div>
+        )}
+        {updateChecked && update === null && !updateDone && (
+          <p className="muted">No newer release is published yet.</p>
+        )}
+        {updateDone && (
+          <p className="alert alert-note">
+            Update installed — restart Purple Memo to run the new version.
+          </p>
         )}
       </section>
 

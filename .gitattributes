@@ -9,3 +9,7 @@
 *.json text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
+# Same reason: biome formats CSS and rejects a CRLF stylesheet.
+*.css text eol=lf
+# rustfmt: keep Rust sources LF so a checkout on any OS formats identically.
+*.rs text eol=lf

@@ -1065,3 +1065,20 @@ tbody .week-row {
   font-family: var(--font-mono);
   overflow-wrap: break-word;
 }
+
+/* Release notes in Settings → Updates (§9): a manifest body can be long, so
+   it scrolls inside the section instead of stretching the page. */
+.update-notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background-color: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}

@@ -1,6 +1,9 @@
-//! The 10 Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
+//! The Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
 //! `db_begin`, `db_commit`, `db_rollback`, `photo_save`, `photo_read`,
-//! `photo_delete`, `db_key_export` (read-only keyring read, §5.4).
+//! `photo_delete`, `db_key_export` (read-only keyring read, §5.4), plus the
+//! P5 share controls — `share_start`, `share_stop`, `share_status`,
+//! `share_publish` (§8). The share commands touch no SQL: they only control
+//! the listener and the snapshot bytes the desktop published.
 //!
 //! Every command serializes through the single mutex-protected connection
 //! (§4 — no pooling). UI pages never call these directly; they go through
@@ -15,6 +18,7 @@ use tauri::State;
 
 use crate::db::{self, AppState, BatchStatement, ExecuteOutcome, JsonObj};
 use crate::photos;
+use crate::share::{ShareInfo, ShareState};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -133,4 +137,32 @@ pub fn photo_delete(state: State<'_, AppState>, rel_path: String) -> CmdResult<(
 #[tauri::command]
 pub fn db_key_export() -> CmdResult<String> {
     db::read_db_key()
+}
+
+/// Turn on the read-only LAN share (§8): binds a fresh port, mints a pairing
+/// code and serves the last published snapshot. Idempotent while running.
+#[tauri::command]
+pub fn share_start(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
+    state.start()
+}
+
+/// Turn the LAN share off and close the listener. Idempotent.
+#[tauri::command]
+pub fn share_stop(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
+    state.stop()
+}
+
+/// Current share state — also reports a server that stopped itself after
+/// repeated wrong pairing codes.
+#[tauri::command]
+pub fn share_status(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
+    state.status()
+}
+
+/// Publish a fresh snapshot payload (built by `src/lib/share.ts`) for the
+/// LAN server to serve. The payload is validated, never executed, and the
+/// share path has no DB or filesystem access at all.
+#[tauri::command]
+pub fn share_publish(state: State<'_, ShareState>, snapshot_json: String) -> CmdResult<ShareInfo> {
+    state.publish(&snapshot_json)
 }

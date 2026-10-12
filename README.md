@@ -41,4 +41,6 @@ Rules of the gate (see §7 of the plan for the full rationale):
   is the only CI evidence this project has.
 - Rust side needs `rustup component add clippy rustfmt` once.
 - Releases are built, signed and published **by hand** — there is no
-  release workflow; see §9 of the plan.
+  release workflow; see §9 of the plan and [`docs/RELEASE.md`](docs/RELEASE.md)
+  for the exact procedure (`scripts/make-latest-json.mjs` builds the updater
+  manifest, which `tauri build` does not emit).

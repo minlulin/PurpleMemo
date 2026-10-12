@@ -7,6 +7,7 @@ import type {
   DataDriver,
   ExecuteOutcome,
   Queryable,
+  ShareInfo,
 } from "./driver.ts";
 
 export interface RecordedCall {
@@ -36,6 +37,15 @@ export interface MockDriver extends DataDriver {
 export function createMockDriver(script: MockScript = {}): MockDriver {
   const calls: RecordedCall[] = [];
   let lastRowid = 0;
+  // Share state for tests: off until start is called, exactly like Rust (§8).
+  let share: ShareInfo = {
+    running: false,
+    url: null,
+    code: null,
+    port: null,
+    publishedAt: null,
+    note: null,
+  };
 
   const record = (method: keyof DataDriver, args: unknown[]) => {
     calls.push({ method, args });
@@ -106,6 +116,40 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     async exportDbKey(): Promise<string> {
       record("exportDbKey", []);
       return "00".repeat(32);
+    },
+    async shareStart(): Promise<ShareInfo> {
+      record("shareStart", []);
+      share = {
+        running: true,
+        url: "http://192.168.1.5:8765/?k=TESTCODE",
+        code: "TESTCODE",
+        port: 8765,
+        publishedAt: share.publishedAt,
+        note: null,
+      };
+      return { ...share };
+    },
+    async shareStop(): Promise<ShareInfo> {
+      record("shareStop", []);
+      share = {
+        running: false,
+        url: null,
+        code: null,
+        port: null,
+        publishedAt: null,
+        note: null,
+      };
+      return { ...share };
+    },
+    async shareStatus(): Promise<ShareInfo> {
+      record("shareStatus", []);
+      return { ...share };
+    },
+    async sharePublish(snapshotJson: string): Promise<ShareInfo> {
+      record("sharePublish", [snapshotJson]);
+      const parsed = JSON.parse(snapshotJson) as { generatedAt?: string };
+      share = { ...share, publishedAt: parsed.generatedAt ?? null };
+      return { ...share };
     },
     callsTo(method: keyof DataDriver): RecordedCall[] {
       return calls.filter((c) => c.method === method);

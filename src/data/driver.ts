@@ -22,6 +22,22 @@ export interface BatchStatement {
   params?: unknown[];
 }
 
+/**
+ * State of the read-only LAN share (§8, P5). `url` is the full link the
+ * phone opens — it carries the pairing code, and is null whenever sharing
+ * is off. `publishedAt` is the `generatedAt` of the last published snapshot.
+ */
+export interface ShareInfo {
+  running: boolean;
+  url: string | null;
+  code: string | null;
+  /** Bound TCP port (shown so the user can allow it through a firewall). */
+  port: number | null;
+  publishedAt: string | null;
+  /** Set only when sharing stopped on its own, e.g. repeated wrong codes. */
+  note: string | null;
+}
+
 /** The full driver surface — implemented by Tauri IPC and by test mocks. */
 export interface DataDriver {
   query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -35,9 +51,15 @@ export interface DataDriver {
   deletePhoto(relPath: string): Promise<void>;
   /** Read-only keyring read for the Settings key-export step (§5.4). */
   exportDbKey(): Promise<string>;
+  /** Start the LAN snapshot server (§8). Idempotent while running. */
+  shareStart(): Promise<ShareInfo>;
+  shareStop(): Promise<ShareInfo>;
+  shareStatus(): Promise<ShareInfo>;
+  /** Publish a freshly built snapshot payload for the LAN server to serve. */
+  sharePublish(snapshotJson: string): Promise<ShareInfo>;
 }
 
-/** The one production driver: Tauri IPC commands (§4 — 10 commands). */
+/** The one production driver: Tauri IPC commands (§4, §8). */
 export function createTauriDriver(): DataDriver {
   return {
     query: (sql, params) => invoke("db_query", { sql, params }),
@@ -50,5 +72,10 @@ export function createTauriDriver(): DataDriver {
     readPhoto: (relPath) => invoke("photo_read", { relPath }),
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
     exportDbKey: () => invoke("db_key_export"),
+    // P5 share controls (§8) — 14 commands total now, still one driver.
+    shareStart: () => invoke("share_start"),
+    shareStop: () => invoke("share_stop"),
+    shareStatus: () => invoke("share_status"),
+    sharePublish: (snapshotJson) => invoke("share_publish", { snapshotJson }),
   };
 }

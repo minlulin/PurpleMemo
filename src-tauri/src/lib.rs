@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod photos;
 mod schema;
+mod share;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
@@ -26,6 +27,9 @@ pub fn run() {
                 txn_open: AtomicBool::new(false),
                 data_dir,
             });
+            // LAN sharing (§8) starts OFF — it is opt-in per session and
+            // must never be re-enabled silently by a restart.
+            app.manage(share::ShareState::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -39,6 +43,10 @@ pub fn run() {
             commands::photo_read,
             commands::photo_delete,
             commands::db_key_export,
+            commands::share_start,
+            commands::share_stop,
+            commands::share_status,
+            commands::share_publish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Purple Memo");
