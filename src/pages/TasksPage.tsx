@@ -4,6 +4,7 @@
 // occurrence (nextDueDate) instead of closing it.
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { tasksRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { nextDueDate } from "../lib/tasks.ts";
@@ -184,7 +185,7 @@ export default function TasksPage({
       <section aria-label="Open tasks">
         <h2 className="side-heading">Open</h2>
         {open.length === 0 ? (
-          <p className="muted">Nothing due — enjoy it.</p>
+          <EmptyState>Nothing due — enjoy it.</EmptyState>
         ) : (
           <ul className="budget-list">
             {open.map((t) => (

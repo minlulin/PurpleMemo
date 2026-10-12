@@ -4,6 +4,7 @@
 // (photo_refs) and delete. Talks only to the gallery + picker repos.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import {
   businessRepo,
   galleryRepo,
@@ -280,9 +281,7 @@ export default function GalleryPage() {
       {loading ? (
         <p className="muted">Loading…</p>
       ) : photos.length === 0 ? (
-        <p className="empty-state">
-          No photos yet — use “Add photos” to store one.
-        </p>
+        <EmptyState>No photos yet — use “Add photos” to store one.</EmptyState>
       ) : (
         <div className="photo-grid">
           {photos.map((photo) => {

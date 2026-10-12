@@ -4,6 +4,7 @@
 // only; P3f adds the app-wide auto-lock on top of the repo's lockVault.
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { vaultRepo } from "../data/app.ts";
 
 function errText(e: unknown): string {
@@ -448,7 +449,7 @@ export default function VaultPage() {
       </form>
 
       {items.length === 0 ? (
-        <p className="empty-state">The vault is empty — add a secret above.</p>
+        <EmptyState>The vault is empty — add a secret above.</EmptyState>
       ) : (
         <ul className="budget-list">
           {items.map((item) => (

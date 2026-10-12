@@ -3,6 +3,7 @@
 // (reorderItems batch).
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { shoppingRepo } from "../data/app.ts";
 import { moveItem } from "../lib/shopping.ts";
 import type { ShoppingItemRow, ShoppingListRow } from "../lib/types.ts";
@@ -253,7 +254,7 @@ export default function ShoppingPage() {
               </div>
 
               {items.length === 0 ? (
-                <p className="muted">Empty list — add items below.</p>
+                <EmptyState>Empty list — add items below.</EmptyState>
               ) : (
                 <ul className="budget-list">
                   {items.map((item, index) => (

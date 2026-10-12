@@ -162,6 +162,24 @@
   text-align: center;
 }
 
+.empty-state-icon {
+  display: block;
+  width: var(--space-8);
+  height: var(--space-8);
+  margin: 0 auto var(--space-3);
+}
+
+.icon {
+  width: 1em;
+  height: 1em;
+  flex: none;
+}
+
+.btn .icon {
+  margin-right: var(--space-1);
+  vertical-align: -0.15em;
+}
+
 .error-bar {
   margin: var(--space-3) var(--space-5);
   padding: var(--space-2) var(--space-4);
@@ -492,12 +510,6 @@ button.chip:focus-visible {
 .alert-note {
   color: var(--color-text);
   border-color: var(--color-accent);
-}
-
-.empty-state {
-  padding: var(--space-8) var(--space-5);
-  text-align: center;
-  color: var(--color-text-muted);
 }
 
 /* Journal month grid */

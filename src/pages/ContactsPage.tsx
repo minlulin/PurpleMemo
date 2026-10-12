@@ -3,6 +3,7 @@
 // month-day). Talks only to the contacts repo from the composition root (§4).
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { contactsRepo } from "../data/app.ts";
 import {
   birthdayLabel,
@@ -274,11 +275,11 @@ export default function ContactsPage() {
           {loading ? (
             <p className="muted">Loading…</p>
           ) : visible.length === 0 ? (
-            <p className="empty-state">
+            <EmptyState>
               {contacts.length === 0
                 ? "No contacts yet — add one above."
                 : "No contact matches the search."}
-            </p>
+            </EmptyState>
           ) : (
             <ul className="budget-list">
               {visible.map((c) => (
@@ -549,9 +550,9 @@ export default function ContactsPage() {
               ) : null}
             </>
           ) : (
-            <p className="empty-state">
+            <EmptyState>
               Select a contact on the left, or add a new one.
-            </p>
+            </EmptyState>
           )}
         </section>
       </div>

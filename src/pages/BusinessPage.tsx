@@ -3,6 +3,7 @@
 // this file starts with the shell + Shops view and gains one view per task.
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { budgetRepo, businessRepo } from "../data/app.ts";
 import {
   inWarranty,
@@ -660,7 +661,7 @@ function ReceivableView() {
       ) : null}
 
       {rows.length === 0 ? (
-        <p className="muted">Nothing outstanding — no receivables.</p>
+        <EmptyState>Nothing outstanding — no receivables.</EmptyState>
       ) : (
         <>
           <ul className="budget-list">

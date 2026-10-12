@@ -1072,7 +1072,7 @@ function LimitsView() {
                   </span>
                 ) : null}
               </span>
-              <span className="muted">
+              <span className="muted figure">
                 spent {formatMMK(r.spentCents)}
                 {r.limitCents !== null
                   ? ` of ${formatMMK(r.limitCents)}${r.percent !== null ? ` (${r.percent}%)` : ""}`
@@ -1290,7 +1290,7 @@ function RecurringView() {
                     </span>
                   ) : null}
                 </span>
-                <span className="muted">
+                <span className="muted figure">
                   {formatMMK(r.amount_cents)} · {r.frequency} · next{" "}
                   {r.next_due_date}
                 </span>

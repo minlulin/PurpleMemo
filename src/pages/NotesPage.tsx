@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { journalRepo, notesRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { noteExcerpt } from "../lib/notes.ts";
@@ -438,9 +439,9 @@ export default function NotesPage() {
             </ul>
             <section className="editor-pane" aria-label="Note editor">
               {selected === null ? (
-                <p className="empty-state">
+                <EmptyState>
                   Select a note to edit, or create a new one.
-                </p>
+                </EmptyState>
               ) : (
                 <NoteEditor
                   key={selected.id}

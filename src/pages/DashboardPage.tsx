@@ -3,6 +3,7 @@
 // expiring warranties, total receivable. Every card links to its feature.
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import {
   budgetRepo,
   businessRepo,
@@ -135,7 +136,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       <section className="settings-section">
         <h3 className="settings-heading">Due tasks &amp; reminders</h3>
         {dueTasks.length === 0 && reminders.length === 0 ? (
-          <p className="muted">Nothing due. Enjoy the quiet.</p>
+          <EmptyState>Nothing due. Enjoy the quiet.</EmptyState>
         ) : (
           <ul className="budget-list">
             {dueTasks.map((t) => (
@@ -190,7 +191,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       <section className="settings-section">
         <h3 className="settings-heading">Habit week progress</h3>
         {habitWeeks.length === 0 ? (
-          <p className="muted">No habits yet.</p>
+          <EmptyState>No habits yet.</EmptyState>
         ) : (
           <ul className="budget-list">
             {habitWeeks.map((h) => (
@@ -220,7 +221,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       <section className="settings-section">
         <h3 className="settings-heading">Upcoming memories &amp; birthdays</h3>
         {memories.length === 0 && birthdays.length === 0 ? (
-          <p className="muted">Nothing in the next 14 days.</p>
+          <EmptyState>Nothing in the next 14 days.</EmptyState>
         ) : (
           <ul className="budget-list">
             {memories.map((m) => (
@@ -258,7 +259,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       <section className="settings-section">
         <h3 className="settings-heading">Expiring warranties</h3>
         {warranties.length === 0 ? (
-          <p className="muted">No warranties expiring in the next 14 days.</p>
+          <EmptyState>No warranties expiring in the next 14 days.</EmptyState>
         ) : (
           <ul className="budget-list">
             {warranties.map((w) => (

@@ -3,6 +3,7 @@
 // is reused from the journal (same Sunday-start grid, §2.5).
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { habitsRepo } from "../data/app.ts";
 import { todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
@@ -137,7 +138,7 @@ export default function HabitsPage() {
       </form>
 
       {habits.length === 0 ? (
-        <p className="muted">No habits yet — add one above.</p>
+        <EmptyState>No habits yet — add one above.</EmptyState>
       ) : (
         habits.map((h) => {
           const p = progress.get(h.id);

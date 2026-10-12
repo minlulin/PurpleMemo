@@ -4,6 +4,7 @@
 // birthdays join On-this-day. Talks only to the memories + contacts repos.
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
 import { todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -98,7 +99,7 @@ interface MemoryListProps {
 }
 
 function MemoryList(p: MemoryListProps) {
-  if (p.items.length === 0) return <p className="muted">Nothing here.</p>;
+  if (p.items.length === 0) return <EmptyState>Nothing here.</EmptyState>;
   return (
     <ul className="budget-list">
       {p.items.map((m) => (
