@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconLoans } from "../components/icons.tsx";
+import { IconCalendar, IconLoans } from "../components/icons.tsx";
 import { loansRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -204,6 +204,13 @@ export default function LoansPage() {
                           placeholder="0.00"
                           value={repayAmount}
                           onChange={(e) => setRepayAmount(e.target.value)}
+                          aria-invalid={
+                            repayAmount.trim() !== "" &&
+                            (parseMMK(repayAmount) === null ||
+                              (parseMMK(repayAmount) ?? 0) <= 0)
+                              ? "true"
+                              : undefined
+                          }
                         />
                         <button
                           type="button"
@@ -291,22 +298,35 @@ export default function LoansPage() {
               />
             </label>
             <label>
-              Amount (MMK)
-              <input
-                inputMode="decimal"
-                placeholder="0.00"
-                value={amountRaw}
-                onChange={(e) => setAmountRaw(e.target.value)}
-              />
+              Amount
+              <span className="input-affix">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={amountRaw}
+                  onChange={(e) => setAmountRaw(e.target.value)}
+                  aria-invalid={
+                    amountRaw.trim() !== "" &&
+                    (parseMMK(amountRaw) === null ||
+                      (parseMMK(amountRaw) ?? 0) <= 0)
+                      ? "true"
+                      : undefined
+                  }
+                />
+                <span className="input-affix-prefix">MMK</span>
+              </span>
             </label>
             <label>
               Due date (optional)
-              <input
-                type="date"
-                aria-label="Due date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-              />
+              <span className="input-icon-wrap">
+                <input
+                  type="date"
+                  aria-label="Due date"
+                  value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                />
+                <IconCalendar className="icon input-icon is-end" />
+              </span>
             </label>
             <label>
               Note (optional)

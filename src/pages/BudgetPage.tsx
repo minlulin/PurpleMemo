@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconBudget,
+  IconCalendar,
   IconChevronLeft,
   IconChevronRight,
   IconWallet,
@@ -532,12 +533,15 @@ function EntriesView() {
           >
             <IconChevronLeft className="icon" />
           </button>
-          <input
-            type="date"
-            aria-label="Entry date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
+          <span className="input-icon-wrap">
+            <input
+              type="date"
+              aria-label="Entry date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+            <IconCalendar className="icon input-icon is-end" />
+          </span>
           <button
             type="button"
             className="btn btn-icon"
@@ -666,13 +670,21 @@ function EntriesView() {
           </div>
 
           <label>
-            Amount (MMK)
-            <input
-              inputMode="decimal"
-              placeholder="0.00"
-              value={amountRaw}
-              onChange={(e) => setAmountRaw(e.target.value)}
-            />
+            Amount
+            <span className="input-affix">
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={amountRaw}
+                onChange={(e) => setAmountRaw(e.target.value)}
+                aria-invalid={
+                  amountRaw.trim() !== "" && amountCents === null
+                    ? "true"
+                    : undefined
+                }
+              />
+              <span className="input-affix-prefix">MMK</span>
+            </span>
           </label>
           {amountRaw.trim() !== "" && amountCents === null ? (
             <p className="limit-warn" role="status">
@@ -1518,13 +1530,23 @@ function RecurringView() {
             />
           </label>
           <label>
-            Amount (MMK)
-            <input
-              inputMode="decimal"
-              placeholder="0.00"
-              value={amountRaw}
-              onChange={(e) => setAmountRaw(e.target.value)}
-            />
+            Amount
+            <span className="input-affix">
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={amountRaw}
+                onChange={(e) => setAmountRaw(e.target.value)}
+                aria-invalid={
+                  amountRaw.trim() !== "" &&
+                  (parseMMK(amountRaw) === null ||
+                    (parseMMK(amountRaw) ?? 0) <= 0)
+                    ? "true"
+                    : undefined
+                }
+              />
+              <span className="input-affix-prefix">MMK</span>
+            </span>
           </label>
           <label>
             Frequency
@@ -1543,12 +1565,15 @@ function RecurringView() {
           </label>
           <label>
             Next due date
-            <input
-              type="date"
-              aria-label="Next due date"
-              value={nextDue}
-              onChange={(e) => setNextDue(e.target.value)}
-            />
+            <span className="input-icon-wrap">
+              <input
+                type="date"
+                aria-label="Next due date"
+                value={nextDue}
+                onChange={(e) => setNextDue(e.target.value)}
+              />
+              <IconCalendar className="icon input-icon is-end" />
+            </span>
           </label>
           <label>
             Category (optional — falls back when marking paid)

@@ -406,12 +406,43 @@
   background: var(--color-surface-input);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-input);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-4);
   min-height: var(--space-8);
   transition:
     border-color var(--dur-fast) var(--ease-out),
     background-color var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out);
+}
+
+/* Native arrow is replaced by the token chevron. */
+.select,
+.inline-form select,
+.day-nav select,
+.entry-form select,
+.budget-row select,
+.row-actions select {
+  appearance: none;
+  padding-inline-end: calc(var(--space-4) + var(--space-6));
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+  background-size: var(--space-4);
+}
+
+/* Chromium/WebKit show their own calendar glyph; the wrapper draws ours and
+ * keeps the native indicator clickable underneath. */
+.input-icon-wrap input[type="date"] {
+  position: relative;
+  padding-inline-end: calc(var(--space-4) + var(--space-6));
+}
+
+.input-icon-wrap input[type="date"]::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block: 0;
+  inline-size: var(--space-8);
+  opacity: 0;
+  cursor: pointer;
 }
 
 .textarea,
@@ -436,12 +467,16 @@
 .inline-form input:not([type="checkbox"]):hover,
 .inline-form select:hover,
 .day-nav input:not([type="checkbox"]):hover,
+.day-nav select:hover,
 .entry-form input:not([type="checkbox"]):hover,
 .entry-form select:hover,
+.entry-form textarea:hover,
 .budget-row input:not([type="checkbox"]):hover,
+.budget-row select:hover,
 .row-actions input:not([type="checkbox"]):hover,
 .row-actions select:hover {
   border-color: var(--color-border-strong);
+  background-color: var(--color-surface-raised);
 }
 
 .input:focus-visible,
@@ -467,6 +502,114 @@
   outline: none;
   border-color: var(--color-accent);
   box-shadow: var(--shadow-focus);
+}
+
+/* ---------------------------------------------------------------------------
+ * Field adornments: leading/trailing icons, currency affix, invalid state
+ * ------------------------------------------------------------------------- */
+
+.input-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-inline-size: 0;
+}
+
+/* Wrappers are the flex item now, so they inherit the grow the raw inputs
+   used to get. */
+.notes-toolbar .input-icon-wrap,
+.inline-form .input-icon-wrap {
+  flex: 1 1 11rem;
+}
+
+.input-icon-wrap > input {
+  inline-size: 100%;
+}
+
+.input-icon {
+  position: absolute;
+  inset-inline-start: var(--space-3);
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+  color: var(--color-text-subtle);
+  pointer-events: none;
+}
+
+.input-icon.is-end {
+  inset-inline-start: auto;
+  inset-inline-end: var(--space-3);
+}
+
+.input-icon-wrap:has(.input-icon:not(.is-end)) > input {
+  padding-inline-start: calc(var(--space-4) + var(--space-6));
+}
+
+.input-affix {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.input-affix > input {
+  inline-size: 100%;
+}
+
+.input-affix-prefix {
+  position: absolute;
+  inset-inline-start: var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-text-subtle);
+  pointer-events: none;
+}
+
+.input-affix:has(.input-affix-prefix) > input {
+  padding-inline-start: calc(var(--space-4) + var(--space-8));
+}
+
+@keyframes input-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-0.1875rem);
+  }
+  75% {
+    transform: translateX(0.1875rem);
+  }
+}
+
+.input-invalid,
+/* Same reach as the unified control rule: bare inputs in entry/inline/budget
+   forms carry no `.input` class, and aria-invalid is what the pages bind. */
+.input[aria-invalid="true"],
+.input-invalid,
+.entry-form input[aria-invalid="true"],
+.inline-form input[aria-invalid="true"],
+.budget-row input[aria-invalid="true"],
+.row-actions input[aria-invalid="true"] {
+  border-color: var(--color-danger);
+  /* Replays whenever the field flips into the invalid state. */
+  animation: input-shake var(--dur-base) var(--ease-out);
+}
+
+.input[aria-invalid="true"]:focus-visible,
+.input-invalid:focus-visible,
+.entry-form input[aria-invalid="true"]:focus-visible,
+.inline-form input[aria-invalid="true"]:focus-visible,
+.budget-row input[aria-invalid="true"]:focus-visible,
+.row-actions input[aria-invalid="true"]:focus-visible {
+  border-color: var(--color-danger);
+  box-shadow: var(--shadow-focus-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .input[aria-invalid="true"],
+  .input-invalid {
+    animation: none;
+  }
 }
 
 .check-label {

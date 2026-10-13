@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
+  IconCalendar,
   IconChevronLeft,
   IconChevronRight,
   IconMemories,
@@ -62,12 +63,15 @@ function MemoryForm(p: MemoryFormProps) {
         </label>
         <label>
           Date
-          <input
-            className="input"
-            type="date"
-            value={p.date}
-            onChange={(e) => p.onDate(e.target.value)}
-          />
+          <span className="input-icon-wrap">
+            <input
+              className="input"
+              type="date"
+              value={p.date}
+              onChange={(e) => p.onDate(e.target.value)}
+            />
+            <IconCalendar className="icon input-icon is-end" />
+          </span>
         </label>
       </div>
       <label>

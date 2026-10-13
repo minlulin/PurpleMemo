@@ -4,7 +4,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconContacts } from "../components/icons.tsx";
+import {
+  IconCalendar,
+  IconContacts,
+  IconSearch,
+} from "../components/icons.tsx";
 import { contactsRepo } from "../data/app.ts";
 import {
   birthdayLabel,
@@ -260,14 +264,17 @@ export default function ContactsPage() {
             <span className="side-heading">Directory</span>
             <span className="badge">{contacts.length}</span>
           </div>
-          <input
-            className="input"
-            type="search"
-            placeholder="Search contacts…"
-            aria-label="Search contacts"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <span className="input-icon-wrap">
+            <input
+              className="input"
+              type="search"
+              placeholder="Search contacts…"
+              aria-label="Search contacts"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <IconSearch className="icon input-icon" />
+          </span>
 
           <form
             className="inline-form"
@@ -400,15 +407,20 @@ export default function ContactsPage() {
                       <option value="monthday">Month and day</option>
                     </select>
                     {edit.mode === "date" ? (
-                      <input
-                        className="input"
-                        type="date"
-                        aria-label="Birthday date"
-                        value={edit.birthday.length >= 10 ? edit.birthday : ""}
-                        onChange={(e) =>
-                          setEdit({ ...edit, birthday: e.target.value })
-                        }
-                      />
+                      <span className="input-icon-wrap">
+                        <input
+                          className="input"
+                          type="date"
+                          aria-label="Birthday date"
+                          value={
+                            edit.birthday.length >= 10 ? edit.birthday : ""
+                          }
+                          onChange={(e) =>
+                            setEdit({ ...edit, birthday: e.target.value })
+                          }
+                        />
+                        <IconCalendar className="icon input-icon is-end" />
+                      </span>
                     ) : null}
                     {edit.mode === "monthday" ? (
                       <input

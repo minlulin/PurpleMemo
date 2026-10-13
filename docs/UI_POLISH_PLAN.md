@@ -139,29 +139,44 @@
 
 ### Tasks
 
-- [ ] **4.1** Add `IconSearch` as a leading icon in search inputs (Notes, Contacts)
-- [ ] **4.2** Add `IconCalendar` as a trailing icon in date inputs
-- [ ] **4.3** Style `<select>` with a custom chevron background SVG (data URI)
-- [ ] **4.4** Add `.input-icon-wrap` utility class — relative container with absolute-positioned icon
-- [ ] **4.5** Add `.input-invalid` class — red border + subtle shake animation
-- [ ] **4.6** Add `aria-invalid` binding on amount inputs when validation fails
-- [ ] **4.7** Add `.input-affix` for currency prefix (MMK) on amount fields
-- [ ] **4.8** Increase input padding slightly: `var(--space-2) var(--space-3)` → `var(--space-2) var(--space-4)`
-- [ ] **4.9** Add `transition: background-color var(--dur-fast)` on input hover
-- [ ] **4.10** Add subtle background shift on hover: `--color-surface-input` → slightly lighter
+- [x] **4.1** Add `IconSearch` as a leading icon in search inputs (Notes, Contacts)
+- [x] **4.2** Add `IconCalendar` as a trailing icon in date inputs
+- [x] **4.3** Style `<select>` with a custom chevron background SVG (data URI)
+- [x] **4.4** Add `.input-icon-wrap` utility class — relative container with absolute-positioned icon
+- [x] **4.5** Add `.input-invalid` class — red border + subtle shake animation
+- [x] **4.6** Add `aria-invalid` binding on amount inputs when validation fails
+- [x] **4.7** Add `.input-affix` for currency prefix (MMK) on amount fields
+- [x] **4.8** Increase input padding slightly: `var(--space-2) var(--space-3)` → `var(--space-2) var(--space-4)`
+- [x] **4.9** Add `transition: background-color var(--dur-fast)` on input hover
+- [x] **4.10** Add subtle background shift on hover: `--color-surface-input` → slightly lighter
 
 ### Files touched
 - `src/styles/app.css`
-- `src/components/icons.tsx`
-- `src/pages/NotesPage.tsx` (search input)
-- `src/pages/ContactsPage.tsx` (search input)
-- `src/pages/BudgetPage.tsx` (amount inputs)
+- `src/styles/tokens.css` (chevron data URI, danger focus ring)
+- `src/pages/NotesPage.tsx`, `ContactsPage.tsx` (search inputs)
+- `src/pages/BudgetPage.tsx`, `LoansPage.tsx`, `BusinessPage.tsx` (amount inputs)
+- `src/pages/BudgetPage.tsx`, `TasksPage.tsx`, `MemoriesPage.tsx`, `LoansPage.tsx`,
+  `BusinessPage.tsx`, `ContactsPage.tsx`, `GalleryPage.tsx` (date inputs)
+
+### Notes
+- The select chevron is a `--select-chevron` token, not an inline data URI in
+  app.css: it encodes a colour, and token-lint keeps colours in tokens.css.
+  Light mode gets its own stroke colour.
+- `.input-icon-wrap` hides the Chromium/WebKit calendar glyph but keeps the
+  native indicator stretched over the same spot, so click-to-open still works.
+- `aria-invalid` (not a class) drives the invalid styling, so it matches the
+  bare inputs that carry no `.input` class; the shake replays only when the
+  attribute flips true and is disabled under `prefers-reduced-motion`.
+- "Amount (MMK)" labels became "Amount" + `.input-affix-prefix`, since the unit
+  is now visible inside the field.
 
 ### Verification
-- [ ] Search inputs have leading magnifier icon
-- [ ] Select dropdowns show custom chevron
-- [ ] Invalid amount shows red border + message
-- [ ] All inputs have consistent hover treatment
+- [x] Search inputs have leading magnifier icon
+- [x] Select dropdowns show custom chevron
+- [x] Invalid amount shows red border + shake (existing inline message kept)
+- [x] All inputs have consistent hover treatment
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (186), `build` all pass
+- [ ] Manual pass on calendar click-through and chevron alignment
 
 ---
 
@@ -585,7 +600,15 @@
 - [ ] Manual press/spinner feel check outstanding
 
 ### Phase 4 — Form Input Enhancement
-- [ ] Not started
+- [x] `.input-icon-wrap` + `.input-icon(.is-end)`: magnifier on Notes/Contacts
+      search, calendar on all nine date inputs
+- [x] Selects: `appearance: none` + `--select-chevron` token (dark + light)
+- [x] `.input-affix` MMK prefix on every money field; "Amount (MMK)" → "Amount"
+- [x] `aria-invalid` + `--shadow-focus-danger` + `input-shake` on invalid amounts
+- [x] Input padding `space-2 space-4`; hover shifts to `--color-surface-raised`
+      (hover selector list completed — it was missing 3 controls)
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual pass on calendar click-through and chevron alignment outstanding
 
 ### Phase 5 — Card & Surface Elevation
 - [ ] Not started

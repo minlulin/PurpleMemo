@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconBusiness } from "../components/icons.tsx";
+import { IconBusiness, IconCalendar } from "../components/icons.tsx";
 import { budgetRepo, businessRepo } from "../data/app.ts";
 import {
   inWarranty,
@@ -506,6 +506,13 @@ function JobsView() {
                       placeholder="0.00"
                       value={payAmount}
                       onChange={(e) => setPayAmount(e.target.value)}
+                      aria-invalid={
+                        payAmount.trim() !== "" &&
+                        (parseMMK(payAmount) === null ||
+                          (parseMMK(payAmount) ?? 0) <= 0)
+                          ? "true"
+                          : undefined
+                      }
                     />
                     <select
                       className="select"
@@ -598,22 +605,35 @@ function JobsView() {
             </select>
           </label>
           <label>
-            Total amount (MMK)
-            <input
-              inputMode="decimal"
-              placeholder="0.00"
-              value={amountRaw}
-              onChange={(e) => setAmountRaw(e.target.value)}
-            />
+            Total amount
+            <span className="input-affix">
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={amountRaw}
+                onChange={(e) => setAmountRaw(e.target.value)}
+                aria-invalid={
+                  amountRaw.trim() !== "" &&
+                  (parseMMK(amountRaw) === null ||
+                    (parseMMK(amountRaw) ?? 0) <= 0)
+                    ? "true"
+                    : undefined
+                }
+              />
+              <span className="input-affix-prefix">MMK</span>
+            </span>
           </label>
           <label>
             Job date
-            <input
-              type="date"
-              aria-label="Job date"
-              value={jobDate}
-              onChange={(e) => setJobDate(e.target.value)}
-            />
+            <span className="input-icon-wrap">
+              <input
+                type="date"
+                aria-label="Job date"
+                value={jobDate}
+                onChange={(e) => setJobDate(e.target.value)}
+              />
+              <IconCalendar className="icon input-icon is-end" />
+            </span>
           </label>
           <label>
             Warranty days (optional — repair jobs)
@@ -1075,13 +1095,23 @@ function PayablesView() {
             />
           </label>
           <label>
-            Amount (MMK)
-            <input
-              inputMode="decimal"
-              placeholder="0.00"
-              value={amountRaw}
-              onChange={(e) => setAmountRaw(e.target.value)}
-            />
+            Amount
+            <span className="input-affix">
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={amountRaw}
+                onChange={(e) => setAmountRaw(e.target.value)}
+                aria-invalid={
+                  amountRaw.trim() !== "" &&
+                  (parseMMK(amountRaw) === null ||
+                    (parseMMK(amountRaw) ?? 0) <= 0)
+                    ? "true"
+                    : undefined
+                }
+              />
+              <span className="input-affix-prefix">MMK</span>
+            </span>
           </label>
           <label>
             Supplier shop (optional)
@@ -1102,12 +1132,15 @@ function PayablesView() {
           </label>
           <label>
             Due date (optional)
-            <input
-              type="date"
-              aria-label="Due date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-            />
+            <span className="input-icon-wrap">
+              <input
+                type="date"
+                aria-label="Due date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
+              <IconCalendar className="icon input-icon is-end" />
+            </span>
           </label>
         </div>
         <label>

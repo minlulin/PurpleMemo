@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconTasks } from "../components/icons.tsx";
+import { IconCalendar, IconTasks } from "../components/icons.tsx";
 import { tasksRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -242,12 +242,15 @@ export default function TasksPage({
           <div className="form-grid">
             <label>
               Due date (optional)
-              <input
-                type="date"
-                aria-label="Due date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-              />
+              <span className="input-icon-wrap">
+                <input
+                  type="date"
+                  aria-label="Due date"
+                  value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                />
+                <IconCalendar className="icon input-icon is-end" />
+              </span>
             </label>
             <label>
               Repeat

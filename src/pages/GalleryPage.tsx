@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconGallery, IconPlus } from "../components/icons.tsx";
+import { IconCalendar, IconGallery, IconPlus } from "../components/icons.tsx";
 import {
   businessRepo,
   galleryRepo,
@@ -358,13 +358,18 @@ export default function GalleryPage() {
               value={edit.note}
               onChange={(e) => setEdit({ ...edit, note: e.target.value })}
             />
-            <input
-              className="input"
-              type="date"
-              aria-label="Taken date"
-              value={edit.takenDate}
-              onChange={(e) => setEdit({ ...edit, takenDate: e.target.value })}
-            />
+            <span className="input-icon-wrap">
+              <input
+                className="input"
+                type="date"
+                aria-label="Taken date"
+                value={edit.takenDate}
+                onChange={(e) =>
+                  setEdit({ ...edit, takenDate: e.target.value })
+                }
+              />
+              <IconCalendar className="icon input-icon is-end" />
+            </span>
             <button
               type="button"
               className="btn btn-primary"

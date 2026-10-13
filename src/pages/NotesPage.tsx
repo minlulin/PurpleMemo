@@ -5,7 +5,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconFolder, IconNotes, IconPlus } from "../components/icons.tsx";
+import {
+  IconFolder,
+  IconNotes,
+  IconPlus,
+  IconSearch,
+} from "../components/icons.tsx";
 import { journalRepo, notesRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -429,13 +434,16 @@ export default function NotesPage() {
             <strong>Notes</strong>
             <span className="badge">{notes.length}</span>
           </div>
-          <input
-            className="input"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search notes (full-text)…"
-            aria-label="Search notes"
-          />
+          <span className="input-icon-wrap">
+            <input
+              className="input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search notes (full-text)…"
+              aria-label="Search notes"
+            />
+            <IconSearch className="icon input-icon" />
+          </span>
           <label className="check-label">
             <input
               type="checkbox"
