@@ -36,7 +36,8 @@
 - [x] **1.2** Add `--text-display: 2.25rem` (36px) token for hero-level headings (lock screen welcome, dashboard "Today")
 - [x] **1.3** Increase `--text-2xl` from `1.625rem` to `1.75rem` (28px) for page titles
 - [x] **1.4** Increase `--text-xl` from `1.375rem` to `1.5rem` (24px) for KPI values
-- [x] **1.5** Add `--text-4xl: 2.5rem` token for display use
+- [x] **1.5** ~~Add `--text-4xl: 2.5rem` token~~ — added in Phase 1, removed in
+      the final cleanup as an unused rung (`--text-display` is the real top)
 - [x] **1.6** Increase `--leading-normal` from `1.55` to `1.6` for better readability
 - [x] **1.7** Add `--space-7: 1.75rem` to spacing scale for larger gaps
 - [x] **1.8** Update `body` font-size reference in `tokens.css` to use the new base
@@ -143,7 +144,9 @@
 - [x] **4.2** Add `IconCalendar` as a trailing icon in date inputs
 - [x] **4.3** Style `<select>` with a custom chevron background SVG (data URI)
 - [x] **4.4** Add `.input-icon-wrap` utility class — relative container with absolute-positioned icon
-- [x] **4.5** Add `.input-invalid` class — red border + subtle shake animation
+- [x] **4.5** Invalid state — red border + subtle shake. Shipped as a
+      `.input-invalid` class, then narrowed to `aria-invalid` in the final
+      cleanup so no unused selector survives (see 4.6)
 - [x] **4.6** Add `aria-invalid` binding on amount inputs when validation fails
 - [x] **4.7** Add `.input-affix` for currency prefix (MMK) on amount fields
 - [x] **4.8** Increase input padding slightly: `var(--space-2) var(--space-3)` → `var(--space-2) var(--space-4)`
@@ -190,8 +193,8 @@
 - [x] **5.2** Add `@keyframes card-enter` — `opacity: 0; translateY(8px)` → `opacity: 1; translateY(0)`
 - [x] **5.3** Add `.card-enter` class with `animation: card-enter var(--dur-slow) var(--ease-out) both`
 - [x] **5.4** Apply staggered `animation-delay` to dashboard grid cards (nth-child)
-- [x] **5.5** Add `.card-hover-lift` — `transform: translateY(-2px); box-shadow: var(--shadow-md)` on hover
-- [x] **5.6** Apply `card-hover-lift` to `.kpi-card`, `.wallet-card`, `.more-card`
+- [x] **5.5** Hover lift — `transform: translateY(-2px); box-shadow: var(--shadow-md)` (shipped as a `.card-hover-lift` class, folded into the shared hover rule in the final cleanup)
+- [x] **5.6** Apply the hover lift to `.kpi-card`, `.wallet-card`, `.more-card`
 - [x] **5.7** Add `border-color: var(--color-accent-ring)` on `.kpi-card:hover` (currently `--color-border-strong`)
 - [x] **5.8** Add `.card-section-divider` — subtle gradient line instead of flat border
 - [x] **5.9** Fix nested card-in-card on Contacts: remove inner `.entry-form` border/background, use `.contact-form` with transparent background
@@ -207,9 +210,9 @@
 - `card-enter`'s `to` frame deliberately omits `transform`: with
   `animation-fill-mode: both`, restating `translateY(0)` would win over the
   hover lift forever and freeze every card.
-- 5.6 is wired through `.card-hover-lift:hover, .kpi-card:hover,
-  .wallet-card:hover, .more-card:hover` so the three cards share one rule
-  instead of three copies; the utility class stays available for new surfaces.
+- 5.6 is one shared rule — `.kpi-card:hover, .wallet-card:hover,
+  .more-card:hover` — so the three cards can't drift apart; each card declares
+  its own transition list.
 - 5.8 ships as a shared gradient-hairline rule over `.dash-card-head`,
   `.dash-card-foot`, `.side-form`, `.editor-actions` and `.contact-section`
   instead of an unused `.card-section-divider` class; Phase 10 re-adds the
@@ -692,7 +695,9 @@
 ### Phase 1 — Typography & Spacing Foundation
 - [x] Tokens: `--text-base: 1rem` (with `--text-md` aliased to it so existing
       consumers, including the inlined phone share page, keep working)
-- [x] Scale: `--text-xl` 24px, `--text-2xl` 28px, `--text-3xl` 32px, `--text-4xl` 40px, `--text-display` 36px
+- [x] Scale: `--text-xl` 24px, `--text-2xl` 28px, `--text-display` 36px
+      (`--text-3xl`/`--text-4xl` were added here and removed in the cleanup —
+      nothing sized between 28 and 36px exists in this app)
 - [x] `--leading-normal: 1.6`, `--space-7: 1.75rem`
 - [x] app.css: `.note-excerpt` → `--text-sm`, `.habit-dot` → 24px / `--text-xs`
 - [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
@@ -739,8 +744,8 @@
 - [x] `card-enter` keyframes + `.card-enter`, staggered across `.kpi-grid` and
       `.dashboard-grid`; `transform` omitted from the `to` frame so `both` fill
       cannot pin the hover lift
-- [x] One shared hover-lift rule for `.card-hover-lift`, `.kpi-card`,
-      `.wallet-card`, `.more-card`; KPI border now `--color-accent-ring`
+- [x] One shared hover-lift rule for `.kpi-card`, `.wallet-card`,
+      `.more-card`; KPI border now `--color-accent-ring`
 - [x] Section separators are gradient hairlines (card head/foot, side-form,
       editor-actions, contact-section)
 - [x] `position: relative` + `overflow: hidden` on every card surface
@@ -790,10 +795,10 @@ issues found and fixed:
       fixed columns and `minmax()` row heights — dead whitespace. Both are
       `display: block` in print now.
 
-Checked and deliberately left alone: `.card-hover-lift` and `.input-invalid`
-are unused-in-markup but are the documented opt-in APIs for 5.5 and 4.5;
-`card-header`, `editor-title-input` and `limit-exceeded` were already dead CSS
-before Phase 1.
+At the time of this audit `.card-hover-lift` and `.input-invalid` were kept as
+the documented opt-in APIs for 5.5 and 4.5; the final cleanup below removed
+them. `card-header`, `editor-title-input` and `limit-exceeded` were already
+dead CSS before Phase 1.
 
 ### Audit — Phases 8-11 recheck
 Same sweep plus a read of the newest logic. Five issues found and fixed:
@@ -818,23 +823,25 @@ rules actually match (so the red border fires everywhere), `.day-cell` keeps
 `position: relative` for its entry dot, and the modal has no transformed or
 filtered ancestor that would break `position: fixed`.
 
-### Cleanup — dead CSS pass
-Removed three selectors that no element could ever match (they predate this
-polish work): `.card-header`, `.limit-exceeded`, and the `.editor-title-input`
-half of the `input.editor-title` rule. Also dropped `--focus-outline-width` /
-`--focus-outline-offset`, orphaned when focus moved to `--shadow-focus`.
+### Cleanup — dead CSS + dead tokens
+Housekeeping runs last, after the feature phases, so nothing "unused" is really
+"not reached yet". Removed:
 
-Kept deliberately:
+- Selectors no element can match: `.card-header`, `.limit-exceeded`, and the
+  `.editor-title-input` half of the `input.editor-title` rule.
+- The opt-in utilities added during the polish itself, folded into the rules
+  that actually run: `.card-hover-lift` (→ `.kpi-card:hover,
+  .wallet-card:hover, .more-card:hover`) and `.input-invalid` (→ the
+  `aria-invalid` selectors).
+- Orphaned tokens: `--focus-outline-width` / `--focus-outline-offset` (left
+  behind when focus moved to `--shadow-focus`) and the never-referenced rungs
+  `--text-3xl`, `--text-4xl`, `--weight-regular`, `--border-width-thick`.
+- `--text-display`, added in Phase 1 and unused, was instead *put to use* on
+  the lock/setup headline — which is what 1.2 reserved it for.
 
-- `.card-hover-lift` and `.input-invalid` are the opt-in APIs named by tasks
-  5.5 and 4.5; every current user of that behaviour is the shared rule
-  (`.card-hover-lift:hover, .kpi-card:hover, …`) and the `aria-invalid`
-  selector respectively.
-- Scale rungs `--text-3xl`, `--text-4xl`, `--weight-regular`,
-  `--border-width-thick` have no reference yet, but they are the vocabulary the
-  plan asked for (1.5) and a scale with a hole in it is worse than an unused
-  rung. `--text-display`, also added in Phase 1, is now actually used by the
-  lock/setup headline.
+The bar afterwards is strict: **every class selector in `app.css` appears in
+some `.tsx`, and every token in `tokens.css` is referenced** (the two
+audit scripts re-run clean).
 
 ### Phase 8 — Notes Studio Refinement
 - [x] Note cards on the input surface; hover lifts with the spring easing

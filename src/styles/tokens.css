@@ -95,7 +95,6 @@
 
   /* Borders & radii */
   --border-width: 1px;
-  --border-width-thick: 2px;
   --border-width-accent: 3px;
   --radius-sm: 0.375rem;
   --radius-input: 0.4375rem;
@@ -128,10 +127,7 @@
   --text-lg: 1.125rem;
   --text-xl: 1.5rem;
   --text-2xl: 1.75rem;
-  --text-3xl: 2rem;
-  --text-4xl: 2.5rem;
   --text-display: 2.25rem;
-  --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;

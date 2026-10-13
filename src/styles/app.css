@@ -588,11 +588,9 @@
   }
 }
 
-.input-invalid,
 /* Same reach as the unified control rule: bare inputs in entry/inline/budget
    forms carry no `.input` class, and aria-invalid is what the pages bind. */
 .input[aria-invalid="true"],
-.input-invalid,
 .entry-form input[aria-invalid="true"],
 .inline-form input[aria-invalid="true"],
 .budget-row input[aria-invalid="true"],
@@ -603,7 +601,6 @@
 }
 
 .input[aria-invalid="true"]:focus-visible,
-.input-invalid:focus-visible,
 .entry-form input[aria-invalid="true"]:focus-visible,
 .inline-form input[aria-invalid="true"]:focus-visible,
 .budget-row input[aria-invalid="true"]:focus-visible,
@@ -613,8 +610,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .input[aria-invalid="true"],
-  .input-invalid {
+  .input[aria-invalid="true"] {
     animation: none;
   }
 }
@@ -914,14 +910,8 @@ button.chip:hover {
   animation-delay: 240ms;
 }
 
-.card-hover-lift {
-  transition:
-    transform var(--dur-base) var(--ease-spring),
-    box-shadow var(--dur-base) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
-}
-
-.card-hover-lift:hover,
+/* One lift rule for the three card types that have it; each card declares its
+ * own transition list. */
 .kpi-card:hover,
 .wallet-card:hover,
 .more-card:hover {
