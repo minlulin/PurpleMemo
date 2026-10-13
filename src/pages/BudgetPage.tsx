@@ -4,7 +4,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconBudget, IconWallet } from "../components/icons.tsx";
+import {
+  IconBudget,
+  IconChevronLeft,
+  IconChevronRight,
+  IconWallet,
+} from "../components/icons.tsx";
 import { budgetRepo } from "../data/app.ts";
 import {
   cleanName,
@@ -520,10 +525,12 @@ function EntriesView() {
         <div className="day-nav">
           <button
             type="button"
-            className="btn"
+            className="btn btn-icon"
+            aria-label="Previous day"
+            title="Previous day"
             onClick={() => setDate(addDays(date, -1))}
           >
-            ◀
+            <IconChevronLeft className="icon" />
           </button>
           <input
             type="date"
@@ -533,10 +540,12 @@ function EntriesView() {
           />
           <button
             type="button"
-            className="btn"
+            className="btn btn-icon"
+            aria-label="Next day"
+            title="Next day"
             onClick={() => setDate(addDays(date, 1))}
           >
-            ▶
+            <IconChevronRight className="icon" />
           </button>
           <button
             type="button"
@@ -799,18 +808,22 @@ function MonthView() {
       <div className="day-nav">
         <button
           type="button"
-          className="btn"
+          className="btn btn-icon"
+          aria-label="Previous month"
+          title="Previous month"
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, -1))}
         >
-          ◀
+          <IconChevronLeft className="icon" />
         </button>
         <h2 className="side-heading month-label">{label}</h2>
         <button
           type="button"
-          className="btn"
+          className="btn btn-icon"
+          aria-label="Next month"
+          title="Next month"
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, 1))}
         >
-          ▶
+          <IconChevronRight className="icon" />
         </button>
         <button
           type="button"
@@ -998,12 +1011,24 @@ function YearView() {
   return (
     <section className="budget-year" aria-label="Yearly summary">
       <div className="day-nav">
-        <button type="button" className="btn" onClick={() => shiftYear(-1)}>
-          ◀
+        <button
+          type="button"
+          className="btn btn-icon"
+          aria-label="Previous year"
+          title="Previous year"
+          onClick={() => shiftYear(-1)}
+        >
+          <IconChevronLeft className="icon" />
         </button>
         <h2 className="side-heading month-label">{year}</h2>
-        <button type="button" className="btn" onClick={() => shiftYear(1)}>
-          ▶
+        <button
+          type="button"
+          className="btn btn-icon"
+          aria-label="Next year"
+          title="Next year"
+          onClick={() => shiftYear(1)}
+        >
+          <IconChevronRight className="icon" />
         </button>
         <button
           type="button"
@@ -1153,18 +1178,22 @@ function LimitsView() {
       <div className="day-nav">
         <button
           type="button"
-          className="btn"
+          className="btn btn-icon"
+          aria-label="Previous month"
+          title="Previous month"
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, -1))}
         >
-          ◀
+          <IconChevronLeft className="icon" />
         </button>
         <h2 className="side-heading month-label">{monthLabel(yearMonth)}</h2>
         <button
           type="button"
-          className="btn"
+          className="btn btn-icon"
+          aria-label="Next month"
+          title="Next month"
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, 1))}
         >
-          ▶
+          <IconChevronRight className="icon" />
         </button>
       </div>
 

@@ -258,7 +258,7 @@
     background-color var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
+    transform var(--dur-fast) var(--ease-spring);
 }
 
 .btn:hover:not(:disabled) {
@@ -267,13 +267,63 @@
 }
 
 .btn:active:not(:disabled) {
-  transform: translateY(var(--border-width));
+  transform: scale(0.98);
+  box-shadow: var(--shadow-inset);
 }
 
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
+}
+
+/* Icon-only square — pair with `title`/`aria-label` so it stays labelled. */
+.btn-icon {
+  padding: var(--space-2);
+  inline-size: var(--space-8);
+  min-inline-size: var(--space-8);
+  block-size: var(--space-8);
+  min-block-size: var(--space-8);
+}
+
+/* Swap the label for a spinner without changing the button's footprint. */
+.btn-loading {
+  color: transparent;
+  pointer-events: none;
+  position: relative;
+}
+
+.btn-loading .icon-spin {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-text-inverse);
+}
+
+.btn-danger.btn-loading .icon-spin {
+  color: var(--color-danger);
+}
+
+.btn:not(.btn-primary):not(.btn-danger).btn-loading .icon-spin {
+  color: var(--color-text);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+.icon-spin {
+  animation: spin 700ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-spin {
+    animation: none;
+  }
 }
 
 .btn-primary {
@@ -285,9 +335,12 @@
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--gradient-accent);
+  background: linear-gradient(
+    135deg,
+    var(--color-accent-hover) 0%,
+    var(--color-accent-gradient-end) 100%
+  );
   border-color: var(--color-accent-hover);
-  filter: brightness(1.08);
   box-shadow: var(--shadow-md);
 }
 
@@ -314,7 +367,7 @@
 .btn-ghost:hover:not(:disabled) {
   color: var(--color-text);
   background: var(--color-surface-hover);
-  border-color: transparent;
+  border-color: var(--color-border-subtle);
 }
 
 .btn.is-on {
@@ -1684,7 +1737,7 @@ input.editor-title {
   gap: var(--space-2);
 }
 
-.month-nav .btn {
+.month-nav .btn:not(.btn-icon) {
   padding-inline: var(--space-3);
 }
 

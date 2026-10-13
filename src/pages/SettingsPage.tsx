@@ -9,8 +9,10 @@
 
 import { useEffect, useState } from "react";
 import {
+  IconArrowRight,
   IconDownload,
   IconSettings,
+  IconSpinner,
   IconUpload,
 } from "../components/icons.tsx";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
@@ -506,7 +508,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             className="btn"
             onClick={() => p.onNavigate("vault")}
           >
-            Open Vault →
+            Open Vault <IconArrowRight className="icon" />
           </button>
         </div>
       </section>
@@ -582,11 +584,12 @@ export default function SettingsPage(p: SettingsPageProps) {
         <div className="editor-row">
           <button
             type="button"
-            className="btn btn-primary"
+            className={`btn btn-primary${backupBusy ? " btn-loading" : ""}`}
             disabled={backupBusy || pending !== null}
             onClick={() => void doExport()}
           >
             <IconDownload className="icon" />
+            {backupBusy && <IconSpinner />}
             {backupBusy ? "Exporting…" : "Export backup"}
           </button>
           <label className="btn">
@@ -616,10 +619,11 @@ export default function SettingsPage(p: SettingsPageProps) {
             <div className="editor-row">
               <button
                 type="button"
-                className="btn btn-danger"
+                className={`btn btn-danger${importBusy ? " btn-loading" : ""}`}
                 disabled={importBusy}
                 onClick={() => void confirmImport()}
               >
+                {importBusy && <IconSpinner />}
                 {importBusy ? "Importing…" : "Replace all data"}
               </button>
               <button
@@ -699,10 +703,11 @@ export default function SettingsPage(p: SettingsPageProps) {
           <div className="editor-row">
             <button
               type="button"
-              className="btn btn-primary"
+              className={`btn btn-primary${shareBusy ? " btn-loading" : ""}`}
               disabled={shareBusy}
               onClick={() => void startShare()}
             >
+              {shareBusy && <IconSpinner />}
               {shareBusy ? "Starting…" : "Start sharing"}
             </button>
           </div>
@@ -736,10 +741,11 @@ export default function SettingsPage(p: SettingsPageProps) {
           {update !== null && (
             <button
               type="button"
-              className="btn btn-primary"
+              className={`btn btn-primary${updateBusy ? " btn-loading" : ""}`}
               disabled={updateBusy}
               onClick={() => void installNow()}
             >
+              {updateBusy && <IconSpinner />}
               {updateBusy ? "Downloading…" : `Install ${update.version}`}
             </button>
           )}

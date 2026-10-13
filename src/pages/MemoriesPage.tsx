@@ -5,7 +5,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconMemories } from "../components/icons.tsx";
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconMemories,
+} from "../components/icons.tsx";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -369,22 +373,24 @@ export default function MemoriesPage() {
               <div className="month-nav">
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-icon"
                   aria-label="Previous month"
+                  title="Previous month"
                   onClick={() => setFeedMonth(shiftYearMonth(feedMonth, -1))}
                 >
-                  ‹
+                  <IconChevronLeft className="icon" />
                 </button>
                 <h3 className="side-heading month-label">
                   {monthLabel(feedMonth)}
                 </h3>
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-icon"
                   aria-label="Next month"
+                  title="Next month"
                   onClick={() => setFeedMonth(shiftYearMonth(feedMonth, 1))}
                 >
-                  ›
+                  <IconChevronRight className="icon" />
                 </button>
                 <button
                   type="button"

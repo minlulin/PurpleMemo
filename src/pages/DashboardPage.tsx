@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
+  IconArrowRight,
   IconBudget,
   IconBusiness,
   IconDashboard,
@@ -324,7 +325,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               className="btn btn-ghost"
               onClick={() => p.onNavigate("tasks")}
             >
-              Open Tasks →
+              Open Tasks <IconArrowRight className="icon" />
             </button>
           </div>
         </section>
@@ -359,7 +360,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               className="btn btn-ghost"
               onClick={() => p.onNavigate("budget")}
             >
-              Open Budget →
+              Open Budget <IconArrowRight className="icon" />
             </button>
           </div>
         </section>
@@ -417,7 +418,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               className="btn btn-ghost"
               onClick={() => p.onNavigate("habits")}
             >
-              Open Habits →
+              Open Habits <IconArrowRight className="icon" />
             </button>
           </div>
         </section>
@@ -472,7 +473,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               className="btn btn-ghost"
               onClick={() => p.onNavigate("memories")}
             >
-              Open Memories →
+              Open Memories <IconArrowRight className="icon" />
             </button>
           </div>
         </section>
@@ -512,7 +513,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               className="btn btn-ghost"
               onClick={() => p.onNavigate("business")}
             >
-              Open Business →
+              Open Business <IconArrowRight className="icon" />
             </button>
           </div>
         </section>
@@ -537,7 +538,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               className="btn btn-ghost"
               onClick={() => p.onNavigate("business")}
             >
-              Open Receivable →
+              Open Receivable <IconArrowRight className="icon" />
             </button>
           </div>
         </section>

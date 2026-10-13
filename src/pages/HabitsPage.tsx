@@ -4,7 +4,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconHabits, IconPlus } from "../components/icons.tsx";
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconHabits,
+  IconPlus,
+} from "../components/icons.tsx";
 import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -213,20 +218,24 @@ export default function HabitsPage() {
                 <div className="month-nav">
                   <button
                     type="button"
-                    className="btn"
+                    className="btn btn-icon"
+                    aria-label="Previous month"
+                    title="Previous month"
                     onClick={() => shiftMonth(-1)}
                   >
-                    ◀
+                    <IconChevronLeft className="icon" />
                   </button>
                   <span className="side-heading month-label">
                     {monthLabel(gridMonth)}
                   </span>
                   <button
                     type="button"
-                    className="btn"
+                    className="btn btn-icon"
+                    aria-label="Next month"
+                    title="Next month"
                     onClick={() => shiftMonth(1)}
                   >
-                    ▶
+                    <IconChevronRight className="icon" />
                   </button>
                 </div>
 

@@ -96,28 +96,40 @@
 
 ### Tasks
 
-- [ ] **3.1** Replace `filter: brightness(1.08)` on `.btn-primary:hover` with a brighter gradient overlay or `background-color` shift
-- [ ] **3.2** Add `.btn-icon` variant — square, `min-height: var(--space-8)`, `padding: var(--space-2)`, icon-only with tooltip
-- [ ] **3.3** Add `.btn-loading` state — shows a CSS spinner (rotating border circle) inside the button
-- [ ] **3.4** Add border to `.btn-ghost:hover` using `--color-border-subtle`
-- [ ] **3.5** Add `transform: scale(0.98)` on `:active` for all buttons (tactile press)
-- [ ] **3.6** Add `transition: transform var(--dur-fast) var(--ease-spring)` for springy press effect
-- [ ] **3.7** Increase icon stroke width from `1.6` to `1.8` in `icons.tsx`
-- [ ] **3.8** Add `IconChevronLeft` and `IconChevronRight` SVG icons
-- [ ] **3.9** Replace all `◀` `▶` `‹` `›` text characters with proper SVG icons across all pages
-- [ ] **3.10** Add `IconSpinner` for loading states
+- [x] **3.1** Replace `filter: brightness(1.08)` on `.btn-primary:hover` with a brighter gradient overlay or `background-color` shift
+- [x] **3.2** Add `.btn-icon` variant — square, `min-height: var(--space-8)`, `padding: var(--space-2)`, icon-only with tooltip
+- [x] **3.3** Add `.btn-loading` state — shows a CSS spinner (rotating border circle) inside the button
+- [x] **3.4** Add border to `.btn-ghost:hover` using `--color-border-subtle`
+- [x] **3.5** Add `transform: scale(0.98)` on `:active` for all buttons (tactile press)
+- [x] **3.6** Add `transition: transform var(--dur-fast) var(--ease-spring)` for springy press effect
+- [x] **3.7** Increase icon stroke width from `1.6` to `1.8` in `icons.tsx`
+- [x] **3.8** Add `IconChevronLeft` and `IconChevronRight` SVG icons
+- [x] **3.9** Replace all `◀` `▶` `‹` `›` text characters with proper SVG icons across all pages
+- [x] **3.10** Add `IconSpinner` for loading states
 
 ### Files touched
 - `src/styles/app.css`
 - `src/components/icons.tsx`
-- `src/pages/BudgetPage.tsx` (day nav arrows)
+- `src/pages/BudgetPage.tsx` (day/month/year nav arrows)
 - `src/pages/JournalPage.tsx` (month nav arrows)
 - `src/pages/HabitsPage.tsx` (month nav arrows)
+- `src/pages/MemoriesPage.tsx`, `DashboardPage.tsx`, `SettingsPage.tsx`
+  (3.9 covers every text arrow; Settings also uses `.btn-loading`)
+
+### Notes
+- `.btn-icon` is square via logical `inline-size`/`block-size`; `.month-nav .btn`
+  padding is now scoped `:not(.btn-icon)` so it can't re-widen the chevrons.
+- Pressed buttons use `--shadow-inset` alongside `scale(0.98)` — the Phase 2 token
+  finally has a consumer.
+- `.btn-loading` keeps the label in the DOM (`color: transparent`) so the button
+  never changes size and screen readers still announce it; the spinner is
+  absolutely centred and tinted per variant.
 
 ### Verification
-- [ ] All text arrows replaced with SVG icons
-- [ ] Button press has satisfying tactile feedback
-- [ ] Loading spinners render correctly
+- [x] All text arrows replaced with SVG icons (`[◀▶‹›«»→←]` matches nothing)
+- [ ] Button press has satisfying tactile feedback (manual pass pending)
+- [x] Loading spinners render correctly (settings export/import/share/install)
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (186), `build` all pass
 
 ---
 
@@ -562,7 +574,15 @@
 - [ ] Manual visual pass (input/card contrast in both themes) outstanding
 
 ### Phase 3 — Button & Control Polish
-- [ ] Not started
+- [x] `.btn-primary:hover` brightens via a gradient shift (no `filter`)
+- [x] `.btn-icon` square variant, `.btn-loading` spinner state, ghost hover border
+- [x] `:active` → `scale(0.98)` + `--shadow-inset`; transform eases with spring
+- [x] icons.tsx: stroke 1.8, added chevrons, arrow-right and spinner
+- [x] Every `◀ ▶ ‹ › →` in TSX is now an SVG icon (Budget/Journal/Habits/
+      Memories/Dashboard/Settings), each with `aria-label` + `title`
+- [x] `.btn-loading` wired into Settings export/import/share/install
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual press/spinner feel check outstanding
 
 ### Phase 4 — Form Input Enhancement
 - [ ] Not started

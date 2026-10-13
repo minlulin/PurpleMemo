@@ -11,7 +11,7 @@ function base(props: IconProps) {
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
-    strokeWidth: 1.6,
+    strokeWidth: 1.8,
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
     "aria-hidden": true,
@@ -314,6 +314,50 @@ export function IconArrowLeft(props: IconProps) {
     <svg {...base(props)}>
       <path d="M19 12H5" />
       <path d="m11 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+export function IconArrowRight(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M5 12h14" />
+      <path d="m13 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+/* --- Compact navigation + progress --------------------------------------- */
+
+export function IconChevronLeft(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="m14.5 6-6 6 6 6" />
+    </svg>
+  );
+}
+
+export function IconChevronRight(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="m9.5 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+/* A spinner is one of the few icons that animates on its own; `.icon-spin`
+ * in app.css drives the rotation. */
+export function IconSpinner(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg
+      {...base(props)}
+      className={props.className ? `icon-spin ${props.className}` : "icon-spin"}
+    >
+      <path d="M12 3a9 9 0 1 0 9 9" />
     </svg>
   );
 }

@@ -3,7 +3,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { IconCalendar, IconJournal } from "../components/icons.tsx";
+import {
+  IconCalendar,
+  IconChevronLeft,
+  IconChevronRight,
+  IconJournal,
+} from "../components/icons.tsx";
 import { journalRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -112,20 +117,22 @@ export default function JournalPage() {
         <div className="month-nav">
           <button
             type="button"
-            className="btn"
+            className="btn btn-icon"
             aria-label="Previous month"
+            title="Previous month"
             onClick={() => setMonth((m) => shiftYearMonth(m, -1))}
           >
-            ‹
+            <IconChevronLeft className="icon" />
           </button>
           <h2 className="side-heading month-label">{label}</h2>
           <button
             type="button"
-            className="btn"
+            className="btn btn-icon"
             aria-label="Next month"
+            title="Next month"
             onClick={() => setMonth((m) => shiftYearMonth(m, 1))}
           >
-            ›
+            <IconChevronRight className="icon" />
           </button>
         </div>
         <table className="month-grid">
