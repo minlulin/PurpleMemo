@@ -472,29 +472,50 @@
 
 ### Tasks
 
-- [ ] **11.1] Increase photo grid gap from `--space-3` (12px) to `--space-4` (16px)
-- [ ] **11.2] Add `.photo-thumb-hover` — scale image 1.05x + show overlay with note text
-- [ ] **11.3] Add `.photo-thumb-overlay` — gradient overlay at bottom with photo caption
-- [ ] **11.4] Move photo inspector to a modal dialog instead of below-grid section
-- [ ] **11.5] Add `.modal-backdrop` — semi-transparent overlay with blur
-- [ ] **11.6] Add `.modal-content` — centered card with scale-in animation
-- [ ] **11.7] Add `IconClose` icon for modal dismiss
-- [ ] **11.8] Separate habit week strip from month grid into distinct sub-sections
-- [ ] **11.9] Add `.habit-month-toggle` — collapse/expand month grid per habit
-- [ ] **11.10] Increase habit day cell font to `--text-sm` and add `font-weight: var(--weight-semibold)` for today
+- [x] **11.1] Increase photo grid gap from `--space-3` (12px) to `--space-4` (16px)
+- [x] **11.2] Add `.photo-thumb-hover` — scale image 1.05x + show overlay with note text
+- [x] **11.3] Add `.photo-thumb-overlay` — gradient overlay at bottom with photo caption
+- [x] **11.4** Move photo inspector to a modal dialog instead of below-grid section
+- [x] **11.5] Add `.modal-backdrop` — semi-transparent overlay with blur
+- [x] **11.6] Add `.modal-content` — centered card with scale-in animation
+- [x] **11.7** Add `IconClose` icon for modal dismiss
+- [x] **11.8** Separate habit week strip from month grid into distinct sub-sections
+- [x] **11.9] Add `.habit-month-toggle` — collapse/expand month grid per habit
+- [x] **11.10** Increase habit day cell font to `--text-sm` and add `font-weight: var(--weight-semibold)` for today
 
 ### Files touched
+- `src/styles/tokens.css`
 - `src/styles/app.css`
 - `src/components/icons.tsx`
 - `src/pages/GalleryPage.tsx`
 - `src/pages/HabitsPage.tsx`
 
+### Notes
+- 11.4 is a real dialog, not a styled section: `role="dialog"` +
+  `aria-modal` + `aria-labelledby`, Escape to close, **Tab cycles inside the
+  dialog**, focus starts on the close button and returns to the thumbnail that
+  opened it. "Click outside" is a real `<button class="modal-dismiss">` under
+  the dialog rather than a click handler on the backdrop div — Biome rejects
+  handlers on static elements, and a div handler would have been mouse-only.
+- Scrim and caption fade are `--color-scrim` / `--gradient-photo-fade` tokens
+  (alpha colours are only allowed in tokens.css), with light-mode values.
+- 11.2/11.3: `.photo-thumb:hover img` zooms the photo, not the tile, so the
+  caption overlay rides along; the overlay also appears on `:focus-visible` so
+  keyboard users get it too.
+- 11.8/11.9: the month grid is now behind a per-habit "Show month" disclosure
+  (`aria-expanded`), so a card with many habits is a list of week strips until
+  you ask for history. Month state is a `Set` of habit ids.
+- 11.10 uses `--weight-semibold` for today as planned; `--weight-bold` there
+  fought `.is-active`'s semibold for precedence.
+
 ### Verification
-- [ ] Photo grid has generous gaps
-- [ ] Photo thumbnails have hover zoom + caption overlay
-- [ ] Photo inspector opens as modal
-- [ ] Habit cards are less visually overloaded
-- [ ] Month grid can be collapsed per habit
+- [x] Photo grid has generous gaps
+- [x] Photo thumbnails have hover zoom + caption overlay
+- [x] Photo inspector opens as modal (Escape, focus trap, focus return)
+- [x] Habit cards are less visually overloaded
+- [x] Month grid can be collapsed per habit
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual pass on modal feel and thumb hover pending
 
 ---
 
@@ -807,7 +828,17 @@ before Phase 1.
 - [ ] Manual pass on nav stickiness and avatar palette pending
 
 ### Phase 11 — Gallery & Habits Polish
-- [ ] Not started
+- [x] Photo grid gap 12px → 16px; thumbs zoom the image and reveal the caption
+      on hover *and* focus
+- [x] Inspector is a real dialog: `aria-modal`, Escape, Tab trap, focus return;
+      backdrop is a dismiss button, not a click handler on a div
+- [x] `--color-scrim` / `--gradient-photo-fade` tokens (dark + light)
+- [x] `IconClose` and `IconChevronDown` added
+- [x] Habits: week strip and month history are separate blocks, month grid
+      behind a per-habit `aria-expanded` disclosure
+- [x] Day cells `--text-sm`; today is semibold (bold was fighting `.is-active`)
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual pass on modal feel and thumb hover pending
 
 ### Phase 12 — Cross-Cutting Premium Features
 - [ ] Not started

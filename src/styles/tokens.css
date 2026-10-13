@@ -157,8 +157,16 @@
    * theme. Lives here because a data URI is a colour value in disguise. */
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a398c3' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
+  /* Modal scrim + photo caption fade (alpha colours live here only). */
+  --color-scrim: rgba(6, 4, 15, 0.62);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(6, 4, 15, 0.78) 70%
+  );
+
   /* Contact avatar presets — picked by a hash of the name so the address book
- * stays scannable. Same five in both themes; the letter is inverse-coloured. */
+   * stays scannable. Same five in both themes; the letter is inverse-coloured. */
   --avatar-gradient-1: linear-gradient(135deg, #6b3fd4 0%, #9a6bff 100%);
   --avatar-gradient-2: linear-gradient(135deg, #4b2ea8 0%, #7a4fe0 100%);
   --avatar-gradient-3: linear-gradient(135deg, #8b3fb0 0%, #c05fd6 100%);
@@ -233,6 +241,12 @@
   --color-text-subtle: #8276a3;
   --color-text-inverse: #ffffff;
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235d527c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-scrim: rgba(27, 19, 48, 0.45);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(27, 19, 48, 0.7) 70%
+  );
   --shadow-sm: 0 1px 3px rgba(27, 19, 48, 0.06);
   --shadow-md: 0 6px 18px rgba(27, 19, 48, 0.08);
   --shadow-lg: 0 18px 40px rgba(27, 19, 48, 0.12);

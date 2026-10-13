@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
+  IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
   IconHabits,
@@ -33,6 +34,7 @@ export default function HabitsPage() {
   );
   const [dates, setDates] = useState<Map<number, string[]>>(new Map());
   const [gridMonth, setGridMonth] = useState(() => yearMonthOf(todayLocal()));
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -161,6 +163,7 @@ export default function HabitsPage() {
             const p = progress.get(h.id);
             const doneToday =
               p?.week.find((d) => d.date === today)?.done ?? false;
+            const open = expanded.has(h.id);
             return (
               <section key={h.id} className="budget-manage" aria-label={h.name}>
                 <div className="dash-card-head">
@@ -191,7 +194,7 @@ export default function HabitsPage() {
                   </span>
                 </div>
 
-                <div>
+                <div className="habit-week-block">
                   <span className="editor-pane-label">This week</span>
                   <div className="habit-week-strip">
                     {(p?.week ?? []).map((d) => {
@@ -215,85 +218,116 @@ export default function HabitsPage() {
                   </div>
                 </div>
 
-                <div className="month-nav">
-                  <button
-                    type="button"
-                    className="btn btn-icon"
-                    aria-label="Previous month"
-                    title="Previous month"
-                    onClick={() => shiftMonth(-1)}
-                  >
-                    <IconChevronLeft className="icon" />
-                  </button>
-                  <span className="side-heading month-label">
-                    {monthLabel(gridMonth)}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-icon"
-                    aria-label="Next month"
-                    title="Next month"
-                    onClick={() => shiftMonth(1)}
-                  >
-                    <IconChevronRight className="icon" />
-                  </button>
-                </div>
-
-                <table className="month-grid">
-                  <caption className="visually-hidden">
-                    {monthLabel(gridMonth)} for {h.name}
-                  </caption>
-                  <thead>
-                    <tr className="week-row week-head">
-                      {DAY_LABELS.map((l) => (
-                        <th key={l} className="day-head" scope="col">
-                          {l}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {buildMonthGrid(gridMonth, dates.get(h.id) ?? []).map(
-                      (week) => (
-                        <tr
-                          className="week-row"
-                          key={
-                            week.find((c) => c !== null)?.date ??
-                            `${gridMonth}-blank`
-                          }
+                <div className="habit-month-toggle">
+                  <div className="month-nav">
+                    <span className="editor-pane-label">Month history</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      aria-expanded={open}
+                      onClick={() =>
+                        setExpanded((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(h.id)) next.delete(h.id);
+                          else next.add(h.id);
+                          return next;
+                        })
+                      }
+                    >
+                      {open ? (
+                        <IconChevronDown className="icon" />
+                      ) : (
+                        <IconChevronRight className="icon" />
+                      )}
+                      {open ? "Hide" : "Show"} month
+                    </button>
+                  </div>
+                  {open ? (
+                    <>
+                      <div className="month-nav">
+                        <button
+                          type="button"
+                          className="btn btn-icon"
+                          aria-label="Previous month"
+                          title="Previous month"
+                          onClick={() => shiftMonth(-1)}
                         >
-                          {week.map((cell, ci) => (
-                            <td
-                              key={cell?.date ?? `blank-${ci}`}
-                              className="day-td"
-                            >
-                              {cell === null ? (
-                                <span className="day-cell is-blank" />
-                              ) : (
-                                <button
-                                  type="button"
-                                  className={[
-                                    "day-cell",
-                                    cell.hasEntry ? "is-active" : "",
-                                    cell.date === today ? "is-today" : "",
-                                  ]
-                                    .filter((c) => c.length > 0)
-                                    .join(" ")}
-                                  aria-pressed={cell.hasEntry}
-                                  aria-label={cell.date}
-                                  disabled={cell.date > today}
-                                  onClick={() => void toggle(h.id, cell.date)}
-                                >
-                                  {Number(cell.date.slice(8))}
-                                </button>
-                              )}
-                            </td>
-                          ))}
-                        </tr>
-                      ),
-                    )}
-                  </tbody>
-                </table>
+                          <IconChevronLeft className="icon" />
+                        </button>
+                        <span className="side-heading month-label">
+                          {monthLabel(gridMonth)}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn-icon"
+                          aria-label="Next month"
+                          title="Next month"
+                          onClick={() => shiftMonth(1)}
+                        >
+                          <IconChevronRight className="icon" />
+                        </button>
+                      </div>
+
+                      <table className="month-grid">
+                        <caption className="visually-hidden">
+                          {monthLabel(gridMonth)} for {h.name}
+                        </caption>
+                        <thead>
+                          <tr className="week-row week-head">
+                            {DAY_LABELS.map((l) => (
+                              <th key={l} className="day-head" scope="col">
+                                {l}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {buildMonthGrid(gridMonth, dates.get(h.id) ?? []).map(
+                            (week) => (
+                              <tr
+                                className="week-row"
+                                key={
+                                  week.find((c) => c !== null)?.date ??
+                                  `${gridMonth}-blank`
+                                }
+                              >
+                                {week.map((cell, ci) => (
+                                  <td
+                                    key={cell?.date ?? `blank-${ci}`}
+                                    className="day-td"
+                                  >
+                                    {cell === null ? (
+                                      <span className="day-cell is-blank" />
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className={[
+                                          "day-cell",
+                                          cell.hasEntry ? "is-active" : "",
+                                          cell.date === today ? "is-today" : "",
+                                        ]
+                                          .filter((c) => c.length > 0)
+                                          .join(" ")}
+                                        aria-pressed={cell.hasEntry}
+                                        aria-label={cell.date}
+                                        disabled={cell.date > today}
+                                        onClick={() =>
+                                          void toggle(h.id, cell.date)
+                                        }
+                                      >
+                                        {Number(cell.date.slice(8))}
+                                      </button>
+                                    )}
+                                  </td>
+                                ))}
+                              </tr>
+                            ),
+                          )}
+                        </tbody>
+                      </table>
+                    </>
+                  ) : null}
+                </div>
               </section>
             );
           })}

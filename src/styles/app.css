@@ -2402,7 +2402,7 @@ tbody .week-row {
   align-items: center;
   justify-content: center;
   font: inherit;
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--color-text-muted);
   background: var(--color-surface-subtle);
@@ -2444,7 +2444,7 @@ tbody .week-row {
 .day-cell.is-today {
   border-color: var(--color-accent);
   color: var(--color-text);
-  font-weight: var(--weight-bold);
+  font-weight: var(--weight-semibold);
 }
 
 .day-cell.is-active {
@@ -2501,6 +2501,30 @@ tbody .week-row {
   border-color: var(--color-accent);
   color: var(--color-accent);
   font-weight: var(--weight-semibold);
+}
+
+/* Week strip and month grid are separate concerns: one is a glanceable
+ * row of days, the other is a detail you open on purpose. */
+.habit-week-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.habit-month-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+}
+
+.habit-month-toggle > .month-nav {
+  padding-top: var(--space-3);
+  border-top: var(--border-width) dashed var(--color-border);
+}
+
+.habit-month-toggle .btn-ghost {
+  margin-inline-start: auto;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2803,10 +2827,11 @@ tbody .week-row {
 .photo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .photo-thumb {
+  position: relative;
   font: inherit;
   padding: 0;
   border: var(--border-width) solid var(--color-border);
@@ -2821,17 +2846,18 @@ tbody .week-row {
   transition:
     border-color var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
+    transform var(--dur-fast) var(--ease-spring);
 }
 
 .photo-thumb:hover {
   border-color: var(--color-accent);
   box-shadow: var(--shadow-md);
+  transform: translateY(-0.0625rem);
 }
 
-.photo-thumb.is-active {
-  border-color: var(--color-accent);
-  box-shadow: var(--shadow-focus);
+/* Zoom the photo, not the tile — the caption rides along underneath. */
+.photo-thumb:hover img {
+  transform: scale(1.05);
 }
 
 .photo-thumb img {
@@ -2839,6 +2865,32 @@ tbody .week-row {
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+.photo-thumb-overlay {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  padding: var(--space-4) var(--space-3) var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  color: var(--color-text-inverse);
+  text-align: start;
+  background-image: var(--gradient-photo-fade);
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out);
+  pointer-events: none;
+}
+
+.photo-thumb:hover .photo-thumb-overlay,
+.photo-thumb:focus-visible .photo-thumb-overlay {
+  opacity: 1;
+}
+
+.photo-thumb.is-active {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
 }
 
 .photo-full {
@@ -2847,6 +2899,76 @@ tbody .week-row {
   border-radius: var(--radius-lg);
   border: var(--border-width) solid var(--color-border);
   align-self: flex-start;
+}
+
+/* ---------------------------------------------------------------------------
+ * Modal (photo inspector)
+ * ------------------------------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background: var(--color-scrim);
+  backdrop-filter: blur(0.25rem);
+  animation: fade-in var(--dur-fast) var(--ease-out);
+}
+
+/* A real button covers the backdrop, so "click outside to close" is also
+ * reachable from the keyboard instead of being a mouse-only affordance. */
+.modal-dismiss {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.modal-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  inline-size: min(48rem, 100%);
+  max-block-size: min(90vh, 52rem);
+  overflow-y: auto;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  background-image: var(--gradient-card-shine);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  animation: modal-in var(--dur-base) var(--ease-spring) both;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .modal-content {
+    animation: none;
+  }
 }
 
 /* ---------------------------------------------------------------------------

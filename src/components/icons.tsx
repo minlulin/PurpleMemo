@@ -411,3 +411,21 @@ export function IconMoon(props: IconProps) {
     </svg>
   );
 }
+
+export function IconClose(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+export function IconChevronDown(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="m6 9.5 6 6 6-6" />
+    </svg>
+  );
+}
