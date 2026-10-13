@@ -4,6 +4,17 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  IconBudget,
+  IconBusiness,
+  IconDashboard,
+  IconJournal,
+  IconLoans,
+  IconLock,
+  IconMore,
+  IconNotes,
+  IconSettings,
+} from "./components/icons.tsx";
 import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
 import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
 import { DEFAULT_AUTO_LOCK_MINUTES, isIdle, lockGate } from "./lib/appLock.ts";
@@ -33,15 +44,15 @@ import ShoppingPage from "./pages/ShoppingPage";
 import TasksPage from "./pages/TasksPage";
 import VaultPage from "./pages/VaultPage";
 
-const TABS: { key: PageKey; label: string }[] = [
-  { key: "dashboard", label: "Dashboard" },
-  { key: "notes", label: "Notes" },
-  { key: "journal", label: "Journal" },
-  { key: "budget", label: "Budget" },
-  { key: "business", label: "Business" },
-  { key: "loans", label: "Loans" },
-  { key: "more", label: "More" },
-  { key: "settings", label: "Settings" },
+const TABS: { key: PageKey; label: string; Icon: typeof IconNotes }[] = [
+  { key: "dashboard", label: "Dashboard", Icon: IconDashboard },
+  { key: "notes", label: "Notes", Icon: IconNotes },
+  { key: "journal", label: "Journal", Icon: IconJournal },
+  { key: "budget", label: "Budget", Icon: IconBudget },
+  { key: "business", label: "Business", Icon: IconBusiness },
+  { key: "loans", label: "Loans", Icon: IconLoans },
+  { key: "more", label: "More", Icon: IconMore },
+  { key: "settings", label: "Settings", Icon: IconSettings },
 ];
 
 /** Ask once for notification permission; false when denied (§2.7). */
@@ -309,7 +320,7 @@ export default function App() {
 
   if (!boot.ready) {
     return (
-      <div className="app-shell">
+      <div className="lock-wrap">
         <p className="muted lock-loading">Loading…</p>
       </div>
     );
@@ -319,7 +330,7 @@ export default function App() {
   // screen — setup would overwrite an existing PIN.
   if (!unlocked && boot.error !== null) {
     return (
-      <div className="app-shell">
+      <div className="lock-wrap">
         <p className="alert alert-error" role="alert">
           {boot.error} Restart Purple Memo and try again.
         </p>
@@ -349,33 +360,46 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
+      <aside className="app-sidebar">
         <div className="app-brand">
           <img className="app-mark" src="/brand/purple-memo-mark.png" alt="" />
           <span className="app-name">Purple Memo</span>
         </div>
         <nav className="app-nav" aria-label="Sections">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={page === tab.key ? "nav-tab is-active" : "nav-tab"}
-              aria-current={page === tab.key ? "page" : undefined}
-              onClick={() => setPage(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
+          {TABS.map((tab) => {
+            // Secondary pages (Habits, Tasks, …) live under More — keep its
+            // rail item lit while the user is inside one of them.
+            const active =
+              page === tab.key ||
+              (tab.key === "more" &&
+                tab.key !== page &&
+                !TABS.some((t) => t.key === page));
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                className={active ? "nav-item is-active" : "nav-item"}
+                aria-current={active ? "page" : undefined}
+                onClick={() => setPage(tab.key)}
+              >
+                <tab.Icon className="icon" />
+                <span className="nav-label">{tab.label}</span>
+              </button>
+            );
+          })}
         </nav>
-        <button
-          type="button"
-          className="btn btn-ghost"
-          title="Lock the app now (§2.9)"
-          onClick={lockNow}
-        >
-          Lock
-        </button>
-      </header>
+        <div className="sidebar-foot">
+          <button
+            type="button"
+            className="nav-item"
+            title="Lock the app now (§2.9)"
+            onClick={lockNow}
+          >
+            <IconLock className="icon" />
+            <span className="nav-label">Lock</span>
+          </button>
+        </div>
+      </aside>
       <main className="app-main">
         {page === "dashboard" ? (
           <DashboardPage onNavigate={setPage} notifyNote={notifyNote} />

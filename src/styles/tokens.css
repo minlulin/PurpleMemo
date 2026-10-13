@@ -4,6 +4,8 @@
  * PurpleShade design tokens — the single source of design values (plan §6).
  * The token-lint gate allows hex colors and px values ONLY in this file.
  * Brand anchor: #310096 (hue 255°, sampled from public/brand/*.png).
+ * Every name here is a contract: the phone share page (src-tauri/share.rs
+ * inlines this file) and tokens.test.ts both depend on them.
  */
 
 :root {
@@ -13,16 +15,24 @@
   --color-base: #14101f;
   --color-surface: #1c1630;
   --color-surface-raised: #251d3f;
+  --color-surface-hover: #2d2450;
   --color-border: #342956;
+  --color-border-strong: #4b3a77;
 
-  /* Brand & accent */
+  /* Brand & accent (hue 255° anchored to the logo) */
   --color-brand: #310096;
   --color-accent: #794dff;
+  --color-accent-soft: rgba(121, 77, 255, 0.16);
+  --color-accent-ring: rgba(121, 77, 255, 0.32);
+  --gradient-accent: linear-gradient(135deg, #794dff 0%, #5a2be0 100%);
 
   /* Status */
   --color-success: #22c55e;
   --color-warn: #f59e0b;
   --color-danger: #ef4444;
+  --color-success-soft: rgba(34, 197, 94, 0.14);
+  --color-warn-soft: rgba(245, 158, 11, 0.14);
+  --color-danger-soft: rgba(239, 68, 68, 0.14);
 
   /* Text */
   --color-text: #ede9f8;
@@ -42,18 +52,57 @@
 
   /* Borders & radii */
   --border-width: 1px;
-  --radius-sm: 0.25rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+  --radius-full: 999px;
+
+  /* Elevation (soft, tinted with the base purple) */
+  --shadow-sm: 0 1px 2px rgba(8, 5, 20, 0.45);
+  --shadow-md: 0 4px 14px rgba(8, 5, 20, 0.38);
+  --shadow-lg: 0 16px 36px rgba(8, 5, 20, 0.48);
+  --shadow-focus: 0 0 0 3px var(--color-accent-ring);
 
   /* Typography */
   --font-sans:
     "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
   --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-md: 1rem;
   --text-lg: 1.25rem;
   --text-xl: 1.5rem;
+  --text-2xl: 1.875rem;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --leading-tight: 1.25;
+  --leading-normal: 1.55;
+  --tracking-wide: 0.06em;
+
+  /* Layout */
+  --sidebar-width: 15rem;
+  --sidebar-width-rail: 4.5rem;
+  --panel-width: 16rem;
+  --content-max: 72rem;
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.3, 1);
+
+  /* Focus */
+  --focus-outline-width: 2px;
+  --focus-outline-offset: 2px;
+
+  /* Ambient glow behind lock/setup screens */
+  --gradient-app-glow: radial-gradient(
+    60rem 40rem at 50% -20%,
+    rgba(121, 77, 255, 0.14),
+    transparent 70%
+  );
 }
 
 /* Light mode mirror — brand/accent/status hues stay identical (§6). */
@@ -62,10 +111,26 @@
   --color-base: #f6f3fc;
   --color-surface: #ffffff;
   --color-surface-raised: #ffffff;
+  --color-surface-hover: #f0eafa;
   --color-border: #ddd3f2;
+  --color-border-strong: #c4b5e6;
+  --color-accent-soft: rgba(49, 0, 150, 0.08);
+  --color-accent-ring: rgba(49, 0, 150, 0.22);
+  --gradient-accent: linear-gradient(135deg, #794dff 0%, #5a2be0 100%);
+  --color-success-soft: rgba(34, 197, 94, 0.12);
+  --color-warn-soft: rgba(245, 158, 11, 0.16);
+  --color-danger-soft: rgba(239, 68, 68, 0.1);
   --color-text: #1d1533;
   --color-text-muted: #5d537d;
   --color-text-inverse: #ffffff;
+  --shadow-sm: 0 1px 2px rgba(29, 21, 51, 0.06);
+  --shadow-md: 0 4px 14px rgba(29, 21, 51, 0.08);
+  --shadow-lg: 0 16px 36px rgba(29, 21, 51, 0.12);
+  --gradient-app-glow: radial-gradient(
+    60rem 40rem at 50% -20%,
+    rgba(121, 77, 255, 0.08),
+    transparent 70%
+  );
 }
 
 html,
@@ -80,6 +145,13 @@ body {
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  accent-color: var(--color-accent);
+}
+
+::selection {
+  background: var(--color-accent-soft);
 }
 
 /* Money and figures always use tabular numerals (§6). */
