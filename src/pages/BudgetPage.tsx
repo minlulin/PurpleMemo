@@ -31,7 +31,12 @@ import {
 } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { monthLabel } from "../lib/journal.ts";
-import { formatMMK, fromCents, parseMMK } from "../lib/money.ts";
+import {
+  formatMMK,
+  fromCents,
+  isPartialAmount,
+  parseMMK,
+} from "../lib/money.ts";
 import type {
   ExpenseCategoryRow,
   IncomeCategoryRow,
@@ -678,7 +683,7 @@ function EntriesView() {
                 value={amountRaw}
                 onChange={(e) => setAmountRaw(e.target.value)}
                 aria-invalid={
-                  amountRaw.trim() !== "" && amountCents === null
+                  amountRaw.trim() !== "" && !isPartialAmount(amountRaw)
                     ? "true"
                     : undefined
                 }
@@ -686,7 +691,7 @@ function EntriesView() {
               <span className="input-affix-prefix">MMK</span>
             </span>
           </label>
-          {amountRaw.trim() !== "" && amountCents === null ? (
+          {amountRaw.trim() !== "" && !isPartialAmount(amountRaw) ? (
             <p className="limit-warn" role="status">
               Enter a valid amount — digits with up to 2 decimals.
             </p>
@@ -1538,9 +1543,7 @@ function RecurringView() {
                 value={amountRaw}
                 onChange={(e) => setAmountRaw(e.target.value)}
                 aria-invalid={
-                  amountRaw.trim() !== "" &&
-                  (parseMMK(amountRaw) === null ||
-                    (parseMMK(amountRaw) ?? 0) <= 0)
+                  amountRaw.trim() !== "" && !isPartialAmount(amountRaw)
                     ? "true"
                     : undefined
                 }

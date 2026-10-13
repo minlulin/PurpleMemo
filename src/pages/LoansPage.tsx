@@ -8,7 +8,12 @@ import { IconCalendar, IconLoans } from "../components/icons.tsx";
 import { loansRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
-import { formatMMK, fromCents, parseMMK } from "../lib/money.ts";
+import {
+  formatMMK,
+  fromCents,
+  isPartialAmount,
+  parseMMK,
+} from "../lib/money.ts";
 import type { LoanDirection, LoanRow, LoanState } from "../lib/types.ts";
 
 type LoanListItem = LoanRow & { state: LoanState; remaining_cents: number };
@@ -206,8 +211,7 @@ export default function LoansPage() {
                           onChange={(e) => setRepayAmount(e.target.value)}
                           aria-invalid={
                             repayAmount.trim() !== "" &&
-                            (parseMMK(repayAmount) === null ||
-                              (parseMMK(repayAmount) ?? 0) <= 0)
+                            !isPartialAmount(repayAmount)
                               ? "true"
                               : undefined
                           }
@@ -306,9 +310,7 @@ export default function LoansPage() {
                   value={amountRaw}
                   onChange={(e) => setAmountRaw(e.target.value)}
                   aria-invalid={
-                    amountRaw.trim() !== "" &&
-                    (parseMMK(amountRaw) === null ||
-                      (parseMMK(amountRaw) ?? 0) <= 0)
+                    amountRaw.trim() !== "" && !isPartialAmount(amountRaw)
                       ? "true"
                       : undefined
                   }

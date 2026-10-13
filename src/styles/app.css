@@ -310,14 +310,15 @@
   color: var(--color-text);
 }
 
-@keyframes spin {
+/* Named to avoid a collision with Tailwind's own `animate-spin` keyframes. */
+@keyframes icon-spin-rotate {
   to {
     transform: rotate(1turn);
   }
 }
 
 .icon-spin {
-  animation: spin 700ms linear infinite;
+  animation: icon-spin-rotate 700ms linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2813,11 +2814,20 @@ tbody .week-row {
   .budget-page,
   .notes-main,
   .notes-body,
-  .editor-split {
+  .editor-split,
+  .kpi-grid,
+  .dashboard-grid {
     display: block;
     min-height: 0;
     max-height: none;
     overflow: visible;
+  }
+
+  /* The screen-only bento rhythm (fixed columns, min row heights) turns into
+   * dead whitespace on paper. */
+  .kpi-card,
+  .settings-section {
+    margin-bottom: var(--space-4);
   }
 
   .budget-page {

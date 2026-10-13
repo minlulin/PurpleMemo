@@ -247,6 +247,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       {p.notifyNote ? <p className="alert alert-note">{p.notifyNote}</p> : null}
 
       {/* Executive KPI Strip */}
+      <h2 className="dashboard-section-title">Overview</h2>
       <div className="kpi-grid">
         <div className="kpi-card card-enter kpi-card-variation is-income">
           <div className="kpi-head">

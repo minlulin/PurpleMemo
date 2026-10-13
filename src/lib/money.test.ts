@@ -5,6 +5,7 @@ import {
   applyPayment,
   formatMMK,
   fromCents,
+  isPartialAmount,
   outstandingCents,
   parseMMK,
   toCents,
@@ -69,4 +70,22 @@ test("parseMMK parses user amount input to integer cents (§4 edge)", () => {
   assert.equal(parseMMK("-5"), null);
   assert.equal(parseMMK("1.2.3"), null);
   assert.equal(parseMMK("1.505"), null);
+});
+
+test("isPartialAmount lets a half-typed amount through (no error mid-edit)", () => {
+  // Everything parseMMK rejects only because it is unfinished.
+  assert.equal(isPartialAmount(""), true);
+  assert.equal(isPartialAmount("12"), true);
+  assert.equal(isPartialAmount("12."), true);
+  assert.equal(isPartialAmount("12.5"), true);
+  assert.equal(isPartialAmount("12.55"), true);
+  assert.equal(isPartialAmount("1,234."), true);
+  assert.equal(isPartialAmount("  7 "), true);
+
+  // Genuinely wrong input is not "still typing".
+  assert.equal(isPartialAmount("abc"), false);
+  assert.equal(isPartialAmount("1.2.3"), false);
+  assert.equal(isPartialAmount("1.234"), false);
+  assert.equal(isPartialAmount("-5"), false);
+  assert.equal(isPartialAmount("5."), true);
 });

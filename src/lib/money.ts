@@ -25,6 +25,19 @@ export function fromCents(cents: number): number {
   return cents / 100;
 }
 
+// A half-typed amount: "12" or "12." or "12.5" are all still on the way to a
+// valid number, so a field must not call them wrong while the user types.
+const AMOUNT_IN_PROGRESS = /^\d*\.?\d{0,2}$/;
+
+/**
+ * True while `raw` could still become a valid amount with a few more
+ * keystrokes. Lets the UI hold off on `aria-invalid` for "12." — which
+ * `parseMMK` rejects — instead of flashing an error mid-edit.
+ */
+export function isPartialAmount(raw: string): boolean {
+  return AMOUNT_IN_PROGRESS.test(raw.trim().replace(/,/g, ""));
+}
+
 const MMK_FORMAT = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,

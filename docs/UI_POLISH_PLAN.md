@@ -690,6 +690,32 @@
 - [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
 - [ ] Manual glow/pulse strength pass pending
 
+### Audit — Phases 1-7 recheck
+Automated sweep: every `var(--x)` resolves to a defined token, every
+`className` in TSX has a matching CSS rule, all 20 `<select>`s are covered by
+the chevron rule, and the built CSS keyframe list matches intent. Four real
+issues found and fixed:
+
+- [x] **Mid-typing false positive (Phase 4).** `parseMMK("12.")` is `null`, so
+      typing a decimal marked every money field invalid — red border + shake on
+      each keystroke. Added `isPartialAmount()` to `src/lib/money.ts` (with
+      tests) and switched all 7 `aria-invalid` bindings plus the budget warning
+      to it. A half-typed amount is no longer "wrong".
+- [x] **Duplicate "Today" heading (Phase 6).** The page title and the new
+      section title were both "Today"; the KPI strip now carries "Overview".
+- [x] **`@keyframes spin` collision risk (Phase 3).** Tailwind's `animate-spin`
+      ships the same keyframe name; ours is now `icon-spin-rotate` so the two
+      can't shadow each other the moment someone uses that utility.
+- [x] **Print kept the screen bento rhythm (Phase 2 + 5/6).** The print block
+      did not un-grid `.kpi-grid`/`.dashboard-grid`, so printed pages kept
+      fixed columns and `minmax()` row heights — dead whitespace. Both are
+      `display: block` in print now.
+
+Checked and deliberately left alone: `.card-hover-lift` and `.input-invalid`
+are unused-in-markup but are the documented opt-in APIs for 5.5 and 4.5;
+`card-header`, `editor-title-input` and `limit-exceeded` were already dead CSS
+before Phase 1.
+
 ### Phase 8 — Notes Studio Refinement
 - [ ] Not started
 

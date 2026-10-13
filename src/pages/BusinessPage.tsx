@@ -15,7 +15,12 @@ import {
 } from "../lib/business.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
-import { formatMMK, fromCents, parseMMK } from "../lib/money.ts";
+import {
+  formatMMK,
+  fromCents,
+  isPartialAmount,
+  parseMMK,
+} from "../lib/money.ts";
 import type {
   ExpenseCategoryRow,
   JobRow,
@@ -507,9 +512,7 @@ function JobsView() {
                       value={payAmount}
                       onChange={(e) => setPayAmount(e.target.value)}
                       aria-invalid={
-                        payAmount.trim() !== "" &&
-                        (parseMMK(payAmount) === null ||
-                          (parseMMK(payAmount) ?? 0) <= 0)
+                        payAmount.trim() !== "" && !isPartialAmount(payAmount)
                           ? "true"
                           : undefined
                       }
@@ -613,9 +616,7 @@ function JobsView() {
                 value={amountRaw}
                 onChange={(e) => setAmountRaw(e.target.value)}
                 aria-invalid={
-                  amountRaw.trim() !== "" &&
-                  (parseMMK(amountRaw) === null ||
-                    (parseMMK(amountRaw) ?? 0) <= 0)
+                  amountRaw.trim() !== "" && !isPartialAmount(amountRaw)
                     ? "true"
                     : undefined
                 }
@@ -1103,9 +1104,7 @@ function PayablesView() {
                 value={amountRaw}
                 onChange={(e) => setAmountRaw(e.target.value)}
                 aria-invalid={
-                  amountRaw.trim() !== "" &&
-                  (parseMMK(amountRaw) === null ||
-                    (parseMMK(amountRaw) ?? 0) <= 0)
+                  amountRaw.trim() !== "" && !isPartialAmount(amountRaw)
                     ? "true"
                     : undefined
                 }
