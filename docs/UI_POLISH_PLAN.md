@@ -818,6 +818,24 @@ rules actually match (so the red border fires everywhere), `.day-cell` keeps
 `position: relative` for its entry dot, and the modal has no transformed or
 filtered ancestor that would break `position: fixed`.
 
+### Cleanup — dead CSS pass
+Removed three selectors that no element could ever match (they predate this
+polish work): `.card-header`, `.limit-exceeded`, and the `.editor-title-input`
+half of the `input.editor-title` rule. Also dropped `--focus-outline-width` /
+`--focus-outline-offset`, orphaned when focus moved to `--shadow-focus`.
+
+Kept deliberately:
+
+- `.card-hover-lift` and `.input-invalid` are the opt-in APIs named by tasks
+  5.5 and 4.5; every current user of that behaviour is the shared rule
+  (`.card-hover-lift:hover, .kpi-card:hover, …`) and the `aria-invalid`
+  selector respectively.
+- Scale rungs `--text-3xl`, `--text-4xl`, `--weight-regular`,
+  `--border-width-thick` have no reference yet, but they are the vocabulary the
+  plan asked for (1.5) and a scale with a hole in it is worse than an unused
+  rung. `--text-display`, also added in Phase 1, is now actually used by the
+  lock/setup headline.
+
 ### Phase 8 — Notes Studio Refinement
 - [x] Note cards on the input surface; hover lifts with the spring easing
 - [x] `IconPin` + `.note-card-pin-indicator` replace the 📌 emoji

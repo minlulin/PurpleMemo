@@ -929,15 +929,6 @@ button.chip:hover {
   box-shadow: var(--shadow-md);
 }
 
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding-bottom: var(--space-3);
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
-}
-
 .settings-heading {
   margin: 0;
   font-size: var(--text-md);
@@ -1630,12 +1621,6 @@ button.chip:hover {
   font-weight: var(--weight-medium);
 }
 
-.limit-exceeded {
-  color: var(--color-danger);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-}
-
 .limit-row {
   display: flex;
   flex-wrap: wrap;
@@ -2191,7 +2176,6 @@ button.chip:hover {
   gap: var(--space-3);
 }
 
-.editor-title-input,
 input.editor-title {
   font-size: var(--text-xl);
   font-weight: var(--weight-bold);
@@ -3042,6 +3026,11 @@ tbody .week-row {
   text-align: center;
   gap: var(--space-2);
   padding-bottom: var(--space-2);
+}
+
+/* The welcome/locked headline is the one display-size moment in the app. */
+.lock-brand-head .editor-title {
+  font-size: var(--text-display);
 }
 
 @keyframes pulse-glow {
