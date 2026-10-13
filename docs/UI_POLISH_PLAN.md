@@ -32,25 +32,26 @@
 
 ### Tasks
 
-- [ ] **1.1** Increase body font size from `0.9375rem` (15px) to `1rem` (16px) in `tokens.css`
-- [ ] **1.2** Add `--text-display: 2.25rem` (36px) token for hero-level headings (lock screen welcome, dashboard "Today")
-- [ ] **1.3** Increase `--text-2xl` from `1.625rem` to `1.75rem` (28px) for page titles
-- [ ] **1.4** Increase `--text-xl` from `1.375rem` to `1.5rem` (24px) for KPI values
-- [ ] **1.5** Add `--text-4xl: 2.5rem` token for display use
-- [ ] **1.6** Increase `--leading-normal` from `1.55` to `1.6` for better readability
-- [ ] **1.7** Add `--space-7: 1.75rem` to spacing scale for larger gaps
-- [ ] **1.8** Update `body` font-size reference in `tokens.css` to use the new base
-- [ ] **1.9** Increase note excerpt font from `--text-xs` to `--text-sm` for readability
-- [ ] **1.10** Increase habit dot size from `--space-5` (20px) to `--space-6` (24px) and font from `--text-2xs` to `--text-xs`
+- [x] **1.1** Increase body font size from `0.9375rem` (15px) to `1rem` (16px) in `tokens.css`
+- [x] **1.2** Add `--text-display: 2.25rem` (36px) token for hero-level headings (lock screen welcome, dashboard "Today")
+- [x] **1.3** Increase `--text-2xl` from `1.625rem` to `1.75rem` (28px) for page titles
+- [x] **1.4** Increase `--text-xl` from `1.375rem` to `1.5rem` (24px) for KPI values
+- [x] **1.5** Add `--text-4xl: 2.5rem` token for display use
+- [x] **1.6** Increase `--leading-normal` from `1.55` to `1.6` for better readability
+- [x] **1.7** Add `--space-7: 1.75rem` to spacing scale for larger gaps
+- [x] **1.8** Update `body` font-size reference in `tokens.css` to use the new base
+- [x] **1.9** Increase note excerpt font from `--text-xs` to `--text-sm` for readability
+- [x] **1.10** Increase habit dot size from `--space-5` (20px) to `--space-6` (24px) and font from `--text-2xs` to `--text-xs`
 
 ### Files touched
 - `src/styles/tokens.css`
 - `src/styles/app.css` (habit dots, note excerpts)
 
 ### Verification
-- [ ] All pages render without overflow at new sizes
-- [ ] Light mode still looks correct
-- [ ] No horizontal scrollbars introduced
+- [ ] All pages render without overflow at new sizes (manual pass pending)
+- [ ] Light mode still looks correct (manual pass pending)
+- [x] No horizontal scrollbars introduced (`.habit-week-mini` still wraps via `.budget-row`)
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (186), `build` all pass
 
 ---
 
@@ -531,7 +532,13 @@
 - [x] Priority matrix established
 
 ### Phase 1 — Typography & Spacing Foundation
-- [ ] Not started
+- [x] Tokens: `--text-base: 1rem` (with `--text-md` aliased to it so existing
+      consumers, including the inlined phone share page, keep working)
+- [x] Scale: `--text-xl` 24px, `--text-2xl` 28px, `--text-3xl` 32px, `--text-4xl` 40px, `--text-display` 36px
+- [x] `--leading-normal: 1.6`, `--space-7: 1.75rem`
+- [x] app.css: `.note-excerpt` → `--text-sm`, `.habit-dot` → 24px / `--text-xs`
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual visual pass (overflow + light mode) still outstanding
 
 ### Phase 2 — Design Token Expansion
 - [ ] Not started
