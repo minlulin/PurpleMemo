@@ -61,25 +61,32 @@
 
 ### Tasks
 
-- [ ] **2.1** Add `--color-surface-input: #1e1730` (dark) / `#f8f5ff` (light) — slightly lighter than surface-subtle for input fields
-- [ ] **2.2** Add `--shadow-inset: inset 0 1px 2px rgba(0,0,0,0.15)` for pressed states
-- [ ] **2.3** Add `--dur-slow: 300ms` for larger transitions
-- [ ] **2.4** Add `--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)` for playful micro-interactions
-- [ ] **2.5** Add `--radius-input: 0.4375rem` (7px) — slightly tighter than `--radius-md` for form fields
-- [ ] **2.6** Add `--gradient-brand-glow: radial-gradient(circle, rgba(121,77,255,0.2), transparent 70%)` for icon backgrounds
-- [ ] **2.7** Add `--color-accent-gradient-start: #835bff` and `--color-accent-gradient-end: #5c2be2` as solid tokens (for non-gradient contexts)
-- [ ] **2.8** Update all `.input`, `.select`, `.textarea` to use `--color-surface-input` and `--radius-input`
-- [ ] **2.9** Add `@media (prefers-contrast: high)` block with increased border widths and stronger text colors
-- [ ] **2.10** Add `@media print` basic styles (hide sidebar, expand content)
+- [x] **2.1** Add `--color-surface-input: #1e1730` (dark) / `#f8f5ff` (light) — slightly lighter than surface-subtle for input fields
+- [x] **2.2** Add `--shadow-inset: inset 0 1px 2px rgba(0,0,0,0.15)` for pressed states
+- [x] **2.3** Add `--dur-slow: 300ms` for larger transitions
+- [x] **2.4** Add `--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)` for playful micro-interactions
+- [x] **2.5** Add `--radius-input: 0.4375rem` (7px) — slightly tighter than `--radius-md` for form fields
+- [x] **2.6** Add `--gradient-brand-glow: radial-gradient(circle, rgba(121,77,255,0.2), transparent 70%)` for icon backgrounds
+- [x] **2.7** Add `--color-accent-gradient-start: #835bff` and `--color-accent-gradient-end: #5c2be2` as solid tokens (for non-gradient contexts)
+- [x] **2.8** Update all `.input`, `.select`, `.textarea` to use `--color-surface-input` and `--radius-input`
+- [x] **2.9** Add `@media (prefers-contrast: high)` block with increased border widths and stronger text colors
+- [x] **2.10** Add `@media print` basic styles (hide sidebar, expand content)
 
 ### Files touched
 - `src/styles/tokens.css`
 - `src/styles/app.css` (input styles)
 
+### Notes
+- Every new token gets a `[data-theme="light"]` mirror; `--gradient-accent` now
+  composes from the two stop tokens so the light override can't drift.
+- `@media print` remaps tokens to paper values in tokens.css (token-lint forbids
+  hex outside it), while app.css only hides chrome and un-clips the panes.
+
 ### Verification
-- [ ] Token lint script passes (`scripts/token-lint.mjs`)
-- [ ] Token contract tests pass (`src/styles/tokens.test.ts`)
-- [ ] Inputs visually distinct from card backgrounds
+- [x] Token lint script passes (`scripts/token-lint.mjs`)
+- [x] Token contract tests pass (`src/styles/tokens.test.ts`)
+- [ ] Inputs visually distinct from card backgrounds (manual pass pending)
+- [x] `npm run lint`, `typecheck`, `test` (186), `build` all pass
 
 ---
 
@@ -541,7 +548,18 @@
 - [ ] Manual visual pass (overflow + light mode) still outstanding
 
 ### Phase 2 — Design Token Expansion
-- [ ] Not started
+- [x] Input tokens: `--color-surface-input` (dark + light), `--radius-input`
+- [x] Motion: `--dur-slow`, `--ease-spring`; elevation: `--shadow-inset` (both themes)
+- [x] Brand: `--gradient-brand-glow`, `--color-accent-gradient-start/end`
+      (light values folded into `--gradient-accent` so they cannot drift)
+- [x] app.css: unified form-control rule + `input.editor-title` on the new
+      input surface/radius
+- [x] `@media (prefers-contrast: high)` — 2px borders, stronger text/borders
+      (light theme redeclared because `[data-theme]` outranks `:root`)
+- [x] `@media print` — tokens remapped to paper in tokens.css, chrome hidden and
+      panes un-clipped in app.css
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual visual pass (input/card contrast in both themes) outstanding
 
 ### Phase 3 — Button & Control Polish
 - [ ] Not started

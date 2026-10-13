@@ -350,9 +350,9 @@
   font-size: var(--text-sm);
   line-height: var(--leading-tight);
   color: var(--color-text);
-  background: var(--color-surface-subtle);
+  background: var(--color-surface-input);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-input);
   padding: var(--space-2) var(--space-3);
   min-height: var(--space-8);
   transition:
@@ -1599,7 +1599,7 @@ input.editor-title {
   font-size: var(--text-xl);
   font-weight: var(--weight-bold);
   letter-spacing: -0.015em;
-  background: var(--color-surface-subtle);
+  background: var(--color-surface-input);
   padding: var(--space-3);
 }
 
@@ -2245,4 +2245,54 @@ tbody .week-row {
   font-family: var(--font-sans);
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * Print — colours/shadows come from the @media print tokens in tokens.css,
+ * so this block only deals with layout: drop the chrome, unclip the panes.
+ * ------------------------------------------------------------------------- */
+
+@media print {
+  .app-sidebar,
+  .page-actions,
+  .notes-toolbar,
+  .editor-actions,
+  .side-form,
+  .row-actions,
+  .photo-full {
+    display: none;
+  }
+
+  .app-shell,
+  .app-main,
+  .budget-page,
+  .notes-main,
+  .notes-body,
+  .editor-split {
+    display: block;
+    min-height: 0;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .budget-page {
+    max-width: none;
+    padding: 0;
+  }
+
+  .notes-body .note-list {
+    width: 100%;
+    max-height: none;
+    border-inline-end: none;
+    padding-inline-end: 0;
+  }
+
+  .settings-section,
+  .surface-card,
+  .kpi-card,
+  .budget-row,
+  .photo-thumb {
+    break-inside: avoid;
+    box-shadow: none;
+  }
 }
