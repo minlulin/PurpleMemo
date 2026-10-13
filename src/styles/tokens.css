@@ -65,6 +65,16 @@
   --color-warn-border: rgba(245, 158, 11, 0.34);
   --color-danger-border: rgba(239, 68, 68, 0.34);
 
+  /* Status gradients for progress fills and other fills-from-left marks. */
+  --gradient-success: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
+  --gradient-warn: linear-gradient(90deg, #d97706 0%, #f59e0b 100%);
+  --gradient-danger: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
+  --gradient-neutral: linear-gradient(
+    90deg,
+    var(--color-accent-gradient-start) 0%,
+    var(--color-accent-gradient-end) 100%
+  );
+
   /* Text */
   --color-text: #f1eefb;
   --color-text-muted: #a398c3;
@@ -207,6 +217,9 @@
   --color-success-border: rgba(22, 163, 74, 0.28);
   --color-warn-border: rgba(217, 119, 6, 0.3);
   --color-danger-border: rgba(220, 38, 38, 0.28);
+  --gradient-success: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
+  --gradient-warn: linear-gradient(90deg, #d97706 0%, #f59e0b 100%);
+  --gradient-danger: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
   --color-text: #1b1330;
   --color-text-muted: #5d527c;
   --color-text-subtle: #8276a3;
@@ -300,7 +313,9 @@ body {
   background: var(--color-accent-soft);
 }
 
-/* Money and figures always use tabular numerals (§6). */
+/* Money and figures always use tabular numerals (§6). `font-feature-settings`
+ * is belt-and-braces for fonts that ignore `font-variant-numeric`. */
 .figure {
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
 }

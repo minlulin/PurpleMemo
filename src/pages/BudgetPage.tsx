@@ -210,12 +210,13 @@ function ManageView() {
         ) : (
           <div className="wallet-grid">
             {wallets.map((w) => (
-              <div key={w.id} className="wallet-card">
+              <div key={w.id} className="wallet-card wallet-card-gradient">
                 <div className="wallet-card-head">
                   <span>{w.name}</span>
                   <IconWallet className="icon" />
                 </div>
-                <span className="wallet-card-balance figure">
+                <IconWallet className="icon wallet-card-icon" />
+                <span className="wallet-card-balance figure amount-large">
                   {formatMMK(balances.get(w.id) ?? 0)}
                 </span>
               </div>
@@ -876,13 +877,13 @@ function MonthView() {
             <div>
               <span className="muted">Net Cashflow</span>
               <span
-                className={
+                className={`figure${
                   display.netCents > 0
-                    ? "figure amount-income"
+                    ? " amount-income budget-summary-highlight"
                     : display.netCents < 0
-                      ? "figure amount-expense"
-                      : "figure"
-                }
+                      ? " amount-expense"
+                      : ""
+                }`}
               >
                 {formatMMK(display.netCents)}
               </span>
@@ -1093,7 +1094,7 @@ function YearView() {
               </span>
             </div>
           </div>
-          <table className="year-table">
+          <table className="year-table year-table-row-hover">
             <caption className="visually-hidden">Months of {year}</caption>
             <thead>
               <tr>

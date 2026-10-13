@@ -1309,6 +1309,32 @@ button.chip:hover {
   letter-spacing: -0.015em;
 }
 
+/* Prominent headline figure (net cashflow, wallet balance, big totals). */
+.amount-large {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  line-height: var(--leading-tight);
+  overflow-wrap: anywhere;
+}
+
+/* Positive net cashflow earns a single soft pulse; a loss never does. */
+@keyframes amount-highlight {
+  0% {
+    background-color: var(--color-success-soft);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.budget-summary-highlight {
+  border-radius: var(--radius-sm);
+  padding-inline: var(--space-1);
+  margin-inline-start: calc(var(--space-1) * -1);
+  animation: amount-highlight var(--dur-slow) var(--ease-out);
+}
+
 .summary-breakdowns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
@@ -1328,7 +1354,7 @@ button.chip:hover {
 /* Progress bars for Budget Month & Limits */
 .progress-track {
   width: 100%;
-  height: var(--space-2);
+  height: 0.625rem;
   background: var(--color-surface-subtle);
   border: var(--border-width) solid var(--color-border-subtle);
   border-radius: var(--radius-full);
@@ -1337,21 +1363,21 @@ button.chip:hover {
 
 .progress-fill {
   height: 100%;
-  background: var(--gradient-accent);
+  background: var(--gradient-neutral);
   border-radius: var(--radius-full);
   transition: width var(--dur-base) var(--ease-out);
 }
 
 .progress-fill.is-success {
-  background: var(--color-success);
+  background: var(--gradient-success);
 }
 
 .progress-fill.is-warn {
-  background: var(--color-warn);
+  background: var(--gradient-warn);
 }
 
 .progress-fill.is-danger {
-  background: var(--color-danger);
+  background: var(--gradient-danger);
 }
 
 .category-breakdown-item {
@@ -1407,6 +1433,19 @@ button.chip:hover {
 .year-table tbody tr:hover td,
 .year-table tbody tr:hover th {
   background: var(--color-surface-hover);
+}
+
+/* Rows read as records you can pick out of the table, not just a tint. */
+.year-table-row-hover tbody tr:hover td,
+.year-table-row-hover tbody tr:hover th {
+  background: var(--color-surface-hover);
+  border-inline-start: var(--border-width-accent) solid var(--color-accent);
+}
+
+/* …and give back the width the thicker border takes, so nothing shifts. */
+.year-table-row-hover tbody tr:hover td:first-child,
+.year-table-row-hover tbody tr:hover th:first-child {
+  padding-inline-start: calc(var(--space-3) - 0.125rem);
 }
 
 .year-table tr.is-empty {
@@ -1555,6 +1594,25 @@ button.chip:hover {
   border-color: var(--color-accent);
 }
 
+/* A whisper of brand colour so a row of wallets isn't a row of grey boxes.
+ * The data-theme is unknown here, so the gradient comes from the tokens. */
+.wallet-card-gradient {
+  background-color: var(--color-surface-raised);
+  background-image: var(--gradient-card-shine);
+}
+
+/* Watermark glyph, pinned to the trailing corner and behind the balance. */
+.wallet-card-icon {
+  position: absolute;
+  inset-block-end: var(--space-2);
+  inset-inline-end: var(--space-2);
+  inline-size: var(--space-12);
+  block-size: var(--space-12);
+  color: var(--color-accent);
+  opacity: 0.07;
+  pointer-events: none;
+}
+
 .wallet-card-head {
   display: flex;
   align-items: center;
@@ -1566,9 +1624,9 @@ button.chip:hover {
   letter-spacing: var(--tracking-wide);
 }
 
+/* Size comes from `.amount-large` — this rule only owns the colour, so the two
+ * classes can't fight over the same property further down the file. */
 .wallet-card-balance {
-  font-size: var(--text-lg);
-  font-weight: var(--weight-bold);
   color: var(--color-text);
 }
 

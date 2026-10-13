@@ -370,27 +370,47 @@
 
 ### Tasks
 
-- [ ] **9.1** Increase progress bar height from `--space-2` (8px) to `0.625rem` (10px)
-- [ ] **9.2** Add `--gradient-success: linear-gradient(90deg, #16a34a, #22c55e)` and similar for warn/danger
-- [ ] **9.3] Apply gradients to `.progress-fill` variants instead of solid colors
-- [ ] **9.4** Add `IconArrowLeft`/`IconArrowRight` to day/month/year navigation
-- [ ] **9.5** Add `.wallet-card-gradient` — subtle gradient background based on wallet type
-- [ ] **9.6] Add `.wallet-card-icon` — watermark-style large icon in card corner
-- [ ] **9.7] Add `.amount-large` — bigger font for prominent amounts
-- [ ] **9.8] Add `font-feature-settings: "tnum"` to `.figure` (already has `tabular-nums`, add `font-feature-settings` for broader support)
-- [ ] **9.9** Add `.budget-summary-highlight` — subtle pulse on net cashflow when positive
-- [ ] **9.10** Add `.year-table-row-hover` — stronger hover state with accent left border
+- [x] **9.1** Increase progress bar height from `--space-2` (8px) to `0.625rem` (10px)
+- [x] **9.2** Add `--gradient-success: linear-gradient(90deg, #16a34a, #22c55e)` and similar for warn/danger
+- [x] **9.3** Apply gradients to `.progress-fill` variants instead of solid colors
+- [x] **9.4** Add `IconArrowLeft`/`IconArrowRight` to day/month/year navigation
+- [x] **9.5** Add `.wallet-card-gradient` — subtle gradient background based on wallet type
+- [x] **9.6** Add `.wallet-card-icon` — watermark-style large icon in card corner
+- [x] **9.7** Add `.amount-large` — bigger font for prominent amounts
+- [x] **9.8** Add `font-feature-settings: "tnum"` to `.figure` (already has `tabular-nums`, add `font-feature-settings` for broader support)
+- [x] **9.9** Add `.budget-summary-highlight` — subtle pulse on net cashflow when positive
+- [x] **9.10** Add `.year-table-row-hover` — stronger hover state with accent left border
 
 ### Files touched
+- `src/styles/tokens.css`
 - `src/styles/app.css`
-- `src/components/icons.tsx`
 - `src/pages/BudgetPage.tsx`
+- `src/pages/DashboardPage.tsx` (`.amount-large` on the receivable figure)
+
+### Notes
+- 9.4 was already delivered in Phase 3 — every day/month/year nav button is now
+  an SVG chevron (plus `IconArrowRight` on the dashboard shortcuts), so no text
+  arrows remain. Chevrons stay: arrows imply a jump, chevrons imply a step.
+- 9.5 cannot key off "wallet type" — the wallet row has no type field, and
+  inventing one is a schema change, not a UI pass. `.wallet-card-gradient`
+  therefore uses the shared `--gradient-card-shine` so a row of wallets stops
+  looking like identical grey boxes; `.wallet-card-icon` (9.6) carries the
+  per-card visual interest instead.
+- `.wallet-card-balance` now only owns colour. It previously set
+  `font-size`/`font-weight`, and because it sits *later* in the file than
+  `.amount-large` it silently won the cascade — the new class would have been
+  dead on exactly the element it was added for.
+- 9.10's accent left border is compensated with 2px less start padding on the
+  first cell, so hovering a row doesn't shift the table sideways.
+- 9.9 pulses only when net cashflow is positive; a loss gets no decoration.
 
 ### Verification
-- [ ] Progress bars use gradients, not flat colors
-- [ ] All navigation uses SVG icons
-- [ ] Wallet cards have visual interest
-- [ ] Financial figures are prominent and readable
+- [x] Progress bars use gradients, not flat colors (10px tall)
+- [x] All navigation uses SVG icons (Phase 3)
+- [x] Wallet cards have visual interest (shine + corner watermark)
+- [x] Financial figures are prominent and readable (`tnum` + font-feature-settings)
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual pass on bar/wallet feel pending
 
 ---
 
@@ -745,7 +765,14 @@ before Phase 1.
 - [ ] Manual drag/feel pass pending
 
 ### Phase 9 — Budget Page Polish
-- [ ] Not started
+- [x] Progress tracks 8px → 10px, fills use `--gradient-success/warn/danger`
+      (light mode retinted) and a neutral brand gradient by default
+- [x] Wallet cards: gradient surface + corner watermark, `.amount-large` balance
+- [x] `.figure` gained `font-feature-settings: "tnum"`
+- [x] Net cashflow pulses only when positive; year rows get an accent edge
+- [x] 9.4 already covered by Phase 3 chevrons
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual pass on bar/wallet feel pending
 
 ### Phase 10 — Contacts & Settings Layout Fix
 - [ ] Not started

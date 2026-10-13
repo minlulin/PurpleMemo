@@ -583,7 +583,7 @@ export default function DashboardPage(p: DashboardPageProps) {
               </div>
               <span className="badge badge-accent">Outstanding</span>
             </div>
-            <p className="figure editor-title">{formatMMK(receivableCents)}</p>
+            <p className="figure amount-large">{formatMMK(receivableCents)}</p>
             <p className="page-subtitle">
               Unpaid balance across open customer repair &amp; service jobs.
             </p>
