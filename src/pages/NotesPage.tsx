@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconFolder, IconNotes, IconPlus } from "../components/icons.tsx";
 import { journalRepo, notesRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -45,7 +46,7 @@ function NoteEditor(p: EditorProps) {
         className="input editor-title"
         value={p.title}
         onChange={(e) => p.onTitle(e.target.value)}
-        placeholder="Title"
+        placeholder="Untitled note"
         aria-label="Note title"
       />
       <div className="editor-row">
@@ -53,7 +54,7 @@ function NoteEditor(p: EditorProps) {
           className="input"
           value={p.tags}
           onChange={(e) => p.onTags(e.target.value)}
-          placeholder="Tags (comma separated)"
+          placeholder="Tags (comma separated, e.g. work, ideas)"
           aria-label="Note tags"
         />
         <select
@@ -75,19 +76,25 @@ function NoteEditor(p: EditorProps) {
         </select>
       </div>
       <div className="editor-split">
-        <textarea
-          className="textarea editor-input"
-          value={p.content}
-          onChange={(e) => p.onContent(e.target.value)}
-          placeholder="Write markdown…"
-          aria-label="Note content (markdown)"
-        />
-        <div className="editor-preview markdown" aria-live="polite">
-          {p.content.trim().length === 0 ? (
-            <p className="empty-state">Live preview appears here.</p>
-          ) : (
-            <ReactMarkdown>{p.content}</ReactMarkdown>
-          )}
+        <div className="editor-pane-box">
+          <span className="editor-pane-label">Markdown</span>
+          <textarea
+            className="textarea editor-input"
+            value={p.content}
+            onChange={(e) => p.onContent(e.target.value)}
+            placeholder="Write markdown…"
+            aria-label="Note content (markdown)"
+          />
+        </div>
+        <div className="editor-pane-box">
+          <span className="editor-pane-label">Live preview</span>
+          <div className="editor-preview markdown" aria-live="polite">
+            {p.content.trim().length === 0 ? (
+              <p className="empty-state">Live preview appears here.</p>
+            ) : (
+              <ReactMarkdown>{p.content}</ReactMarkdown>
+            )}
+          </div>
         </div>
       </div>
       <div className="editor-actions">
@@ -106,7 +113,11 @@ function NoteEditor(p: EditorProps) {
         >
           {p.pinned ? "Unpin" : "Pin"}
         </button>
-        <button type="button" className="btn" onClick={p.onArchive}>
+        <button
+          type="button"
+          className={p.archived ? "btn is-on" : "btn"}
+          onClick={p.onArchive}
+        >
           {p.archived ? "Unarchive" : "Archive"}
         </button>
         <button
@@ -306,6 +317,7 @@ export default function NotesPage() {
       setError(errText(e));
     }
   }
+
   const listBody =
     notes.length === 0 ? (
       <li className="empty-state">
@@ -316,6 +328,7 @@ export default function NotesPage() {
     ) : (
       notes.map((note) => {
         const isActive = note.id === selectedId;
+        const excerpt = noteExcerpt(note.content);
         return (
           <li key={note.id}>
             <button
@@ -328,11 +341,14 @@ export default function NotesPage() {
                 <span className="title-text">
                   {note.title.length > 0 ? note.title : "Untitled"}
                 </span>
+                {note.archived === 1 && <span className="badge">Archived</span>}
               </span>
-              <span className="note-excerpt">{noteExcerpt(note.content)}</span>
+              <span className="note-excerpt">
+                {excerpt.length > 0 ? excerpt : "No additional text…"}
+              </span>
               <span className="note-meta">
                 {note.tags.length > 0 && (
-                  <span className="tag-row">{note.tags}</span>
+                  <span className="tag-row">#{note.tags}</span>
                 )}
                 <span className="meta-date figure">{note.updated_at}</span>
               </span>
@@ -345,7 +361,13 @@ export default function NotesPage() {
   return (
     <div className="feature-split">
       <aside className="feature-side" aria-label="Collections">
-        <h2 className="side-heading">Collections</h2>
+        <div className="dash-card-head">
+          <div className="dash-card-title">
+            <IconFolder className="icon" />
+            <h2 className="side-heading">Collections</h2>
+          </div>
+          <span className="badge">{collections.length}</span>
+        </div>
         <ul className="side-list">
           <li>
             <button
@@ -355,7 +377,7 @@ export default function NotesPage() {
               }
               onClick={() => setActiveCollection("all")}
             >
-              All notes
+              <span>All notes</span>
             </button>
           </li>
           {collections.map((c) => (
@@ -367,7 +389,7 @@ export default function NotesPage() {
                 }
                 onClick={() => setActiveCollection(c.id)}
               >
-                {c.name}
+                <span>{c.name}</span>
               </button>
               <button
                 type="button"
@@ -385,7 +407,7 @@ export default function NotesPage() {
             className="input"
             value={newCollection}
             onChange={(e) => setNewCollection(e.target.value)}
-            placeholder="New collection"
+            placeholder="New collection…"
             aria-label="New collection name"
             onKeyDown={(e) => {
               if (e.key === "Enter") void handleNewCollection();
@@ -402,6 +424,11 @@ export default function NotesPage() {
       </aside>
       <section className="notes-main" aria-label="Notes">
         <div className="notes-toolbar">
+          <div className="dash-card-title">
+            <IconNotes className="icon" />
+            <strong>Notes</strong>
+            <span className="badge">{notes.length}</span>
+          </div>
           <input
             className="input"
             value={search}
@@ -423,7 +450,7 @@ export default function NotesPage() {
             className="btn btn-primary"
             onClick={() => void handleNew()}
           >
-            New note
+            <IconPlus className="icon" /> New note
           </button>
         </div>
         {error !== null && (
@@ -441,7 +468,8 @@ export default function NotesPage() {
             <section className="editor-pane" aria-label="Note editor">
               {selected === null ? (
                 <EmptyState>
-                  Select a note to edit, or create a new one.
+                  Select a note from the list, or create a new one to start
+                  writing in Markdown.
                 </EmptyState>
               ) : (
                 <NoteEditor

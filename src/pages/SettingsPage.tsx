@@ -8,7 +8,11 @@
 // confirms before applying and reloads afterwards.
 
 import { useEffect, useState } from "react";
-import { IconDownload, IconUpload } from "../components/icons.tsx";
+import {
+  IconDownload,
+  IconSettings,
+  IconUpload,
+} from "../components/icons.tsx";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
 import type { ShareInfo } from "../data/driver.ts";
 import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
@@ -353,7 +357,23 @@ export default function SettingsPage(p: SettingsPageProps) {
 
   return (
     <div className="budget-page">
-      <h2 className="editor-title">Settings</h2>
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconSettings className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Settings</h2>
+              <p className="page-subtitle">
+                Appearance, PIN security, database key export, local backups,
+                LAN share &amp; updates
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
       {error !== null && (
         <p className="alert alert-error" role="alert">
           {error}
@@ -362,46 +382,54 @@ export default function SettingsPage(p: SettingsPageProps) {
       {note !== null && <p className="alert alert-note">{note}</p>}
 
       <section className="settings-section">
-        <h3 className="settings-heading">Appearance</h3>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Appearance</h3>
+          <span className="badge badge-accent">{p.theme}</span>
+        </div>
+        <p className="page-subtitle">
+          Choose between the dark-first PurpleShade palette and its high-clarity
+          light mode mirror.
+        </p>
         <div className="editor-row">
           <button
             type="button"
-            className={p.theme === "dark" ? "btn btn-primary" : "btn btn-ghost"}
+            className={p.theme === "dark" ? "btn btn-primary" : "btn"}
             aria-pressed={p.theme === "dark"}
             onClick={() => void setTheme("dark")}
           >
-            Dark
+            Dark mode
           </button>
           <button
             type="button"
-            className={
-              p.theme === "light" ? "btn btn-primary" : "btn btn-ghost"
-            }
+            className={p.theme === "light" ? "btn btn-primary" : "btn"}
             aria-pressed={p.theme === "light"}
             onClick={() => void setTheme("light")}
           >
-            Light
+            Light mode
           </button>
         </div>
       </section>
 
       <section className="settings-section">
-        <h3 className="settings-heading">App lock</h3>
-        <label className="side-form">
-          Lock after idle
-          <select
-            className="select"
-            value={p.autoLockMinutes}
-            onChange={(e) => void setAutoLock(Number(e.target.value))}
-          >
-            {AUTO_LOCK_CHOICES.map((m) => (
-              <option key={m} value={m}>
-                {m === 0 ? "Never" : `${m} minutes`}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">App lock &amp; PIN</h3>
+          <span className="badge">PBKDF2-SHA256</span>
+        </div>
         <div className="side-form">
+          <label>
+            Lock after idle
+            <select
+              className="select"
+              value={p.autoLockMinutes}
+              onChange={(e) => void setAutoLock(Number(e.target.value))}
+            >
+              {AUTO_LOCK_CHOICES.map((m) => (
+                <option key={m} value={m}>
+                  {m === 0 ? "Never" : `${m} minutes`}
+                </option>
+              ))}
+            </select>
+          </label>
           <label>
             Current PIN
             <input
@@ -412,26 +440,28 @@ export default function SettingsPage(p: SettingsPageProps) {
               onChange={(e) => setPin({ ...pin, current: e.target.value })}
             />
           </label>
-          <label>
-            New PIN (at least {MIN_PIN_LENGTH} characters)
-            <input
-              className="input"
-              type="password"
-              autoComplete="new-password"
-              value={pin.next}
-              onChange={(e) => setPin({ ...pin, next: e.target.value })}
-            />
-          </label>
-          <label>
-            Confirm new PIN
-            <input
-              className="input"
-              type="password"
-              autoComplete="new-password"
-              value={pin.confirm}
-              onChange={(e) => setPin({ ...pin, confirm: e.target.value })}
-            />
-          </label>
+          <div className="form-grid">
+            <label>
+              New PIN (at least {MIN_PIN_LENGTH} characters)
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                value={pin.next}
+                onChange={(e) => setPin({ ...pin, next: e.target.value })}
+              />
+            </label>
+            <label>
+              Confirm new PIN
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                value={pin.confirm}
+                onChange={(e) => setPin({ ...pin, confirm: e.target.value })}
+              />
+            </label>
+          </div>
           <label>
             New security question (blank keeps the old one)
             <input
@@ -448,34 +478,44 @@ export default function SettingsPage(p: SettingsPageProps) {
               onChange={(e) => setPin({ ...pin, answer: e.target.value })}
             />
           </label>
+          <div className="editor-row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void changePin()}
+            >
+              {busy ? "Updating…" : "Change PIN"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Vault</h3>
+          <span className="badge badge-accent">AES-256-GCM</span>
+        </div>
+        <p className="muted">
+          Password-protected secrets. Setup, unlock and password changes live on
+          the Vault page.
+        </p>
+        <div className="editor-row">
           <button
             type="button"
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={() => void changePin()}
+            className="btn"
+            onClick={() => p.onNavigate("vault")}
           >
-            {busy ? "Updating…" : "Change PIN"}
+            Open Vault →
           </button>
         </div>
       </section>
 
       <section className="settings-section">
-        <h3 className="settings-heading">Vault</h3>
-        <p className="muted">
-          Password-protected secrets. Setup, unlock and password changes live on
-          the Vault page.
-        </p>
-        <button
-          type="button"
-          className="btn btn-ghost"
-          onClick={() => p.onNavigate("vault")}
-        >
-          Open Vault
-        </button>
-      </section>
-
-      <section className="settings-section">
-        <h3 className="settings-heading">Encryption key export</h3>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Encryption key export</h3>
+          <span className="badge badge-warn">Sensitive</span>
+        </div>
         <p className="muted">
           A database backup without this key is unopenable — and this key on its
           own opens your data. Save it as its own file, stored apart from any
@@ -493,7 +533,7 @@ export default function SettingsPage(p: SettingsPageProps) {
         <div className="editor-row">
           <button
             type="button"
-            className="btn btn-ghost"
+            className="btn"
             disabled={keyBusy}
             onClick={() => void exportKey()}
           >
@@ -502,7 +542,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           {exportedKey !== null && (
             <button
               type="button"
-              className="btn btn-ghost"
+              className="btn"
               onClick={() => void copyKey()}
             >
               {copied ? "Copied" : "Copy"}
@@ -511,7 +551,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           {exportedKey !== null && (
             <button
               type="button"
-              className="btn btn-ghost"
+              className="btn btn-primary"
               onClick={saveKeyFile}
             >
               Save key file
@@ -530,7 +570,10 @@ export default function SettingsPage(p: SettingsPageProps) {
       </section>
 
       <section className="settings-section">
-        <h3 className="settings-heading">Backup &amp; restore</h3>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Backup &amp; restore</h3>
+          <span className="badge">.zip archive</span>
+        </div>
         <p className="muted">
           Export everything — every table and photo — into one zip file, saved
           wherever you like. The encryption key is never inside the backup.
@@ -546,7 +589,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             <IconDownload className="icon" />
             {backupBusy ? "Exporting…" : "Export backup"}
           </button>
-          <label className="btn btn-ghost">
+          <label className="btn">
             <IconUpload className="icon" />
             {importBusy ? "Importing…" : "Import backup"}
             <input
@@ -593,7 +636,14 @@ export default function SettingsPage(p: SettingsPageProps) {
       </section>
 
       <section className="settings-section">
-        <h3 className="settings-heading">Share to this network</h3>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Share to this network</h3>
+          <span
+            className={shareState?.running ? "badge badge-success" : "badge"}
+          >
+            {shareState?.running ? "Live on LAN" : "Off"}
+          </span>
+        </div>
         <p className="muted">
           A read-only view of your dashboard for a phone on the same Wi-Fi:
           money, wallets, due items, habits, upcoming dates and recent notes.
@@ -630,7 +680,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             <div className="editor-row">
               <button
                 type="button"
-                className="btn btn-ghost"
+                className="btn"
                 onClick={() => void copyShareLink()}
               >
                 {shareCopied ? "Copied" : "Copy link"}
@@ -665,7 +715,10 @@ export default function SettingsPage(p: SettingsPageProps) {
       </section>
 
       <section className="settings-section">
-        <h3 className="settings-heading">Updates</h3>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Updates</h3>
+          <span className="badge">Signed releases</span>
+        </div>
         <p className="muted">
           Releases are built, signed and published by hand, so Purple Memo only
           checks the release feed when you ask it to. A downloaded update is
@@ -722,11 +775,14 @@ export default function SettingsPage(p: SettingsPageProps) {
       </section>
 
       <section className="settings-section">
-        <h3 className="settings-heading">About</h3>
+        <div className="dash-card-head">
+          <h3 className="settings-heading">About</h3>
+          <span className="badge badge-accent">Open Source</span>
+        </div>
         <p className="muted">
-          Purple Memo — a personal, offline-first notebook. No accounts, no
-          servers, no cloud. Everything lives in an encrypted database on this
-          machine.
+          Purple Memo — a personal, offline-first notebook and finance manager.
+          No accounts, no servers, no cloud. Everything lives in an encrypted
+          SQLCipher database on this machine.
         </p>
       </section>
     </div>

@@ -1,9 +1,9 @@
 // P3c Business page (§2.2): shops, jobs, receivable, payables, history.
-// Talks only to the business + budget repos (§4). Views land progressively:
-// this file starts with the shell + Shops view and gains one view per task.
+// Talks only to the business + budget repos (§4).
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconBusiness } from "../components/icons.tsx";
 import { budgetRepo, businessRepo } from "../data/app.ts";
 import {
   inWarranty,
@@ -39,19 +39,36 @@ export default function BusinessPage() {
 
   return (
     <div className="budget-page">
-      <nav className="budget-viewnav" aria-label="Business views">
-        {VIEWS.map((v) => (
-          <button
-            key={v.key}
-            type="button"
-            className={view === v.key ? "nav-tab is-active" : "nav-tab"}
-            aria-current={view === v.key ? "page" : undefined}
-            onClick={() => setView(v.key)}
-          >
-            {v.label}
-          </button>
-        ))}
-      </nav>{" "}
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconBusiness className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Business Tracker</h2>
+              <p className="page-subtitle">
+                Customer jobs, receivables, repair warranties &amp; supplier
+                payables
+              </p>
+            </div>
+          </div>
+        </div>
+        <nav className="budget-viewnav" aria-label="Business views">
+          {VIEWS.map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              className={view === v.key ? "nav-tab is-active" : "nav-tab"}
+              aria-current={view === v.key ? "page" : undefined}
+              onClick={() => setView(v.key)}
+            >
+              {v.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
       {view === "shops" ? (
         <ShopsView />
       ) : view === "jobs" ? (
@@ -174,8 +191,13 @@ function ShopsView() {
         </p>
       ) : null}
 
+      <div className="dash-card-head">
+        <h3 className="side-heading">Customer &amp; Supplier Directory</h3>
+        <span className="badge">{rows.length}</span>
+      </div>
+
       {rows.length === 0 ? (
-        <p className="muted">No shops yet — add one below.</p>
+        <EmptyState>No shops yet — add one below.</EmptyState>
       ) : (
         <ul className="budget-list">
           {rows.map((s) => (
@@ -183,6 +205,7 @@ function ShopsView() {
               {editingId === s.id ? (
                 <>
                   <input
+                    className="input"
                     aria-label="Shop name"
                     value={editDraft.name}
                     onChange={(e) =>
@@ -190,6 +213,7 @@ function ShopsView() {
                     }
                   />
                   <input
+                    className="input"
                     aria-label="Shop phone"
                     placeholder="Phone"
                     value={editDraft.phone}
@@ -198,6 +222,7 @@ function ShopsView() {
                     }
                   />
                   <input
+                    className="input"
                     aria-label="Shop address"
                     placeholder="Address"
                     value={editDraft.address}
@@ -206,6 +231,7 @@ function ShopsView() {
                     }
                   />
                   <input
+                    className="input"
                     aria-label="Shop notes"
                     placeholder="Notes"
                     value={editDraft.notes}
@@ -233,43 +259,46 @@ function ShopsView() {
                 </>
               ) : (
                 <>
-                  <span>
-                    {s.name}
-                    {s.phone ? (
-                      <span className="muted"> · {s.phone}</span>
+                  <div className="row-main">
+                    <span className="row-title">
+                      <b>{s.name}</b>
+                      {s.phone ? <span className="chip">{s.phone}</span> : null}
+                    </span>
+                    {s.address || s.notes ? (
+                      <span className="row-sub">
+                        {s.address}
+                        {s.address && s.notes ? " — " : ""}
+                        {s.notes}
+                      </span>
                     ) : null}
-                    {s.address ? (
-                      <span className="muted"> · {s.address}</span>
+                  </div>
+                  <div className="row-end">
+                    {s.remaining_cents > 0 ? (
+                      <span className="badge badge-warn figure">
+                        owes {formatMMK(s.remaining_cents)}
+                      </span>
                     ) : null}
-                    {s.notes ? (
-                      <span className="muted"> — {s.notes}</span>
-                    ) : null}
-                  </span>
-                  <span className="muted figure">
-                    {s.remaining_cents > 0
-                      ? `owes ${formatMMK(s.remaining_cents)}`
-                      : ""}
-                  </span>
-                  <span className="row-actions">
-                    {s.id !== 0 ? (
-                      <>
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          onClick={() => startEdit(s)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          onClick={() => void removeShop(s.id)}
-                        >
-                          Delete
-                        </button>
-                      </>
-                    ) : null}
-                  </span>
+                    <span className="row-actions">
+                      {s.id !== 0 ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => startEdit(s)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => void removeShop(s.id)}
+                          >
+                            Delete
+                          </button>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
                 </>
               )}
             </li>
@@ -285,36 +314,40 @@ function ShopsView() {
         }}
       >
         <h2 className="side-heading">New shop</h2>
-        <label>
-          Name
-          <input
-            value={draft.name}
-            placeholder="e.g. Aung Electronics"
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-          />
-        </label>
-        <label>
-          Phone (optional)
-          <input
-            value={draft.phone}
-            placeholder="09…"
-            onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
-          />
-        </label>
-        <label>
-          Address (optional)
-          <input
-            value={draft.address}
-            onChange={(e) => setDraft({ ...draft, address: e.target.value })}
-          />
-        </label>
-        <label>
-          Notes (optional)
-          <input
-            value={draft.notes}
-            onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
-          />
-        </label>
+        <div className="form-grid">
+          <label>
+            Name
+            <input
+              value={draft.name}
+              placeholder="e.g. Aung Electronics"
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
+          </label>
+          <label>
+            Phone (optional)
+            <input
+              value={draft.phone}
+              placeholder="09…"
+              onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
+            />
+          </label>
+          <label>
+            Address (optional)
+            <input
+              value={draft.address}
+              placeholder="Street / township"
+              onChange={(e) => setDraft({ ...draft, address: e.target.value })}
+            />
+          </label>
+          <label>
+            Notes (optional)
+            <input
+              value={draft.notes}
+              placeholder="Customer or supplier note"
+              onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
+            />
+          </label>
+        </div>
         <div className="row-actions">
           <button type="submit" className="btn btn-primary" disabled={!nameOk}>
             Add shop
@@ -426,34 +459,48 @@ function JobsView() {
         </p>
       ) : null}
 
+      <div className="dash-card-head">
+        <h3 className="side-heading">Open Jobs &amp; Work Orders</h3>
+        <span className="badge">{jobs.length}</span>
+      </div>
+
       {jobs.length === 0 ? (
-        <p className="muted">No open jobs — create one below.</p>
+        <EmptyState>No open jobs — create one below.</EmptyState>
       ) : (
         <ul className="budget-list">
           {jobs.map((j) => (
-            <li key={j.id} className="budget-row">
-              <span>
-                {j.title}
-                <span className="muted"> · {shopName(j.shop_id)}</span>
-                {j.note ? <span className="muted"> — {j.note}</span> : null}
-              </span>
-              <span className="muted figure">
-                {formatMMK(j.paid_cents)} / {formatMMK(j.total_cents)}
-              </span>
-              <span className="muted figure">
-                {formatMMK(j.remaining_cents)} left
-              </span>
-              {warrantyEndDate(j) !== null ? (
-                <span className="muted">
-                  {inWarranty(j, todayLocal())
-                    ? `warranty until ${warrantyEndDate(j)}`
-                    : `warranty ended ${warrantyEndDate(j)}`}
+            <li key={j.id} className="limit-row">
+              <div className="row-main">
+                <span className="row-title">
+                  <b>{j.title}</b>
+                  <span className="chip">{shopName(j.shop_id)}</span>
+                  {warrantyEndDate(j) !== null ? (
+                    <span
+                      className={
+                        inWarranty(j, todayLocal())
+                          ? "badge badge-success"
+                          : "badge"
+                      }
+                    >
+                      {inWarranty(j, todayLocal())
+                        ? `warranty until ${warrantyEndDate(j)}`
+                        : `warranty ended ${warrantyEndDate(j)}`}
+                    </span>
+                  ) : null}
                 </span>
-              ) : null}
+                <span className="row-sub figure">
+                  Paid {formatMMK(j.paid_cents)} / {formatMMK(j.total_cents)} ·{" "}
+                  <b className="amount-expense">
+                    {formatMMK(j.remaining_cents)} left
+                  </b>
+                  {j.note ? ` — ${j.note}` : ""}
+                </span>
+              </div>
               <span className="row-actions">
                 {payFor === j.id ? (
                   <>
                     <input
+                      className="input"
                       aria-label={`Payment amount for ${j.title}`}
                       inputMode="decimal"
                       placeholder="0.00"
@@ -461,6 +508,7 @@ function JobsView() {
                       onChange={(e) => setPayAmount(e.target.value)}
                     />
                     <select
+                      className="select"
                       aria-label="Payment wallet"
                       value={payWallet === "" ? "" : String(payWallet)}
                       onChange={(e) =>
@@ -523,62 +571,68 @@ function JobsView() {
         }}
       >
         <h2 className="side-heading">New job</h2>
-        <label>
-          Title
-          <input
-            value={title}
-            placeholder="e.g. Fix fan"
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <label>
-          Customer shop (optional)
-          <select
-            aria-label="Customer shop"
-            value={shopId === "" ? "" : String(shopId)}
-            onChange={(e) =>
-              setShopId(e.target.value === "" ? "" : Number(e.target.value))
-            }
-          >
-            <option value="">None</option>
-            {shops.map((s) => (
-              <option key={s.id} value={String(s.id)}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Total amount (MMK)
-          <input
-            inputMode="decimal"
-            placeholder="0.00"
-            value={amountRaw}
-            onChange={(e) => setAmountRaw(e.target.value)}
-          />
-        </label>
-        <label>
-          Job date
-          <input
-            type="date"
-            aria-label="Job date"
-            value={jobDate}
-            onChange={(e) => setJobDate(e.target.value)}
-          />
-        </label>
-        <label>
-          Warranty days (optional — repair jobs)
-          <input
-            inputMode="numeric"
-            placeholder="e.g. 30"
-            value={warrantyDays}
-            onChange={(e) => setWarrantyDays(e.target.value)}
-          />
-        </label>
-        <label>
-          Note (optional)
-          <input value={note} onChange={(e) => setNote(e.target.value)} />
-        </label>
+        <div className="form-grid">
+          <label>
+            Title
+            <input
+              value={title}
+              placeholder="e.g. Fix inverter board"
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+          <label>
+            Customer shop (optional)
+            <select
+              aria-label="Customer shop"
+              value={shopId === "" ? "" : String(shopId)}
+              onChange={(e) =>
+                setShopId(e.target.value === "" ? "" : Number(e.target.value))
+              }
+            >
+              <option value="">None</option>
+              {shops.map((s) => (
+                <option key={s.id} value={String(s.id)}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Total amount (MMK)
+            <input
+              inputMode="decimal"
+              placeholder="0.00"
+              value={amountRaw}
+              onChange={(e) => setAmountRaw(e.target.value)}
+            />
+          </label>
+          <label>
+            Job date
+            <input
+              type="date"
+              aria-label="Job date"
+              value={jobDate}
+              onChange={(e) => setJobDate(e.target.value)}
+            />
+          </label>
+          <label>
+            Warranty days (optional — repair jobs)
+            <input
+              inputMode="numeric"
+              placeholder="e.g. 30"
+              value={warrantyDays}
+              onChange={(e) => setWarrantyDays(e.target.value)}
+            />
+          </label>
+          <label>
+            Note (optional)
+            <input
+              value={note}
+              placeholder="Serial or repair note"
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </label>
+        </div>
         <div className="row-actions">
           <button
             type="submit"
@@ -661,33 +715,43 @@ function ReceivableView() {
         <EmptyState>Nothing outstanding — no receivables.</EmptyState>
       ) : (
         <>
+          <div className="summary-figures">
+            <div>
+              <span className="muted">Total outstanding</span>
+              <span className="figure amount-expense">{formatMMK(total)}</span>
+            </div>
+            <div>
+              <span className="muted">Customers owing</span>
+              <span className="figure">{rows.length}</span>
+            </div>
+          </div>
           <ul className="budget-list">
             {rows.map((r) => (
               <li key={r.id} className="budget-row">
-                <span>{r.name}</span>
-                <span className="figure amount-expense">
-                  {formatMMK(r.remaining_cents)}
-                </span>
-                <span className="row-actions">
-                  {r.id !== 0 ? (
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={() => void copyVoucher(r.id)}
-                    >
-                      {copiedId === r.id ? "Copied ✓" : "Copy voucher"}
-                    </button>
-                  ) : null}
-                </span>
+                <div className="row-main">
+                  <span className="row-title">
+                    <b>{r.name}</b>
+                  </span>
+                </div>
+                <div className="row-end">
+                  <span className="figure amount-expense">
+                    {formatMMK(r.remaining_cents)}
+                  </span>
+                  <span className="row-actions">
+                    {r.id !== 0 ? (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void copyVoucher(r.id)}
+                      >
+                        {copiedId === r.id ? "Copied ✓" : "Copy voucher"}
+                      </button>
+                    ) : null}
+                  </span>
+                </div>
               </li>
             ))}
           </ul>
-          <p className="budget-row">
-            <strong>Total outstanding</strong>
-            <strong className="figure amount-expense">
-              {formatMMK(total)}
-            </strong>
-          </p>
           <p className="muted">
             Record partial payments from the Jobs view; a job joins History (and
             books Business income) when fully paid.
@@ -740,18 +804,25 @@ function HistoryView() {
         </p>
       ) : null}
 
+      <div className="dash-card-head">
+        <h3 className="side-heading">Completed Jobs</h3>
+        <span className="badge badge-success">{jobs.length}</span>
+      </div>
+
       {jobs.length === 0 ? (
-        <p className="muted">No completed jobs yet.</p>
+        <EmptyState>No completed jobs yet.</EmptyState>
       ) : (
         <ul className="budget-list">
           {jobs.map((j) => (
             <li key={j.id} className="budget-row">
-              <span>
-                {j.title}
-                <span className="muted"> · {shopName(j.shop_id)}</span>
-                <span className="muted"> · {j.job_date}</span>
-                {j.note ? <span className="muted"> — {j.note}</span> : null}
-              </span>
+              <div className="row-main">
+                <span className="row-title">
+                  <b>{j.title}</b>
+                  <span className="chip">{shopName(j.shop_id)}</span>
+                  <span className="badge figure">{j.job_date}</span>
+                </span>
+                {j.note ? <span className="row-sub">{j.note}</span> : null}
+              </div>
               <span className="figure amount-income">
                 {formatMMK(j.total_cents)}
               </span>
@@ -859,116 +930,127 @@ function PayablesView() {
         </p>
       ) : null}
 
-      <label className="muted">
-        <input
-          type="checkbox"
-          checked={showPaid}
-          onChange={(e) => setShowPaid(e.target.checked)}
-        />{" "}
-        Show paid
-      </label>
+      <div className="dash-card-head">
+        <h3 className="side-heading">Supplier Payables</h3>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={showPaid}
+            onChange={(e) => setShowPaid(e.target.checked)}
+          />{" "}
+          Show paid
+        </label>
+      </div>
 
       {payables.length === 0 ? (
-        <p className="muted">No payables — add one below.</p>
+        <EmptyState>No payables — add one below.</EmptyState>
       ) : (
         <ul className="budget-list">
           {payables.map((p) => {
             const status =
               p.paid === 1 ? "none" : payableDueStatus(p.due_date, today);
             return (
-              <li key={p.id} className="budget-row">
-                <span>
-                  {p.title}
-                  {p.paid === 1 ? <span className="muted"> (paid)</span> : null}
-                  {status === "overdue" ? (
-                    <span className="limit-exceeded" role="status">
-                      {" "}
-                      (overdue)
-                    </span>
-                  ) : status === "due" ? (
-                    <span className="limit-warn" role="status">
-                      {" "}
-                      (due today)
-                    </span>
-                  ) : null}
-                  <span className="muted"> · {shopName(p.shop_id)}</span>
-                  {p.due_date ? (
-                    <span className="muted"> · due {p.due_date}</span>
-                  ) : null}
-                  {p.note ? <span className="muted"> — {p.note}</span> : null}
-                </span>
-                <span className="figure">{formatMMK(p.amount_cents)}</span>
-                {p.paid === 0 ? (
-                  <span className="row-actions">
-                    {payFor === p.id ? (
-                      <>
-                        <select
-                          aria-label="Expense category"
-                          value={payCategory === "" ? "" : String(payCategory)}
-                          onChange={(e) =>
-                            setPayCategory(
-                              e.target.value === ""
-                                ? ""
-                                : Number(e.target.value),
-                            )
-                          }
-                        >
-                          <option value="">Category…</option>
-                          {expenseCats.map((c) => (
-                            <option key={c.id} value={String(c.id)}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          aria-label="Paid from wallet"
-                          value={payWallet === "" ? "" : String(payWallet)}
-                          onChange={(e) =>
-                            setPayWallet(
-                              e.target.value === ""
-                                ? ""
-                                : Number(e.target.value),
-                            )
-                          }
-                        >
-                          <option value="">Wallet…</option>
-                          {wallets.map((w) => (
-                            <option key={w.id} value={String(w.id)}>
-                              {w.name}
-                            </option>
-                          ))}
-                        </select>
+              <li key={p.id} className="limit-row">
+                <div className="row-main">
+                  <span className="row-title">
+                    <b>{p.title}</b>
+                    <span className="chip">{shopName(p.shop_id)}</span>
+                    {p.paid === 1 ? <span className="badge">Paid</span> : null}
+                    {status === "overdue" ? (
+                      <span className="badge badge-danger" role="status">
+                        Overdue
+                      </span>
+                    ) : status === "due" ? (
+                      <span className="badge badge-warn" role="status">
+                        Due today
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="row-sub">
+                    {p.due_date ? `due ${p.due_date}` : "No due date"}
+                    {p.note ? ` — ${p.note}` : ""}
+                  </span>
+                </div>
+                <div className="row-end">
+                  <span className="figure amount-expense">
+                    {formatMMK(p.amount_cents)}
+                  </span>
+                  {p.paid === 0 ? (
+                    <span className="row-actions">
+                      {payFor === p.id ? (
+                        <>
+                          <select
+                            className="select"
+                            aria-label="Expense category"
+                            value={
+                              payCategory === "" ? "" : String(payCategory)
+                            }
+                            onChange={(e) =>
+                              setPayCategory(
+                                e.target.value === ""
+                                  ? ""
+                                  : Number(e.target.value),
+                              )
+                            }
+                          >
+                            <option value="">Category…</option>
+                            {expenseCats.map((c) => (
+                              <option key={c.id} value={String(c.id)}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            className="select"
+                            aria-label="Paid from wallet"
+                            value={payWallet === "" ? "" : String(payWallet)}
+                            onChange={(e) =>
+                              setPayWallet(
+                                e.target.value === ""
+                                  ? ""
+                                  : Number(e.target.value),
+                              )
+                            }
+                          >
+                            <option value="">Wallet…</option>
+                            {wallets.map((w) => (
+                              <option key={w.id} value={String(w.id)}>
+                                {w.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={payCategory === "" || payWallet === ""}
+                            onClick={() => void pay(p.id)}
+                          >
+                            Confirm paid
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => setPayFor(null)}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
                         <button
                           type="button"
                           className="btn btn-primary"
-                          disabled={payCategory === "" || payWallet === ""}
-                          onClick={() => void pay(p.id)}
+                          onClick={() => {
+                            setPayFor(p.id);
+                            setPayCategory("");
+                            setPayWallet("");
+                          }}
                         >
-                          Confirm paid
+                          Mark paid
                         </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => setPayFor(null)}
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={() => {
-                          setPayFor(p.id);
-                          setPayCategory("");
-                          setPayWallet("");
-                        }}
-                      >
-                        Mark paid
-                      </button>
-                    )}
-                  </span>
-                ) : null}
+                      )}
+                    </span>
+                  ) : null}
+                </div>
               </li>
             );
           })}
@@ -983,49 +1065,51 @@ function PayablesView() {
         }}
       >
         <h2 className="side-heading">New payable</h2>
-        <label>
-          Title
-          <input
-            value={title}
-            placeholder="e.g. Parts supplier"
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <label>
-          Amount (MMK)
-          <input
-            inputMode="decimal"
-            placeholder="0.00"
-            value={amountRaw}
-            onChange={(e) => setAmountRaw(e.target.value)}
-          />
-        </label>
-        <label>
-          Supplier shop (optional)
-          <select
-            aria-label="Supplier shop"
-            value={shopId === "" ? "" : String(shopId)}
-            onChange={(e) =>
-              setShopId(e.target.value === "" ? "" : Number(e.target.value))
-            }
-          >
-            <option value="">None</option>
-            {shops.map((s) => (
-              <option key={s.id} value={String(s.id)}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Due date (optional)
-          <input
-            type="date"
-            aria-label="Due date"
-            value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-          />
-        </label>
+        <div className="form-grid">
+          <label>
+            Title
+            <input
+              value={title}
+              placeholder="e.g. Parts supplier"
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+          <label>
+            Amount (MMK)
+            <input
+              inputMode="decimal"
+              placeholder="0.00"
+              value={amountRaw}
+              onChange={(e) => setAmountRaw(e.target.value)}
+            />
+          </label>
+          <label>
+            Supplier shop (optional)
+            <select
+              aria-label="Supplier shop"
+              value={shopId === "" ? "" : String(shopId)}
+              onChange={(e) =>
+                setShopId(e.target.value === "" ? "" : Number(e.target.value))
+              }
+            >
+              <option value="">None</option>
+              {shops.map((s) => (
+                <option key={s.id} value={String(s.id)}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Due date (optional)
+            <input
+              type="date"
+              aria-label="Due date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
+          </label>
+        </div>
         <label>
           Note (optional)
           <input value={note} onChange={(e) => setNote(e.target.value)} />

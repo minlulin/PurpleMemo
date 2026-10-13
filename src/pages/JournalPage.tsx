@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { IconCalendar, IconJournal } from "../components/icons.tsx";
 import { journalRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -87,10 +88,27 @@ export default function JournalPage() {
   const label = monthLabel(month);
   const today = todayLocal();
   const entrySet = useMemo(() => new Set(entryDates), [entryDates]);
+  const readableActiveDate = new Date(
+    `${activeDate}T00:00:00`,
+  ).toLocaleDateString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 
   return (
     <div className="feature-split">
       <aside className="feature-side" aria-label="Month grid">
+        <div className="dash-card-head">
+          <div className="dash-card-title">
+            <IconCalendar className="icon" />
+            <span className="side-heading">Calendar</span>
+          </div>
+          <span className="badge badge-accent">
+            {entryDates.length} {entryDates.length === 1 ? "entry" : "entries"}
+          </span>
+        </div>
         <div className="month-nav">
           <button
             type="button"
@@ -183,7 +201,14 @@ export default function JournalPage() {
 
       <section className="notes-main" aria-label="Journal entry">
         <div className="notes-toolbar">
-          <h2 className="entry-date figure">{activeDate}</h2>
+          <div className="dash-card-title">
+            <IconJournal className="icon" />
+            <h2 className="entry-date figure">{activeDate}</h2>
+            <span className="badge">{readableActiveDate}</span>
+            {entrySet.has(activeDate) ? (
+              <span className="badge badge-accent">Saved</span>
+            ) : null}
+          </div>
           <span className="toolbar-spacer" />
           <button
             type="button"
@@ -212,19 +237,25 @@ export default function JournalPage() {
           <p className="empty-state">Loading entry…</p>
         ) : (
           <div className="editor-split journal-split">
-            <textarea
-              className="textarea editor-input"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Write today's entry in markdown…"
-              aria-label="Journal entry content (markdown)"
-            />
-            <div className="editor-preview markdown" aria-live="polite">
-              {content.trim().length === 0 ? (
-                <p className="empty-state">Live preview appears here.</p>
-              ) : (
-                <ReactMarkdown>{content}</ReactMarkdown>
-              )}
+            <div className="editor-pane-box">
+              <span className="editor-pane-label">Daily reflection</span>
+              <textarea
+                className="textarea editor-input"
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Write today's entry in markdown…"
+                aria-label="Journal entry content (markdown)"
+              />
+            </div>
+            <div className="editor-pane-box">
+              <span className="editor-pane-label">Live preview</span>
+              <div className="editor-preview markdown" aria-live="polite">
+                {content.trim().length === 0 ? (
+                  <p className="empty-state">Live preview appears here.</p>
+                ) : (
+                  <ReactMarkdown>{content}</ReactMarkdown>
+                )}
+              </div>
             </div>
           </div>
         )}

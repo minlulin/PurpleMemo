@@ -16,6 +16,7 @@ import {
 } from "../lib/crypto.ts";
 import { errText } from "../lib/errors.ts";
 import { SETTING_KEYS } from "../lib/settings.ts";
+import { IconLock } from "./icons.tsx";
 
 /** First-run flow (§2.9): PIN + security question, both required. */
 export function SetupScreen({ onDone }: { onDone: () => void }) {
@@ -75,38 +76,51 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
           void submit();
         }}
       >
-        <h2 className="editor-title">Welcome to Purple Memo</h2>
-        <p className="muted">
-          Set a PIN to lock this app. The PIN is <b>required</b> — it cannot be
-          skipped. There is <b>no online recovery</b>: if you forget the PIN,
-          the security question below is the only way back in. Choose an answer
-          you will never forget, and keep it somewhere safe.
-        </p>
+        <div className="lock-brand-head">
+          <img
+            className="lock-brand-mark"
+            src="/brand/purple-memo-mark.png"
+            alt=""
+          />
+          <span className="badge badge-accent">
+            <IconLock className="icon" /> Offline Encrypted Workspace
+          </span>
+          <h2 className="editor-title">Welcome to Purple Memo</h2>
+          <p className="page-subtitle">
+            Set a local PIN to protect your workspace. The PIN is{" "}
+            <b>required</b> — there is <b>no online recovery</b>. Your security
+            question below is the only way back in if you forget your PIN.
+          </p>
+        </div>
         {error ? (
           <p className="alert alert-error" role="alert">
             {error}
           </p>
         ) : null}
-        <label>
-          PIN (at least {MIN_PIN_LENGTH} characters)
-          <input
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={draft.pin}
-            onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
-          />
-        </label>
-        <label>
-          Confirm PIN
-          <input
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={draft.confirm}
-            onChange={(e) => setDraft({ ...draft, confirm: e.target.value })}
-          />
-        </label>
+        <div className="form-grid">
+          <label>
+            PIN (at least {MIN_PIN_LENGTH} characters)
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              placeholder="••••••"
+              value={draft.pin}
+              onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
+            />
+          </label>
+          <label>
+            Confirm PIN
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              placeholder="••••••"
+              value={draft.confirm}
+              onChange={(e) => setDraft({ ...draft, confirm: e.target.value })}
+            />
+          </label>
+        </div>
         <label>
           Security question
           <input
@@ -117,9 +131,10 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
           />
         </label>
         <label>
-          Answer
+          Security answer
           <input
             className="input"
+            placeholder="Memorable answer"
             value={draft.answer}
             onChange={(e) => setDraft({ ...draft, answer: e.target.value })}
           />
@@ -217,7 +232,21 @@ export function LockScreen(p: LockScreenProps) {
             void unlockWithPin();
           }}
         >
-          <h2 className="editor-title">Purple Memo is locked</h2>
+          <div className="lock-brand-head">
+            <img
+              className="lock-brand-mark"
+              src="/brand/purple-memo-mark.png"
+              alt=""
+            />
+            <span className="badge badge-accent">
+              <IconLock className="icon" /> Session Locked
+            </span>
+            <h2 className="editor-title">Purple Memo is locked</h2>
+            <p className="page-subtitle">
+              Enter your PIN to unlock your encrypted notebook and finance
+              ledger.
+            </p>
+          </div>
           {error ? (
             <p className="alert alert-error" role="alert">
               {error}
@@ -229,6 +258,7 @@ export function LockScreen(p: LockScreenProps) {
               className="input"
               type="password"
               autoComplete="current-password"
+              placeholder="Enter PIN…"
               value={pin}
               onChange={(e) => setPin(e.target.value)}
             />
@@ -241,6 +271,7 @@ export function LockScreen(p: LockScreenProps) {
             >
               {busy ? "Checking…" : "Unlock"}
             </button>
+            <span className="toolbar-spacer" />
             <button
               type="button"
               className="btn btn-ghost"
@@ -272,45 +303,55 @@ export function LockScreen(p: LockScreenProps) {
           void resetPin();
         }}
       >
-        <h2 className="editor-title">Reset your PIN</h2>
-        <p className="muted">
-          Answer your security question to set a new PIN. There is no other way
-          to recover the PIN.
-        </p>
+        <div className="lock-brand-head">
+          <img
+            className="lock-brand-mark"
+            src="/brand/purple-memo-mark.png"
+            alt=""
+          />
+          <h2 className="editor-title">Reset your PIN</h2>
+          <p className="page-subtitle">
+            Answer your security question to set a new PIN. There is no other
+            way to recover the PIN.
+          </p>
+        </div>
         {error ? (
           <p className="alert alert-error" role="alert">
             {error}
           </p>
         ) : null}
-        <p className="chip-accent">{p.question}</p>
+        <p className="alert alert-note">{p.question}</p>
         <label>
           Answer
           <input
             className="input"
+            placeholder="Your security answer"
             value={draft.answer}
             onChange={(e) => setDraft({ ...draft, answer: e.target.value })}
           />
         </label>
-        <label>
-          New PIN
-          <input
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={draft.pin}
-            onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
-          />
-        </label>
-        <label>
-          Confirm new PIN
-          <input
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={draft.confirm}
-            onChange={(e) => setDraft({ ...draft, confirm: e.target.value })}
-          />
-        </label>
+        <div className="form-grid">
+          <label>
+            New PIN
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={draft.pin}
+              onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
+            />
+          </label>
+          <label>
+            Confirm new PIN
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={draft.confirm}
+              onChange={(e) => setDraft({ ...draft, confirm: e.target.value })}
+            />
+          </label>
+        </div>
         <div className="editor-actions">
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy ? "Checking…" : "Set new PIN"}

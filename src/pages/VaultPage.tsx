@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconLock, IconVault } from "../components/icons.tsx";
 import { vaultRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 
@@ -222,9 +223,43 @@ export default function VaultPage() {
     }
   };
 
+  const header = (
+    <header className="page-header">
+      <div className="page-header-main">
+        <div className="page-title-row">
+          <span className="page-icon-badge">
+            <IconVault className="icon" />
+          </span>
+          <div>
+            <h2 className="editor-title">Encrypted Vault</h2>
+            <p className="page-subtitle">
+              Per-item AES-256-GCM encrypted secrets derived via PBKDF2-SHA256
+              (600k iterations)
+            </p>
+          </div>
+        </div>
+      </div>
+      {phase === "open" ? (
+        <div className="page-actions">
+          <button
+            type="button"
+            className={change.open ? "btn is-on" : "btn"}
+            onClick={() => setChange({ ...change, open: !change.open })}
+          >
+            Change password
+          </button>
+          <button type="button" className="btn" onClick={doLock}>
+            <IconLock className="icon" /> Lock vault
+          </button>
+        </div>
+      ) : null}
+    </header>
+  );
+
   if (phase === "loading") {
     return (
       <div className="budget-page">
+        {header}
         <p className="muted">Loading…</p>
       </div>
     );
@@ -233,6 +268,7 @@ export default function VaultPage() {
   if (phase === "setup") {
     return (
       <div className="budget-page">
+        {header}
         {error ? (
           <p className="alert alert-error" role="alert">
             {error}
@@ -245,8 +281,13 @@ export default function VaultPage() {
             void doSetup();
           }}
         >
-          <h2 className="editor-title">Set a vault password</h2>
-          <p className="limit-warn" role="note">
+          <div className="lock-brand-head">
+            <span className="page-icon-badge">
+              <IconVault className="icon" />
+            </span>
+            <h2 className="editor-title">Set a vault password</h2>
+          </div>
+          <p className="alert alert-error" role="note">
             There is NO recovery. If you forget this password, your secrets
             cannot be recovered by anyone — not even on this machine. Store it
             somewhere safe before you continue.
@@ -288,6 +329,7 @@ export default function VaultPage() {
   if (phase === "unlock") {
     return (
       <div className="budget-page">
+        {header}
         {error ? (
           <p className="alert alert-error" role="alert">
             {error}
@@ -300,7 +342,15 @@ export default function VaultPage() {
             void doUnlock();
           }}
         >
-          <h2 className="editor-title">Vault locked</h2>
+          <div className="lock-brand-head">
+            <span className="page-icon-badge">
+              <IconLock className="icon" />
+            </span>
+            <h2 className="editor-title">Vault locked</h2>
+            <p className="page-subtitle">
+              Enter your vault password to decrypt and manage secrets.
+            </p>
+          </div>
           <label>
             Password
             <input
@@ -327,25 +377,12 @@ export default function VaultPage() {
 
   return (
     <div className="budget-page">
+      {header}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
         </p>
       ) : null}
-
-      <div className="editor-actions">
-        <button type="button" className="btn" onClick={doLock}>
-          Lock vault
-        </button>
-        <span className="toolbar-spacer" />
-        <button
-          type="button"
-          className={change.open ? "btn is-on" : "btn"}
-          onClick={() => setChange({ ...change, open: !change.open })}
-        >
-          Change password
-        </button>
-      </div>
 
       {change.open ? (
         <form
@@ -355,6 +392,7 @@ export default function VaultPage() {
             void doChangePassword();
           }}
         >
+          <h3 className="side-heading">Change vault password</h3>
           <label>
             Current password
             <input
@@ -404,112 +442,134 @@ export default function VaultPage() {
         </form>
       ) : null}
 
-      <form
-        className="entry-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void addItem();
-        }}
-      >
-        <label>
-          Title
-          <input
-            className="input"
-            placeholder="e.g. Email login"
-            value={draft.title}
-            onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-          />
-        </label>
-        <label>
-          Secret
-          <textarea
-            className="textarea"
-            rows={3}
-            placeholder="Password, note, code…"
-            value={draft.secret}
-            onChange={(e) => setDraft({ ...draft, secret: e.target.value })}
-          />
-        </label>
-        <div className="editor-actions">
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={
-              busy ||
-              draft.title.trim().length === 0 ||
-              draft.secret.length === 0
-            }
-          >
-            Add secret
-          </button>
-        </div>
-      </form>
+      <div className="split-workspace-grid">
+        <section className="settings-section" aria-label="Vault items">
+          <div className="dash-card-head">
+            <h3 className="side-heading">Stored Secrets</h3>
+            <span className="badge">{items.length}</span>
+          </div>
+          {items.length === 0 ? (
+            <EmptyState>The vault is empty — add a secret.</EmptyState>
+          ) : (
+            <ul className="budget-list">
+              {items.map((item) => (
+                <li key={item.id} className="budget-row">
+                  <div className="row-main">
+                    <span className="row-title">
+                      <b>{item.title}</b>
+                      <span className="chip figure">
+                        updated {item.updated_at}
+                      </span>
+                    </span>
+                    {revealed.has(item.id) ? (
+                      <span className="vault-secret">
+                        {revealed.get(item.id)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void toggleReveal(item.id)}
+                    >
+                      {revealed.has(item.id) ? "Hide" : "Reveal"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void startEdit(item)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void removeItem(item.id)}
+                    >
+                      Delete
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
-      {items.length === 0 ? (
-        <EmptyState>The vault is empty — add a secret above.</EmptyState>
-      ) : (
-        <ul className="budget-list">
-          {items.map((item) => (
-            <li key={item.id} className="budget-row">
-              <span>
-                <b>{item.title}</b>
-                <span className="muted"> — updated {item.updated_at}</span>
-                {revealed.has(item.id) ? (
-                  <span className="vault-secret">{revealed.get(item.id)}</span>
-                ) : null}
-              </span>
-              <span className="row-actions">
+          {edit ? (
+            <form
+              className="entry-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveEdit();
+              }}
+            >
+              <h3 className="side-heading">Edit secret</h3>
+              <label>
+                Title
+                <input
+                  className="input"
+                  value={edit.title}
+                  onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+                />
+              </label>
+              <label>
+                Secret
+                <textarea
+                  className="textarea"
+                  rows={3}
+                  value={edit.secret}
+                  onChange={(e) => setEdit({ ...edit, secret: e.target.value })}
+                />
+              </label>
+              <div className="editor-actions">
                 <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => void toggleReveal(item.id)}
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={
+                    busy ||
+                    edit.title.trim().length === 0 ||
+                    edit.secret.length === 0
+                  }
                 >
-                  {revealed.has(item.id) ? "Hide" : "Reveal"}
+                  Save
                 </button>
                 <button
                   type="button"
-                  className="btn btn-ghost"
-                  onClick={() => void startEdit(item)}
+                  className="btn"
+                  onClick={() => setEdit(null)}
                 >
-                  Edit
+                  Cancel
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => void removeItem(item.id)}
-                >
-                  Delete
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+              </div>
+            </form>
+          ) : null}
+        </section>
 
-      {edit ? (
         <form
           className="entry-form"
           onSubmit={(e) => {
             e.preventDefault();
-            void saveEdit();
+            void addItem();
           }}
         >
-          <h3 className="side-heading">Edit secret</h3>
+          <h3 className="side-heading">New secret</h3>
           <label>
             Title
             <input
               className="input"
-              value={edit.title}
-              onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+              placeholder="e.g. Email login, Recovery seed"
+              value={draft.title}
+              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
             />
           </label>
           <label>
             Secret
             <textarea
               className="textarea"
-              rows={3}
-              value={edit.secret}
-              onChange={(e) => setEdit({ ...edit, secret: e.target.value })}
+              rows={4}
+              placeholder="Password, note, recovery code…"
+              value={draft.secret}
+              onChange={(e) => setDraft({ ...draft, secret: e.target.value })}
             />
           </label>
           <div className="editor-actions">
@@ -518,18 +578,15 @@ export default function VaultPage() {
               className="btn btn-primary"
               disabled={
                 busy ||
-                edit.title.trim().length === 0 ||
-                edit.secret.length === 0
+                draft.title.trim().length === 0 ||
+                draft.secret.length === 0
               }
             >
-              Save
-            </button>
-            <button type="button" className="btn" onClick={() => setEdit(null)}>
-              Cancel
+              Add secret
             </button>
           </div>
         </form>
-      ) : null}
+      </div>
     </div>
   );
 }

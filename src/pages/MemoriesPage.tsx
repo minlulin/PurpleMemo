@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconMemories } from "../components/icons.tsx";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -42,29 +43,35 @@ function MemoryForm(p: MemoryFormProps) {
         p.onSubmit();
       }}
     >
-      <label>
-        Title
-        <input
-          className="input"
-          value={p.title}
-          placeholder="What happened?"
-          onChange={(e) => p.onTitle(e.target.value)}
-        />
-      </label>
-      <label>
-        Date
-        <input
-          className="input"
-          type="date"
-          value={p.date}
-          onChange={(e) => p.onDate(e.target.value)}
-        />
-      </label>
+      <h3 className="side-heading">
+        {p.editing ? "Edit memory" : "New memory"}
+      </h3>
+      <div className="form-grid">
+        <label>
+          Title
+          <input
+            className="input"
+            value={p.title}
+            placeholder="What happened?"
+            onChange={(e) => p.onTitle(e.target.value)}
+          />
+        </label>
+        <label>
+          Date
+          <input
+            className="input"
+            type="date"
+            value={p.date}
+            onChange={(e) => p.onDate(e.target.value)}
+          />
+        </label>
+      </div>
       <label>
         Note
         <textarea
           className="textarea"
           rows={3}
+          placeholder="Optional reflection or story…"
           value={p.note}
           onChange={(e) => p.onNote(e.target.value)}
         />
@@ -100,10 +107,13 @@ function MemoryList(p: MemoryListProps) {
     <ul className="budget-list">
       {p.items.map((m) => (
         <li key={m.id} className="budget-row">
-          <span>
-            <span className="chip">{m.memory_date}</span> <b>{m.title}</b>
-            {m.note ? <span className="muted"> — {m.note}</span> : null}
-          </span>
+          <div className="row-main">
+            <span className="row-title">
+              <span className="chip figure">{m.memory_date}</span>
+              <b>{m.title}</b>
+            </span>
+            {m.note ? <span className="row-sub">{m.note}</span> : null}
+          </div>
           <span className="row-actions">
             <button
               type="button"
@@ -239,19 +249,35 @@ export default function MemoriesPage() {
 
   return (
     <div className="budget-page">
-      <nav className="budget-viewnav" aria-label="Memory views">
-        {VIEWS.map((v) => (
-          <button
-            key={v.key}
-            type="button"
-            className={view === v.key ? "nav-tab is-active" : "nav-tab"}
-            aria-current={view === v.key ? "page" : undefined}
-            onClick={() => setView(v.key)}
-          >
-            {v.label}
-          </button>
-        ))}
-      </nav>
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconMemories className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Memories &amp; Milestones</h2>
+              <p className="page-subtitle">
+                Important dates, anniversaries, on-this-day flashbacks &amp;
+                contact birthdays
+              </p>
+            </div>
+          </div>
+        </div>
+        <nav className="budget-viewnav" aria-label="Memory views">
+          {VIEWS.map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              className={view === v.key ? "nav-tab is-active" : "nav-tab"}
+              aria-current={view === v.key ? "page" : undefined}
+              onClick={() => setView(v.key)}
+            >
+              {v.label}
+            </button>
+          ))}
+        </nav>
+      </header>
 
       {loading ? <p className="muted">Loading…</p> : null}
       {error ? (
@@ -260,111 +286,149 @@ export default function MemoriesPage() {
         </p>
       ) : null}
 
-      <MemoryForm
-        title={form.title}
-        date={form.date}
-        note={form.note}
-        editing={form.editingId !== null}
-        onTitle={(title) => setForm({ ...form, title })}
-        onDate={(date) => setForm({ ...form, date })}
-        onNote={(note) => setForm({ ...form, note })}
-        onSubmit={() => void submitForm()}
-        onCancel={cancelEdit}
-      />
+      <div className="split-workspace-grid">
+        <div>
+          {view === "upcoming" ? (
+            <div className="budget-manage">
+              <div className="dash-card-head">
+                <h3 className="side-heading">Next 14 days</h3>
+                <span className="badge">{upcoming.length}</span>
+              </div>
+              <MemoryList
+                items={upcoming}
+                editingId={form.editingId}
+                onEdit={startEdit}
+                onDelete={(m) => void remove(m)}
+              />
+              <div className="contact-section">
+                <div className="dash-card-head">
+                  <h3 className="side-heading">
+                    Birthdays in the next 14 days
+                  </h3>
+                  <span className="badge badge-accent">
+                    {upcomingBirthdays.length}
+                  </span>
+                </div>
+                {upcomingBirthdays.length === 0 ? (
+                  <p className="muted">No upcoming birthdays.</p>
+                ) : (
+                  <ul className="budget-list">
+                    {upcomingBirthdays.map((c) => (
+                      <li key={c.id} className="budget-row">
+                        <span>
+                          <b>{c.name}</b>
+                        </span>
+                        <span className="badge badge-accent">
+                          {c.birthday ? birthdayLabel(c.birthday) : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : view === "onthisday" ? (
+            <div className="budget-manage">
+              <div className="dash-card-head">
+                <h3 className="side-heading">On this day (any year)</h3>
+                <span className="badge">{onThisDay.length}</span>
+              </div>
+              <MemoryList
+                items={onThisDay}
+                editingId={form.editingId}
+                onEdit={startEdit}
+                onDelete={(m) => void remove(m)}
+              />
+              <div className="contact-section">
+                <div className="dash-card-head">
+                  <h3 className="side-heading">Birthdays today</h3>
+                  <span className="badge badge-accent">
+                    {todaysBirthdays.length}
+                  </span>
+                </div>
+                {todaysBirthdays.length === 0 ? (
+                  <p className="muted">No birthdays today.</p>
+                ) : (
+                  <ul className="budget-list">
+                    {todaysBirthdays.map((c) => (
+                      <li key={c.id} className="budget-row">
+                        <span>
+                          <b>{c.name}</b>
+                        </span>
+                        <span className="badge badge-accent">
+                          {c.birthday ? birthdayLabel(c.birthday) : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : view === "month" ? (
+            <div className="budget-manage">
+              <div className="month-nav">
+                <button
+                  type="button"
+                  className="btn"
+                  aria-label="Previous month"
+                  onClick={() => setFeedMonth(shiftYearMonth(feedMonth, -1))}
+                >
+                  ‹
+                </button>
+                <h3 className="side-heading month-label">
+                  {monthLabel(feedMonth)}
+                </h3>
+                <button
+                  type="button"
+                  className="btn"
+                  aria-label="Next month"
+                  onClick={() => setFeedMonth(shiftYearMonth(feedMonth, 1))}
+                >
+                  ›
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setFeedMonth(yearMonthOf(today))}
+                >
+                  This month
+                </button>
+              </div>
+              <MemoryList
+                items={month}
+                editingId={form.editingId}
+                onEdit={startEdit}
+                onDelete={(m) => void remove(m)}
+              />
+            </div>
+          ) : (
+            <div className="budget-manage">
+              <div className="dash-card-head">
+                <h3 className="side-heading">All memories</h3>
+                <span className="badge">{all.length}</span>
+              </div>
+              <MemoryList
+                items={all}
+                editingId={form.editingId}
+                onEdit={startEdit}
+                onDelete={(m) => void remove(m)}
+              />
+            </div>
+          )}
+        </div>
 
-      {view === "upcoming" ? (
-        <>
-          <h3 className="side-heading">Next 14 days</h3>
-          <MemoryList
-            items={upcoming}
-            editingId={form.editingId}
-            onEdit={startEdit}
-            onDelete={(m) => void remove(m)}
-          />
-          <h3 className="side-heading">Birthdays in the next 14 days</h3>
-          {upcomingBirthdays.length === 0 ? (
-            <p className="muted">No upcoming birthdays.</p>
-          ) : (
-            <ul className="budget-list">
-              {upcomingBirthdays.map((c) => (
-                <li key={c.id} className="budget-row">
-                  <span>{c.name}</span>
-                  <span className="muted">
-                    {c.birthday ? birthdayLabel(c.birthday) : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      ) : view === "onthisday" ? (
-        <>
-          <h3 className="side-heading">On this day (any year)</h3>
-          <MemoryList
-            items={onThisDay}
-            editingId={form.editingId}
-            onEdit={startEdit}
-            onDelete={(m) => void remove(m)}
-          />
-          <h3 className="side-heading">Birthdays today</h3>
-          {todaysBirthdays.length === 0 ? (
-            <p className="muted">No birthdays today.</p>
-          ) : (
-            <ul className="budget-list">
-              {todaysBirthdays.map((c) => (
-                <li key={c.id} className="budget-row">
-                  <span>{c.name}</span>
-                  <span className="muted">
-                    {c.birthday ? birthdayLabel(c.birthday) : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      ) : view === "month" ? (
-        <>
-          <div className="month-nav">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              aria-label="Previous month"
-              onClick={() => setFeedMonth(shiftYearMonth(feedMonth, -1))}
-            >
-              ‹
-            </button>
-            <h3 className="month-label">{monthLabel(feedMonth)}</h3>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              aria-label="Next month"
-              onClick={() => setFeedMonth(shiftYearMonth(feedMonth, 1))}
-            >
-              ›
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setFeedMonth(yearMonthOf(today))}
-            >
-              This month
-            </button>
-          </div>
-          <MemoryList
-            items={month}
-            editingId={form.editingId}
-            onEdit={startEdit}
-            onDelete={(m) => void remove(m)}
-          />
-        </>
-      ) : (
-        <MemoryList
-          items={all}
-          editingId={form.editingId}
-          onEdit={startEdit}
-          onDelete={(m) => void remove(m)}
+        <MemoryForm
+          title={form.title}
+          date={form.date}
+          note={form.note}
+          editing={form.editingId !== null}
+          onTitle={(title) => setForm({ ...form, title })}
+          onDate={(date) => setForm({ ...form, date })}
+          onNote={(note) => setForm({ ...form, note })}
+          onSubmit={() => void submitForm()}
+          onCancel={cancelEdit}
         />
-      )}
+      </div>
     </div>
   );
 }

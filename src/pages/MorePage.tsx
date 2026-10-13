@@ -1,6 +1,17 @@
 // P3f More page (§2.8): overflow navigation for the secondary pages — the
 // header keeps the primary sections, everything else lives here.
 
+import {
+  IconContacts,
+  IconGallery,
+  IconHabits,
+  IconMemories,
+  IconMore,
+  IconSettings,
+  IconShopping,
+  IconTasks,
+  IconVault,
+} from "../components/icons.tsx";
 import type { PageKey } from "../lib/navigation.ts";
 
 export const SECONDARY_PAGES: { key: PageKey; label: string; blurb: string }[] =
@@ -15,6 +26,17 @@ export const SECONDARY_PAGES: { key: PageKey; label: string; blurb: string }[] =
     { key: "settings", label: "Settings", blurb: "Theme, PIN, key export" },
   ];
 
+const PAGE_ICONS: Partial<Record<PageKey, typeof IconHabits>> = {
+  habits: IconHabits,
+  tasks: IconTasks,
+  shopping: IconShopping,
+  contacts: IconContacts,
+  memories: IconMemories,
+  gallery: IconGallery,
+  vault: IconVault,
+  settings: IconSettings,
+};
+
 export default function MorePage({
   onNavigate,
 }: {
@@ -22,24 +44,44 @@ export default function MorePage({
 }) {
   return (
     <div className="budget-page">
-      <h2 className="editor-title">More</h2>
-      <ul className="budget-list">
-        {SECONDARY_PAGES.map((p) => (
-          <li key={p.key} className="budget-row">
-            <span>
-              <b>{p.label}</b>
-              <span className="muted"> — {p.blurb}</span>
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconMore className="icon" />
             </span>
+            <div>
+              <h2 className="editor-title">More</h2>
+              <p className="page-subtitle">
+                Personal trackers, address book, memories, media gallery &amp;
+                encrypted vault
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="more-grid">
+        {SECONDARY_PAGES.map((p) => {
+          const Icon = PAGE_ICONS[p.key] ?? IconMore;
+          return (
             <button
+              key={p.key}
               type="button"
-              className="btn btn-ghost"
+              className="more-card"
               onClick={() => onNavigate(p.key)}
             >
-              Open
+              <span className="more-card-icon">
+                <Icon className="icon" />
+              </span>
+              <span className="more-card-body">
+                <span className="more-card-title">{p.label}</span>
+                <span className="more-card-blurb">{p.blurb}</span>
+              </span>
             </button>
-          </li>
-        ))}
-      </ul>
+          );
+        })}
+      </div>
     </div>
   );
 }
