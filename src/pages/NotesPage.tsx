@@ -2,12 +2,16 @@
 // pin/archive, FTS search, 140-char excerpts. Talks only to the notes repo
 // from the composition root (§4) — never to the driver or IPC directly.
 
+import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
+  IconEye,
   IconFolder,
+  IconMarkdown,
   IconNotes,
+  IconPin,
   IconPlus,
   IconSearch,
 } from "../components/icons.tsx";
@@ -45,6 +49,20 @@ interface EditorProps {
 }
 
 function NoteEditor(p: EditorProps) {
+  const splitRef = useRef<HTMLDivElement>(null);
+  const [ratio, setRatio] = useState(0.5);
+  const [dragging, setDragging] = useState(false);
+
+  /** Pointer-driven pane split; keeps both panes at least 25% wide. */
+  const resizeTo = (clientX: number) => {
+    const box = splitRef.current?.getBoundingClientRect();
+    if (!box || box.width === 0) return;
+    setRatio(Math.min(0.75, Math.max(0.25, (clientX - box.left) / box.width)));
+  };
+
+  const words =
+    p.content.trim().length === 0 ? 0 : p.content.trim().split(/\s+/).length;
+
   return (
     <>
       <input
@@ -80,9 +98,15 @@ function NoteEditor(p: EditorProps) {
           ))}
         </select>
       </div>
-      <div className="editor-split">
+      <div
+        className="editor-split"
+        ref={splitRef}
+        style={{ "--editor-split-ratio": `${ratio * 100}%` } as CSSProperties}
+      >
         <div className="editor-pane-box">
-          <span className="editor-pane-label">Markdown</span>
+          <span className="editor-pane-label">
+            <IconMarkdown className="icon" /> Markdown
+          </span>
           <textarea
             className="textarea editor-input"
             value={p.content}
@@ -91,8 +115,38 @@ function NoteEditor(p: EditorProps) {
             aria-label="Note content (markdown)"
           />
         </div>
+        <hr
+          className={`editor-resize-handle${dragging ? " is-dragging" : ""}`}
+          aria-label="Resize editor and preview panes"
+          tabIndex={0}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setDragging(true);
+            resizeTo(e.clientX);
+          }}
+          onPointerMove={(e) => {
+            if (dragging) resizeTo(e.clientX);
+          }}
+          onPointerUp={(e) => {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+            setDragging(false);
+          }}
+          onPointerCancel={() => setDragging(false)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              setRatio((r) => Math.max(0.25, r - 0.05));
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              setRatio((r) => Math.min(0.75, r + 0.05));
+            }
+          }}
+        />
         <div className="editor-pane-box">
-          <span className="editor-pane-label">Live preview</span>
+          <span className="editor-pane-label">
+            <IconEye className="icon" /> Live preview
+          </span>
           <div className="editor-preview markdown" aria-live="polite">
             {p.content.trim().length === 0 ? (
               <p className="empty-state">Live preview appears here.</p>
@@ -134,6 +188,9 @@ function NoteEditor(p: EditorProps) {
           Send to journal
         </button>
         <span className="toolbar-spacer" />
+        <span className="editor-word-count" aria-live="polite">
+          {words} {words === 1 ? "word" : "words"}
+        </span>
         <button type="button" className="btn btn-danger" onClick={p.onDelete}>
           Delete
         </button>
@@ -325,10 +382,13 @@ export default function NotesPage() {
 
   const listBody =
     notes.length === 0 ? (
-      <li className="empty-state">
-        {search.trim().length > 0
-          ? "No notes match this search."
-          : "No notes yet — create your first note."}
+      <li className="note-list-empty">
+        <IconNotes className="icon" />
+        <span>
+          {search.trim().length > 0
+            ? "No notes match this search."
+            : "No notes yet — create your first note."}
+        </span>
       </li>
     ) : (
       notes.map((note) => {
@@ -338,11 +398,16 @@ export default function NotesPage() {
           <li key={note.id}>
             <button
               type="button"
-              className={isActive ? "note-card is-active" : "note-card"}
+              className={`note-card${note.pinned === 1 ? " note-card-pin-indicator" : ""}${isActive ? " is-active" : ""}`}
               onClick={() => setSelectedId(note.id)}
             >
               <span className="note-card-title">
-                {note.pinned === 1 && <span title="Pinned">📌</span>}
+                {note.pinned === 1 && (
+                  <>
+                    <IconPin className="icon note-pin" />
+                    <span className="visually-hidden">Pinned</span>
+                  </>
+                )}
                 <span className="title-text">
                   {note.title.length > 0 ? note.title : "Untitled"}
                 </span>
@@ -473,7 +538,11 @@ export default function NotesPage() {
             <ul className="note-list" aria-label="Note list">
               {listBody}
             </ul>
-            <section className="editor-pane" aria-label="Note editor">
+            <section
+              className="editor-pane editor-enter"
+              aria-label="Note editor"
+              key={selected?.id ?? "empty"}
+            >
               {selected === null ? (
                 <EmptyState>
                   Select a note from the list, or create a new one to start

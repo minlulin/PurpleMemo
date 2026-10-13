@@ -321,28 +321,46 @@
 
 ### Tasks
 
-- [ ] **8.1** Change note card background from `--color-surface-subtle` to `--color-surface-input` for better contrast
-- [ ] **8.2** Replace raw 📌 emoji with `IconPin` SVG icon
-- [ ] **8.3** Add `.note-card-pin-indicator` — small accent-colored left border for pinned notes
-- [ ] **8.4** Add `.editor-resize-handle` — draggable divider between markdown and preview panes
-- [ ] **8.5** Add `IconMarkdown` and `IconEye` icons for pane labels
-- [ ] **8.6** Add word count display in `.editor-actions` (e.g., "245 words")
-- [ ] **8.7** Add `.note-card-excerpt` line clamp fallback for non-webkit browsers
-- [ ] **8.8** Add `transition: transform var(--dur-fast) var(--ease-spring)` on note card hover
-- [ ] **8.9** Add `.note-list-empty` — larger empty state with icon when no notes exist
-- [ ] **8.10** Add `@keyframes fade-in` for note editor when switching notes
+- [x] **8.1** Change note card background from `--color-surface-subtle` to `--color-surface-input` for better contrast
+- [x] **8.2** Replace raw 📌 emoji with `IconPin` SVG icon
+- [x] **8.3** Add `.note-card-pin-indicator` — small accent-colored left border for pinned notes
+- [x] **8.4** Add `.editor-resize-handle` — draggable divider between markdown and preview panes
+- [x] **8.5** Add `IconMarkdown` and `IconEye` icons for pane labels
+- [x] **8.6** Add word count display in `.editor-actions` (e.g., "245 words")
+- [x] **8.7** Add `.note-card-excerpt` line clamp fallback for non-webkit browsers
+- [x] **8.8** Add `transition: transform var(--dur-fast) var(--ease-spring)` on note card hover
+- [x] **8.9** Add `.note-list-empty` — larger empty state with icon when no notes exist
+- [x] **8.10** Add `@keyframes fade-in` for note editor when switching notes
 
 ### Files touched
 - `src/styles/app.css`
 - `src/components/icons.tsx`
 - `src/pages/NotesPage.tsx`
 
+### Notes
+- 8.4 is a real drag, not decoration: pointer capture on the handle, ratio
+  clamped to 25–75%, `touch-action: none`, and ArrowLeft/ArrowRight for
+  keyboard users. The split is a CSS variable
+  (`--editor-split-ratio`) so the grid owns the layout; below 56rem the panes
+  stack and the handle hides itself.
+- The handle is an `<hr>`, not `<div role="separator">` — Biome's
+  `useSemanticElements` rule requires the real element. Padding (not grid gap)
+  spaces the panes around it.
+- 8.1 + 8.3 together: the pin indicator adds a 3px leading border, so its
+  padding is reduced by 2px to keep every card's text on the same line.
+- 8.2 replaces the 📌 emoji with `IconPin` plus a `.visually-hidden` "Pinned",
+  since the icon itself is `aria-hidden`.
+- 8.10 keys the animation off `selected?.id` on the pane, so it replays on
+  every note switch (the editor already remounts per note).
+
 ### Verification
-- [ ] Note cards visually distinct from panel background
-- [ ] Pin uses SVG icon, not emoji
-- [ ] Editor panes are resizable
-- [ ] Word count visible in toolbar
-- [ ] Note switching has smooth transition
+- [x] Note cards visually distinct from panel background (input surface)
+- [x] Pin uses SVG icon, not emoji
+- [x] Editor panes are resizable (pointer + keyboard)
+- [x] Word count visible in toolbar
+- [x] Note switching has smooth transition
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual drag/feel pass pending
 
 ---
 
@@ -717,7 +735,14 @@ are unused-in-markup but are the documented opt-in APIs for 5.5 and 4.5;
 before Phase 1.
 
 ### Phase 8 — Notes Studio Refinement
-- [ ] Not started
+- [x] Note cards on the input surface; hover lifts with the spring easing
+- [x] `IconPin` + `.note-card-pin-indicator` replace the 📌 emoji
+- [x] Draggable editor split (pointer capture, 25–75% clamp, arrow keys)
+- [x] `IconMarkdown`/`IconEye` pane labels, live word count in `.editor-actions`
+- [x] `.note-list-empty` empty state, `fade-in` on note switch
+- [x] Standard `line-clamp` alongside the `-webkit-` pair
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual drag/feel pass pending
 
 ### Phase 9 — Budget Page Polish
 - [ ] Not started

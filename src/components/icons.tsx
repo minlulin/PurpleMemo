@@ -370,3 +370,25 @@ export function IconCheck(props: IconProps) {
     </svg>
   );
 }
+
+export function IconMarkdown(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
+      <path d="M6 15v-6l2.5 3L11 9v6" />
+      <path d="M14 9v4a1.5 1.5 0 0 0 3 0V9" />
+      <path d="M17 9v6" />
+    </svg>
+  );
+}
+
+export function IconEye(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
