@@ -157,6 +157,14 @@
    * theme. Lives here because a data URI is a colour value in disguise. */
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a398c3' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
+  /* Contact avatar presets — picked by a hash of the name so the address book
+ * stays scannable. Same five in both themes; the letter is inverse-coloured. */
+  --avatar-gradient-1: linear-gradient(135deg, #6b3fd4 0%, #9a6bff 100%);
+  --avatar-gradient-2: linear-gradient(135deg, #4b2ea8 0%, #7a4fe0 100%);
+  --avatar-gradient-3: linear-gradient(135deg, #8b3fb0 0%, #c05fd6 100%);
+  --avatar-gradient-4: linear-gradient(135deg, #3a3fa8 0%, #5f74e0 100%);
+  --avatar-gradient-5: linear-gradient(135deg, #2f7f6e 0%, #43ad94 100%);
+
   /* Focus */
   --focus-outline-width: 2px;
   --focus-outline-offset: 2px;
@@ -294,6 +302,17 @@ html,
 body,
 #root {
   min-height: 100%;
+}
+
+/* Settings anchors scroll to their section instead of snapping instantly. */
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 
 body {

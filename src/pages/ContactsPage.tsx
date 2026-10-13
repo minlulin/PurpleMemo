@@ -35,6 +35,18 @@ const CHANNEL_KINDS: { key: ContactChannelKind; label: string }[] = [
   { key: "other", label: "Other" },
 ];
 
+/**
+ * Stable per-name avatar colour. FNV-ish over the characters, so the same
+ * contact keeps the same swatch across sessions and machines.
+ */
+function avatarClass(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return `contact-avatar contact-avatar-gradient is-g${hash % 5}`;
+}
+
 export default function ContactsPage() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -318,7 +330,7 @@ export default function ContactsPage() {
                     onClick={() => void select(c.id)}
                   >
                     <span className="row-title">
-                      <span className="contact-avatar">
+                      <span className={avatarClass(c.name)}>
                         {c.name.slice(0, 1).toUpperCase()}
                       </span>
                       <span>{c.name}</span>
@@ -335,7 +347,7 @@ export default function ContactsPage() {
             <>
               <div className="dash-card-head">
                 <div className="row-title">
-                  <span className="contact-avatar">
+                  <span className={avatarClass(selectedContact.name)}>
                     {selectedContact.name.slice(0, 1).toUpperCase()}
                   </span>
                   <h3 className="settings-heading">{selectedContact.name}</h3>

@@ -11,8 +11,11 @@ import { useEffect, useState } from "react";
 import {
   IconArrowRight,
   IconDownload,
+  IconMoon,
+  IconSearch,
   IconSettings,
   IconSpinner,
+  IconSun,
   IconUpload,
 } from "../components/icons.tsx";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
@@ -40,10 +43,23 @@ interface SettingsPageProps {
   onNavigate: (key: PageKey) => void;
 }
 
+/** Anchors for the sticky sub-nav; the ids live on the sections below. */
+const SETTINGS_SECTIONS = [
+  { id: "appearance", label: "Appearance" },
+  { id: "lock", label: "App lock & PIN" },
+  { id: "vault", label: "Vault" },
+  { id: "key-export", label: "Key export" },
+  { id: "backup", label: "Backup" },
+  { id: "share", label: "Share" },
+  { id: "updates", label: "Updates" },
+  { id: "about", label: "About" },
+] as const;
+
 export default function SettingsPage(p: SettingsPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
   const [pin, setPin] = useState({
     current: "",
     next: "",
@@ -51,6 +67,14 @@ export default function SettingsPage(p: SettingsPageProps) {
     question: "",
     answer: "",
   });
+
+  /** Section filter — matches the nav labels, so search and nav agree. */
+  const needle = query.trim().toLowerCase();
+  const shows = (id: string) =>
+    needle === "" ||
+    SETTINGS_SECTIONS.some(
+      (s) => s.id === id && s.label.toLowerCase().includes(needle),
+    );
 
   const setTheme = async (theme: Theme) => {
     try {
@@ -383,7 +407,39 @@ export default function SettingsPage(p: SettingsPageProps) {
       )}
       {note !== null && <p className="alert alert-note">{note}</p>}
 
-      <section className="settings-section">
+      <span className="input-icon-wrap">
+        <input
+          className="input"
+          type="search"
+          placeholder="Filter settings…"
+          aria-label="Filter settings"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <IconSearch className="icon input-icon" />
+      </span>
+
+      <nav className="settings-nav" aria-label="Settings sections">
+        {SETTINGS_SECTIONS.filter((s) => shows(s.id)).map((s) => (
+          <a
+            key={s.id}
+            className="settings-nav-link"
+            href={`#settings-${s.id}`}
+          >
+            {s.label}
+          </a>
+        ))}
+      </nav>
+
+      {needle !== "" && SETTINGS_SECTIONS.every((s) => !shows(s.id)) && (
+        <p className="empty-state">No settings match “{query.trim()}”.</p>
+      )}
+
+      <section
+        className="settings-section"
+        id="settings-appearance"
+        hidden={!shows("appearance")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">Appearance</h3>
           <span className="badge badge-accent">{p.theme}</span>
@@ -392,27 +448,32 @@ export default function SettingsPage(p: SettingsPageProps) {
           Choose between the dark-first PurpleShade palette and its high-clarity
           light mode mirror.
         </p>
-        <div className="editor-row">
+        <fieldset className="theme-segmented">
+          <legend className="visually-hidden">Theme</legend>
           <button
             type="button"
-            className={p.theme === "dark" ? "btn btn-primary" : "btn"}
+            className={p.theme === "dark" ? "btn is-on" : "btn"}
             aria-pressed={p.theme === "dark"}
             onClick={() => void setTheme("dark")}
           >
-            Dark mode
+            <IconMoon className="icon" /> Dark
           </button>
           <button
             type="button"
-            className={p.theme === "light" ? "btn btn-primary" : "btn"}
+            className={p.theme === "light" ? "btn is-on" : "btn"}
             aria-pressed={p.theme === "light"}
             onClick={() => void setTheme("light")}
           >
-            Light mode
+            <IconSun className="icon" /> Light
           </button>
-        </div>
+        </fieldset>
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section settings-section-expanded"
+        id="settings-lock"
+        hidden={!shows("lock")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">App lock &amp; PIN</h3>
           <span className="badge">PBKDF2-SHA256</span>
@@ -493,7 +554,11 @@ export default function SettingsPage(p: SettingsPageProps) {
         </div>
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section settings-section-compact"
+        id="settings-vault"
+        hidden={!shows("vault")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">Vault</h3>
           <span className="badge badge-accent">AES-256-GCM</span>
@@ -513,7 +578,11 @@ export default function SettingsPage(p: SettingsPageProps) {
         </div>
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        id="settings-key-export"
+        hidden={!shows("key-export")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">Encryption key export</h3>
           <span className="badge badge-warn">Sensitive</span>
@@ -571,7 +640,11 @@ export default function SettingsPage(p: SettingsPageProps) {
         )}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section settings-section-expanded"
+        id="settings-backup"
+        hidden={!shows("backup")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">Backup &amp; restore</h3>
           <span className="badge">.zip archive</span>
@@ -639,7 +712,11 @@ export default function SettingsPage(p: SettingsPageProps) {
         )}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        id="settings-share"
+        hidden={!shows("share")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">Share to this network</h3>
           <span
@@ -719,7 +796,11 @@ export default function SettingsPage(p: SettingsPageProps) {
           )}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        id="settings-updates"
+        hidden={!shows("updates")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">Updates</h3>
           <span className="badge">Signed releases</span>
@@ -780,7 +861,11 @@ export default function SettingsPage(p: SettingsPageProps) {
         )}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section settings-section-compact"
+        id="settings-about"
+        hidden={!shows("about")}
+      >
         <div className="dash-card-head">
           <h3 className="settings-heading">About</h3>
           <span className="badge badge-accent">Open Source</span>

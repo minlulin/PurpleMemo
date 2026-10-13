@@ -420,29 +420,49 @@
 
 ### Tasks
 
-- [ ] **10.1** Remove nested `.entry-form` inside `.contacts-detail` — replace with `.contact-form` (transparent background, no border)
-- [ ] **10.2] Add `.contact-avatar-gradient` — gradient background based on name hash (pick from 4-5 preset gradients)
-- [ ] **10.3] Add `.contact-detail-section` — sub-sections within the detail panel with subtle separators
-- [ ] **10.4] Add `.settings-nav` — sticky sub-navigation for settings sections
-- [ ] **10.5] Add `.settings-section-compact` — tighter padding for simple sections (About, Vault)
-- [ ] **10.6] Add `.settings-section-expanded` — larger padding for complex sections (PIN, Backup)
-- [ ] **10.7] Replace Dark/Light button toggle with a single `.theme-segmented` control
-- [ ] **10.8] Add `IconSun` and `IconMoon` icons for theme toggle
-- [ ] **10.9] Add `.settings-search` — filter input at top of settings page
-- [ ] **10.10] Add `scroll-behavior: smooth` to `html` for anchor navigation
+- [x] **10.1** Remove nested `.entry-form` inside `.contacts-detail` — replace with `.contact-form` (transparent background, no border)
+- [x] **10.2] Add `.contact-avatar-gradient` — gradient background based on name hash (pick from 4-5 preset gradients)
+- [x] **10.3** Add `.contact-detail-section` — sub-sections within the detail panel with subtle separators
+- [x] **10.4** Add `.settings-nav` — sticky sub-navigation for settings sections
+- [x] **10.5** Add `.settings-section-compact` — tighter padding for simple sections (About, Vault)
+- [x] **10.6** Add `.settings-section-expanded` — larger padding for complex sections (PIN, Backup)
+- [x] **10.7** Replace Dark/Light button toggle with a single `.theme-segmented` control
+- [x] **10.8** Add `IconSun` and `IconMoon` icons for theme toggle
+- [x] **10.9** Add `.settings-search` — filter input at top of settings page
+- [x] **10.10** Add `scroll-behavior: smooth` to `html` for anchor navigation
 
 ### Files touched
+- `src/styles/tokens.css`
 - `src/styles/app.css`
 - `src/components/icons.tsx`
 - `src/pages/ContactsPage.tsx`
 - `src/pages/SettingsPage.tsx`
 
+### Notes
+- **Bug caught while wiring 10.9:** the filter hides sections with the `hidden`
+  attribute, but `.settings-section { display: flex }` beats the UA's
+  `[hidden] { display: none }` — every "hidden" section would have stayed on
+  screen. Added a global `[hidden] { display: none !important }`.
+- 10.9 reuses the Phase 4 `.input-icon-wrap` instead of adding a
+  `.settings-search` class, so the filter looks like every other search field.
+  The nav and the sections filter off the same `SETTINGS_SECTIONS` table, so
+  they can never disagree.
+- 10.4 uses real `<a href="#settings-…">` anchors (keyboard + middle-click
+  work for free) with `scroll-margin-top` so targets clear the sticky nav.
+- 10.7 is a `<fieldset>` with a visually-hidden legend — Biome rejects
+  `role="group"` on a div, and a fieldset is the honest grouping anyway.
+- 10.2 hashes the name with a stable 31-multiplier, so a contact keeps its
+  colour across sessions; 10.3 is an alias of the existing `.contact-section`
+  rule (same separator, both names) rather than a second copy.
+
 ### Verification
-- [ ] No nested card borders on Contacts detail
-- [ ] Avatars have gradient backgrounds
-- [ ] Settings has sticky nav + search
-- [ ] Theme toggle is a single segmented control
-- [ ] Settings sections have varied visual weight
+- [x] No nested card borders on Contacts detail (Phase 5's `.contact-form`)
+- [x] Avatars have gradient backgrounds
+- [x] Settings has sticky nav + search
+- [x] Theme toggle is a single segmented control
+- [x] Settings sections have varied visual weight
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual pass on nav stickiness and avatar palette pending
 
 ---
 
@@ -775,7 +795,16 @@ before Phase 1.
 - [ ] Manual pass on bar/wallet feel pending
 
 ### Phase 10 — Contacts & Settings Layout Fix
-- [ ] Not started
+- [x] Contacts: hashed avatar gradients (5 presets), `.contact-detail-section`
+      alias, nested card already gone from Phase 5
+- [x] Settings: filter input + sticky anchor nav over one shared section table
+- [x] `.settings-section-compact` (Vault, About) and `-expanded` (PIN, Backup)
+- [x] `.theme-segmented` fieldset with `IconMoon`/`IconSun` replaces two buttons
+- [x] `html { scroll-behavior: smooth }` (off under reduced motion)
+- [x] Bug fix: global `[hidden] { display: none !important }` — class `display`
+      rules were beating the UA rule, so filtered-out sections stayed visible
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual pass on nav stickiness and avatar palette pending
 
 ### Phase 11 — Gallery & Habits Polish
 - [ ] Not started

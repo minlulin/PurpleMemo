@@ -28,6 +28,12 @@
   background: transparent;
 }
 
+/* The UA's `[hidden] { display: none }` loses to any author rule that sets
+ * `display` (every card in this file does), so state it with weight. */
+[hidden] {
+  display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -948,6 +954,93 @@ button.chip:hover {
   color: var(--color-text-muted);
   max-width: 38rem;
   cursor: pointer;
+}
+
+/* ---------------------------------------------------------------------------
+ * Settings: sticky sub-nav, filter, segmented theme, section density
+ * ------------------------------------------------------------------------- */
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  margin-inline: calc(var(--space-1) * -1);
+  background: var(--color-base);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.settings-nav:empty {
+  display: none;
+}
+
+.settings-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.settings-nav-link:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+.settings-section-compact {
+  padding: var(--space-4);
+  gap: var(--space-3);
+}
+
+.settings-section-expanded {
+  padding: var(--space-6);
+  gap: var(--space-5);
+}
+
+/* Anchored sections must clear the sticky nav. */
+[id^="settings-"] {
+  scroll-margin-top: var(--space-12);
+}
+
+/* One control, two segments — never two competing buttons. */
+.theme-segmented {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1);
+  background: var(--color-surface-input);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  align-self: flex-start;
+}
+
+.theme-segmented .btn {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  min-height: var(--space-7);
+  padding: var(--space-1) var(--space-4);
+}
+
+.theme-segmented .btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.theme-segmented .btn.is-on {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
 }
 
 /* Segmented view switchers (Budget / Business / Memories) */
@@ -2558,6 +2651,29 @@ tbody .week-row {
   flex: none;
 }
 
+/* Name-hashed preset fills. The letter flips to inverse so it stays readable. */
+.contact-avatar-gradient {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-inverse);
+}
+
+.contact-avatar-gradient.is-g0 {
+  background-image: var(--avatar-gradient-1);
+}
+.contact-avatar-gradient.is-g1 {
+  background-image: var(--avatar-gradient-2);
+}
+.contact-avatar-gradient.is-g2 {
+  background-image: var(--avatar-gradient-3);
+}
+.contact-avatar-gradient.is-g3 {
+  background-image: var(--avatar-gradient-4);
+}
+.contact-avatar-gradient.is-g4 {
+  background-image: var(--avatar-gradient-5);
+}
+
 .contacts-detail {
   display: flex;
   flex-direction: column;
@@ -2573,7 +2689,8 @@ tbody .week-row {
   overflow: hidden;
 }
 
-.contact-section {
+.contact-section,
+.contact-detail-section {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
