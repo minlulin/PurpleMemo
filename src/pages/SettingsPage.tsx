@@ -68,13 +68,14 @@ export default function SettingsPage(p: SettingsPageProps) {
     answer: "",
   });
 
-  /** Section filter — matches the nav labels, so search and nav agree. */
+  /** Section filter — matches the nav labels, so search and nav agree. An id
+   * missing from the table stays visible rather than vanishing. */
   const needle = query.trim().toLowerCase();
-  const shows = (id: string) =>
-    needle === "" ||
-    SETTINGS_SECTIONS.some(
-      (s) => s.id === id && s.label.toLowerCase().includes(needle),
-    );
+  const shows = (id: string) => {
+    if (needle === "") return true;
+    const section = SETTINGS_SECTIONS.find((s) => s.id === id);
+    return section ? section.label.toLowerCase().includes(needle) : true;
+  };
 
   const setTheme = async (theme: Theme) => {
     try {

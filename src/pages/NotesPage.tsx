@@ -46,18 +46,21 @@ interface EditorProps {
   onArchive: () => void;
   onToJournal: () => void;
   onDelete: () => void;
+  /** Editor/preview split, owned by the page so it survives note switches. */
+  splitRatio: number;
+  onSplitRatio: (ratio: number) => void;
 }
 
 function NoteEditor(p: EditorProps) {
   const splitRef = useRef<HTMLDivElement>(null);
-  const [ratio, setRatio] = useState(0.5);
   const [dragging, setDragging] = useState(false);
+  const clamp = (r: number) => Math.min(0.75, Math.max(0.25, r));
 
   /** Pointer-driven pane split; keeps both panes at least 25% wide. */
   const resizeTo = (clientX: number) => {
     const box = splitRef.current?.getBoundingClientRect();
     if (!box || box.width === 0) return;
-    setRatio(Math.min(0.75, Math.max(0.25, (clientX - box.left) / box.width)));
+    p.onSplitRatio(clamp((clientX - box.left) / box.width));
   };
 
   const words =
@@ -101,7 +104,9 @@ function NoteEditor(p: EditorProps) {
       <div
         className="editor-split"
         ref={splitRef}
-        style={{ "--editor-split-ratio": `${ratio * 100}%` } as CSSProperties}
+        style={
+          { "--editor-split-ratio": `${p.splitRatio * 100}%` } as CSSProperties
+        }
       >
         <div className="editor-pane-box">
           <span className="editor-pane-label">
@@ -136,10 +141,10 @@ function NoteEditor(p: EditorProps) {
           onKeyDown={(e) => {
             if (e.key === "ArrowLeft") {
               e.preventDefault();
-              setRatio((r) => Math.max(0.25, r - 0.05));
+              p.onSplitRatio(clamp(p.splitRatio - 0.05));
             } else if (e.key === "ArrowRight") {
               e.preventDefault();
-              setRatio((r) => Math.min(0.75, r + 0.05));
+              p.onSplitRatio(clamp(p.splitRatio + 0.05));
             }
           }}
         />
@@ -210,6 +215,7 @@ export default function NotesPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [splitRatio, setSplitRatio] = useState(0.5);
   const [error, setError] = useState<string | null>(null);
   const [newCollection, setNewCollection] = useState("");
   const [title, setTitle] = useState("");
@@ -568,6 +574,8 @@ export default function NotesPage() {
                   onArchive={() => void handleArchive(selected)}
                   onToJournal={() => void handleToJournal()}
                   onDelete={() => void handleDelete(selected.id)}
+                  splitRatio={splitRatio}
+                  onSplitRatio={setSplitRatio}
                 />
               )}
             </section>

@@ -465,7 +465,7 @@ export default function ContactsPage() {
                 </label>
               </div>
 
-              <section className="contact-section">
+              <section className="contact-detail-section">
                 <h3 className="side-heading">Channels</h3>
                 {detail.channels.length === 0 ? (
                   <p className="muted">No channels yet.</p>
@@ -563,7 +563,7 @@ export default function ContactsPage() {
                 </form>
               </section>
 
-              <section className="contact-section">
+              <section className="contact-detail-section">
                 <h3 className="side-heading">Tags</h3>
                 {detail.tags.length === 0 ? (
                   <p className="muted">No tags yet.</p>

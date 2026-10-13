@@ -795,6 +795,29 @@ are unused-in-markup but are the documented opt-in APIs for 5.5 and 4.5;
 `card-header`, `editor-title-input` and `limit-exceeded` were already dead CSS
 before Phase 1.
 
+### Audit — Phases 8-11 recheck
+Same sweep plus a read of the newest logic. Five issues found and fixed:
+
+- [x] **`.contact-detail-section` was dead CSS (Phase 10).** Added as an alias
+      but never used; the contacts detail panels now actually use it, which is
+      what 10.3 asked for.
+- [x] **Settings filter could hide an unknown section (Phase 10).** `shows()`
+      returned false for any id missing from `SETTINGS_SECTIONS`, so a section
+      added without a nav entry would silently vanish while typing. It now
+      defaults to visible.
+- [x] **Editor split reset on every note switch (Phase 8).** The ratio lived in
+      `NoteEditor`, which is keyed by note id, so switching notes snapped the
+      panes back to 50/50. Lifted to the page.
+- [x] **Dashed separator drawn twice on habit cards (Phase 11).** The rule hit
+      both `.month-nav` rows; narrowed to `:first-child`.
+- [x] **Print didn't hide the modal (Phase 2 + 11).** Printing with the photo
+      inspector open would have dumped the scrim and dialog onto the page.
+
+Verified clean: all 7 `aria-invalid` inputs sit inside a container the invalid
+rules actually match (so the red border fires everywhere), `.day-cell` keeps
+`position: relative` for its entry dot, and the modal has no transformed or
+filtered ancestor that would break `position: fixed`.
+
 ### Phase 8 — Notes Studio Refinement
 - [x] Note cards on the input surface; hover lifts with the spring easing
 - [x] `IconPin` + `.note-card-pin-indicator` replace the 📌 emoji

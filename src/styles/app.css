@@ -2518,7 +2518,7 @@ tbody .week-row {
   padding-top: var(--space-4);
 }
 
-.habit-month-toggle > .month-nav {
+.habit-month-toggle > .month-nav:first-child {
   padding-top: var(--space-3);
   border-top: var(--border-width) dashed var(--color-border);
 }
@@ -3213,7 +3213,8 @@ tbody .week-row {
   .editor-actions,
   .side-form,
   .row-actions,
-  .photo-full {
+  .photo-full,
+  .modal-backdrop {
     display: none;
   }
 
