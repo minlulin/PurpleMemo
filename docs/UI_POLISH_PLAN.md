@@ -522,49 +522,95 @@
 
 ---
 
-## Phase 12: Cross-Cutting Premium Features
+## Phase 12a: Feedback Layer — Skeletons & Toasts
 
-**Goal:** Add the features that separate good apps from great apps.
+**Goal:** Replace "Loading…" and silent failures with real feedback. Split out
+of the old cross-cutting Phase 12 because it has the widest blast radius — it
+touches every page component plus the `App.tsx` provider — and wants its own
+reviewable commit.
 
 ### Tasks
 
-- [ ] **12.1] Create `Skeleton` component — pulsing placeholder blocks matching layout shapes
-- [ ] **12.2] Add `.skeleton-card`, `.skeleton-text`, `.skeleton-icon` variants
-- [ ] **12.3] Replace all "Loading…" text with skeleton screens
-- [ ] **12.4] Create `Toast` component — slide-in from bottom-right, auto-dismiss after 4s
-- [ ] **12.5] Add `.toast-success`, `.toast-error`, `.toast-info` variants
-- [ ] **12.6] Add `IconCheck`, `IconAlert`, `IconInfo` for toast icons
-- [ ] **12.7] Create `useToast` hook — `toast.success("Note saved")`, `toast.error("Failed")`
-- [ ] **12.8] Add `@keyframes toast-in` — slide up + fade in
-- [ ] **12.9] Add `@keyframes toast-out` — fade out + slide down
-- [ ] **12.10] Add keyboard shortcut overlay — press `?` to show shortcuts modal
-- [ ] **12.11] Add `IconKeyboard` for shortcut hint
-- [ ] **12.12] Add `data-shortcut` attributes to actionable elements
-- [ ] **12.13] Add `@media (prefers-contrast: high)` — increase border widths to 2px, strengthen text
-- [ ] **12.14] Add `@media print` — hide sidebar/nav, expand content, remove shadows
-- [ ] **12.15] Add `scroll-behavior: smooth` to `html`
-- [ ] **12.16] Add `::focus-visible` fallback for `:focus-visible` (for older browsers)
-- [ ] **12.17] Add `.skip-to-content` link for keyboard accessibility
-- [ ] **12.18] Add `aria-live="polite"` region for toast announcements
-- [ ] **12.19] Add `.visually-hidden` improvement — use `clip` instead of `clip-path` for broader support
-- [ ] **12.20] Add `title` tooltips to all icon-only buttons
+- [ ] **12a.1** Create `Skeleton` component — pulsing placeholder blocks matching layout shapes
+- [ ] **12a.2** Add `.skeleton-card`, `.skeleton-text`, `.skeleton-icon` variants
+- [ ] **12a.3** Replace all "Loading…" text with skeleton screens
+- [ ] **12a.4** Create `Toast` component — slide-in from bottom-right, auto-dismiss after 4s
+- [ ] **12a.5** Add `.toast-success`, `.toast-error`, `.toast-info` variants
+- [ ] **12a.6** Add `IconCheck`, `IconAlert`, `IconInfo` for toast icons
+- [ ] **12a.7** Create `useToast` hook — `toast.success("Note saved")`, `toast.error("Failed")`
+- [ ] **12a.8** Add `@keyframes toast-in` — slide up + fade in
+- [ ] **12a.9** Add `@keyframes toast-out` — fade out + slide down
+- [ ] **12a.10** Add `aria-live="polite"` region for toast announcements
 
 ### Files touched
 - `src/styles/app.css`
-- `src/styles/tokens.css`
 - `src/components/icons.tsx`
 - `src/components/Skeleton.tsx` (new)
 - `src/components/Toast.tsx` (new)
-- `src/App.tsx` (toast provider, shortcut overlay)
+- `src/App.tsx` (toast provider)
 - All page components (skeleton loading)
+
+### Notes
+- Skeletons must match the real layout shape (`.skeleton-card` for
+  `.settings-section`, `.skeleton-text` for rows) or they cause a reflow that
+  is worse than the "Loading…" text they replace.
+- The toast host renders the `aria-live` region itself, so announcements don't
+  need a second element elsewhere in the tree.
+- `@keyframes shimmer` (the actual sweep) lands in Phase 13 (13.4); 12a.2 uses
+  a simple opacity pulse so the two phases don't fight over one animation.
 
 ### Verification
 - [ ] All loading states use skeletons, not text
 - [ ] Toasts appear and auto-dismiss correctly
-- [ ] Keyboard shortcut overlay works
-- [ ] High contrast mode renders correctly
-- [ ] Print output is clean
+- [ ] Toast announcements reach a screen reader once, not twice
+- [ ] `npm run lint`, `token-lint`, `typecheck`, `test`, `build` all pass
+
+---
+
+## Phase 12b: Accessibility & Keyboard Layer
+
+**Goal:** The non-visual paths through the app. Split from the old cross-cutting
+Phase 12 because it is orthogonal to feedback: it changes how the app is
+*navigated*, not how it reports state, and it reuses the modal/dismiss
+patterns that 11.4 already established.
+
+### Tasks
+
+- [ ] **12b.1** Add keyboard shortcut overlay — press `?` to show shortcuts modal
+- [ ] **12b.2** Add `IconKeyboard` for shortcut hint
+- [ ] **12b.3** Add `data-shortcut` attributes to actionable elements
+- [ ] **12b.4** Add `::focus-visible` fallback for `:focus-visible` (older browsers)
+- [ ] **12b.5** Add `.skip-to-content` link for keyboard accessibility
+- [ ] **12b.6** Add `.visually-hidden` improvement — use `clip` instead of `clip-path`
+- [ ] **12b.7** Add `title` tooltips to all icon-only buttons
+- [x] ~~**12b.8** `@media (prefers-contrast: high)`~~ — shipped in Phase 2 (2.9)
+- [x] ~~**12b.9** `@media print`~~ — shipped in Phase 2 (2.10), extended in the
+      Phase 8-11 audit (un-grids the dashboard, hides the modal)
+- [x] ~~**12b.10** `scroll-behavior: smooth` on `html`~~ — shipped in Phase 10 (10.10)
+
+### Files touched
+- `src/styles/app.css`
+- `src/components/icons.tsx`
+- `src/App.tsx` (shortcut overlay, skip link)
+- Icon-only buttons across pages (12b.7)
+
+### Notes
+- 12b.3 is only meaningful with 12b.1 — the overlay reads `data-shortcut`, so
+  the attributes and the panel ship together or not at all.
+- The shortcut overlay reuses `.modal-backdrop` / `.modal-content` from Phase
+  11, including the Tab trap and focus return; do not build a second dialog.
+- 12b.7 is an audit task: every `btn-icon` needs a `title`, not just an
+  `aria-label` (the icon buttons added in Phases 3 and 8 already have both —
+  verify rather than assume).
+
+### Verification
+- [ ] Keyboard shortcut overlay works and is dismissible
 - [ ] Skip-to-content link works
+- [ ] Focus is visible on every interactive element
+- [ ] Every icon-only button has a `title`
+- [ ] High contrast mode renders correctly (2.9, already shipped)
+- [ ] Print output is clean (2.10, already shipped)
+- [ ] `npm run lint`, `token-lint`, `typecheck`, `test`, `build` all pass
 
 ---
 
@@ -619,7 +665,8 @@
 - [ ] **14.6] Add `IconCheck` — checkmark (already exists, verify)
 - [ ] **14.7] Add `IconAlert` — alert triangle
 - [ ] **14.8] Add `IconInfo` — info circle
-- [ ] **14.9] Add `IconKeyboard` — keyboard for shortcuts
+- [ ] **14.9** Add `IconKeyboard` — keyboard for shortcuts (owned by 12b.2; drop
+      this line if 12b has already landed)
 - [ ] **14.10] Add `IconSpinner` — loading spinner
 - [ ] **14.11] Add `IconMarkdown` — markdown icon for editor label
 - [ ] **14.12] Add `IconEye` — eye for preview label
@@ -663,7 +710,8 @@
 - [ ] **15.12] Add `aria-busy="true"` to loading containers
 - [ ] **15.13] Verify color contrast ratios meet WCAG AA (4.5:1 for text)
 - [ ] **15.14] Add `focus-visible` styles to all interactive elements
-- [ ] **15.15] Add `skip-to-content` link as first element in `App.tsx`
+- [ ] **15.15** Add `skip-to-content` link as first element in `App.tsx`
+      (owned by 12b.5; drop this line if 12b has already landed)
 - [ ] **15.16] Add `lang="en"` to `<html>` element
 - [ ] **15.17] Add `meta description` to `index.html`
 - [ ] **15.18] Add `theme-color` meta tag for browser chrome
@@ -888,7 +936,10 @@ audit scripts re-run clean).
 - [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
 - [ ] Manual pass on modal feel and thumb hover pending
 
-### Phase 12 — Cross-Cutting Premium Features
+### Phase 12a — Feedback Layer (Skeletons & Toasts)
+- [ ] Not started
+
+### Phase 12b — Accessibility & Keyboard Layer
 - [ ] Not started
 
 ### Phase 13 — Animation & Motion System
@@ -917,7 +968,8 @@ audit scripts re-run clean).
 | Phase 9 | 2 hours | Medium |
 | Phase 10 | 2.5 hours | Medium |
 | Phase 11 | 2 hours | Medium |
-| Phase 12 | 4 hours | High |
+| Phase 12a | 2.5 hours | High |
+| Phase 12b | 1.5 hours | High |
 | Phase 13 | 2 hours | Medium |
 | Phase 14 | 1.5 hours | Low |
 | Phase 15 | 3 hours | High |
