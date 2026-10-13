@@ -18,6 +18,26 @@ import { errText } from "../lib/errors.ts";
 import { SETTING_KEYS } from "../lib/settings.ts";
 import { IconLock } from "./icons.tsx";
 
+/** Progress dots for PIN entry. Decorative — the input keeps the real value. */
+function PinDots({ length }: { length: number }) {
+  const slots = MIN_PIN_LENGTH;
+  const filled = Math.min(length, slots);
+  return (
+    <div className="pin-dots" aria-hidden="true">
+      {Array.from({ length: slots }, (_, i) => (
+        <span
+          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length progress
+          key={`pin-dot-${i}`}
+          className={`pin-dot${i < filled ? " is-filled" : ""}`}
+        />
+      ))}
+      {length > slots ? (
+        <span className="pin-dots-overflow">+{length - slots}</span>
+      ) : null}
+    </div>
+  );
+}
+
 /** First-run flow (§2.9): PIN + security question, both required. */
 export function SetupScreen({ onDone }: { onDone: () => void }) {
   const [draft, setDraft] = useState({
@@ -97,48 +117,79 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
             {error}
           </p>
         ) : null}
-        <div className="form-grid">
+        <div className="setup-step">
+          <div className="setup-step-head">
+            <span className="setup-step-indicator" aria-hidden="true">
+              1
+            </span>
+            <div>
+              <div className="setup-step-title">Choose a PIN</div>
+              <p className="setup-step-note">
+                At least {MIN_PIN_LENGTH} characters. Stored as a salted hash —
+                it is never written in plain text.
+              </p>
+            </div>
+          </div>
+          <PinDots length={draft.pin.length} />
+          <div className="form-grid">
+            <label>
+              PIN (at least {MIN_PIN_LENGTH} characters)
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                placeholder="••••••"
+                value={draft.pin}
+                onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
+              />
+            </label>
+            <label>
+              Confirm PIN
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                placeholder="••••••"
+                value={draft.confirm}
+                onChange={(e) =>
+                  setDraft({ ...draft, confirm: e.target.value })
+                }
+              />
+            </label>
+          </div>
+        </div>
+        <div className="setup-step">
+          <div className="setup-step-head">
+            <span className="setup-step-indicator" aria-hidden="true">
+              2
+            </span>
+            <div>
+              <div className="setup-step-title">Set your recovery question</div>
+              <p className="setup-step-note">
+                Your only way back in if you forget the PIN. Answer something
+                only you know.
+              </p>
+            </div>
+          </div>
           <label>
-            PIN (at least {MIN_PIN_LENGTH} characters)
+            Security question
             <input
               className="input"
-              type="password"
-              autoComplete="new-password"
-              placeholder="••••••"
-              value={draft.pin}
-              onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
+              placeholder="e.g. What street did I grow up on?"
+              value={draft.question}
+              onChange={(e) => setDraft({ ...draft, question: e.target.value })}
             />
           </label>
           <label>
-            Confirm PIN
+            Security answer
             <input
               className="input"
-              type="password"
-              autoComplete="new-password"
-              placeholder="••••••"
-              value={draft.confirm}
-              onChange={(e) => setDraft({ ...draft, confirm: e.target.value })}
+              placeholder="Memorable answer"
+              value={draft.answer}
+              onChange={(e) => setDraft({ ...draft, answer: e.target.value })}
             />
           </label>
         </div>
-        <label>
-          Security question
-          <input
-            className="input"
-            placeholder="e.g. What street did I grow up on?"
-            value={draft.question}
-            onChange={(e) => setDraft({ ...draft, question: e.target.value })}
-          />
-        </label>
-        <label>
-          Security answer
-          <input
-            className="input"
-            placeholder="Memorable answer"
-            value={draft.answer}
-            onChange={(e) => setDraft({ ...draft, answer: e.target.value })}
-          />
-        </label>
         <div className="editor-actions">
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy ? "Setting up…" : "Set PIN and continue"}
@@ -173,8 +224,10 @@ export function LockScreen(p: LockScreenProps) {
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [shaking, setShaking] = useState(false);
 
   const unlockWithPin = async () => {
+    setShaking(false);
     setBusy(true);
     try {
       if (await verifyPin(pin, p.pinHash)) {
@@ -182,6 +235,7 @@ export function LockScreen(p: LockScreenProps) {
       } else {
         setError("Wrong PIN.");
         setPin("");
+        setShaking(true);
       }
     } catch (e) {
       setError(errText(e));
@@ -191,6 +245,7 @@ export function LockScreen(p: LockScreenProps) {
   };
 
   const resetPin = async () => {
+    setShaking(false);
     if (p.answerHash === null) {
       setError(
         "The recovery fallback is unavailable for this install — the stored PIN is the only way in.",
@@ -209,6 +264,7 @@ export function LockScreen(p: LockScreenProps) {
     try {
       if (!(await verifyAnswer(draft.answer, p.answerHash))) {
         setError("Wrong answer.");
+        setShaking(true);
         return;
       }
       await settingsRepo.setManyJSON([
@@ -226,7 +282,7 @@ export function LockScreen(p: LockScreenProps) {
     return (
       <div className="lock-wrap">
         <form
-          className="entry-form vault-narrow"
+          className={`entry-form vault-narrow${shaking ? " is-shaking" : ""}`}
           onSubmit={(e) => {
             e.preventDefault();
             void unlockWithPin();
@@ -260,9 +316,13 @@ export function LockScreen(p: LockScreenProps) {
               autoComplete="current-password"
               placeholder="Enter PIN…"
               value={pin}
-              onChange={(e) => setPin(e.target.value)}
+              onChange={(e) => {
+                setPin(e.target.value);
+                setShaking(false);
+              }}
             />
           </label>
+          <PinDots length={pin.length} />
           <div className="editor-actions">
             <button
               type="submit"
@@ -284,6 +344,7 @@ export function LockScreen(p: LockScreenProps) {
                 }
                 setMode("forgot");
                 setError(null);
+                setShaking(false);
               }}
             >
               Forgot PIN?
@@ -297,7 +358,7 @@ export function LockScreen(p: LockScreenProps) {
   return (
     <div className="lock-wrap">
       <form
-        className="entry-form vault-narrow"
+        className={`entry-form vault-narrow${shaking ? " is-shaking" : ""}`}
         onSubmit={(e) => {
           e.preventDefault();
           void resetPin();
@@ -338,7 +399,10 @@ export function LockScreen(p: LockScreenProps) {
               type="password"
               autoComplete="new-password"
               value={draft.pin}
-              onChange={(e) => setDraft({ ...draft, pin: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...draft, pin: e.target.value });
+                setShaking(false);
+              }}
             />
           </label>
           <label>
@@ -352,6 +416,7 @@ export function LockScreen(p: LockScreenProps) {
             />
           </label>
         </div>
+        <PinDots length={draft.pin.length} />
         <div className="editor-actions">
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy ? "Checking…" : "Set new PIN"}
@@ -362,6 +427,7 @@ export function LockScreen(p: LockScreenProps) {
             onClick={() => {
               setMode("pin");
               setError(null);
+              setShaking(false);
             }}
           >
             Back

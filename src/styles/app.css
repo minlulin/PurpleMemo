@@ -2596,9 +2596,34 @@ tbody .week-row {
 }
 
 .lock-wrap .entry-form {
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-lg), var(--shadow-lock-glow);
   border-radius: var(--radius-xl);
   padding: var(--space-6);
+}
+
+/* Wrong PIN / wrong answer: shake, then settle. Cleared on the next keystroke
+ * so a corrected attempt starts calm. */
+.lock-wrap .entry-form.is-shaking {
+  animation: lock-shake var(--dur-base) var(--ease-out);
+}
+
+@keyframes lock-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-0.5rem);
+  }
+  40% {
+    transform: translateX(0.375rem);
+  }
+  60% {
+    transform: translateX(-0.25rem);
+  }
+  80% {
+    transform: translateX(0.125rem);
+  }
 }
 
 .lock-brand-head {
@@ -2610,11 +2635,127 @@ tbody .week-row {
   padding-bottom: var(--space-2);
 }
 
+@keyframes pulse-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: var(--shadow-md);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: var(--shadow-lg);
+  }
+}
+
 .lock-brand-mark {
   width: var(--space-12);
   height: var(--space-12);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
+  animation: pulse-glow 3.6s var(--ease-out) infinite;
+}
+
+/* ---------------------------------------------------------------------------
+ * PIN entry: progress dots + two-step setup
+ * ------------------------------------------------------------------------- */
+
+.pin-dots {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-block: var(--space-2);
+}
+
+.pin-dot {
+  inline-size: var(--space-3);
+  block-size: var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border-strong);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+@keyframes pin-fill {
+  from {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.25);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.pin-dot.is-filled {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  animation: pin-fill var(--dur-base) var(--ease-spring);
+}
+
+.pin-dots-overflow {
+  align-self: center;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-muted);
+}
+
+.setup-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.setup-step + .setup-step {
+  padding-top: var(--space-4);
+  border-top: var(--border-width) dashed var(--color-border);
+}
+
+.setup-step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.setup-step-indicator {
+  inline-size: var(--space-7);
+  block-size: var(--space-7);
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--color-text-inverse);
+  background-image: var(--gradient-accent);
+}
+
+.setup-step-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.setup-step-note {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lock-brand-mark {
+    animation: none;
+  }
+
+  .pin-dot.is-filled {
+    animation: none;
+  }
+
+  .lock-wrap .entry-form.is-shaking {
+    animation: none;
+  }
 }
 
 .lock-loading {

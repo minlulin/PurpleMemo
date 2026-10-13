@@ -275,28 +275,43 @@
 
 ### Tasks
 
-- [ ] **7.1** Strengthen `--gradient-app-glow` opacity from `0.16` to `0.22` (dark)
-- [ ] **7.2** Add `@keyframes pulse-glow` — subtle opacity/scale pulsing for the brand mark
-- [ ] **7.3** Apply `pulse-glow` animation to `.lock-brand-mark`
-- [ ] **7.4** Add `.pin-dots` — 4-6 dot indicators that fill as PIN is entered
-- [ ] **7.5** Add `@keyframes pin-fill` — dot fills with accent color + scale spring
-- [ ] **7.6** Split setup screen into two visual sections: "Step 1: PIN" and "Step 2: Security Question" with a visual divider
-- [ ] **7.7** Add `.setup-step-indicator` — numbered circles (1, 2) to show progress
-- [ ] **7.8** Add `box-shadow: 0 0 40px rgba(121,77,255,0.15)` to `.lock-wrap .entry-form` for a glow effect
-- [ ] **7.9** Add `@keyframes lock-shake` — horizontal shake on wrong PIN
-- [ ] **7.10** Apply `lock-shake` to the form on PIN verification failure
+- [x] **7.1** Strengthen `--gradient-app-glow` opacity from `0.16` to `0.22` (dark)
+- [x] **7.2** Add `@keyframes pulse-glow` — subtle opacity/scale pulsing for the brand mark
+- [x] **7.3** Apply `pulse-glow` animation to `.lock-brand-mark`
+- [x] **7.4** Add `.pin-dots` — 4-6 dot indicators that fill as PIN is entered
+- [x] **7.5** Add `@keyframes pin-fill` — dot fills with accent color + scale spring
+- [x] **7.6** Split setup screen into two visual sections: "Step 1: PIN" and "Step 2: Security Question" with a visual divider
+- [x] **7.7** Add `.setup-step-indicator` — numbered circles (1, 2) to show progress
+- [x] **7.8** Add `box-shadow: 0 0 40px rgba(121,77,255,0.15)` to `.lock-wrap .entry-form` for a glow effect
+- [x] **7.9** Add `@keyframes lock-shake` — horizontal shake on wrong PIN
+- [x] **7.10** Apply `lock-shake` to the form on PIN verification failure
 
 ### Files touched
 - `src/styles/tokens.css`
 - `src/styles/app.css`
 - `src/components/LockScreens.tsx`
 
+### Notes
+- 7.8 ships as a `--shadow-lock-glow` token; the raw `rgba()` literal would fail
+  token-lint. 7.1 also strengthens the shared app glow, so the shell picks up a
+  slightly brighter ambience too — check it isn't too strong behind the sidebar.
+- `PinDots` renders `MIN_PIN_LENGTH` slots with a `+N` overflow badge rather than
+  silently truncating a longer PIN, and is `aria-hidden` (the input keeps the
+  real value). The plan's "4-6 dots" is pinned to the app's own 6-char minimum.
+- The setup screen stays ONE `<form>` — the two steps are visual sections inside
+  it, so submit/validation semantics (§2.9 fail-closed setup) are untouched.
+- `lock-shake` also fires on a wrong security answer, and resets at the start of
+  every submit plus on the next keystroke so it always replays.
+- All three animations are disabled under `prefers-reduced-motion`.
+
 ### Verification
-- [ ] Lock screen has visible ambient glow
-- [ ] Brand mark has subtle pulsing animation
-- [ ] PIN entry shows dot indicators
-- [ ] Wrong PIN triggers shake animation
-- [ ] Setup screen has clear step separation
+- [x] Lock screen has visible ambient glow (0.22 + `--shadow-lock-glow`)
+- [x] Brand mark has subtle pulsing animation
+- [x] PIN entry shows dot indicators (setup, unlock and reset flows)
+- [x] Wrong PIN triggers shake animation
+- [x] Setup screen has clear step separation
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (186), `build` all pass
+- [ ] Manual glow/pulse strength pass pending
 
 ---
 
@@ -665,7 +680,15 @@
 - [ ] Manual balance pass outstanding
 
 ### Phase 7 — Lock Screen & Onboarding Drama
-- [ ] Not started
+- [x] App glow 0.16 → 0.22; new `--shadow-lock-glow` halo on the lock card
+- [x] `pulse-glow` on the brand mark, `lock-shake` on a failed verification
+- [x] `PinDots` progress indicator (6 slots + `+N` overflow, `aria-hidden`)
+      across setup, unlock and PIN-reset flows
+- [x] Setup split into `.setup-step` 1/2 with `.setup-step-indicator` circles
+      and a dashed divider — still a single `<form>`
+- [x] All three animations disabled under `prefers-reduced-motion`
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual glow/pulse strength pass pending
 
 ### Phase 8 — Notes Studio Refinement
 - [ ] Not started

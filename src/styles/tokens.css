@@ -102,6 +102,8 @@
   --shadow-focus-danger: 0 0 0 3px var(--color-danger-border);
   /* Pressed/inset surfaces (active chips, toggles, sunken wells). */
   --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+  /* Ambient halo behind the lock/setup card. */
+  --shadow-lock-glow: 0 0 2.5rem rgba(121, 77, 255, 0.15);
 
   /* Typography */
   --font-sans:
@@ -152,7 +154,7 @@
   /* Ambient glow behind lock/setup screens and shell */
   --gradient-app-glow: radial-gradient(
     64rem 36rem at 50% -15%,
-    rgba(121, 77, 255, 0.16),
+    rgba(121, 77, 255, 0.22),
     transparent 70%
   );
 }
