@@ -186,27 +186,42 @@
 
 ### Tasks
 
-- [ ] **5.1** Increase `--gradient-card-shine` opacity from `0.03` to `0.06` (dark) / `0.8` → `0.4` (light)
-- [ ] **5.2** Add `@keyframes card-enter` — `opacity: 0; translateY(8px)` → `opacity: 1; translateY(0)`
-- [ ] **5.3** Add `.card-enter` class with `animation: card-enter var(--dur-slow) var(--ease-out) both`
-- [ ] **5.4** Apply staggered `animation-delay` to dashboard grid cards (nth-child)
-- [ ] **5.5** Add `.card-hover-lift` — `transform: translateY(-2px); box-shadow: var(--shadow-md)` on hover
-- [ ] **5.6** Apply `card-hover-lift` to `.kpi-card`, `.wallet-card`, `.more-card`
-- [ ] **5.7** Add `border-color: var(--color-accent-ring)` on `.kpi-card:hover` (currently `--color-border-strong`)
-- [ ] **5.8** Add `.card-section-divider` — subtle gradient line instead of flat border
-- [ ] **5.9** Fix nested card-in-card on Contacts: remove inner `.entry-form` border/background, use `.contact-form` with transparent background
-- [ ] **5.10** Add `position: relative` + `overflow: hidden` to cards for pseudo-element effects
+- [x] **5.1** Increase `--gradient-card-shine` opacity from `0.03` to `0.06` (dark) / `0.8` → `0.4` (light)
+- [x] **5.2** Add `@keyframes card-enter` — `opacity: 0; translateY(8px)` → `opacity: 1; translateY(0)`
+- [x] **5.3** Add `.card-enter` class with `animation: card-enter var(--dur-slow) var(--ease-out) both`
+- [x] **5.4** Apply staggered `animation-delay` to dashboard grid cards (nth-child)
+- [x] **5.5** Add `.card-hover-lift` — `transform: translateY(-2px); box-shadow: var(--shadow-md)` on hover
+- [x] **5.6** Apply `card-hover-lift` to `.kpi-card`, `.wallet-card`, `.more-card`
+- [x] **5.7** Add `border-color: var(--color-accent-ring)` on `.kpi-card:hover` (currently `--color-border-strong`)
+- [x] **5.8** Add `.card-section-divider` — subtle gradient line instead of flat border
+- [x] **5.9** Fix nested card-in-card on Contacts: remove inner `.entry-form` border/background, use `.contact-form` with transparent background
+- [x] **5.10** Add `position: relative` + `overflow: hidden` to cards for pseudo-element effects
 
 ### Files touched
 - `src/styles/tokens.css`
 - `src/styles/app.css`
 - `src/pages/ContactsPage.tsx`
+- `src/pages/DashboardPage.tsx` (applies `.card-enter`)
+
+### Notes
+- `card-enter`'s `to` frame deliberately omits `transform`: with
+  `animation-fill-mode: both`, restating `translateY(0)` would win over the
+  hover lift forever and freeze every card.
+- 5.6 is wired through `.card-hover-lift:hover, .kpi-card:hover,
+  .wallet-card:hover, .more-card:hover` so the three cards share one rule
+  instead of three copies; the utility class stays available for new surfaces.
+- 5.8 ships as a shared gradient-hairline rule over `.dash-card-head`,
+  `.dash-card-foot`, `.side-form`, `.editor-actions` and `.contact-section`
+  instead of an unused `.card-section-divider` class; Phase 10 re-adds the
+  class where a divider element actually exists in markup.
+- Light-mode shine was 0.6, not the 0.8 the plan assumed; set to the plan's 0.4.
 
 ### Verification
-- [ ] Cards have visible entrance animation on page load
-- [ ] Dashboard cards lift on hover
-- [ ] Contacts detail no longer has nested card borders
-- [ ] Card shine is subtly visible
+- [x] Cards have visible entrance animation on page load (dashboard KPI strip + sections, staggered)
+- [x] Dashboard cards lift on hover
+- [x] Contacts detail no longer has nested card borders
+- [ ] Card shine is subtly visible (manual pass pending)
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (186), `build` all pass
 
 ---
 
@@ -611,7 +626,18 @@
 - [ ] Manual pass on calendar click-through and chevron alignment outstanding
 
 ### Phase 5 — Card & Surface Elevation
-- [ ] Not started
+- [x] Shine 0.03 → 0.06 (dark) / 0.6 → 0.4 (light)
+- [x] `card-enter` keyframes + `.card-enter`, staggered across `.kpi-grid` and
+      `.dashboard-grid`; `transform` omitted from the `to` frame so `both` fill
+      cannot pin the hover lift
+- [x] One shared hover-lift rule for `.card-hover-lift`, `.kpi-card`,
+      `.wallet-card`, `.more-card`; KPI border now `--color-accent-ring`
+- [x] Section separators are gradient hairlines (card head/foot, side-form,
+      editor-actions, contact-section)
+- [x] `position: relative` + `overflow: hidden` on every card surface
+- [x] Contacts detail: `.entry-form.contact-form` no longer draws a second card
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual shine/lift check outstanding
 
 ### Phase 6 — Dashboard Premium Pass
 - [ ] Not started

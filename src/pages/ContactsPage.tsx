@@ -363,7 +363,7 @@ export default function ContactsPage() {
                 </div>
               </div>
 
-              <div className="entry-form">
+              <div className="entry-form contact-form">
                 <div className="form-grid">
                   <label>
                     Name

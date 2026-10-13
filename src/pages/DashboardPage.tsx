@@ -211,7 +211,7 @@ export default function DashboardPage(p: DashboardPageProps) {
 
       {/* Executive KPI Strip */}
       <div className="kpi-grid">
-        <div className="kpi-card">
+        <div className="kpi-card card-enter">
           <div className="kpi-head">
             <span className="kpi-label">Money In Today</span>
             <span className="kpi-icon is-income">
@@ -224,7 +224,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           <span className="kpi-sub">Cash-basis daily inflow</span>
         </div>
 
-        <div className="kpi-card">
+        <div className="kpi-card card-enter">
           <div className="kpi-head">
             <span className="kpi-label">Money Out Today</span>
             <span className="kpi-icon is-expense">
@@ -240,7 +240,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </span>
         </div>
 
-        <div className="kpi-card">
+        <div className="kpi-card card-enter">
           <div className="kpi-head">
             <span className="kpi-label">Total Receivable</span>
             <span className="kpi-icon">
@@ -255,7 +255,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </span>
         </div>
 
-        <div className="kpi-card">
+        <div className="kpi-card card-enter">
           <div className="kpi-head">
             <span className="kpi-label">Action Items</span>
             <span className={dueCount > 0 ? "kpi-icon is-warn" : "kpi-icon"}>
@@ -275,7 +275,7 @@ export default function DashboardPage(p: DashboardPageProps) {
 
       {/* Bento Dashboard Sections */}
       <div className="dashboard-grid">
-        <section className="settings-section">
+        <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -330,7 +330,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section">
+        <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -365,7 +365,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section">
+        <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -423,7 +423,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section">
+        <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -478,7 +478,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section">
+        <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -518,7 +518,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section">
+        <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
