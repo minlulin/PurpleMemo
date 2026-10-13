@@ -3,6 +3,8 @@
 // it against today's local date. Repayments never overpay (§4).
 
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { IconLoans } from "../components/icons.tsx";
 import { loansRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -18,11 +20,11 @@ const STATE_LABEL: Record<LoanState, string> = {
   closed: "Closed",
 };
 
-const STATE_CHIP: Record<LoanState, string> = {
-  open: "",
-  partial: "limit-warn",
-  overdue: "limit-exceeded",
-  closed: "muted",
+const STATE_BADGE: Record<LoanState, string> = {
+  open: "badge badge-accent",
+  partial: "badge badge-warn",
+  overdue: "badge badge-danger",
+  closed: "badge",
 };
 
 export default function LoansPage() {
@@ -100,8 +102,52 @@ export default function LoansPage() {
     }
   };
 
+  const lentRemaining = loans
+    .filter((l) => l.direction === "lent" && l.state !== "closed")
+    .reduce((sum, l) => sum + l.remaining_cents, 0);
+  const borrowedRemaining = loans
+    .filter((l) => l.direction === "borrowed" && l.state !== "closed")
+    .reduce((sum, l) => sum + l.remaining_cents, 0);
+  const activeCount = loans.filter((l) => l.state !== "closed").length;
+
   return (
     <div className="budget-page">
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconLoans className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Loans &amp; Debts</h2>
+              <p className="page-subtitle">
+                Money lent and borrowed with automatic repayment &amp; due-state
+                tracking
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="summary-figures">
+        <div>
+          <span className="muted">Lent (Owed to you)</span>
+          <span className="figure amount-income">
+            {formatMMK(lentRemaining)}
+          </span>
+        </div>
+        <div>
+          <span className="muted">Borrowed (You owe)</span>
+          <span className="figure amount-expense">
+            {formatMMK(borrowedRemaining)}
+          </span>
+        </div>
+        <div>
+          <span className="muted">Active Loans</span>
+          <span className="figure">{activeCount}</span>
+        </div>
+      </div>
+
       <section className="budget-manage" aria-label="Loans">
         {loading ? <p className="muted">Loading…</p> : null}
         {error ? (
@@ -110,40 +156,49 @@ export default function LoansPage() {
           </p>
         ) : null}
 
+        <div className="dash-card-head">
+          <h3 className="side-heading">Loan Ledger</h3>
+          <span className="badge">{loans.length}</span>
+        </div>
+
         {loans.length === 0 ? (
-          <p className="muted">No loans yet — add one below.</p>
+          <EmptyState>No loans yet — add one below.</EmptyState>
         ) : (
           <ul className="budget-list">
             {loans.map((l) => (
-              <li key={l.id} className="budget-row">
-                <span>
-                  {l.counterparty}
-                  <span className="muted"> · {l.direction}</span>
-                  {l.state !== "open" && l.state !== "closed" ? (
-                    <span className={STATE_CHIP[l.state]} role="status">
-                      {" "}
-                      ({STATE_LABEL[l.state].toLowerCase()})
+              <li key={l.id} className="limit-row">
+                <div className="row-main">
+                  <span className="row-title">
+                    <b>{l.counterparty}</b>
+                    <span
+                      className={
+                        l.direction === "lent"
+                          ? "badge badge-success"
+                          : "badge badge-warn"
+                      }
+                    >
+                      {l.direction}
                     </span>
-                  ) : null}
-                  {l.state === "closed" ? (
-                    <span className="muted"> (closed)</span>
-                  ) : null}
-                  {l.due_date ? (
-                    <span className="muted"> · due {l.due_date}</span>
-                  ) : null}
-                  {l.note ? <span className="muted"> — {l.note}</span> : null}
-                </span>
-                <span className="muted figure">
-                  {formatMMK(l.repaid_cents)} / {formatMMK(l.amount_cents)}
-                  {l.state !== "closed"
-                    ? ` · ${formatMMK(l.remaining_cents)} left`
-                    : ""}
-                </span>
+                    <span className={STATE_BADGE[l.state]} role="status">
+                      {STATE_LABEL[l.state]}
+                    </span>
+                  </span>
+                  <span className="row-sub figure">
+                    Repaid {formatMMK(l.repaid_cents)} /{" "}
+                    {formatMMK(l.amount_cents)}
+                    {l.state !== "closed"
+                      ? ` · ${formatMMK(l.remaining_cents)} left`
+                      : ""}
+                    {l.due_date ? ` · due ${l.due_date}` : ""}
+                    {l.note ? ` — ${l.note}` : ""}
+                  </span>
+                </div>
                 <span className="row-actions">
                   {l.state !== "closed" ? (
                     repayFor === l.id ? (
                       <>
                         <input
+                          className="input"
                           aria-label={`Repayment amount for ${l.counterparty}`}
                           inputMode="decimal"
                           placeholder="0.00"
@@ -204,56 +259,64 @@ export default function LoansPage() {
             void addLoan();
           }}
         >
-          <h2 className="side-heading">New loan</h2>
-          <fieldset className="kind-toggle">
-            <legend className="visually-hidden">Loan direction</legend>
-            <button
-              type="button"
-              className={direction === "lent" ? "btn is-on" : "btn"}
-              aria-pressed={direction === "lent"}
-              onClick={() => setDirection("lent")}
-            >
-              Lent
-            </button>
-            <button
-              type="button"
-              className={direction === "borrowed" ? "btn is-on" : "btn"}
-              aria-pressed={direction === "borrowed"}
-              onClick={() => setDirection("borrowed")}
-            >
-              Borrowed
-            </button>
-          </fieldset>
-          <label>
-            Counterparty
-            <input
-              value={counterparty}
-              placeholder="e.g. U Kyaw"
-              onChange={(e) => setCounterparty(e.target.value)}
-            />
-          </label>
-          <label>
-            Amount (MMK)
-            <input
-              inputMode="decimal"
-              placeholder="0.00"
-              value={amountRaw}
-              onChange={(e) => setAmountRaw(e.target.value)}
-            />
-          </label>
-          <label>
-            Due date (optional)
-            <input
-              type="date"
-              aria-label="Due date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-            />
-          </label>
-          <label>
-            Note (optional)
-            <input value={note} onChange={(e) => setNote(e.target.value)} />
-          </label>
+          <div className="dash-card-head">
+            <h2 className="side-heading">New loan</h2>
+            <fieldset className="kind-toggle">
+              <legend className="visually-hidden">Loan direction</legend>
+              <button
+                type="button"
+                className={direction === "lent" ? "btn is-on" : "btn"}
+                aria-pressed={direction === "lent"}
+                onClick={() => setDirection("lent")}
+              >
+                Lent
+              </button>
+              <button
+                type="button"
+                className={direction === "borrowed" ? "btn is-on" : "btn"}
+                aria-pressed={direction === "borrowed"}
+                onClick={() => setDirection("borrowed")}
+              >
+                Borrowed
+              </button>
+            </fieldset>
+          </div>
+          <div className="form-grid">
+            <label>
+              Counterparty
+              <input
+                value={counterparty}
+                placeholder="e.g. U Kyaw"
+                onChange={(e) => setCounterparty(e.target.value)}
+              />
+            </label>
+            <label>
+              Amount (MMK)
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={amountRaw}
+                onChange={(e) => setAmountRaw(e.target.value)}
+              />
+            </label>
+            <label>
+              Due date (optional)
+              <input
+                type="date"
+                aria-label="Due date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
+            </label>
+            <label>
+              Note (optional)
+              <input
+                value={note}
+                placeholder="Optional note"
+                onChange={(e) => setNote(e.target.value)}
+              />
+            </label>
+          </div>
           <div className="row-actions">
             <button
               type="submit"

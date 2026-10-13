@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconPlus, IconShopping } from "../components/icons.tsx";
 import { shoppingRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 import { moveItem } from "../lib/shopping.ts";
@@ -151,8 +152,48 @@ export default function ShoppingPage() {
     }
   };
 
+  const doneCount = items.filter((i) => i.done === 1).length;
+
   return (
     <div className="budget-page">
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconShopping className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Shopping Lists</h2>
+              <p className="page-subtitle">
+                Checkable shopping &amp; packing lists with manual priority
+                ordering
+              </p>
+            </div>
+          </div>
+        </div>
+        <form
+          className="inline-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addList();
+          }}
+        >
+          <input
+            aria-label="New list name"
+            placeholder="New list (e.g. Market)"
+            value={listName}
+            onChange={(e) => setListName(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={listName.trim().length === 0}
+          >
+            <IconPlus className="icon" /> Add list
+          </button>
+        </form>
+      </header>
+
       {loading ? <p className="muted">Loading…</p> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -160,35 +201,22 @@ export default function ShoppingPage() {
         </p>
       ) : null}
 
-      <form
-        className="inline-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void addList();
-        }}
-      >
-        <input
-          aria-label="New list name"
-          placeholder="e.g. Market"
-          value={listName}
-          onChange={(e) => setListName(e.target.value)}
-        />
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={listName.trim().length === 0}
-        >
-          Add list
-        </button>
-      </form>
-
       {lists.length === 0 ? (
-        <p className="muted">No shopping lists yet — add one above.</p>
+        <section className="settings-section">
+          <EmptyState>No shopping lists yet — add one above.</EmptyState>
+        </section>
       ) : (
         <>
           <div className="day-nav">
             {lists.map((l) => (
-              <span key={l.id}>
+              <span
+                key={l.id}
+                className={
+                  selectedId === l.id
+                    ? "shopping-tab-group is-active"
+                    : "shopping-tab-group"
+                }
+              >
                 <button
                   type="button"
                   className={selectedId === l.id ? "btn is-on" : "btn"}
@@ -210,8 +238,19 @@ export default function ShoppingPage() {
           </div>
 
           {selectedId !== null ? (
-            <section aria-label="Selected list items">
-              <div className="budget-row">
+            <section
+              className="settings-section"
+              aria-label="Selected list items"
+            >
+              <div className="dash-card-head">
+                <div className="row-title">
+                  <h3 className="settings-heading">
+                    {lists.find((l) => l.id === selectedId)?.name ?? "List"}
+                  </h3>
+                  <span className="badge badge-accent figure">
+                    {doneCount}/{items.length} checked
+                  </span>
+                </div>
                 {renaming !== null ? (
                   <span className="inline-form">
                     <input
@@ -256,7 +295,7 @@ export default function ShoppingPage() {
                 <ul className="budget-list">
                   {items.map((item, index) => (
                     <li key={item.id} className="budget-row">
-                      <label>
+                      <label className="check-label">
                         <input
                           type="checkbox"
                           checked={item.done === 1}
@@ -305,7 +344,7 @@ export default function ShoppingPage() {
               >
                 <input
                   aria-label="New item"
-                  placeholder="e.g. Rice 5kg"
+                  placeholder="Add item (e.g. Rice 5kg)"
                   value={itemName}
                   onChange={(e) => setItemName(e.target.value)}
                 />

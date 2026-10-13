@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconContacts } from "../components/icons.tsx";
 import { contactsRepo } from "../data/app.ts";
 import {
   birthdayLabel,
@@ -230,6 +231,23 @@ export default function ContactsPage() {
 
   return (
     <div className="budget-page">
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconContacts className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Address Book</h2>
+              <p className="page-subtitle">
+                Personal &amp; business contacts, channels, tags &amp; birthday
+                reminders
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -238,10 +256,14 @@ export default function ContactsPage() {
 
       <div className="contacts-layout">
         <aside className="contacts-sidebar">
+          <div className="dash-card-head">
+            <span className="side-heading">Directory</span>
+            <span className="badge">{contacts.length}</span>
+          </div>
           <input
             className="input"
             type="search"
-            placeholder="Search contacts"
+            placeholder="Search contacts…"
             aria-label="Search contacts"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -256,7 +278,7 @@ export default function ContactsPage() {
           >
             <input
               aria-label="New contact name"
-              placeholder="Name"
+              placeholder="New contact name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
@@ -278,7 +300,7 @@ export default function ContactsPage() {
                 : "No contact matches the search."}
             </EmptyState>
           ) : (
-            <ul className="budget-list">
+            <ul className="side-list">
               {visible.map((c) => (
                 <li key={c.id}>
                   <button
@@ -288,7 +310,12 @@ export default function ContactsPage() {
                     }
                     onClick={() => void select(c.id)}
                   >
-                    {c.name}
+                    <span className="row-title">
+                      <span className="contact-avatar">
+                        {c.name.slice(0, 1).toUpperCase()}
+                      </span>
+                      <span>{c.name}</span>
+                    </span>
                   </button>
                 </li>
               ))}
@@ -299,44 +326,60 @@ export default function ContactsPage() {
         <section className="contacts-detail">
           {detail && selectedContact ? (
             <>
-              <div className="editor-actions">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => void saveContact()}
-                >
-                  Save
-                </button>
-                <span className="toolbar-spacer" />
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  onClick={() => void removeContact(selectedContact.id)}
-                >
-                  Delete contact
-                </button>
+              <div className="dash-card-head">
+                <div className="row-title">
+                  <span className="contact-avatar">
+                    {selectedContact.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <h3 className="settings-heading">{selectedContact.name}</h3>
+                  {selectedContact.birthday ? (
+                    <span className="badge badge-accent">
+                      Birthday: {birthdayLabel(selectedContact.birthday)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void saveContact()}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={() => void removeContact(selectedContact.id)}
+                  >
+                    Delete contact
+                  </button>
+                </div>
               </div>
 
               <div className="entry-form">
-                <label>
-                  Name
-                  <input
-                    className="input"
-                    value={edit.name}
-                    onChange={(e) => setEdit({ ...edit, name: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Address
-                  <input
-                    className="input"
-                    value={edit.address}
-                    placeholder="Street, city…"
-                    onChange={(e) =>
-                      setEdit({ ...edit, address: e.target.value })
-                    }
-                  />
-                </label>
+                <div className="form-grid">
+                  <label>
+                    Name
+                    <input
+                      className="input"
+                      value={edit.name}
+                      onChange={(e) =>
+                        setEdit({ ...edit, name: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Address
+                    <input
+                      className="input"
+                      value={edit.address}
+                      placeholder="Street, city…"
+                      onChange={(e) =>
+                        setEdit({ ...edit, address: e.target.value })
+                      }
+                    />
+                  </label>
+                </div>
                 <label>
                   Birthday
                   <span className="editor-row">
@@ -406,12 +449,12 @@ export default function ContactsPage() {
                   <ul className="budget-list">
                     {detail.channels.map((ch) => (
                       <li key={ch.id} className="budget-row">
-                        <span>
+                        <span className="row-title">
                           <span className="chip">
                             {CHANNEL_KINDS.find((k) => k.key === ch.kind)
                               ?.label ?? ch.kind}
                           </span>{" "}
-                          {ch.value}
+                          <b>{ch.value}</b>
                           {ch.is_primary === 1 ? (
                             <span className="chip chip-accent">Primary</span>
                           ) : null}
@@ -526,7 +569,7 @@ export default function ContactsPage() {
                 >
                   <input
                     aria-label="New tag"
-                    placeholder="Tag"
+                    placeholder="Tag (e.g. family, VIP)"
                     value={newTag}
                     onChange={(e) => setNewTag(e.target.value)}
                   />
@@ -539,12 +582,6 @@ export default function ContactsPage() {
                   </button>
                 </form>
               </section>
-
-              {selectedContact.birthday ? (
-                <p className="muted">
-                  Birthday: {birthdayLabel(selectedContact.birthday)}
-                </p>
-              ) : null}
             </>
           ) : (
             <EmptyState>

@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { IconTasks } from "../components/icons.tsx";
 import { tasksRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -79,7 +80,6 @@ export default function TasksPage({
     try {
       const rolled = nextDueDate(t.due_date, t.repeat, today);
       if (rolled !== null) {
-        // Repeating: keep it open on its next occurrence.
         await tasksRepo.updateTask(t.id, { dueDate: rolled });
       } else {
         await tasksRepo.toggleTask(t.id, true);
@@ -113,6 +113,23 @@ export default function TasksPage({
 
   return (
     <div className="budget-page">
+      <header className="page-header">
+        <div className="page-header-main">
+          <div className="page-title-row">
+            <span className="page-icon-badge">
+              <IconTasks className="icon" />
+            </span>
+            <div>
+              <h2 className="editor-title">Tasks &amp; Reminders</h2>
+              <p className="page-subtitle">
+                Actionable to-dos, repeating schedules &amp; local desktop
+                notifications
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
       {loading ? <p className="muted">Loading…</p> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -120,138 +137,152 @@ export default function TasksPage({
         </p>
       ) : null}
       {notifyNote ? (
-        <p className="limit-warn" role="status">
+        <p className="alert alert-note" role="status">
           {notifyNote}
         </p>
       ) : null}
 
-      <form
-        className="entry-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void addTask();
-        }}
-      >
-        <h2 className="side-heading">New task</h2>
-        <label>
-          Title
-          <input
-            value={title}
-            placeholder="e.g. Pay electricity bill"
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <label>
-          Due date (optional)
-          <input
-            type="date"
-            aria-label="Due date"
-            value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-          />
-        </label>
-        <label>
-          Repeat
-          <select
-            aria-label="Repeat"
-            value={repeat}
-            onChange={(e) => setRepeat(e.target.value as Repeat)}
-          >
-            {REPEAT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Note (optional)
-          <input value={note} onChange={(e) => setNote(e.target.value)} />
-        </label>
-        <div className="row-actions">
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={title.trim().length === 0}
-          >
-            Add task
-          </button>
-        </div>
-      </form>
+      <div className="split-workspace-grid">
+        <section className="settings-section" aria-label="Open tasks">
+          <div className="dash-card-head">
+            <h2 className="side-heading">Open tasks</h2>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={showDone}
+                onChange={(e) => setShowDone(e.target.checked)}
+              />{" "}
+              Show done
+            </label>
+          </div>
 
-      <section aria-label="Open tasks">
-        <h2 className="side-heading">Open</h2>
-        {open.length === 0 ? (
-          <EmptyState>Nothing due — enjoy it.</EmptyState>
-        ) : (
-          <ul className="budget-list">
-            {open.map((t) => (
-              <li key={t.id} className="budget-row">
-                <span>
-                  {t.title}
-                  {overdue(t.due_date, today) ? (
-                    <span className="limit-exceeded" role="status">
-                      {" "}
-                      (overdue)
+          {open.length === 0 ? (
+            <EmptyState>Nothing due — enjoy it.</EmptyState>
+          ) : (
+            <ul className="budget-list">
+              {open.map((t) => (
+                <li key={t.id} className="budget-row">
+                  <div className="row-main">
+                    <span className="row-title">
+                      <b>{t.title}</b>
+                      {overdue(t.due_date, today) ? (
+                        <span className="badge badge-danger" role="status">
+                          Overdue
+                        </span>
+                      ) : null}
+                      {t.due_date ? (
+                        <span className="chip figure">due {t.due_date}</span>
+                      ) : null}
+                      {t.repeat !== "none" ? (
+                        <span className="badge badge-accent">{t.repeat}</span>
+                      ) : null}
                     </span>
-                  ) : null}
-                  {t.due_date ? (
-                    <span className="muted"> · due {t.due_date}</span>
-                  ) : null}
-                  {t.repeat !== "none" ? (
-                    <span className="muted"> · {t.repeat}</span>
-                  ) : null}
-                  {t.note ? <span className="muted"> — {t.note}</span> : null}
-                </span>
-                <span className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => void complete(t)}
-                  >
-                    Done
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={() => void remove(t.id)}
-                  >
-                    Delete
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                    {t.note ? <span className="row-sub">{t.note}</span> : null}
+                  </div>
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => void complete(t)}
+                    >
+                      Done
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void remove(t.id)}
+                    >
+                      Delete
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
-      <label className="muted">
-        <input
-          type="checkbox"
-          checked={showDone}
-          onChange={(e) => setShowDone(e.target.checked)}
-        />{" "}
-        Show done
-      </label>
+          {done.length > 0 ? (
+            <div className="contact-section">
+              <h3 className="side-heading">Completed</h3>
+              <ul className="budget-list">
+                {done.map((t) => (
+                  <li key={t.id} className="budget-row">
+                    <span className="muted">{t.title}</span>
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => void reopen(t)}
+                      >
+                        Reopen
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </section>
 
-      {done.length > 0 ? (
-        <ul className="budget-list">
-          {done.map((t) => (
-            <li key={t.id} className="budget-row">
-              <span className="muted">{t.title}</span>
-              <span className="row-actions">
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => void reopen(t)}
-                >
-                  Reopen
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+        <form
+          className="entry-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addTask();
+          }}
+        >
+          <h2 className="side-heading">New task</h2>
+          <label>
+            Title
+            <input
+              value={title}
+              placeholder="e.g. Pay electricity bill"
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+          <div className="form-grid">
+            <label>
+              Due date (optional)
+              <input
+                type="date"
+                aria-label="Due date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
+            </label>
+            <label>
+              Repeat
+              <select
+                aria-label="Repeat"
+                value={repeat}
+                onChange={(e) => setRepeat(e.target.value as Repeat)}
+              >
+                {REPEAT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label>
+            Note (optional)
+            <input
+              value={note}
+              placeholder="Details or context"
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </label>
+          <div className="row-actions">
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={title.trim().length === 0}
+            >
+              Add task
+            </button>
+          </div>
+        </form>
+      </div>
 
       <RemindersSection />
     </div>
@@ -303,8 +334,11 @@ function RemindersSection() {
   };
 
   return (
-    <section aria-label="Reminders">
-      <h2 className="side-heading">Reminders</h2>
+    <section className="settings-section" aria-label="Reminders">
+      <div className="dash-card-head">
+        <h2 className="side-heading">Scheduled Reminders</h2>
+        <span className="badge">{reminders.length}</span>
+      </div>
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -312,21 +346,22 @@ function RemindersSection() {
       ) : null}
 
       {reminders.length === 0 ? (
-        <p className="muted">No reminders.</p>
+        <p className="muted">No scheduled reminders.</p>
       ) : (
         <ul className="budget-list">
           {reminders.map((r) => (
             <li key={r.id} className="budget-row">
-              <span>
-                {r.title}
-                <span className="muted">
-                  {" "}
-                  · {r.remind_at.replace("T", " ")}
+              <div className="row-main">
+                <span className="row-title">
+                  <b>{r.title}</b>
+                  <span className="chip figure">
+                    {r.remind_at.replace("T", " ")}
+                  </span>
+                  {r.repeat !== "none" ? (
+                    <span className="badge badge-accent">{r.repeat}</span>
+                  ) : null}
                 </span>
-                {r.repeat !== "none" ? (
-                  <span className="muted"> · {r.repeat}</span>
-                ) : null}
-              </span>
+              </div>
               <span className="row-actions">
                 <button
                   type="button"
@@ -350,7 +385,7 @@ function RemindersSection() {
       >
         <input
           aria-label="Reminder title"
-          placeholder="e.g. Meeting"
+          placeholder="Reminder title (e.g. Call supplier)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
@@ -361,6 +396,7 @@ function RemindersSection() {
           onChange={(e) => setRemindAt(e.target.value)}
         />
         <select
+          className="select"
           aria-label="Reminder repeat"
           value={repeat}
           onChange={(e) =>

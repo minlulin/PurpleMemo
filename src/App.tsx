@@ -7,13 +7,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   IconBudget,
   IconBusiness,
+  IconContacts,
   IconDashboard,
+  IconGallery,
+  IconHabits,
   IconJournal,
   IconLoans,
   IconLock,
+  IconMemories,
   IconMore,
   IconNotes,
   IconSettings,
+  IconShopping,
+  IconTasks,
+  IconVault,
 } from "./components/icons.tsx";
 import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
 import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
@@ -44,15 +51,48 @@ import ShoppingPage from "./pages/ShoppingPage";
 import TasksPage from "./pages/TasksPage";
 import VaultPage from "./pages/VaultPage";
 
-const TABS: { key: PageKey; label: string; Icon: typeof IconNotes }[] = [
-  { key: "dashboard", label: "Dashboard", Icon: IconDashboard },
-  { key: "notes", label: "Notes", Icon: IconNotes },
-  { key: "journal", label: "Journal", Icon: IconJournal },
-  { key: "budget", label: "Budget", Icon: IconBudget },
-  { key: "business", label: "Business", Icon: IconBusiness },
-  { key: "loans", label: "Loans", Icon: IconLoans },
-  { key: "more", label: "More", Icon: IconMore },
-  { key: "settings", label: "Settings", Icon: IconSettings },
+interface NavItem {
+  key: PageKey;
+  label: string;
+  Icon: typeof IconNotes;
+}
+
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "Workspace",
+    items: [
+      { key: "dashboard", label: "Dashboard", Icon: IconDashboard },
+      { key: "notes", label: "Notes", Icon: IconNotes },
+      { key: "journal", label: "Journal", Icon: IconJournal },
+    ],
+  },
+  {
+    label: "Finance",
+    items: [
+      { key: "budget", label: "Budget", Icon: IconBudget },
+      { key: "business", label: "Business", Icon: IconBusiness },
+      { key: "loans", label: "Loans", Icon: IconLoans },
+    ],
+  },
+  {
+    label: "Personal",
+    items: [
+      { key: "habits", label: "Habits", Icon: IconHabits },
+      { key: "tasks", label: "Tasks", Icon: IconTasks },
+      { key: "shopping", label: "Shopping", Icon: IconShopping },
+      { key: "contacts", label: "Contacts", Icon: IconContacts },
+      { key: "memories", label: "Memories", Icon: IconMemories },
+      { key: "gallery", label: "Gallery", Icon: IconGallery },
+      { key: "vault", label: "Vault", Icon: IconVault },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { key: "more", label: "All tools", Icon: IconMore },
+      { key: "settings", label: "Settings", Icon: IconSettings },
+    ],
+  },
 ];
 
 /** Ask once for notification permission; false when denied (§2.7). */
@@ -363,30 +403,32 @@ export default function App() {
       <aside className="app-sidebar">
         <div className="app-brand">
           <img className="app-mark" src="/brand/purple-memo-mark.png" alt="" />
-          <span className="app-name">Purple Memo</span>
+          <div className="app-brand-text">
+            <span className="app-name">Purple Memo</span>
+            <span className="app-tagline">Offline Workspace</span>
+          </div>
         </div>
         <nav className="app-nav" aria-label="Sections">
-          {TABS.map((tab) => {
-            // Secondary pages (Habits, Tasks, …) live under More — keep its
-            // rail item lit while the user is inside one of them.
-            const active =
-              page === tab.key ||
-              (tab.key === "more" &&
-                tab.key !== page &&
-                !TABS.some((t) => t.key === page));
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                className={active ? "nav-item is-active" : "nav-item"}
-                aria-current={active ? "page" : undefined}
-                onClick={() => setPage(tab.key)}
-              >
-                <tab.Icon className="icon" />
-                <span className="nav-label">{tab.label}</span>
-              </button>
-            );
-          })}
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label} className="nav-group">
+              <span className="nav-group-label">{group.label}</span>
+              {group.items.map((tab) => {
+                const active = page === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={active ? "nav-item is-active" : "nav-item"}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => setPage(tab.key)}
+                  >
+                    <tab.Icon className="icon" />
+                    <span className="nav-label">{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
         <div className="sidebar-foot">
           <button
@@ -396,7 +438,7 @@ export default function App() {
             onClick={lockNow}
           >
             <IconLock className="icon" />
-            <span className="nav-label">Lock</span>
+            <span className="nav-label">Lock workspace</span>
           </button>
         </div>
       </aside>
