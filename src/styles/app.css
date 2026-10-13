@@ -1038,36 +1038,44 @@ button.chip:hover {
 }
 
 .kpi-icon {
-  width: var(--space-8);
-  height: var(--space-8);
+  width: var(--space-10);
+  height: var(--space-10);
   border-radius: var(--radius-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-accent-soft);
+  background-color: var(--color-accent-soft);
+  background-image: var(--gradient-brand-glow);
   color: var(--color-accent);
+  flex: none;
+}
+
+.kpi-icon .icon {
+  width: var(--space-5);
+  height: var(--space-5);
 }
 
 .kpi-icon.is-income {
-  background: var(--color-success-soft);
+  background-color: var(--color-success-soft);
   color: var(--color-success);
 }
 
 .kpi-icon.is-expense {
-  background: var(--color-danger-soft);
+  background-color: var(--color-danger-soft);
   color: var(--color-danger);
 }
 
 .kpi-icon.is-warn {
-  background: var(--color-warn-soft);
+  background-color: var(--color-warn-soft);
   color: var(--color-warn);
 }
 
 .kpi-value {
-  font-size: var(--text-xl);
+  font-size: var(--text-2xl);
   font-weight: var(--weight-bold);
   letter-spacing: -0.02em;
   line-height: var(--leading-tight);
+  overflow-wrap: anywhere;
 }
 
 .kpi-sub {
@@ -1075,17 +1083,114 @@ button.chip:hover {
   color: var(--color-text-muted);
 }
 
+/* Day-over-day delta. Only rendered when there is a previous day to compare
+ * against — a missing baseline is never rendered as "0%". */
+.kpi-trend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-muted);
+}
+
+.kpi-trend-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+}
+
+.kpi-trend .icon {
+  width: var(--space-3);
+  height: var(--space-3);
+}
+
+.kpi-trend.is-good {
+  color: var(--color-success);
+}
+
+.kpi-trend.is-bad {
+  color: var(--color-danger);
+}
+
+.kpi-trend.is-flat {
+  color: var(--color-text-subtle);
+}
+
+/* Hairline accent on the card's leading edge. */
+.kpi-card-variation::before {
+  content: "";
+  position: absolute;
+  inset-block: var(--space-4);
+  inset-inline-start: 0;
+  inline-size: var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+.kpi-card-variation.is-income::before {
+  background: var(--color-success);
+}
+
+.kpi-card-variation.is-expense::before {
+  background: var(--color-danger);
+}
+
+.kpi-card-variation.is-warn::before {
+  background: var(--color-warn);
+}
+
+/* Explicit column counts (not auto-fit) so row heights stay predictable, plus
+ * a shared minimum row height for the bento rhythm. */
 .dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(21rem, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(13rem, auto);
   gap: var(--space-5);
   align-items: stretch;
+}
+
+@media (max-width: 78rem) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 54rem) {
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: auto;
+  }
 }
 
 .dashboard-grid .settings-section {
   margin: 0;
   height: 100%;
   justify-content: space-between;
+}
+
+.dashboard-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 calc(var(--space-2) * -1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
+}
+
+.dashboard-section-title::after {
+  content: "";
+  flex: 1;
+  block-size: var(--border-width);
+  background-image: linear-gradient(
+    90deg,
+    var(--color-border-strong),
+    transparent
+  );
 }
 
 .dash-card-top {
@@ -1152,7 +1257,7 @@ button.chip:hover {
 .habit-week-mini {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-4);
 }
 
 .habit-dot {

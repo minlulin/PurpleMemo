@@ -26,7 +26,7 @@ import {
   tasksRepo,
 } from "../data/app.ts";
 import { dayMoneyTotals, expiringWarranties } from "../lib/dashboard.ts";
-import { localISODateTime, todayLocal } from "../lib/dates.ts";
+import { addDays, localISODateTime, todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { formatMMK } from "../lib/money.ts";
 import type { PageKey } from "../lib/navigation.ts";
@@ -51,6 +51,36 @@ interface HabitWeek {
 
 const SHORT_DAYS = ["S", "M", "T", "W", "T", "F", "S"] as const;
 
+/**
+ * Day-over-day change as a whole percentage, or null when there is no usable
+ * baseline (nothing recorded yesterday) — an invented "0%" would be a lie.
+ */
+function trendPercent(now: number, prev: number): number | null {
+  if (prev <= 0) return null;
+  return Math.round(((now - prev) / prev) * 100);
+}
+
+function KpiTrend({
+  now,
+  prev,
+  upIsGood,
+}: {
+  now: number;
+  prev: number | null;
+  upIsGood: boolean;
+}) {
+  const pct = prev === null ? null : trendPercent(now, prev);
+  if (pct === null) return null;
+  const up = pct > 0;
+  const tone = pct === 0 ? "is-flat" : up === upIsGood ? "is-good" : "is-bad";
+  return (
+    <span className={`kpi-trend ${tone}`}>
+      {pct > 0 ? <IconTrendUp /> : pct < 0 ? <IconTrendDown /> : null}
+      {pct === 0 ? "level" : `${Math.abs(pct)}%`} vs yesterday
+    </span>
+  );
+}
+
 export default function DashboardPage(p: DashboardPageProps) {
   const today = todayLocal();
   const [loading, setLoading] = useState(true);
@@ -58,6 +88,10 @@ export default function DashboardPage(p: DashboardPageProps) {
   const [dueTasks, setDueTasks] = useState<TaskRow[]>([]);
   const [reminders, setReminders] = useState<ReminderRow[]>([]);
   const [money, setMoney] = useState({ incomeCents: 0, expenseCents: 0 });
+  const [moneyPrev, setMoneyPrev] = useState<{
+    incomeCents: number;
+    expenseCents: number;
+  } | null>(null);
   const [habitWeeks, setHabitWeeks] = useState<HabitWeek[]>([]);
   const [memories, setMemories] = useState<MemoryRow[]>([]);
   const [birthdays, setBirthdays] = useState<ContactRow[]>([]);
@@ -72,6 +106,7 @@ export default function DashboardPage(p: DashboardPageProps) {
         tasks,
         rems,
         dayEntries,
+        prevDayEntries,
         habits,
         upcoming,
         birthdayContacts,
@@ -81,6 +116,7 @@ export default function DashboardPage(p: DashboardPageProps) {
         tasksRepo.dueTasks(today),
         tasksRepo.dueReminders(localISODateTime(new Date())),
         budgetRepo.listDayEntries(today),
+        budgetRepo.listDayEntries(addDays(today, -1)),
         habitsRepo.listHabits(),
         memoriesRepo.upcoming(today, 14),
         contactsRepo.upcomingBirthdays(14, today),
@@ -90,6 +126,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       setDueTasks(tasks);
       setReminders(rems);
       setMoney(dayMoneyTotals(dayEntries));
+      setMoneyPrev(dayMoneyTotals(prevDayEntries));
       const weeks = await Promise.all(
         habits.map(async (h: HabitRow) => ({
           name: h.name,
@@ -211,7 +248,7 @@ export default function DashboardPage(p: DashboardPageProps) {
 
       {/* Executive KPI Strip */}
       <div className="kpi-grid">
-        <div className="kpi-card card-enter">
+        <div className="kpi-card card-enter kpi-card-variation is-income">
           <div className="kpi-head">
             <span className="kpi-label">Money In Today</span>
             <span className="kpi-icon is-income">
@@ -221,10 +258,17 @@ export default function DashboardPage(p: DashboardPageProps) {
           <span className="kpi-value figure amount-income">
             +{formatMMK(money.incomeCents)}
           </span>
-          <span className="kpi-sub">Cash-basis daily inflow</span>
+          <span className="kpi-trend-row">
+            <KpiTrend
+              now={money.incomeCents}
+              prev={moneyPrev?.incomeCents ?? null}
+              upIsGood
+            />
+            <span className="kpi-sub">Cash-basis daily inflow</span>
+          </span>
         </div>
 
-        <div className="kpi-card card-enter">
+        <div className="kpi-card card-enter kpi-card-variation is-expense">
           <div className="kpi-head">
             <span className="kpi-label">Money Out Today</span>
             <span className="kpi-icon is-expense">
@@ -234,13 +278,20 @@ export default function DashboardPage(p: DashboardPageProps) {
           <span className="kpi-value figure amount-expense">
             −{formatMMK(money.expenseCents)}
           </span>
-          <span className="kpi-sub">
-            Net today: {netTodayCents >= 0 ? "+" : "−"}
-            {formatMMK(Math.abs(netTodayCents))}
+          <span className="kpi-trend-row">
+            <KpiTrend
+              now={money.expenseCents}
+              prev={moneyPrev?.expenseCents ?? null}
+              upIsGood={false}
+            />
+            <span className="kpi-sub">
+              Net today: {netTodayCents >= 0 ? "+" : "−"}
+              {formatMMK(Math.abs(netTodayCents))}
+            </span>
           </span>
         </div>
 
-        <div className="kpi-card card-enter">
+        <div className="kpi-card card-enter kpi-card-variation">
           <div className="kpi-head">
             <span className="kpi-label">Total Receivable</span>
             <span className="kpi-icon">
@@ -255,7 +306,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </span>
         </div>
 
-        <div className="kpi-card card-enter">
+        <div className="kpi-card card-enter kpi-card-variation is-warn">
           <div className="kpi-head">
             <span className="kpi-label">Action Items</span>
             <span className={dueCount > 0 ? "kpi-icon is-warn" : "kpi-icon"}>
@@ -274,6 +325,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       </div>
 
       {/* Bento Dashboard Sections */}
+      <h2 className="dashboard-section-title">Today</h2>
       <div className="dashboard-grid">
         <section className="settings-section card-enter">
           <div className="dash-card-top">
@@ -422,7 +474,10 @@ export default function DashboardPage(p: DashboardPageProps) {
             </button>
           </div>
         </section>
+      </div>
 
+      <h2 className="dashboard-section-title">Coming up</h2>
+      <div className="dashboard-grid">
         <section className="settings-section card-enter">
           <div className="dash-card-top">
             <div className="dash-card-head">

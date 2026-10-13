@@ -231,26 +231,41 @@
 
 ### Tasks
 
-- [ ] **6.1** Increase KPI icon size from `--space-8` (32px) to `--space-10` (40px)
-- [ ] **6.2** Add `--gradient-brand-glow` background to `.kpi-icon` for a soft glow effect
-- [ ] **6.3** Increase KPI value font from `--text-xl` to `--text-2xl`
-- [ ] **6.4** Add `.kpi-trend` — small up/down arrow + percentage next to KPI value
-- [ ] **6.5** Add `IconTrendUp`/`IconTrendDown` mini indicators in KPI cards
-- [ ] **6.6** Balance dashboard grid: use explicit grid areas instead of `auto-fit` for consistent card heights
-- [ ] **6.7** Add `.dashboard-section-title` — section headers above card groups (e.g., "Overview", "Finance", "Personal")
-- [ ] **6.8** Increase habit dot size to `--space-6` (24px) with `--text-xs` font
-- [ ] **6.9** Add `gap: var(--space-4)` to `.habit-week-mini` (currently `--space-1`)
-- [ ] **6.10** Add `.kpi-card-variation` — subtle left border accent for visual interest
+- [x] **6.1** Increase KPI icon size from `--space-8` (32px) to `--space-10` (40px)
+- [x] **6.2** Add `--gradient-brand-glow` background to `.kpi-icon` for a soft glow effect
+- [x] **6.3** Increase KPI value font from `--text-xl` to `--text-2xl`
+- [x] **6.4** Add `.kpi-trend` — small up/down arrow + percentage next to KPI value
+- [x] **6.5** Add `IconTrendUp`/`IconTrendDown` mini indicators in KPI cards
+- [x] **6.6** Balance dashboard grid: use explicit grid areas instead of `auto-fit` for consistent card heights
+- [x] **6.7** Add `.dashboard-section-title` — section headers above card groups (e.g., "Overview", "Finance", "Personal")
+- [x] **6.8** Increase habit dot size to `--space-6` (24px) with `--text-xs` font
+- [x] **6.9** Add `gap: var(--space-4)` to `.habit-week-mini` (currently `--space-1`)
+- [x] **6.10** Add `.kpi-card-variation` — subtle left border accent for visual interest
 
 ### Files touched
 - `src/styles/app.css`
 - `src/pages/DashboardPage.tsx`
 
+### Notes
+- 6.4/6.5 show a **real** day-over-day delta (extra `listDayEntries(yesterday)`
+  query feeding a `KpiTrend` component) on the two money cards only. With no
+  baseline the badge renders nothing rather than a fake "0%"; the receivable
+  and action-item cards get no trend because there is no comparable series.
+- 6.6 uses explicit column counts (3 / 2 / 1 at 78rem / 54rem) plus a shared
+  `grid-auto-rows: minmax(13rem, auto)` rather than literal `grid-template-areas`
+  — named areas would force every card into a fixed cell and clip longer cards.
+- 6.7 splits the bento into two titled grids: "Today" (tasks, money, habits)
+  and "Coming up" (memories, warranties, receivable). A title has to sit outside
+  the grid to span it, so the single grid became two.
+- 6.8 shipped back in Phase 1 (habit dots).
+
 ### Verification
-- [ ] KPI cards feel weighty and important
-- [ ] Dashboard grid is visually balanced
-- [ ] Habit dots are easily readable
-- [ ] Dashboard loads with staggered card animation
+- [x] KPI cards feel weighty and important (40px glowing icons, 28px values)
+- [x] Dashboard grid is visually balanced
+- [x] Habit dots are easily readable
+- [x] Dashboard loads with staggered card animation
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (186), `build` all pass
+- [ ] Manual balance pass outstanding
 
 ---
 
@@ -640,7 +655,14 @@
 - [ ] Manual shine/lift check outstanding
 
 ### Phase 6 — Dashboard Premium Pass
-- [ ] Not started
+- [x] KPI icons 32px → 40px with `--gradient-brand-glow`; values → `--text-2xl`
+- [x] `.kpi-card-variation` hairline accent on the leading edge (status-tinted)
+- [x] `.kpi-trend` + `.kpi-trend-row` with real yesterday comparison
+- [x] Bento grid: explicit 3/2/1 columns, shared minimum row height
+- [x] `.dashboard-section-title` — "Today" and "Coming up" groups
+- [x] `.habit-week-mini` gap `--space-4` (6.8 already done in Phase 1)
+- [x] Gates green: token-lint, biome, tsc, 186 tests, vite build
+- [ ] Manual balance pass outstanding
 
 ### Phase 7 — Lock Screen & Onboarding Drama
 - [ ] Not started
