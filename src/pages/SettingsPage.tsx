@@ -7,6 +7,8 @@
 // key is never inside it; import replaces ALL current data, so the UI
 // confirms before applying and reloads afterwards.
 
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
 import {
   IconArrowRight,
@@ -178,17 +180,15 @@ export default function SettingsPage(p: SettingsPageProps) {
     setBackupBusy(true);
     try {
       const { bytes, summary } = await backupRepo.exportBackup();
-      const blob = new Blob([new Uint8Array(bytes)], {
-        type: "application/zip",
+      const path = await save({
+        title: "Save Purple Memo backup",
+        defaultPath: `purple-memo-backup-${todayLocal()}.zip`,
+        filters: [{ name: "Purple Memo backup", extensions: ["zip"] }],
       });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `purple-memo-backup-${todayLocal()}.zip`;
-      link.click();
-      URL.revokeObjectURL(url);
+      if (path === null) return;
+      await writeFile(path, bytes);
       toast.success(
-        `Backup saved — ${summary.rowCount} rows, ${summary.photoCount} photos`,
+        `Backup saved to ${path} — ${summary.rowCount} rows, ${summary.photoCount} photos`,
       );
     } catch (e) {
       setError(errText(e));
@@ -266,18 +266,22 @@ export default function SettingsPage(p: SettingsPageProps) {
     }
   };
 
-  const saveKeyFile = () => {
+  const saveKeyFile = async () => {
     if (!exportedKey) return;
-    const blob = new Blob([`${exportedKey}\n`], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "purple-memo-db-key.txt";
-    link.click();
-    URL.revokeObjectURL(url);
-    toast.success(
-      "Encryption key download started. Store it separately from backups.",
-    );
+    try {
+      const path = await save({
+        title: "Save Purple Memo encryption key",
+        defaultPath: "purple-memo-db-key.txt",
+        filters: [{ name: "Text file", extensions: ["txt"] }],
+      });
+      if (path === null) return;
+      await writeTextFile(path, `${exportedKey}\n`);
+      toast.success(
+        `Encryption key saved to ${path}. Store it separately from backups.`,
+      );
+    } catch (e) {
+      setError(errText(e));
+    }
   };
 
   // -- Same-network read-only share (§8, P5) ------------------------------------
