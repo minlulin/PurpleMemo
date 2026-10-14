@@ -11,8 +11,8 @@ import { useEffect, useState } from "react";
 import {
   IconArrowRight,
   IconDownload,
+  IconFilter,
   IconMoon,
-  IconSearch,
   IconSettings,
   IconSpinner,
   IconSun,
@@ -412,7 +412,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <IconSearch className="icon input-icon" />
+        <IconFilter className="icon input-icon" />
       </span>
 
       <nav className="settings-nav" aria-label="Settings sections">

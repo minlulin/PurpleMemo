@@ -7,7 +7,9 @@ import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconCalendar,
   IconContacts,
+  IconEdit,
   IconSearch,
+  IconTrash,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { contactsRepo } from "../data/app.ts";
@@ -364,14 +366,14 @@ export default function ContactsPage() {
                     className="btn btn-primary"
                     onClick={() => void saveContact()}
                   >
-                    Save
+                    <IconEdit className="icon" /> Save
                   </button>
                   <button
                     type="button"
                     className="btn btn-danger"
                     onClick={() => void removeContact(selectedContact.id)}
                   >
-                    Delete contact
+                    <IconTrash className="icon" /> Delete contact
                   </button>
                 </div>
               </div>

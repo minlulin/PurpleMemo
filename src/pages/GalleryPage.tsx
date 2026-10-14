@@ -11,6 +11,7 @@ import {
   IconClose,
   IconGallery,
   IconPlus,
+  IconTrash,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import {
@@ -363,7 +364,7 @@ export default function GalleryPage() {
                 className="btn btn-danger"
                 onClick={() => void removePhoto(selected)}
               >
-                Delete photo
+                <IconTrash className="icon" /> Delete photo
               </button>
               <button
                 type="button"

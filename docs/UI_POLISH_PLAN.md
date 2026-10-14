@@ -719,35 +719,67 @@ patterns that 11.4 already established.
 ### Tasks
 
 - [ ] **14.1] Add `IconChevronLeft` — left-pointing chevron
-- [ ] **14.2] Add `IconChevronRight` — right-pointing chevron
-- [ ] **14.3] Add `IconSun` — sun for light mode
-- [ ] **14.4] Add `IconMoon` — moon for dark mode
-- [ ] **14.5] Add `IconClose` — X for modal dismiss
-- [ ] **14.6] Add `IconCheck` — checkmark (already exists, verify)
-- [ ] **14.7] Add `IconAlert` — alert triangle
-- [ ] **14.8] Add `IconInfo` — info circle
-- [ ] **14.9** Add `IconKeyboard` — keyboard for shortcuts (owned by 12b.2; drop
-      this line if 12b has already landed)
-- [ ] **14.10] Add `IconSpinner` — loading spinner
-- [ ] **14.11] Add `IconMarkdown` — markdown icon for editor label
-- [ ] **14.12] Add `IconEye` — eye for preview label
-- [ ] **14.13] Add `IconPin` — pin for pinned notes
-- [ ] **14.14] Add filled variants: `.icon-filled` class that uses `fill: currentColor` for specific icons
-- [ ] **14.15] Increase default stroke width from `1.6` to `1.8`
-- [ ] **14.16] Add `IconEdit` — pencil for edit actions
-- [ ] **14.17] Add `IconTrash` — trash can for delete actions
-- [ ] **14.18] Add `IconExternal` — external link arrow
-- [ ] **14.19] Add `IconFilter` — filter funnel
-- [ ] **14.20] Add `IconSort` — sort arrows
+- [x] **14.2] Add `IconChevronRight` — right-pointing chevron *(Phase 3)*
+- [x] **14.3] Add `IconSun` — sun for light mode *(Phase 10)*
+- [x] **14.4] Add `IconMoon` — moon for dark mode *(Phase 10)*
+- [x] **14.5] Add `IconClose` — X for modal dismiss *(Phase 11)*
+- [x] **14.6] Add `IconCheck` — checkmark (already exists, verified)
+- [x] **14.7] Add `IconAlert` — alert triangle *(Phase 12a)*
+- [x] **14.8] Add `IconInfo` — info circle *(Phase 12a)*
+- [x] **14.9] Add `IconKeyboard` — keyboard for shortcuts *(Phase 12b — owned there)*
+- [x] **14.10] Add `IconSpinner` — loading spinner *(Phase 3)*
+- [x] **14.11] Add `IconMarkdown` — markdown icon for editor label *(Phase 8)*
+- [x] **14.12] Add `IconEye` — eye for preview label *(Phase 8)*
+- [x] **14.13] Add `IconPin` — pin for pinned notes (already exists, verified)
+- [ ] **14.14] Filled variants — **rejected**, see Notes
+- [x] **14.15] Increase default stroke width from `1.6` to `1.8` *(Phase 3)*
+- [x] **14.16] Add `IconEdit` — pencil for edit actions
+- [x] **14.17] Add `IconTrash` — trash can for delete actions
+- [ ] **14.18] Add `IconExternal` — **rejected**, see Notes
+- [x] **14.19] Add `IconFilter` — filter funnel
+- [ ] **14.20] Add `IconSort` — **rejected**, see Notes
 
 ### Files touched
 - `src/components/icons.tsx`
+- `src/pages/ContactsPage.tsx`
+- `src/pages/GalleryPage.tsx`
+- `src/pages/SettingsPage.tsx`
+
+### Notes
+- **15 of 20 tasks were already done** by Phases 3, 8, 10, 11 and 12a/b. 14.9
+  was explicitly earmarked to 12b.2, so this phase is mostly verification; the
+  real work was 14.16/14.17/14.19.
+- **14.14 rejected.** `.icon-filled { fill: currentColor }` is a footgun for a
+  stroke-first set: CSS `fill` beats the `fill="none"` presentation attribute,
+  so *every* path would render as a solid blob. Filling an open polyline like
+  `IconCheck`'s `m5 12.5 4.5 4.5L19 7.5` implicitly closes it and yields a
+  sliver, not a checkmark. A genuine filled variant needs per-icon filled
+  geometry authored in the component, and no current UI asks for one — the one
+  fill-safe glyph here is the ellipsis, whose 1.5r circles with a 1.8 stroke
+  already read as solid dots.
+- **14.18 rejected.** The only candidate was the share URL in Settings, but it
+  is a read-only field you copy from, not a link — an "opens off-device" glyph
+  there decorates rather than informs. It also needed a full-width
+  `.input-icon-wrap` inside a bare label, and those wraps are `inline-flex`,
+  so the field would have silently shrink-wrapped. No outbound links exist in
+  the app today.
+- **14.20 rejected.** Nothing in the app offers a user-facing sort control;
+  adding one purely to justify an icon is backwards.
+- New icons were added *with* call sites rather than shipped into the library
+  to sit unused, per the same zero-unused standard applied to CSS:
+  `IconTrash` on the two primary delete actions (photo, contact), `IconEdit` on
+  the contact save button, `IconFilter` on Settings' "Filter settings" input
+  (a funnel is what that field does — `IconSearch` reads as a page search).
+- Icons need no button CSS: `.btn` is already `inline-flex` with `gap`, and
+  `.icon` is `1.1em` with `flex: none`.
+- `IconArrowLeft` is the only declared-but-unused export, kept because
+  `IconArrowRight` is used everywhere and a one-sided pair is worse.
 
 ### Verification
-- [ ] All icons render at consistent stroke width
-- [ ] New icons used in appropriate places
-- [ ] Filled variants work where needed
-- [ ] Icon lint passes
+- [x] All icons render at consistent stroke width (single 1.8 base, `base()`)
+- [x] New icons used in appropriate places
+- [x] Every exported icon except `IconArrowLeft` has a call site
+- [x] Icon lint passes (biome + typecheck clean)
 
 ---
 
@@ -1040,8 +1072,17 @@ audit scripts re-run clean).
 - [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
 - [ ] Manual pass on scroll reveal and motion feel pending
 
-### Phase 14 — Icon System Completion
-- [ ] Not started
+### Phase 14 - Icon System Completion
+- [x] 15 of 20 tasks already landed in Phases 3/8/10/11/12a/12b - verified
+- [x] Added `IconEdit`, `IconTrash`, `IconFilter`, each wired to a real
+      call site in the same change (contact save, two delete actions, settings
+      filter)
+- [x] Rejected 14.14 `.icon-filled`: `fill: currentColor` overrides the
+      `fill="none"` attribute and would render every stroked path as a blob
+- [x] Rejected 14.18 `IconExternal`: the share URL is a copyable field, not a
+      link, and no outbound link exists in the app
+- [x] Rejected 14.20 `IconSort`: no user-facing sort control exists to host it
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
 
 ### Phase 15 — Final Polish & Quality Pass
 - [ ] Not started

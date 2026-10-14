@@ -461,3 +461,32 @@ export function IconKeyboard(props: IconProps) {
     </svg>
   );
 }
+
+export function IconTrash(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5" />
+      <path d="M10.5 11v5.5M13.5 11v5.5" />
+    </svg>
+  );
+}
+
+export function IconEdit(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M4 20h4l10-10-4-4L4 16v4Z" />
+      <path d="m13.5 6.5 4 4" />
+    </svg>
+  );
+}
+
+export function IconFilter(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M3.5 5h17l-6.5 8v5.5L10 20.5V13L3.5 5Z" />
+    </svg>
+  );
+}
