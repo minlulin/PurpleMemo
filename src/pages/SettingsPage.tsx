@@ -18,6 +18,7 @@ import {
   IconSun,
   IconUpload,
 } from "../components/icons.tsx";
+import { useToast } from "../components/Toast.tsx";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
 import type { ShareInfo } from "../data/driver.ts";
 import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
@@ -57,8 +58,10 @@ const SETTINGS_SECTIONS = [
 
 export default function SettingsPage(p: SettingsPageProps) {
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Confirmations are transient by nature — they were a dismiss-less banner
+  // before; a toast says the same thing without parking on the page.
+  const toast = useToast();
   const [query, setQuery] = useState("");
   const [pin, setPin] = useState({
     current: "",
@@ -97,7 +100,6 @@ export default function SettingsPage(p: SettingsPageProps) {
   };
 
   const changePin = async () => {
-    setNote(null);
     setError(null);
     try {
       const stored = await settingsRepo.getJSON<PinHash>(SETTING_KEYS.pinHash);
@@ -143,7 +145,7 @@ export default function SettingsPage(p: SettingsPageProps) {
       }
       await settingsRepo.setManyJSON(changes);
       setPin({ current: "", next: "", confirm: "", question: "", answer: "" });
-      setNote("PIN updated.");
+      toast.success("PIN updated.");
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -170,7 +172,6 @@ export default function SettingsPage(p: SettingsPageProps) {
   } | null>(null);
 
   const doExport = async () => {
-    setNote(null);
     setError(null);
     setPending(null);
     setBackupBusy(true);
@@ -185,8 +186,8 @@ export default function SettingsPage(p: SettingsPageProps) {
       link.download = `purple-memo-backup-${todayLocal()}.zip`;
       link.click();
       URL.revokeObjectURL(url);
-      setNote(
-        `Backup saved (${summary.rowCount} rows, ${summary.photoCount} photos) — keep it with your key file, somewhere safe.`,
+      toast.success(
+        `Backup saved — ${summary.rowCount} rows, ${summary.photoCount} photos`,
       );
     } catch (e) {
       setError(errText(e));
@@ -199,7 +200,6 @@ export default function SettingsPage(p: SettingsPageProps) {
     const file = files?.[0];
     if (!file) return;
     setError(null);
-    setNote(null);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { summary } = await backupRepo.inspectBackup(bytes);
@@ -219,7 +219,7 @@ export default function SettingsPage(p: SettingsPageProps) {
       await shareRepo.stop();
       const result = await backupRepo.importBackup(pending.bytes);
       setPending(null);
-      setNote(
+      toast.success(
         `Imported ${result.rows} rows and ${result.photos} photos — reloading…`,
       );
       // The imported backup carries its own settings (theme, PIN, …), so
@@ -232,7 +232,6 @@ export default function SettingsPage(p: SettingsPageProps) {
   };
 
   const exportKey = async () => {
-    setNote(null);
     setError(null);
     setCopied(false);
     if (!keyAck) {
@@ -270,8 +269,8 @@ export default function SettingsPage(p: SettingsPageProps) {
     link.download = "purple-memo-db-key.txt";
     link.click();
     URL.revokeObjectURL(url);
-    setNote(
-      "Encryption key file download started. Store it separately from backups.",
+    toast.success(
+      "Encryption key download started. Store it separately from backups.",
     );
   };
 
@@ -302,7 +301,6 @@ export default function SettingsPage(p: SettingsPageProps) {
 
   const startShare = async () => {
     setError(null);
-    setNote(null);
     setShareCopied(false);
     setShareBusy(true);
     try {
@@ -349,7 +347,6 @@ export default function SettingsPage(p: SettingsPageProps) {
 
   const checkUpdates = async () => {
     setError(null);
-    setNote(null);
     setUpdateDone(false);
     setUpdatePercent(null);
     setUpdateBusy(true);
@@ -369,7 +366,6 @@ export default function SettingsPage(p: SettingsPageProps) {
   const installNow = async () => {
     if (update === null) return;
     setError(null);
-    setNote(null);
     setUpdateBusy(true);
     setUpdateDone(false);
     try {
@@ -406,7 +402,6 @@ export default function SettingsPage(p: SettingsPageProps) {
           {error}
         </p>
       )}
-      {note !== null && <p className="alert alert-note">{note}</p>}
 
       <span className="input-icon-wrap">
         <input

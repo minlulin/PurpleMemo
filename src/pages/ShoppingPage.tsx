@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconPlus, IconShopping } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { shoppingRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 import { moveItem } from "../lib/shopping.ts";
@@ -194,7 +195,7 @@ export default function ShoppingPage() {
         </form>
       </header>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}

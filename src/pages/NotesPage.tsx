@@ -15,6 +15,7 @@ import {
   IconPlus,
   IconSearch,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { journalRepo, notesRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -538,7 +539,16 @@ export default function NotesPage() {
           </p>
         )}
         {loading ? (
-          <p className="empty-state">Loading notes…</p>
+          <div className="notes-body">
+            <ul className="note-list" aria-label="Note list">
+              <li>
+                <Skeleton count={5} />
+              </li>
+            </ul>
+            <section className="editor-pane" aria-label="Note editor">
+              <Skeleton variant="card" />
+            </section>
+          </div>
         ) : (
           <div className="notes-body">
             <ul className="note-list" aria-label="Note list">

@@ -11,6 +11,7 @@ import {
   IconChevronRight,
   IconMemories,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -287,7 +288,7 @@ export default function MemoriesPage() {
         </nav>
       </header>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}

@@ -371,6 +371,28 @@ export function IconCheck(props: IconProps) {
   );
 }
 
+export function IconAlert(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9.5v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+export function IconInfo(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
 export function IconMarkdown(props: IconProps) {
   return (
     // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden

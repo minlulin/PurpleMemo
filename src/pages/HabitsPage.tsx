@@ -11,6 +11,7 @@ import {
   IconHabits,
   IconPlus,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -146,7 +147,13 @@ export default function HabitsPage() {
         </form>
       </header>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? (
+        <div className="dashboard-grid">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={`habit-${i}`} variant="card" />
+          ))}
+        </div>
+      ) : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}

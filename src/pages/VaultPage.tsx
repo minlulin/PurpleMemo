@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconLock, IconVault } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { vaultRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 
@@ -260,7 +261,7 @@ export default function VaultPage() {
     return (
       <div className="budget-page">
         {header}
-        <p className="muted">Loading…</p>
+        <Skeleton variant="card" />
       </div>
     );
   }

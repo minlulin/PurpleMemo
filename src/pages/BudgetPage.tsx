@@ -11,6 +11,7 @@ import {
   IconChevronRight,
   IconWallet,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { budgetRepo } from "../data/app.ts";
 import {
   cleanName,
@@ -190,7 +191,7 @@ function ManageView() {
       className="budget-manage"
       aria-label="Manage wallets and categories"
     >
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -575,7 +576,7 @@ function EntriesView() {
         </div>
       </div>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -852,7 +853,7 @@ function MonthView() {
         </button>
       </div>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -1057,7 +1058,7 @@ function YearView() {
         </button>
       </div>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -1215,7 +1216,7 @@ function LimitsView() {
         </button>
       </div>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -1411,7 +1412,7 @@ function RecurringView() {
 
   return (
     <section className="budget-recurring" aria-label="Recurring payments">
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}

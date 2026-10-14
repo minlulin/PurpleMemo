@@ -17,6 +17,7 @@ import {
   IconTrendDown,
   IconTrendUp,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import {
   budgetRepo,
   businessRepo,
@@ -189,7 +190,17 @@ export default function DashboardPage(p: DashboardPageProps) {
             </div>
           </div>
         </header>
-        <p className="muted">Loading…</p>
+        {/* Same grids the real page renders, so nothing reflows on load. */}
+        <div className="kpi-grid">
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={`kpi-${i}`} variant="card" />
+          ))}
+        </div>
+        <div className="dashboard-grid">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={`card-${i}`} variant="card" />
+          ))}
+        </div>
       </div>
     );
   }

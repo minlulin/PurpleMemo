@@ -9,6 +9,7 @@ import {
   IconContacts,
   IconSearch,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { contactsRepo } from "../data/app.ts";
 import {
   birthdayLabel,
@@ -311,7 +312,7 @@ export default function ContactsPage() {
           </form>
 
           {loading ? (
-            <p className="muted">Loading…</p>
+            <Skeleton count={5} />
           ) : visible.length === 0 ? (
             <EmptyState>
               {contacts.length === 0

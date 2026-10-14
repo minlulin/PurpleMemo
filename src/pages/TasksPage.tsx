@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconCalendar, IconTasks } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { tasksRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -130,7 +131,7 @@ export default function TasksPage({
         </div>
       </header>
 
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}

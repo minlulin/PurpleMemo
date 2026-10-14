@@ -23,6 +23,8 @@ import {
   IconVault,
 } from "./components/icons.tsx";
 import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
+import { Skeleton } from "./components/Skeleton.tsx";
+import { ToastProvider } from "./components/Toast.tsx";
 import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
 import { DEFAULT_AUTO_LOCK_MINUTES, isIdle, lockGate } from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
@@ -260,7 +262,7 @@ interface BootState {
  * auto-lock. Navigation is state-based — §3 locks the stack and has no
  * router dependency.
  */
-export default function App() {
+function AppShell() {
   const [boot, setBoot] = useState<BootState>({
     ready: false,
     error: null,
@@ -361,7 +363,10 @@ export default function App() {
   if (!boot.ready) {
     return (
       <div className="lock-wrap">
-        <p className="muted lock-loading">Loading…</p>
+        <div className="entry-form vault-narrow">
+          <Skeleton variant="icon" />
+          <Skeleton variant="card" />
+        </div>
       </div>
     );
   }
@@ -481,5 +486,17 @@ export default function App() {
         )}
       </main>
     </div>
+  );
+}
+
+/**
+ * The toast host wraps everything — including the lock and boot screens — so a
+ * provider is never missing from a branch. All shell state lives in AppShell.
+ */
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppShell />
+    </ToastProvider>
   );
 }

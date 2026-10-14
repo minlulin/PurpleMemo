@@ -9,6 +9,7 @@ import {
   IconChevronRight,
   IconJournal,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { journalRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -241,7 +242,16 @@ export default function JournalPage() {
         )}
 
         {loading ? (
-          <p className="empty-state">Loading entry…</p>
+          <div className="editor-split journal-split">
+            <div className="editor-pane-box">
+              <span className="editor-pane-label">Daily reflection</span>
+              <Skeleton variant="card" />
+            </div>
+            <div className="editor-pane-box">
+              <span className="editor-pane-label">History</span>
+              <Skeleton count={4} />
+            </div>
+          </div>
         ) : (
           <div className="editor-split journal-split">
             <div className="editor-pane-box">

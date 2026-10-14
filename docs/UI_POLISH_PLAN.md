@@ -531,39 +531,49 @@ reviewable commit.
 
 ### Tasks
 
-- [ ] **12a.1** Create `Skeleton` component — pulsing placeholder blocks matching layout shapes
-- [ ] **12a.2** Add `.skeleton-card`, `.skeleton-text`, `.skeleton-icon` variants
-- [ ] **12a.3** Replace all "Loading…" text with skeleton screens
-- [ ] **12a.4** Create `Toast` component — slide-in from bottom-right, auto-dismiss after 4s
-- [ ] **12a.5** Add `.toast-success`, `.toast-error`, `.toast-info` variants
-- [ ] **12a.6** Add `IconCheck`, `IconAlert`, `IconInfo` for toast icons
-- [ ] **12a.7** Create `useToast` hook — `toast.success("Note saved")`, `toast.error("Failed")`
-- [ ] **12a.8** Add `@keyframes toast-in` — slide up + fade in
-- [ ] **12a.9** Add `@keyframes toast-out` — fade out + slide down
-- [ ] **12a.10** Add `aria-live="polite"` region for toast announcements
+- [x] **12a.1** Create `Skeleton` component — pulsing placeholder blocks matching layout shapes
+- [x] **12a.2** Add `.skeleton-card`, `.skeleton-text`, `.skeleton-icon` variants
+- [x] **12a.3** Replace all "Loading…" text with skeleton screens
+- [x] **12a.4** Create `Toast` component — slide-in from bottom-right, auto-dismiss after 4s
+- [x] **12a.5** Add `.toast-success`, `.toast-error`, `.toast-info` variants
+- [x] **12a.6** Add `IconCheck`, `IconAlert`, `IconInfo` for toast icons
+- [x] **12a.7** Create `useToast` hook — `toast.success("Note saved")`, `toast.error("Failed")`
+- [x] **12a.8** Add `@keyframes toast-in` — slide up + fade in
+- [x] **12a.9** Add `@keyframes toast-out` — fade out + slide down
+- [x] **12a.10** Add `aria-live="polite"` region for toast announcements
 
 ### Files touched
 - `src/styles/app.css`
 - `src/components/icons.tsx`
 - `src/components/Skeleton.tsx` (new)
 - `src/components/Toast.tsx` (new)
-- `src/App.tsx` (toast provider)
-- All page components (skeleton loading)
+- `src/App.tsx` (toast provider, boot skeleton)
+- `src/pages/*.tsx` (skeleton loading; SettingsPage confirmations)
 
 ### Notes
-- Skeletons must match the real layout shape (`.skeleton-card` for
-  `.settings-section`, `.skeleton-text` for rows) or they cause a reflow that
-  is worse than the "Loading…" text they replace.
-- The toast host renders the `aria-live` region itself, so announcements don't
-  need a second element elsewhere in the tree.
-- `@keyframes shimmer` (the actual sweep) lands in Phase 13 (13.4); 12a.2 uses
-  a simple opacity pulse so the two phases don't fight over one animation.
+- `App`'s shell became `AppShell` with a thin `App` that mounts
+  `<ToastProvider>` — wrapping the early returns instead would have created a
+  different provider per lock/boot branch.
+- 12a.3 shapes follow the real layout, not one generic block: DashboardPage
+  renders the same `kpi-grid` + `dashboard-grid` it will fill, NotesPage and
+  JournalPage render their split panes, the Gallery renders a square
+  `skeleton-grid`, HabitsPage renders habit cards. Reflow on load would be worse
+  than the "Loading…" text it replaces.
+- Toasts are wired to SettingsPage's four confirmations (PIN updated, backup
+  saved, backup imported, key download). The reminder/share **notes** in
+  `App.tsx` deliberately stay inline alerts: "notifications are blocked" needs
+  to outlast a 4-second toast.
+- A toast unmounts on a timer, not `animationend` — under reduced motion there
+  is no animation to end and the row would stick forever. The stack also caps
+  at four.
+- 12a.6 added `IconAlert` + `IconInfo`; `IconCheck` already existed from Phase 3.
 
 ### Verification
-- [ ] All loading states use skeletons, not text
-- [ ] Toasts appear and auto-dismiss correctly
-- [ ] Toast announcements reach a screen reader once, not twice
-- [ ] `npm run lint`, `token-lint`, `typecheck`, `test`, `build` all pass
+- [x] All loading states use skeletons, not text (23 sites, zero "Loading…" left)
+- [x] Toasts appear and auto-dismiss correctly
+- [x] Toast announcements reach a screen reader once, not twice
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual pass on skeleton sizing and toast timing pending
 
 ---
 
@@ -937,7 +947,16 @@ audit scripts re-run clean).
 - [ ] Manual pass on modal feel and thumb hover pending
 
 ### Phase 12a — Feedback Layer (Skeletons & Toasts)
-- [ ] Not started
+- [x] `Skeleton` component: text/icon/card variants, last bar short
+- [x] All 23 loading sites are skeletons now, shape-matched per page; zero
+      "Loading…" strings remain in the app
+- [x] `ToastProvider` + `useToast` in a new `Toast.tsx`; settings confirmations
+      (PIN, backup export/import, key download) are toasts
+- [x] `toast-in`/`toast-out`, per-tone variants, `IconAlert`/`IconInfo` added
+- [x] Timer-driven dismissal (survives reduced motion), stack capped at 4,
+      one polite live region, print hides the stack
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual pass on skeleton sizing and toast timing pending
 
 ### Phase 12b — Accessibility & Keyboard Layer
 - [ ] Not started

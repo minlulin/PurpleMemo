@@ -11,6 +11,7 @@ import {
   IconGallery,
   IconPlus,
 } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import {
   businessRepo,
   galleryRepo,
@@ -348,7 +349,15 @@ export default function GalleryPage() {
           <span className="badge">{photos.length}</span>
         </div>
         {loading ? (
-          <p className="muted">Loading…</p>
+          <div className="skeleton-grid">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <Skeleton
+                key={`thumb-${i}`}
+                variant="card"
+                className="is-thumb"
+              />
+            ))}
+          </div>
         ) : photos.length === 0 ? (
           <EmptyState>
             No photos yet — use “Add photos” to store one.

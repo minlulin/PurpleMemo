@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconBusiness, IconCalendar } from "../components/icons.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { budgetRepo, businessRepo } from "../data/app.ts";
 import {
   inWarranty,
@@ -189,7 +190,7 @@ function ShopsView() {
 
   return (
     <section className="budget-manage" aria-label="Shops">
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -457,7 +458,7 @@ function JobsView() {
 
   return (
     <section className="budget-manage" aria-label="Open jobs">
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -720,7 +721,7 @@ function ReceivableView() {
 
   return (
     <section className="budget-manage" aria-label="Receivable by customer">
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -818,7 +819,7 @@ function HistoryView() {
 
   return (
     <section className="budget-manage" aria-label="Job history">
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}
@@ -944,7 +945,7 @@ function PayablesView() {
 
   return (
     <section className="budget-manage" aria-label="Payables">
-      {loading ? <p className="muted">Loading…</p> : null}
+      {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
           {error}

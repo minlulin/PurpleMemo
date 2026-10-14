@@ -2795,6 +2795,172 @@ tbody .week-row {
 }
 
 /* ---------------------------------------------------------------------------
+ * Skeletons (plan 12a.1/12a.2) — shape-matched placeholders. A plain opacity
+ * pulse; the `shimmer` sweep arrives with the motion system in Phase 13.
+ * ------------------------------------------------------------------------- */
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.skeleton {
+  display: block;
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-sm);
+  animation: skeleton-pulse 1.4s var(--ease-out) infinite;
+}
+
+.skeleton-text {
+  block-size: 0.75rem;
+}
+
+.skeleton-text.is-short {
+  inline-size: 40%;
+}
+
+.skeleton-icon {
+  inline-size: var(--space-5);
+  block-size: var(--space-5);
+  border-radius: var(--radius-md);
+  flex: none;
+}
+
+.skeleton-card {
+  block-size: 8rem;
+  border-radius: var(--radius-lg);
+  border: var(--border-width) solid var(--color-border);
+}
+
+/* Photo tiles are square — a bar-shaped placeholder would reflow the grid. */
+.skeleton-card.is-thumb {
+  block-size: auto;
+  aspect-ratio: 1;
+}
+
+.skeleton-stack {
+  display: block;
+}
+
+.skeleton-stack-bars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: var(--space-4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Toasts (plan 12a.4-12a.9)
+ * ------------------------------------------------------------------------- */
+
+.toast-stack {
+  position: fixed;
+  inset-block-end: var(--space-5);
+  inset-inline-end: var(--space-5);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  inline-size: min(22rem, calc(100vw - var(--space-8)));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+  animation: toast-in var(--dur-base) var(--ease-out);
+}
+
+.toast .icon {
+  flex: none;
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.toast-success {
+  border-color: var(--color-success-border);
+}
+.toast-success .icon {
+  color: var(--color-success);
+}
+
+.toast-error {
+  border-color: var(--color-danger-border);
+}
+.toast-error .icon {
+  color: var(--color-danger);
+}
+
+.toast-info {
+  border-color: var(--color-accent-ring);
+}
+.toast-info .icon {
+  color: var(--color-accent);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+.toast.is-leaving {
+  animation: toast-out var(--dur-fast) var(--ease-out) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast,
+  .toast.is-leaving {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
  * Gallery (P3e, §2.7)
  * ------------------------------------------------------------------------- */
 
@@ -3146,11 +3312,6 @@ tbody .week-row {
   }
 }
 
-.lock-loading {
-  margin: var(--space-8) auto;
-  text-align: center;
-}
-
 /* ---------------------------------------------------------------------------
  * Settings + More (P3f, §2.8)
  * ------------------------------------------------------------------------- */
@@ -3193,6 +3354,7 @@ tbody .week-row {
   .side-form,
   .row-actions,
   .photo-full,
+  .toast-stack,
   .modal-backdrop {
     display: none;
   }
