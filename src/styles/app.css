@@ -270,6 +270,7 @@
 .btn:hover:not(:disabled) {
   background: var(--color-surface-hover);
   border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-button-glow);
 }
 
 .btn:active:not(:disabled) {
@@ -361,6 +362,7 @@
 .btn-danger:hover:not(:disabled) {
   background: var(--color-danger-soft);
   border-color: var(--color-danger);
+  box-shadow: var(--shadow-focus-danger);
 }
 
 .btn-ghost {
@@ -956,7 +958,7 @@ button.chip:hover {
   gap: var(--space-4);
   background: var(--color-surface);
   background-image: var(--gradient-card-shine);
-  border: var(--border-width) solid var(--color-border);
+  border: var(--border-width) solid var(--color-card-border);
   border-radius: var(--radius-lg);
   padding: var(--space-5);
   box-shadow: var(--shadow-sm);
@@ -1166,7 +1168,7 @@ button.chip:hover {
   gap: var(--space-2);
   background: var(--color-surface);
   background-image: var(--gradient-card-shine);
-  border: var(--border-width) solid var(--color-border);
+  border: var(--border-width) solid var(--color-card-border);
   border-radius: var(--radius-lg);
   padding: var(--space-4) var(--space-5);
   box-shadow: var(--shadow-sm);
@@ -1736,7 +1738,7 @@ button.chip:hover {
   gap: var(--space-2);
   padding: var(--space-4);
   background: var(--color-surface-raised);
-  border: var(--border-width) solid var(--color-border);
+  border: var(--border-width) solid var(--color-card-border);
   border-radius: var(--radius-lg);
   position: relative;
   overflow: hidden;
@@ -2909,7 +2911,7 @@ tbody .week-row {
   padding: var(--space-5);
   background: var(--color-surface);
   background-image: var(--gradient-card-shine);
-  border: var(--border-width) solid var(--color-border);
+  border: var(--border-width) solid var(--color-card-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   position: relative;
@@ -2946,6 +2948,39 @@ tbody .week-row {
 .more-card-icon .icon {
   width: var(--space-5);
   height: var(--space-5);
+}
+
+.more-card-icon-habits,
+.more-card-icon-gallery {
+  color: var(--color-success);
+  background: var(--color-success-soft);
+  border-color: var(--color-success-border);
+}
+
+.more-card-icon-tasks {
+  color: var(--color-warn);
+  background: var(--color-warn-soft);
+  border-color: var(--color-warn-border);
+}
+
+.more-card-icon-shopping,
+.more-card-icon-contacts {
+  color: var(--color-accent-hover);
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-ring);
+}
+
+.more-card-icon-memories,
+.more-card-icon-vault {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger-border);
+}
+
+.more-card-icon-settings {
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
 }
 
 .more-card-body {
@@ -3265,6 +3300,11 @@ tbody .week-row {
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
+}
+
+.shortcuts-modal {
+  border-color: var(--color-accent-ring);
+  box-shadow: var(--shadow-lg), var(--shadow-modal-glow);
 }
 
 .modal-head {

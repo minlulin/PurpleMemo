@@ -22,6 +22,7 @@
   --color-border: #2f244f;
   --color-border-subtle: #251c3f;
   --color-border-strong: #493878;
+  --color-card-border: rgba(255, 255, 255, 0.1);
 
   /* Brand & accent (hue 255° anchored to the logo) */
   --color-brand: #310096;
@@ -84,7 +85,7 @@
 
   /* Text */
   --color-text: #f1eefb;
-  --color-text-muted: #a398c3;
+  --color-text-muted: #b8b8d0;
   /* Placeholders and metadata. #786d99 was 3.6:1 on the input surface —
      placeholder text is still text, so it has to clear 4.5:1 (15.9/15.13). */
   --color-text-subtle: #8f86aa;
@@ -118,6 +119,8 @@
   --shadow-lg: 0 18px 42px rgba(6, 4, 15, 0.55);
   --shadow-focus: 0 0 0 3px var(--color-accent-ring);
   --shadow-focus-danger: 0 0 0 3px var(--color-danger-border);
+  --shadow-button-glow: 0 0 1rem rgba(121, 77, 255, 0.24);
+  --shadow-modal-glow: 0 0 2rem rgba(121, 77, 255, 0.18);
   /* Pressed/inset surfaces (active chips, toggles, sunken wells). */
   --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.15);
   /* Ambient halo behind the lock/setup card. */
@@ -131,7 +134,7 @@
   --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
-  --text-base: 1rem;
+  --text-base: 1.09375rem;
   --text-md: var(--text-base);
   --text-lg: 1.125rem;
   --text-xl: 1.5rem;
@@ -203,6 +206,7 @@
   --color-border: #e1d8f5;
   --color-border-subtle: #ece5fa;
   --color-border-strong: #c5b4ea;
+  --color-card-border: rgba(49, 0, 150, 0.12);
   --color-accent: #6333f0;
   --color-accent-hover: #5222df;
   --color-accent-soft: rgba(99, 51, 240, 0.1);
@@ -261,6 +265,8 @@
   --shadow-md: 0 6px 18px rgba(27, 19, 48, 0.08);
   --shadow-lg: 0 18px 40px rgba(27, 19, 48, 0.12);
   --shadow-inset: inset 0 1px 2px rgba(27, 19, 48, 0.08);
+  --shadow-button-glow: 0 0 1rem rgba(99, 51, 240, 0.14);
+  --shadow-modal-glow: 0 0 2rem rgba(99, 51, 240, 0.12);
   --gradient-app-glow: radial-gradient(
     64rem 36rem at 50% -15%,
     rgba(121, 77, 255, 0.09),

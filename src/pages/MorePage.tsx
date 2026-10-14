@@ -71,7 +71,7 @@ export default function MorePage({
               className="more-card"
               onClick={() => onNavigate(p.key)}
             >
-              <span className="more-card-icon">
+              <span className={`more-card-icon more-card-icon-${p.key}`}>
                 <Icon className="icon" />
               </span>
               <span className="more-card-body">

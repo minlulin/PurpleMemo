@@ -560,6 +560,7 @@ function AppShell() {
       {shortcutsOpen && (
         <Dialog
           labelledBy="shortcuts-title"
+          className="shortcuts-modal"
           onClose={() => setShortcutsOpen(false)}
         >
           <div className="modal-head">
