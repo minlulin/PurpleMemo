@@ -586,13 +586,13 @@ patterns that 11.4 already established.
 
 ### Tasks
 
-- [ ] **12b.1** Add keyboard shortcut overlay — press `?` to show shortcuts modal
-- [ ] **12b.2** Add `IconKeyboard` for shortcut hint
-- [ ] **12b.3** Add `data-shortcut` attributes to actionable elements
-- [ ] **12b.4** Add `::focus-visible` fallback for `:focus-visible` (older browsers)
-- [ ] **12b.5** Add `.skip-to-content` link for keyboard accessibility
-- [ ] **12b.6** Add `.visually-hidden` improvement — use `clip` instead of `clip-path`
-- [ ] **12b.7** Add `title` tooltips to all icon-only buttons
+- [x] **12b.1** Add keyboard shortcut overlay — press `?` to show shortcuts modal
+- [x] **12b.2** Add `IconKeyboard` for shortcut hint
+- [x] **12b.3** Add `data-shortcut` attributes to actionable elements
+- [x] **12b.4** Add `::focus-visible` fallback for `:focus-visible` (older browsers)
+- [x] **12b.5** Add `.skip-to-content` link for keyboard accessibility
+- [x] **12b.6** Add `.visually-hidden` improvement — use `clip` instead of `clip-path`
+- [x] **12b.7** Add `title` tooltips to all icon-only buttons
 - [x] ~~**12b.8** `@media (prefers-contrast: high)`~~ — shipped in Phase 2 (2.9)
 - [x] ~~**12b.9** `@media print`~~ — shipped in Phase 2 (2.10), extended in the
       Phase 8-11 audit (un-grids the dashboard, hides the modal)
@@ -600,27 +600,41 @@ patterns that 11.4 already established.
 
 ### Files touched
 - `src/styles/app.css`
+- `src/styles/tokens.css` (focus outline tokens return, now consumed by 12b.4)
 - `src/components/icons.tsx`
-- `src/App.tsx` (shortcut overlay, skip link)
-- Icon-only buttons across pages (12b.7)
+- `src/components/Dialog.tsx` (new — extracted from GalleryPage)
+- `src/App.tsx` (skip link, shortcut overlay, key handler)
+- `src/pages/GalleryPage.tsx` (now renders `<Dialog>`)
 
 ### Notes
-- 12b.3 is only meaningful with 12b.1 — the overlay reads `data-shortcut`, so
-  the attributes and the panel ship together or not at all.
-- The shortcut overlay reuses `.modal-backdrop` / `.modal-content` from Phase
-  11, including the Tab trap and focus return; do not build a second dialog.
-- 12b.7 is an audit task: every `btn-icon` needs a `title`, not just an
-  `aria-label` (the icon buttons added in Phases 3 and 8 already have both —
-  verify rather than assume).
+- GalleryPage's inspector (11.4) already had a focus trap, Escape and focus
+  return. Rather than copy that into a second modal, the logic moved to
+  `Dialog.tsx` and both modals render it — the shortcut overlay inherits the
+  scrim, Tab trap and focus restore for free. GalleryPage lost ~40 lines and
+  two refs.
+- 12b.4 ships as `@supports not selector(:focus-visible)`, so the outline only
+  appears in engines that would otherwise have no focus ring at all. That
+  re-introduces `--focus-outline-width`/`--focus-outline-offset`, which the
+  cleanup pass had removed as unused — they have a consumer again.
+- 12b.3's `data-shortcut` attributes sit on the two sidebar actions the
+  shortcuts trigger (Lock workspace `Ctrl+L`, Shortcuts `?`). The overlay's
+  list is written out rather than scraped from the DOM: scraping `aria-label`
+  text would be fragile, and the table is small.
+- `?` is ignored while typing in a field and while any `[role=dialog]` is open,
+  so it cannot stack a second dialog on the photo inspector.
+- 12b.7 needed no changes: all 15 `btn-icon` buttons already carry `title`
+  **and** `aria-label` (verified by scanning every `<button>` with an icon).
 
 ### Verification
-- [ ] Keyboard shortcut overlay works and is dismissible
-- [ ] Skip-to-content link works
-- [ ] Focus is visible on every interactive element
-- [ ] Every icon-only button has a `title`
-- [ ] High contrast mode renders correctly (2.9, already shipped)
-- [ ] Print output is clean (2.10, already shipped)
-- [ ] `npm run lint`, `token-lint`, `typecheck`, `test`, `build` all pass
+- [x] Keyboard shortcut overlay works and is dismissible
+- [x] Skip-to-content link works (`#main-content` is focusable via `tabIndex`)
+- [x] Focus is visible on every interactive element
+- [x] Every icon-only button has a `title`
+- [x] High contrast mode renders correctly (2.9, already shipped)
+- [x] Print output is clean (2.10, already shipped)
+- [x] Zero unused selectors/tokens (only `skeleton-*`/`toast-*`, built dynamically)
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual pass: tab order, skip link, overlay on a real screen pending
 
 ---
 
@@ -959,7 +973,19 @@ audit scripts re-run clean).
 - [ ] Manual pass on skeleton sizing and toast timing pending
 
 ### Phase 12b — Accessibility & Keyboard Layer
-- [ ] Not started
+- [x] `Dialog.tsx`: GalleryPage's trap/Escape/focus-return extracted and shared,
+      so the overlay cannot ship a weaker modal than the inspector
+- [x] `?` opens the shortcut overlay, `Ctrl/⌘+L` locks the workspace; both
+      ignored while typing and while a dialog is already open
+- [x] `.skip-to-content` as the shell's first tab stop, targeting a focusable
+      `#main-content`
+- [x] `@supports not selector(:focus-visible)` outline fallback
+- [x] `.visually-hidden` gained the legacy `clip` alongside `clip-path`
+- [x] `IconKeyboard` added; `data-shortcut` on the two triggerable actions
+- [x] 12b.7 verified, not assumed: all 15 icon-only buttons already had
+      `title` + `aria-label`
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual pass: tab order, skip link, overlay on a real screen pending
 
 ### Phase 13 — Animation & Motion System
 - [ ] Not started

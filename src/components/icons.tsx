@@ -451,3 +451,13 @@ export function IconChevronDown(props: IconProps) {
     </svg>
   );
 }
+
+export function IconKeyboard(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <rect x="2.5" y="6" width="19" height="12" rx="2.5" />
+      <path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M8 14h8" />
+    </svg>
+  );
+}

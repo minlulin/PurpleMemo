@@ -169,7 +169,10 @@
   --avatar-gradient-4: linear-gradient(135deg, #3a3fa8 0%, #5f74e0 100%);
   --avatar-gradient-5: linear-gradient(135deg, #2f7f6e 0%, #43ad94 100%);
 
-  /* Focus rings live in --shadow-focus; there is no separate outline system. */
+  /* Focus rings live in --shadow-focus; these two only feed the :focus fallback
+ * below for engines without :focus-visible (12b.4). */
+  --focus-outline-width: 2px;
+  --focus-outline-offset: 2px;
 
   /* Ambient glow behind lock/setup screens and shell */
   --gradient-app-glow: radial-gradient(

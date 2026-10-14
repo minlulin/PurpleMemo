@@ -4,6 +4,7 @@
 // (photo_refs) and delete. Talks only to the gallery + picker repos.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Dialog } from "../components/Dialog.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconCalendar,
@@ -56,9 +57,6 @@ export default function GalleryPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Thumbnail that opened the inspector, so focus can go back there. */
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -157,11 +155,7 @@ export default function GalleryPage() {
     }
   };
 
-  const select = async (
-    photo: PhotoRow,
-    trigger?: HTMLButtonElement | null,
-  ) => {
-    triggerRef.current = trigger ?? null;
+  const select = async (photo: PhotoRow) => {
     setSelected(photo);
     setEdit({ note: photo.note, takenDate: photo.taken_date ?? "" });
     setLinkDraft({ type: "note", id: "" });
@@ -172,42 +166,7 @@ export default function GalleryPage() {
     }
   };
 
-  const closeInspector = useCallback(() => {
-    setSelected(null);
-    triggerRef.current?.focus();
-  }, []);
-
-  // Escape closes the inspector; Tab cycles inside it instead of escaping to
-  // the page behind the scrim.
-  useEffect(() => {
-    if (selected === null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        closeInspector();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const stops = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((el) => !el.hasAttribute("disabled"));
-      const first = stops[0];
-      const last = stops[stops.length - 1];
-      if (!first || !last) return;
-      if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      } else if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selected, closeInspector]);
+  const closeInspector = useCallback(() => setSelected(null), []);
 
   const saveMeta = async () => {
     if (!selected) return;
@@ -375,7 +334,7 @@ export default function GalleryPage() {
                       ? "photo-thumb is-active"
                       : "photo-thumb"
                   }
-                  onClick={(e) => void select(photo, e.currentTarget)}
+                  onClick={() => void select(photo)}
                 >
                   {url ? (
                     <img src={url} alt={photo.note || `Photo ${photo.id}`} />
@@ -393,162 +352,148 @@ export default function GalleryPage() {
       </section>
 
       {selected ? (
-        <div className="modal-backdrop">
-          <button
-            type="button"
-            className="modal-dismiss"
-            aria-label="Close photo inspector"
-            onClick={closeInspector}
-          />
-          <div
-            className="modal-content"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="photo-inspector-title"
-            ref={dialogRef}
-          >
-            <div className="modal-head">
-              <h3 className="side-heading" id="photo-inspector-title">
-                Photo Inspector
-              </h3>
-              <div className="editor-row">
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  onClick={() => void removePhoto(selected)}
-                >
-                  Delete photo
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-icon"
-                  aria-label="Close photo inspector"
-                  title="Close"
-                  // biome-ignore lint/a11y/noAutofocus: the dialog's first stop
-                  autoFocus
-                  onClick={closeInspector}
-                >
-                  <IconClose className="icon" />
-                </button>
-              </div>
-            </div>
-            {urls.get(selected.id) ? (
-              <img
-                className="photo-full"
-                src={urls.get(selected.id)}
-                alt={selected.note || `Photo ${selected.id}`}
-              />
-            ) : null}
-            <div className="inline-form">
-              <input
-                className="input"
-                placeholder="Caption or note…"
-                aria-label="Photo note"
-                value={edit.note}
-                onChange={(e) => setEdit({ ...edit, note: e.target.value })}
-              />
-              <span className="input-icon-wrap">
-                <input
-                  className="input"
-                  type="date"
-                  aria-label="Taken date"
-                  value={edit.takenDate}
-                  onChange={(e) =>
-                    setEdit({ ...edit, takenDate: e.target.value })
-                  }
-                />
-                <IconCalendar className="icon input-icon is-end" />
-              </span>
+        <Dialog labelledBy="photo-inspector-title" onClose={closeInspector}>
+          <div className="modal-head">
+            <h3 className="side-heading" id="photo-inspector-title">
+              Photo Inspector
+            </h3>
+            <div className="editor-row">
               <button
                 type="button"
-                className="btn btn-primary"
-                onClick={() => void saveMeta()}
+                className="btn btn-danger"
+                onClick={() => void removePhoto(selected)}
               >
-                Save
+                Delete photo
+              </button>
+              <button
+                type="button"
+                className="btn btn-icon"
+                aria-label="Close photo inspector"
+                title="Close"
+                // biome-ignore lint/a11y/noAutofocus: the dialog's first stop
+                autoFocus
+                onClick={closeInspector}
+              >
+                <IconClose className="icon" />
               </button>
             </div>
+          </div>
+          {urls.get(selected.id) ? (
+            <img
+              className="photo-full"
+              src={urls.get(selected.id)}
+              alt={selected.note || `Photo ${selected.id}`}
+            />
+          ) : null}
+          <div className="inline-form">
+            <input
+              className="input"
+              placeholder="Caption or note…"
+              aria-label="Photo note"
+              value={edit.note}
+              onChange={(e) => setEdit({ ...edit, note: e.target.value })}
+            />
+            <span className="input-icon-wrap">
+              <input
+                className="input"
+                type="date"
+                aria-label="Taken date"
+                value={edit.takenDate}
+                onChange={(e) =>
+                  setEdit({ ...edit, takenDate: e.target.value })
+                }
+              />
+              <IconCalendar className="icon input-icon is-end" />
+            </span>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void saveMeta()}
+            >
+              Save
+            </button>
+          </div>
 
-            <div className="contact-section">
-              <h3 className="side-heading">Linked to</h3>
-              {selectedRefs.length === 0 ? (
-                <p className="muted">Not linked to anything yet.</p>
-              ) : (
-                <ul className="budget-list">
-                  {selectedRefs.map((ref) => (
-                    <li key={ref.id} className="budget-row">
-                      <span>
-                        <span className="chip">
-                          {ENTITY_LABELS.find((l) => l.key === ref.entity_type)
-                            ?.label ?? ref.entity_type}
-                        </span>{" "}
-                        <b>{titleOf(ref.entity_type, ref.entity_id)}</b>
-                      </span>
-                      <button
-                        type="button"
-                        className="btn btn-ghost"
-                        onClick={() => void removeLink(ref)}
-                      >
-                        Unlink
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <form
-                className="inline-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void addLink();
-                }}
+          <div className="contact-section">
+            <h3 className="side-heading">Linked to</h3>
+            {selectedRefs.length === 0 ? (
+              <p className="muted">Not linked to anything yet.</p>
+            ) : (
+              <ul className="budget-list">
+                {selectedRefs.map((ref) => (
+                  <li key={ref.id} className="budget-row">
+                    <span>
+                      <span className="chip">
+                        {ENTITY_LABELS.find((l) => l.key === ref.entity_type)
+                          ?.label ?? ref.entity_type}
+                      </span>{" "}
+                      <b>{titleOf(ref.entity_type, ref.entity_id)}</b>
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void removeLink(ref)}
+                    >
+                      Unlink
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form
+              className="inline-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void addLink();
+              }}
+            >
+              <select
+                className="select"
+                aria-label="Link type"
+                value={linkDraft.type}
+                onChange={(e) =>
+                  setLinkDraft({
+                    type: e.target.value as PhotoRefEntity,
+                    id: "",
+                  })
+                }
               >
-                <select
-                  className="select"
-                  aria-label="Link type"
-                  value={linkDraft.type}
-                  onChange={(e) =>
-                    setLinkDraft({
-                      type: e.target.value as PhotoRefEntity,
-                      id: "",
-                    })
-                  }
-                >
-                  {ENTITY_LABELS.map((l) => (
-                    <option key={l.key} value={l.key}>
-                      {l.label}
+                {ENTITY_LABELS.map((l) => (
+                  <option key={l.key} value={l.key}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="select"
+                aria-label="Link target"
+                value={linkDraft.id === "" ? "" : String(linkDraft.id)}
+                onChange={(e) =>
+                  setLinkDraft({
+                    ...linkDraft,
+                    id: e.target.value === "" ? "" : Number(e.target.value),
+                  })
+                }
+              >
+                <option value="">Choose…</option>
+                {pickerRows()
+                  .find((p) => p.key === linkDraft.type)
+                  ?.rows.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.title || `#${r.id}`}
                     </option>
                   ))}
-                </select>
-                <select
-                  className="select"
-                  aria-label="Link target"
-                  value={linkDraft.id === "" ? "" : String(linkDraft.id)}
-                  onChange={(e) =>
-                    setLinkDraft({
-                      ...linkDraft,
-                      id: e.target.value === "" ? "" : Number(e.target.value),
-                    })
-                  }
-                >
-                  <option value="">Choose…</option>
-                  {pickerRows()
-                    .find((p) => p.key === linkDraft.type)
-                    ?.rows.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.title || `#${r.id}`}
-                      </option>
-                    ))}
-                </select>
-                <button
-                  type="submit"
-                  className="btn"
-                  disabled={linkDraft.id === ""}
-                >
-                  Link
-                </button>
-              </form>
-            </div>
+              </select>
+              <button
+                type="submit"
+                className="btn"
+                disabled={linkDraft.id === ""}
+              >
+                Link
+              </button>
+            </form>
           </div>
-        </div>
+        </Dialog>
       ) : null}
     </div>
   );
