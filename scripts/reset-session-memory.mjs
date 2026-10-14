@@ -29,7 +29,7 @@ const template = `# SESSION MEMORY — ${now}
 
 ## Decisions & Constraints
 - Single source of truth: \`docs/PLAN.md\`. One phase at a time; never start the next phase before the current gate is green.
-- Never \`git push --no-verify\`. The Progress log's gate column is the only CI evidence this project has.
+- Never \`git push --no-verify\`. The Progress log's gate column records the local gate; hosted CI is intentionally not used.
 
 ## Open / Next
 - [ ] (fill in)

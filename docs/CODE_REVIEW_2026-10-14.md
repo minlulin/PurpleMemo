@@ -3,7 +3,17 @@
 **Date:** 2026-10-14
 **Reviewed revision:** `76f4e8d865d7b78281a455af187b90c4a1f76181` (`polish: refine visual hierarchy`), branch `arena/30b42c1b-purplememo`, working tree clean
 **Reviewer:** independent review pass over the whole tree (source, config, tests, docs, git/CI state, upstream dependency behaviour)
-**Deliverable:** this document. It is a review artifact only — no source file was modified.
+**Deliverable:** this document and its 2026-10-14 A-05 resolution addendum.
+
+### A-05 resolution addendum — 2026-10-14
+
+The repository owner cannot use GitHub Actions because of billing constraints.
+The previously added `.github/workflows/verify.yml` has therefore been removed
+by decision. A-05 is intentionally **local-only**, not partially fixed: the
+pre-push hook runs `npm run verify`, and the README, release guide, audit, and
+session-memory template now state that hosted CI is out of scope. The trade-off
+is accepted: GitHub cannot enforce the gate, so each clone must configure
+`core.hooksPath=.githooks` and release operators must retain local gate output.
 
 ---
 
@@ -27,9 +37,9 @@ Three things must be closed first:
    unconditional success toast** (M-03) — if it fails, the user believes they have a
    backup. Verify on the target OS before shipping.
 
-Everything else found is Low or informational. The single most important *process* point
-is I-01: the repository defines hosted CI, but there is no evidence it has ever run, so
-the local pre-push hook is still the only proven gate.
+Everything else found is Low or informational. The process decision recorded
+in I-01 is that hosted CI is intentionally out of scope, so the local pre-push
+hook remains the only gate.
 
 ### Finding summary
 
@@ -90,8 +100,8 @@ driven from here, so nothing in this review proves runtime behaviour of the pack
   the remaining pages were surveyed by pattern (see §2.3) rather than read line by line —
   an explicit limitation of this review.
 - **Config/build:** `package.json`, `tsconfig.json`, `biome.json`, `vite.config.ts`,
-  `index.html`, `.gitattributes`, `.editorconfig`, `.githooks/pre-push`,
-  `.github/workflows/verify.yml`, all four `scripts/*.mjs`.
+  `index.html`, `.gitattributes`, `.editorconfig`, `.githooks/pre-push`, and all
+  four `scripts/*.mjs`.
 - **Docs:** `README.md`, `docs/PLAN.md`, `docs/RELEASE.md`,
   `docs/CODEBASE_AUDIT_2026-10-14.md`, `docs/SESSION_MEMORY.md`, `docs/UI_POLISH_PLAN.md`
   (surveyed).
@@ -285,6 +295,12 @@ plugins (with capability entries) to write the file and report the real path, or
 of the mechanism, **verify both exports on every target OS before the first release** and
 say in the UI where the file went.
 
+**Implementation update — 2026-10-14:** Backup export now opens the native Tauri
+Save As dialog, writes the ZIP through the Tauri filesystem plugin, and reports
+the selected path only after the write succeeds. Encryption-key export uses the
+same controlled save flow. Windows desktop verification remains required after
+the next build.
+
 ### L-01 — Webview navigation is unrestricted; a markdown link can navigate the app away
 
 **Severity:** Low · **Evidence:** `src-tauri/src/lib.rs` (no `on_navigation`),
@@ -375,10 +391,10 @@ manifest script already validates everything it can see.
   A-04 and A-05 are all **fixed** in this revision (see §5), yet the document is written
   in the present tense and its "Recommended release order" is stale. Either annotate it
   with a resolution status per finding or mark it superseded by this review.
-- `.githooks/pre-push:3` says *"No hosted CI is used; this hook is the enforcement"* while
-  `.github/workflows/verify.yml` exists and `README.md:24` says CI repeats the gate.
-- `scripts/reset-session-memory.mjs:32` writes *"The Progress log's gate column is the
-  only CI evidence this project has"* into every new `SESSION_MEMORY.md` — also stale now.
+- The A-05 addendum resolves the former CI-documentation contradiction: hosted
+  CI is intentionally absent, and the hook/README/release guide now say so.
+- `scripts/reset-session-memory.mjs:32` now records that the Progress log is
+  local gate evidence; hosted CI is intentionally not used.
 - `docs/SESSION_MEMORY.md` states *"`gh` is not installed here"* — it is installed and
   authenticated (`gh auth status` → `minlulin`), so the two open P5 gate items can be
   actioned today.
@@ -402,20 +418,15 @@ every client rejects with a signature-verification error, and `docs/RELEASE.md` 
 hint. Add a line to the release doc's gotchas: *the signature must carry the version; use
 `tauri build`, or pass `--app-version` explicitly*.
 
-### I-01 — CI is defined, but nothing proves it has ever run
+### I-01 — Hosted CI is intentionally out of scope
 
-**Severity:** Info · **Evidence:** `.github/workflows/verify.yml` (26 lines);
-`gh pr view 1 -R minlulin/PurpleMemo --json statusCheckRollup` → `[]`;
-`gh api repos/…/actions/*` → 403 with the available token
+**Severity:** Info · **Decision:** GitHub Actions billing is unavailable for
+this project, so no hosted workflow is maintained.
 
-The only merged pull request shows **no status checks**, and the Actions API is not
-readable with the current token, so this review cannot confirm a single successful CI run.
-The workflow itself is correct in shape (Node 24, `npm ci`, `npm run verify`, clippy +
-rustfmt components, `permissions: contents: read`). Two improvements: pin the third-party
-actions (`dtolnay/rust-toolchain@stable` is a moving ref) to commit SHAs, and *require* the
-workflow on `main` so the gate is not bypassable by a clone that never ran
-`git config core.hooksPath .githooks`. Until then, keep treating the local gate as the only
-evidence — and note that `check-hooks.mjs` deliberately only warns.
+The local pre-push hook and `npm run verify` are the only quality gate. This is
+documented and accepted as an operating constraint; `check-hooks.mjs` warns when
+a clone has not enabled the hook, so release operators must retain the local
+gate output as evidence.
 
 ### I-02 — Test coverage shape
 
@@ -453,11 +464,11 @@ property that erodes silently.
 | **A-02** LAN share is plain HTTP with the code in the URL | **Unchanged, now disclosed in the UI** | `src/pages/SettingsPage.tsx` shows an explicit unencrypted-HTTP warning; transport design unchanged (see §6) |
 | **A-03** The verification gate skips Rust tests | **Fixed** | `package.json:14` and `:20` — `verify` runs `test:rust` before clippy/fmt |
 | **A-04** Backup import has no size/entry/expansion limits | **Fixed** | `src/lib/backup.ts:27-32,208-260` (256 MB / 512 MB / 10 000 entries / 16 MB manifest / 5 000 photos / 25 MB per photo) enforced in the `unzipSync` filter before bytes are allocated, plus a `File.size` pre-check in the UI |
-| **A-05** Quality enforcement is local and opt-in | **Partially fixed** | `.github/workflows/verify.yml` exists; there is no evidence it is required on `main`, and no demonstrable run (I-01) |
+| **A-05** Quality enforcement is local and opt-in | **Accepted local-only** | GitHub Actions workflow removed because billing is unavailable; `.githooks/pre-push` runs `npm run verify`, and README/release documentation records the required setup and accepted limitation |
 
 The audit's "Strengths confirmed" list still reads accurately. Its remaining
-recommendations map to M-03 (verify exports on device), L-07 (document the signature
-version requirement) and I-01 (make CI real).
+recommendations map to M-03 (verify exports on device) and L-07 (document the
+signature version requirement).
 
 ---
 
@@ -492,7 +503,7 @@ nothing structurally.
    to the gate. Both are small and both protect the first release.
 4. **L-06** — reconcile the documents with the code (audit status, hook comment, session
    template, README's `npm run dev` claim).
-5. **I-01** — enable/require CI on `main` and pin the third-party actions.
+5. **A-05** — no further CI work: hosted CI is intentionally out of scope; retain local gate evidence for releases.
 6. **M-02** — plan the raw-bytes/thumbnail work as its own phase; it is the only item here
    that is architecture rather than a fix.
 7. **L-01, L-02, L-03, L-04** — cheap hardening (navigation allowlist, lock-screen delay,

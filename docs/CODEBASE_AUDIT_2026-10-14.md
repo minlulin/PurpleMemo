@@ -2,6 +2,11 @@
 
 ## Executive summary
 
+> **A-05 decision:** hosted CI is intentionally not used because GitHub Actions
+> billing is unavailable for this project. The local pre-push hook and
+> `npm run verify` are the documented quality gate; this is an explicit
+> operating constraint, not an unfinished CI setup.
+
 Purple Memo has a solid local-first foundation. The audited working tree was
 clean, the TypeScript and Rust code is strongly checked, database writes are
 parameterized, and the encryption/key-management design is thoughtfully
@@ -16,9 +21,8 @@ Three release-relevant findings remain:
 3. **Moderate — the advertised full verification gate does not run the Rust
    test suite.**
 
-Two additional hardening items are recommended before a public release:
-unbounded backup parsing and the lack of independently enforced CI/release
-checks.
+One additional hardening item is recommended before a public release:
+unbounded backup parsing. Independent hosted CI is intentionally out of scope.
 
 ## Scope and method
 
@@ -126,9 +130,10 @@ pre-push hook as the only enforcement. Git hooks require a one-time
 honoring the hook. A malformed or untested change can reach the release branch
 outside the intended quality gate.
 
-**Recommendation:** Add a minimal CI workflow that runs `npm ci`, `npm run
-verify`, and Rust tests on pull requests and protected-branch pushes. Require
-the workflow for release-branch merges.
+**Resolution:** Do not add hosted CI. GitHub Actions billing is unavailable for
+this project, so the local pre-push hook and `npm run verify` remain the only
+quality gate. Every clone must configure `core.hooksPath` as documented in the
+README, and release verification must include the local gate output.
 
 ## Strengths confirmed
 
@@ -158,7 +163,7 @@ the workflow for release-branch merges.
    the first public release.
 2. Add Rust test execution to `npm run verify` (A-03).
 3. Add backup resource limits (A-04).
-4. Establish CI before relying on a release branch (A-05).
+4. Keep the local-only quality gate enabled and record its output for releases (A-05).
 5. Re-run the full gate, Rust tests, a live dependency advisory scan, a real
    phone-on-LAN test, and a signed-update installation rehearsal.
 

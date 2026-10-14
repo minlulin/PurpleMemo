@@ -58,7 +58,7 @@
 ## Open / Next
 - [ ] P5 gate: (a) open the share link from a real phone on the LAN against a
       release build; (b) install a hand-published signed release from an older
-      build (`gh` is not installed here — the web UI works too).
+      build (publish with `gh` or the GitHub web UI; hosted CI is not used).
 - [ ] Consider a QR code for the share link (phone typing a 40-char URL is the
       weak part of the flow) — needs a small dep, §3 rule 3 ruling first.
 - [ ] P6: full report-only audit of P0–P5, then the first release.

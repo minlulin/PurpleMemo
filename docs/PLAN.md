@@ -222,7 +222,7 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
 No hosted CI is used. The local gate is the enforcement:
 
 **`npm run verify` =**
-`biome check --error-on-warnings .` → token-lint script → `tsc --noEmit` → `node --test "src/**/*.test.ts"` → `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` → `vite build`
+`biome check --error-on-warnings .` → token-lint script → `tsc --noEmit` → `node --test "src/**/*.test.ts"` → `cargo test --manifest-path src-tauri/Cargo.toml` → `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` → `vite build`
 
 - **Biome:** recommended preset + **`noExplicitAny` raised to error**;
   formatter (2-space, double quotes, semicolons) and organize-imports

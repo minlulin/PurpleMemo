@@ -21,8 +21,9 @@ npm run verify     # the full local gate (see below)
 
 ## Local gate
 
-The pre-push hook runs the full local gate, and hosted CI repeats it for pull
-requests and protected-branch pushes. **No change should merge unless
+The pre-push hook runs the full local gate. This project deliberately does not
+use GitHub Actions or any hosted CI: the repository owner cannot rely on paid
+GitHub Actions minutes. **No change should be merged or released unless
 `npm run verify` is green**:
 
 ```
@@ -40,7 +41,10 @@ Rules of the gate (see §7 of the plan for the full rationale):
 
 - Never use `git push --no-verify`. If the gate is red, fix it or
   revert. Keep the Progress log's gate column in [`docs/PLAN.md`](docs/PLAN.md)
-  current as local evidence alongside hosted CI.
+  current as the local evidence for the gate.
+- Hosted CI is intentionally out of scope. Every clone must enable the hook
+  with `git config core.hooksPath .githooks`; reviewers and release operators
+  should request the local gate output when verifying a change.
 - Rust side needs `rustup component add clippy rustfmt` once.
 - Releases are built, signed and published **by hand** — there is no
   release workflow; see §9 of the plan and [`docs/RELEASE.md`](docs/RELEASE.md)
