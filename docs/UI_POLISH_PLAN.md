@@ -789,40 +789,98 @@ patterns that 11.4 already established.
 
 ### Tasks
 
-- [ ] **15.1] Audit all pages for consistent `page-header` usage
-- [ ] **15.2] Ensure all `page-subtitle` elements use `--color-text-muted`
-- [ ] **15.3] Verify all badges use consistent sizing
-- [ ] **15.4] Check all `border-radius` values use token variables
-- [ ] **15.5] Verify all `box-shadow` values use token variables
-- [ ] **15.6] Check all `transition` properties use token variables
-- [ ] **15.7] Ensure all `gap` values use spacing tokens
-- [ ] **15.8] Add `selection` styling for light mode (currently only dark)
-- [ ] **15.9] Add `::placeholder` styling for light mode inputs
-- [ ] **15.10] Verify all `aria-label` attributes are descriptive
-- [ ] **15.11] Add `role="status"` to loading indicators
-- [ ] **15.12] Add `aria-busy="true"` to loading containers
-- [ ] **15.13] Verify color contrast ratios meet WCAG AA (4.5:1 for text)
-- [ ] **15.14] Add `focus-visible` styles to all interactive elements
-- [ ] **15.15** Add `skip-to-content` link as first element in `App.tsx`
-      (owned by 12b.5; drop this line if 12b has already landed)
-- [ ] **15.16] Add `lang="en"` to `<html>` element
-- [ ] **15.17] Add `meta description` to `index.html`
-- [ ] **15.18] Add `theme-color` meta tag for browser chrome
-- [ ] **15.19] Verify all images have `alt` attributes
-- [ ] **15.20] Final visual regression check — compare before/after screenshots
+- [x] **15.1] Audit all pages for consistent `page-header` usage - all 14 use
+      `page-header` > `page-header-main`
+- [x] **15.2] Ensure all `page-subtitle` elements use `--color-text-muted`
+      - one rule, 20 call sites
+- [x] **15.3] Verify all badges use consistent sizing - `.chip, .badge` share
+      one base block, so the two label styles cannot drift
+- [x] **15.4] Check all `border-radius` values use token variables
+- [x] **15.5] Verify all `box-shadow` values use token variables
+- [x] **15.6] Check all `transition` properties use token variables
+- [x] **15.7] Ensure all `gap` values use spacing tokens
+- [x] **15.8] `::selection` - already themed via `--color-accent-soft`
+- [x] **15.9] `::placeholder` - already `--color-text-subtle`; **fixed the
+      contrast** (see 15.13)
+- [x] **15.10] Verify all `aria-label` attributes are descriptive
+- [x] **15.11] Add `role="status"` to loading indicators - every skeleton
+      usage is a stack or a card, so all of them announce
+- [x] **15.12] Add `aria-busy="true"` to loading containers
+- [x] **15.13] Verify color contrast ratios meet WCAG AA - **six real failures
+      found and fixed**, now enforced by a test
+- [x] **15.14] Add `focus-visible` styles to all interactive elements
+- [x] **15.15] Skip link *(owned by 12b.5)*
+- [x] **15.16] Add `lang="en"` to `<html>` - already present
+- [x] **15.17] Add `meta description` to `index.html`
+- [x] **15.18] Add `theme-color` meta tag for browser chrome
+- [x] **15.19] Verify all images have `alt` attributes
+- [ ] **15.20] Final visual regression check - manual, pending
 
 ### Files touched
-- All files
+- `src/styles/tokens.css`
+- `src/styles/app.css`
+- `src/styles/contrast.test.ts` (new)
+- `src/styles/tokens.test.ts`
+- `src/components/Skeleton.tsx`
+- `index.html`
+
+### Notes
+#### 15.13 found six genuine AA failures
+Every failure was a colour doing **two jobs**: a vivid fill hue reused as
+*text*. Each looked fine in isolation and only fell short once composited over
+the surface it actually lands on.
+
+| theme | pair | before | after |
+| --- | --- | --- | --- |
+| dark | `--color-accent` on raised / on `accent-soft` | 3.39 / 2.92 | 5.62 / 4.83 |
+| dark | `--color-danger` on `danger-soft` | 3.78 | 5.22 |
+| dark | `--color-text-subtle` on surface / input | 3.81 / 3.64 | 5.28 / 5.05 |
+| light | `--color-success` on `success-soft` | 2.92 | 5.49 |
+| light | `--color-warn` on `warn-soft` | 2.77 | 5.45 |
+| light | `--color-danger` on `danger-soft` | 4.14 | 5.47 |
+
+- Dark hues were lightened, light hues darkened. The `-soft`/`-border`
+  tints and the gradient literals are **backgrounds, not text**, so they keep
+  their punchy values - only the text token moved.
+- `--color-accent-hover` had to move with the accent (it would otherwise have
+  become *darker* than its base on hover), and the dark gradient start was
+  darkened to `#7a4cf7` because it carries inverse text: white on the old
+  `#835bff` was 4.28:1, so **every primary button failed AA**.
+- `.skip-to-content` moved from `--color-accent` to `--color-brand`: the
+  label is inverse text, and the accent is now tuned to be legible *as text*
+  on dark surfaces. White on brand is 13.4:1 in both themes.
+- `contrast.test.ts` makes this permanent. It parses both themes, composites
+  the alpha tints over the surface behind them, and asserts 4.5:1 on the 24
+  pairs app.css really uses, plus 3:1 for the focus-indicator border. Verified
+  it fails when a token is reverted.
+
+#### Other findings
+- **15.12**: `aria-busy` went on the skeleton *block*, not on the live
+  region. A busy live region defers its own announcement, so putting both on
+  one element would have silently swallowed the Phase 12a "Loading…" message.
+  The status now sits outside the busy subtree.
+- **15.8/15.9** needed no new CSS: both already read themed tokens. The
+  placeholder colour simply failed contrast until 15.13.
+- **15.14**: checkboxes keep the UA focus ring on purpose - every custom
+  ring sets `border-color` + a translucent shadow, and forcing a box-shadow
+  ring onto a native checkbox risks double-ringing for no a11y gain. Measured
+  the accent border at 4.8:1+ on all three surfaces, so the indicator clears
+  3:1 without the ring.
+- **15.4-15.7**: the only literal values left are two deliberate zeros -
+  `.shopping-tab-group .btn { border-radius: 0 }` (a segmented control must
+  join) and `.editor-split { gap: 0 }` (documented: padding, not gap, keeps
+  the resize handle centred).
 
 ### Verification
-- [ ] No hardcoded colors outside `tokens.css`
-- [ ] No hardcoded spacing outside `tokens.css`
-- [ ] All interactive elements have focus styles
-- [ ] All images have alt text
-- [ ] Color contrast passes WCAG AA
-- [ ] HTML is valid and semantic
-- [ ] Light mode is fully polished
-- [ ] Dark mode is fully polished
+- [x] No hardcoded colors outside `tokens.css` (token-lint)
+- [x] No hardcoded spacing outside `tokens.css`
+- [x] All interactive elements have focus styles
+- [x] All images have alt text
+- [x] Color contrast passes WCAG AA - enforced by `contrast.test.ts`
+- [x] HTML is valid and semantic
+- [x] Light mode is fully polished
+- [x] Dark mode is fully polished
+- [ ] Manual visual pass in both themes pending
 
 ---
 
@@ -1084,9 +1142,33 @@ audit scripts re-run clean).
 - [x] Rejected 14.20 `IconSort`: no user-facing sort control exists to host it
 - [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
 
-### Phase 15 — Final Polish & Quality Pass
-- [ ] Not started
-
+### Phase 15 - Final Polish & Quality Pass
+- [x] 15.1-15.3, 15.8-15.11, 15.14-15.16, 15.19 audited clean: headers share
+      one structure, subtitles/badge/chip are single-rule, selection and
+      placeholder already read themed tokens, every skeleton announces, every
+      focusable element has a ring, `lang="en"` and all `alt` present
+- [x] 15.4-15.7: every radius/shadow/transition/gap is tokenised. The only
+      literals left are two deliberate zeros (segmented-control radius, split
+      pane gap)
+- [x] 15.13 **found six real WCAG AA failures** - every one was a vivid fill hue
+      reused as text: accent/danger/text-subtle in dark, success/warn/danger in
+      light, plus white on the dark gradient start (4.28:1), which meant every
+      primary button failed
+- [x] Fixed by retuning tokens only: dark hues lightened, light hues darkened,
+      `accent-hover` moved with its base, gradient start darkened to
+      `#7a4cf7`, skip link repainted on `--color-brand`
+- [x] Added `contrast.test.ts` so it cannot regress: parses both themes,
+      composites alpha tints over the surface behind them, asserts 4.5:1 on 24
+      real pairs and 3:1 on the focus border. Verified it fails on revert, and
+      caught a bug in itself (the light map was being overwritten by the base
+      one, so the light-theme checks were vacuous)
+- [x] 15.12: `aria-busy` on the skeleton block, deliberately NOT on the live
+      region - a busy live region defers its own announcement and would have
+      eaten the Phase 12a "Loading..." message
+- [x] 15.17/15.18: meta description + per-scheme `theme-color` matched to each
+      theme's own surface
+- [x] Gates green: token-lint, biome, tsc, 189 tests, vite build
+- [ ] 15.20 visual regression + motion pass pending manual review
 ---
 
 ## Estimated Effort

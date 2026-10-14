@@ -794,7 +794,10 @@ button.chip:hover {
   z-index: 70;
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-md);
-  background: var(--color-accent);
+  /* Brand, not accent: the label is inverse text and `--color-accent` is tuned
+     to be legible *as text* on the dark surfaces (15.13). White on brand is
+     13.4:1 in both themes. */
+  background: var(--color-brand);
   color: var(--color-text-inverse);
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);

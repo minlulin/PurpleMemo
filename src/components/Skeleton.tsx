@@ -2,6 +2,10 @@
 // replace the "Loading…" paragraphs pages used to render. Decorative by
 // default — a stack (or a card) carries `role="status"` so the wait is still
 // announced, and the bars themselves are hidden from assistive tech.
+//
+// The `aria-busy` lives on the *block*, not on the live region (15.12): a
+// busy live region defers its own announcement, which would have silently
+// swallowed the "Loading…" below.
 
 export type SkeletonVariant = "text" | "icon" | "card";
 export type SkeletonWidth = "full" | "short";
@@ -37,17 +41,26 @@ export function Skeleton({
 
   // A lone inline bar is decoration; a stack or a card is a loading region.
   if (count <= 1 && variant === "text") {
-    return <span className={barClass(variant, width)} />;
+    return <span className={barClass(variant, width)} aria-busy="true" />;
   }
 
   return (
-    <span className={`skeleton-stack ${className ?? ""}`.trim()} role="status">
-      <span className="visually-hidden">Loading…</span>
-      <span className="skeleton-stack-bars">
-        {bars.map((b) => (
-          <span key={b.id} className={b.className} />
-        ))}
+    <>
+      {/* Outside the busy block so it announces straight away rather than
+          being held back until the region settles. */}
+      <span className="visually-hidden" role="status">
+        Loading…
       </span>
-    </span>
+      <span
+        className={`skeleton-stack ${className ?? ""}`.trim()}
+        aria-busy="true"
+      >
+        <span className="skeleton-stack-bars">
+          {bars.map((b) => (
+            <span key={b.id} className={b.className} />
+          ))}
+        </span>
+      </span>
+    </>
   );
 }

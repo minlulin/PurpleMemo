@@ -25,11 +25,16 @@
 
   /* Brand & accent (hue 255° anchored to the logo) */
   --color-brand: #310096;
-  --color-accent: #794dff;
-  --color-accent-hover: #8b66ff;
+  /* Lightened from #794dff: the accent doubles as *text* colour (21 rules),
+     and #794dff only reached 3.4:1 on the raised surface (2.9:1 on the soft
+     tint). #a182ff clears 4.5:1 on every surface it can land on. */
+  --color-accent: #a182ff;
+  --color-accent-hover: #bb9dff;
   --color-accent-soft: rgba(121, 77, 255, 0.15);
   --color-accent-ring: rgba(121, 77, 255, 0.34);
-  --color-accent-gradient-start: #835bff;
+  /* Gradient stops stay saturated: they carry inverse text, so the light end
+     needs ≥4.5:1 against white (15.13). */
+  --color-accent-gradient-start: #7a4cf7;
   --color-accent-gradient-end: #5c2be2;
   --gradient-accent: linear-gradient(
     135deg,
@@ -57,7 +62,9 @@
   /* Status */
   --color-success: #22c55e;
   --color-warn: #f59e0b;
-  --color-danger: #ef4444;
+  /* Lightened from #ef4444 for the same reason as the accent: it is button and
+     alert *text* on `--color-danger-soft`, which was 3.8:1 (15.13). */
+  --color-danger: #f46868;
   --color-success-soft: rgba(34, 197, 94, 0.14);
   --color-warn-soft: rgba(245, 158, 11, 0.15);
   --color-danger-soft: rgba(239, 68, 68, 0.14);
@@ -78,7 +85,9 @@
   /* Text */
   --color-text: #f1eefb;
   --color-text-muted: #a398c3;
-  --color-text-subtle: #786d99;
+  /* Placeholders and metadata. #786d99 was 3.6:1 on the input surface —
+     placeholder text is still text, so it has to clear 4.5:1 (15.9/15.13). */
+  --color-text-subtle: #8f86aa;
   --color-text-inverse: #ffffff;
 
   /* Spacing scale */
@@ -221,9 +230,13 @@
     rgba(255, 255, 255, 0.4) 0%,
     rgba(255, 255, 255, 0) 100%
   );
-  --color-success: #16a34a;
-  --color-warn: #d97706;
-  --color-danger: #dc2626;
+  /* Light-theme status hues are darkened: as badge/alert text they sit on the
+     soft tints over a near-white surface, which #16a34a/#d97706/#dc2626 failed
+     (2.8-3.3:1). The `-soft`/`-border` tints and the gradients keep their own
+     values — they are backgrounds, not text (15.13). */
+  --color-success: #0f7033;
+  --color-warn: #915004;
+  --color-danger: #b92020;
   --color-success-soft: rgba(22, 163, 74, 0.11);
   --color-warn-soft: rgba(217, 119, 6, 0.13);
   --color-danger-soft: rgba(220, 38, 38, 0.1);
