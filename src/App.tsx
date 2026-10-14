@@ -279,6 +279,9 @@ function AppShell() {
   const [page, setPage] = useState<PageKey>("dashboard");
   const [notifyNote, setNotifyNote] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [shortcutRows, setShortcutRows] = useState<
+    { keys: string; label: string }[]
+  >([]);
   const lastActivity = useRef(Date.now());
 
   const loadSecurity = useCallback(async () => {
@@ -363,6 +366,22 @@ function AppShell() {
 
   useReminderPoll(setNotifyNote, unlocked);
   useSharePublisher(setNotifyNote, unlocked);
+
+  // The overlay lists shortcuts by reading `data-shortcut` off the controls
+  // themselves, so the help can never drift from what the app actually binds.
+  useEffect(() => {
+    if (!shortcutsOpen) return;
+    setShortcutRows(
+      Array.from(document.querySelectorAll<HTMLElement>("[data-shortcut]")).map(
+        (el) => ({
+          keys: el.dataset.shortcut ?? "",
+          label: (el.getAttribute("aria-label") ?? el.textContent ?? "")
+            .replace(/\s+/g, " ")
+            .trim(),
+        }),
+      ),
+    );
+  }, [shortcutsOpen]);
 
   // Shortcuts (plan 12b.1): `?` opens the list, Ctrl/Cmd+L locks. Both are
   // ignored while typing in a field, and the overlay itself is a Dialog, so
@@ -550,17 +569,27 @@ function AppShell() {
               <IconClose className="icon" />
             </button>
           </div>
+          {/* Element-triggered shortcuts are scraped from `data-shortcut`, so
+              adding a shortcut to a control lists itself here. */}
           <dl className="shortcut-list">
-            <dt>Ctrl / ⌘ + L</dt>
-            <dd>Lock the workspace</dd>
-            <dt>?</dt>
-            <dd>Show or hide this list</dd>
-            <dt>Esc</dt>
-            <dd>Close this dialog</dd>
-            <dt>Tab</dt>
-            <dd>Move inside a dialog (never behind it)</dd>
-            <dt>Tab (from the top)</dt>
-            <dd>Skip to content link</dd>
+            {shortcutRows.map((row) => (
+              <div className="shortcut-row" key={row.keys}>
+                <dt>{row.keys}</dt>
+                <dd>{row.label}</dd>
+              </div>
+            ))}
+            <div className="shortcut-row">
+              <dt>Esc</dt>
+              <dd>Close a dialog</dd>
+            </div>
+            <div className="shortcut-row">
+              <dt>Tab</dt>
+              <dd>Move inside a dialog, never behind it</dd>
+            </div>
+            <div className="shortcut-row">
+              <dt>Tab</dt>
+              <dd>First stop skips straight to the content</dd>
+            </div>
           </dl>
         </Dialog>
       )}

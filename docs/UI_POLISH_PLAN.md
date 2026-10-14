@@ -616,10 +616,12 @@ patterns that 11.4 already established.
   appears in engines that would otherwise have no focus ring at all. That
   re-introduces `--focus-outline-width`/`--focus-outline-offset`, which the
   cleanup pass had removed as unused — they have a consumer again.
-- 12b.3's `data-shortcut` attributes sit on the two sidebar actions the
-  shortcuts trigger (Lock workspace `Ctrl+L`, Shortcuts `?`). The overlay's
-  list is written out rather than scraped from the DOM: scraping `aria-label`
-  text would be fragile, and the table is small.
+- 12b.3's `data-shortcut` attributes are **read by the overlay**: it scrapes
+  `[data-shortcut]` on open and lists each control's `aria-label`/text. Adding
+  a shortcut to a control therefore lists itself, and the help can't drift from
+  what the app binds. Dialog-wide behaviours (Esc, Tab, the skip link) have no
+  owning element, so those three rows stay written out — a pure scrape would
+  miss them.
 - `?` is ignored while typing in a field and while any `[role=dialog]` is open,
   so it cannot stack a second dialog on the photo inspector.
 - 12b.7 needed no changes: all 15 `btn-icon` buttons already carry `title`
@@ -981,7 +983,8 @@ audit scripts re-run clean).
       `#main-content`
 - [x] `@supports not selector(:focus-visible)` outline fallback
 - [x] `.visually-hidden` gained the legacy `clip` alongside `clip-path`
-- [x] `IconKeyboard` added; `data-shortcut` on the two triggerable actions
+- [x] `IconKeyboard` added; `data-shortcut` on the two triggerable actions,
+      and the overlay scrapes those attributes so a new shortcut lists itself
 - [x] 12b.7 verified, not assumed: all 15 icon-only buttons already had
       `title` + `aria-label`
 - [x] Gates green: token-lint, biome, tsc, 187 tests, vite build

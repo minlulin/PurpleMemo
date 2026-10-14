@@ -814,13 +814,19 @@ button.chip:hover {
 
 .shortcut-list {
   display: grid;
-  grid-template-columns: auto 1fr;
   gap: var(--space-2) var(--space-4);
   margin: 0;
+}
+
+/* Each row is its own grid so a scraped row and a static one line up. */
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: var(--space-4);
   align-items: baseline;
 }
 
-.shortcut-list dt {
+.shortcut-row dt {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
@@ -828,7 +834,7 @@ button.chip:hover {
   white-space: nowrap;
 }
 
-.shortcut-list dd {
+.shortcut-row dd {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
