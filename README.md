@@ -21,8 +21,9 @@ npm run verify     # the full local gate (see below)
 
 ## Local gate
 
-No hosted CI is used — the pre-push hook runs the full gate, and
-**no push happens unless `npm run verify` is green**:
+The pre-push hook runs the full local gate, and hosted CI repeats it for pull
+requests and protected-branch pushes. **No change should merge unless
+`npm run verify` is green**:
 
 ```
 git config core.hooksPath .githooks   # once per clone
@@ -31,14 +32,15 @@ git config core.hooksPath .githooks   # once per clone
 `npm run verify` =
 `biome check --error-on-warnings .` → token lint → `tsc --noEmit` →
 `node --test "src/**/*.test.ts"` →
+`cargo test --manifest-path src-tauri/Cargo.toml` →
 `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` →
 `vite build`
 
 Rules of the gate (see §7 of the plan for the full rationale):
 
 - Never use `git push --no-verify`. If the gate is red, fix it or
-  revert — the Progress log's gate column in [`docs/PLAN.md`](docs/PLAN.md)
-  is the only CI evidence this project has.
+  revert. Keep the Progress log's gate column in [`docs/PLAN.md`](docs/PLAN.md)
+  current as local evidence alongside hosted CI.
 - Rust side needs `rustup component add clippy rustfmt` once.
 - Releases are built, signed and published **by hand** — there is no
   release workflow; see §9 of the plan and [`docs/RELEASE.md`](docs/RELEASE.md)

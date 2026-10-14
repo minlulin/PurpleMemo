@@ -264,6 +264,11 @@ impl Running {
 
 /// Signal the accept loop and wait for it to exit.
 fn reap(mut running: Running) {
+    // Clear personal data before signalling the listener, so a request racing
+    // with shutdown can never receive the last published snapshot.
+    if let Ok(mut snapshot) = running.snapshot.lock() {
+        *snapshot = None;
+    }
     running.shared.stop.store(true, Ordering::SeqCst);
     if let Some(join) = running.join.take() {
         let _ = join.join();
@@ -680,6 +685,18 @@ mod tests {
         );
         assert_eq!(get(port, "/api/snapshot?k=WRONG1").0, 403);
         state.stop().expect("stop");
+    }
+
+    #[test]
+    fn stopping_sharing_revokes_the_published_snapshot() {
+        let (state, _port, _code) = started();
+        state
+            .publish(&payload("2026-10-12T09:30"))
+            .expect("publish");
+        let stopped = state.stop().expect("stop");
+        assert!(!stopped.running);
+        assert!(stopped.published_at.is_none());
+        assert!(!state.status().expect("status").running);
     }
 
     #[test]

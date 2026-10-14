@@ -19,6 +19,11 @@ import {
   type BackupPayload,
   type BackupPhotoEntry,
   buildBackupZip,
+  MAX_BACKUP_ARCHIVE_BYTES,
+  MAX_BACKUP_ENTRIES,
+  MAX_BACKUP_MANIFEST_BYTES,
+  MAX_BACKUP_PHOTO_BYTES,
+  MAX_BACKUP_PHOTOS,
   type ParsedBackup,
   parseBackupZip,
   readBackupData,
@@ -119,6 +124,53 @@ test("parseBackupZip rejects bytes that are not a zip", () => {
 test("parseBackupZip rejects a zip without backup.json", () => {
   const zip = zipSync({ "photos/2026/10/x.jpg": new Uint8Array([1]) });
   assert.throws(() => parseBackupZip(zip), /backup\.json/);
+});
+
+test("parseBackupZip rejects an archive over the compressed-size limit", () => {
+  assert.throws(
+    () => parseBackupZip(new Uint8Array(MAX_BACKUP_ARCHIVE_BYTES + 1)),
+    /archive is larger/i,
+  );
+});
+
+test("parseBackupZip rejects an oversized manifest before extraction", () => {
+  const zip = zipSync({
+    [BACKUP_JSON_ENTRY]: new Uint8Array(MAX_BACKUP_MANIFEST_BYTES + 1),
+  });
+  assert.throws(() => parseBackupZip(zip), /backup\.json is larger/i);
+});
+
+test("parseBackupZip rejects too many entries", () => {
+  const files: Record<string, Uint8Array> = {
+    [BACKUP_JSON_ENTRY]: new TextEncoder().encode(
+      JSON.stringify(samplePayload()),
+    ),
+  };
+  for (let i = 0; i < MAX_BACKUP_ENTRIES; i += 1) {
+    files[`ignored/${i}`] = new Uint8Array();
+  }
+  const zip = zipSync(files);
+  assert.throws(() => parseBackupZip(zip), /more than .* entries/i);
+});
+
+test("parseBackupZip rejects too many and oversized photos before extraction", () => {
+  const tooMany: Record<string, Uint8Array> = {
+    [BACKUP_JSON_ENTRY]: new TextEncoder().encode(
+      JSON.stringify(samplePayload()),
+    ),
+  };
+  for (let i = 0; i <= MAX_BACKUP_PHOTOS; i += 1) {
+    tooMany[`photos/${i}.jpg`] = new Uint8Array();
+  }
+  assert.throws(() => parseBackupZip(zipSync(tooMany)), /more than .* photos/i);
+
+  const oversized = zipSync({
+    [BACKUP_JSON_ENTRY]: new TextEncoder().encode(
+      JSON.stringify(samplePayload()),
+    ),
+    "photos/large.jpg": new Uint8Array(MAX_BACKUP_PHOTO_BYTES + 1),
+  });
+  assert.throws(() => parseBackupZip(oversized), /backup photo is larger/i);
 });
 
 test("parseBackupZip rejects a corrupt backup.json", () => {

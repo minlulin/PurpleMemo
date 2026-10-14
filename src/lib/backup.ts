@@ -20,6 +20,17 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const BACKUP_JSON_ENTRY = "backup.json";
 export const PHOTOS_ZIP_PREFIX = "photos/";
 
+// Import limits keep a user-selected archive from exhausting renderer memory
+// before its manifest can be validated. fflate's filter sees ZIP metadata
+// before extracting an entry, so expansion and per-entry limits are enforced
+// before the corresponding bytes are allocated.
+export const MAX_BACKUP_ARCHIVE_BYTES = 256 * 1024 * 1024;
+export const MAX_BACKUP_EXPANDED_BYTES = 512 * 1024 * 1024;
+export const MAX_BACKUP_ENTRIES = 10_000;
+export const MAX_BACKUP_MANIFEST_BYTES = 16 * 1024 * 1024;
+export const MAX_BACKUP_PHOTOS = 5_000;
+export const MAX_BACKUP_PHOTO_BYTES = 25 * 1024 * 1024;
+
 /** The 28 data tables (the 29th, notes_fts, is trigger-maintained). */
 export const BACKUP_TABLES = [
   "collections",
@@ -195,10 +206,62 @@ function parseBackupJson(text: string): BackupPayload {
 
 /** Unzip + validate a backup file without touching the database. */
 export function parseBackupZip(bytes: Uint8Array): ParsedBackup {
+  if (bytes.byteLength > MAX_BACKUP_ARCHIVE_BYTES) {
+    throw new Error(
+      `Backup archive is larger than the ${MAX_BACKUP_ARCHIVE_BYTES} byte limit — import rejected.`,
+    );
+  }
+  let entryCount = 0;
+  let expandedBytes = 0;
+  let photoCount = 0;
   let entries: Record<string, Uint8Array>;
   try {
-    entries = unzipSync(bytes);
-  } catch {
+    entries = unzipSync(bytes, {
+      filter: ({ name, originalSize }) => {
+        entryCount += 1;
+        if (entryCount > MAX_BACKUP_ENTRIES) {
+          throw new Error(
+            `Backup contains more than ${MAX_BACKUP_ENTRIES} entries — import rejected.`,
+          );
+        }
+        if (!Number.isSafeInteger(originalSize) || originalSize < 0) {
+          throw new Error(
+            "Backup contains an invalid entry size — import rejected.",
+          );
+        }
+        expandedBytes += originalSize;
+        if (expandedBytes > MAX_BACKUP_EXPANDED_BYTES) {
+          throw new Error(
+            `Backup expands beyond the ${MAX_BACKUP_EXPANDED_BYTES} byte limit — import rejected.`,
+          );
+        }
+        if (name === BACKUP_JSON_ENTRY) {
+          if (originalSize > MAX_BACKUP_MANIFEST_BYTES) {
+            throw new Error(
+              `backup.json is larger than the ${MAX_BACKUP_MANIFEST_BYTES} byte limit — import rejected.`,
+            );
+          }
+          return true;
+        }
+        if (!name.startsWith(PHOTOS_ZIP_PREFIX)) return false;
+        photoCount += 1;
+        if (photoCount > MAX_BACKUP_PHOTOS) {
+          throw new Error(
+            `Backup contains more than ${MAX_BACKUP_PHOTOS} photos — import rejected.`,
+          );
+        }
+        if (originalSize > MAX_BACKUP_PHOTO_BYTES) {
+          throw new Error(
+            `A backup photo is larger than the ${MAX_BACKUP_PHOTO_BYTES} byte limit — import rejected.`,
+          );
+        }
+        return true;
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("import rejected")) {
+      throw error;
+    }
     throw new Error("Not a valid zip file — import rejected.");
   }
   const manifest = entries[BACKUP_JSON_ENTRY];

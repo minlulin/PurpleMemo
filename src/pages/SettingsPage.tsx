@@ -22,6 +22,7 @@ import { useToast } from "../components/Toast.tsx";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
 import type { ShareInfo } from "../data/driver.ts";
 import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
+import { MAX_BACKUP_ARCHIVE_BYTES } from "../lib/backup.ts";
 import { hashAnswer, hashPin, type PinHash, verifyPin } from "../lib/crypto.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -201,6 +202,11 @@ export default function SettingsPage(p: SettingsPageProps) {
     if (!file) return;
     setError(null);
     try {
+      if (file.size > MAX_BACKUP_ARCHIVE_BYTES) {
+        throw new Error(
+          `Backup archive is larger than the ${MAX_BACKUP_ARCHIVE_BYTES} byte limit — import rejected.`,
+        );
+      }
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { summary } = await backupRepo.inspectBackup(bytes);
       setPending({ bytes, summary });
@@ -726,14 +732,17 @@ export default function SettingsPage(p: SettingsPageProps) {
           money, wallets, due items, habits, upcoming dates and recent notes.
           The vault, settings and photos are never part of it. Anyone the link
           reaches can read that snapshot, so turn it off when you are done —
-          sharing never survives a restart, and it keeps running while the app
-          is locked.
+          sharing never survives a restart and stops when the app is locked.
+        </p>
+        <p className="alert alert-note" role="note">
+          LAN sharing uses unencrypted HTTP. Use it only on a trusted private
+          network: anyone who can observe the Wi-Fi traffic may capture the
+          pairing link and snapshot.
         </p>
         {shareState?.running && (
           <p className="alert alert-note" role="status">
-            Sharing is live. Locking Purple Memo does <b>not</b> stop it —
-            anyone holding the link keeps reading this snapshot until you press
-            Stop.
+            Sharing is live. Locking Purple Memo stops this sharing session and
+            invalidates its link.
           </p>
         )}
         {shareState?.running ? (

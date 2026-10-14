@@ -1,9 +1,9 @@
-# Cutting a release — by hand, no CI
+# Cutting a release — by hand
 
-Purple Memo ships in-app updates through GitHub Releases, but **there is no CI
-and no release workflow anywhere** (§9). The artifacts are built, signed and
-published locally. The local gate (§7) is the only check that runs before a
-release exists, so it must be green first.
+Purple Memo ships in-app updates through GitHub Releases. Verification runs in
+hosted CI, while the artifacts are still built, signed and published locally;
+there is no release workflow (§9). The local gate (§7) must be green before a
+release is prepared.
 
 The app polls:
 
@@ -33,11 +33,10 @@ npm run tauri -- signer generate -w .keys/updater.key
 
 1. **Dependency re-check** (§3 rule 1): confirm every pinned version is still
    the max stable one (`npm outdated`; `cargo info <crate>@<major>`).
-2. **Green gate** — the only gate that exists:
+2. **Green gate** — the local and hosted checks must agree:
 
    ```bash
-   npm run verify        # biome, token-lint, tsc, tests, clippy, fmt, build
-   cargo test --manifest-path src-tauri/Cargo.toml
+   npm run verify        # biome, token-lint, tsc, JS + Rust tests, clippy, fmt, build
    ```
 
 3. **Bump the version in all three places** — they must agree:

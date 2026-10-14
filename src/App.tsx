@@ -329,6 +329,9 @@ function AppShell() {
   const lockNow = useCallback(() => {
     vaultRepo.lockVault();
     setUnlocked(false);
+    // Locking ends any active LAN session. This is deliberately best-effort:
+    // the lock screen must never wait on the network listener teardown.
+    void shareRepo.stop().catch(() => undefined);
   }, []);
 
   const handleUnlock = useCallback(() => {
