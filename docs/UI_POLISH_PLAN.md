@@ -646,34 +646,69 @@ patterns that 11.4 already established.
 
 ### Tasks
 
-- [ ] **13.1] Add `@keyframes fade-in` — `opacity: 0` → `opacity: 1`
-- [ ] **13.2] Add `@keyframes slide-up` — `translateY(12px)` → `translateY(0)`
-- [ ] **13.3] Add `@keyframes scale-in` — `scale(0.95)` → `scale(1)`
-- [ ] **13.4] Add `@keyframes shimmer` — background-position sweep for skeletons
-- [ ] **13.5] Add `.animate-fade-in`, `.animate-slide-up`, `.animate-scale-in` utility classes
-- [ ] **13.6] Add `animation-fill-mode: both` to all animation utilities
-- [ ] **13.7] Add `animation-delay` stagger utilities: `.delay-1` through `.delay-8`
-- [ ] **13.8] Apply `animate-fade-in` to page content on route change
-- [ ] **13.9] Apply `animate-slide-up` to cards on scroll into view (IntersectionObserver)
-- [ ] **13.10] Add `animate-scale-in` to modals and dropdowns
-- [ ] **13.11] Add `animate-shimmer` to skeleton components
-- [ ] **13.12] Add `transition: all var(--dur-fast) var(--ease-out)` to interactive elements missing it
-- [ ] **13.13] Add `will-change: transform` to animated elements (use sparingly)
-- [ ] **13.14] Add `@media (prefers-reduced-motion: reduce)` override for all animations (already exists, verify coverage)
+- [x] **13.1] Add `@keyframes fade-in` — `opacity: 0` → `opacity: 1`
+- [x] **13.2] Add `@keyframes slide-up` — `translateY(12px)` → `translateY(0)`
+- [x] **13.3] Add `@keyframes scale-in` — `scale(0.95)` → `scale(1)`
+- [x] **13.4] Add `@keyframes shimmer` — background-position sweep for skeletons
+- [x] **13.5] Add `.animate-fade-in`, `.animate-slide-up`, `.animate-scale-in` utility classes
+- [x] **13.6] Add `animation-fill-mode: both` to all animation utilities
+- [x] **13.7] Add `animation-delay` stagger utilities: `.delay-1` through `.delay-8`
+- [x] **13.8] Apply `animate-fade-in` to page content on route change
+- [x] **13.9] Apply `animate-slide-up` to cards on scroll into view (IntersectionObserver)
+- [x] **13.10] Add `animate-scale-in` to modals and dropdowns
+- [x] **13.11] Add `animate-shimmer` to skeleton components
+- [x] **13.12** Add transitions to interactive elements missing them
+- [x] **13.13] Add `will-change: transform` to animated elements (use sparingly)
+- [x] **13.14] Add `@media (prefers-reduced-motion: reduce)` override for all animations (already exists, verify coverage)
 
 ### Files touched
 - `src/styles/app.css`
-- `src/styles/tokens.css`
+- `src/lib/useReveal.ts` (new)
 - `src/App.tsx`
-- All page components
+- `src/components/Dialog.tsx`
+- `src/pages/DashboardPage.tsx`
+- `src/pages/NotesPage.tsx`
+
+### Notes
+- **13.12 does not use `transition: all`, deliberately.** `all` makes the
+  browser watch every property on every hover — more main-thread work, and it
+  animates things never intended (box-shadows, layout properties). Three
+  elements genuinely had no transition (`button.chip`, `.side-remove`,
+  `.year-table` cells) and each now transitions exactly the properties it
+  changes. Everything else already declared one.
+- 13.9 **replaces** Phase 5's `card-enter`: the reveal hook adds
+  `is-revealed` + `animate-slide-up` at intersection time, and `.delay-N` in
+  markup staggers it. Two entrance mechanisms for one job would have been one
+  too many, so `card-enter` and its keyframes are gone.
+- The reveal is an **animation, not a transition** — a transition has no
+  `animation-delay` for `.delay-N` to read. That was a real bug in the first
+  cut of this phase: the stagger delays were inert.
+- The hook takes `ready` (`!loading` on the dashboard). Observing the container
+  while it still held skeletons would have found zero targets and left the
+  cards that arrived later stuck at `opacity: 0`.
+- `slide-up` and `scale-in` omit `transform` from their `to` frames, so
+  `animation-fill-mode: both` cannot pin a hover lift (the Phase 5 trap).
+- 13.11: skeletons run `shimmer` **and** `skeleton-pulse` in one shorthand, so
+  the block still reads as loading when the sweep is subtle.
+  `.animate-shimmer` was dropped rather than shipped unused — a
+  single-animation utility would have overwritten the pulse.
+- 13.13: `will-change` only on the two animations that never stop
+  (`.skeleton`, `.icon-spin`).
+- 13.14: the global `prefers-reduced-motion` block already neutralises every
+  animation and transition with `!important`; the per-utility block makes the
+  intent explicit next to the utilities.
+- 13.3 folded the Phase 11 `modal-in` keyframe into the shared `scale-in`.
 
 ### Verification
-- [ ] Page transitions are smooth
-- [ ] Cards animate in with stagger
-- [ ] Modals scale in from center
-- [ ] Skeletons shimmer
-- [ ] Reduced motion disables all animations
-- [ ] No jank or layout thrashing
+- [x] Page transitions are smooth (`animate-fade-in` on a `key={page}` `<main>`)
+- [x] Cards animate in with stagger (dashboard, `.delay-1`…`.delay-8`)
+- [x] Modals scale in from center (`animate-scale-in` via `Dialog`)
+- [x] Skeletons shimmer
+- [x] Reduced motion disables all animations
+- [x] No jank: `will-change` limited to the two infinite animations
+- [x] Zero unused selectors, keyframes and tokens
+- [x] `npm run lint`, `token-lint`, `typecheck`, `test` (187), `build` all pass
+- [ ] Manual pass on scroll reveal and motion feel pending
 
 ---
 
@@ -991,7 +1026,19 @@ audit scripts re-run clean).
 - [ ] Manual pass: tab order, skip link, overlay on a real screen pending
 
 ### Phase 13 — Animation & Motion System
-- [ ] Not started
+- [x] `fade-in` (already present) + new `slide-up`, `scale-in`, `shimmer`
+- [x] `.animate-*` utilities, `both` fill, `.delay-1`…`.delay-8` — all wired
+- [x] `.app-main` keyed by page → fades on every route change
+- [x] `useRevealWithin` + `.reveal-on-scroll` replaces Phase 5's `card-enter`;
+      dashboard cards reveal on scroll, staggered from markup
+- [x] `Dialog` renders `.animate-scale-in`; skeletons shimmer + pulse
+- [x] 13.12 rejected `transition: all`; three transition-less elements got
+      explicit property lists
+- [x] `will-change` on the two infinite animations only
+- [x] Caught a self-inflicted bug: the reveal was a transition, so `.delay-N`
+      had no `animation-delay` to act on
+- [x] Gates green: token-lint, biome, tsc, 187 tests, vite build
+- [ ] Manual pass on scroll reveal and motion feel pending
 
 ### Phase 14 — Icon System Completion
 - [ ] Not started

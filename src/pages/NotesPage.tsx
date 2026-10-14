@@ -555,7 +555,7 @@ export default function NotesPage() {
               {listBody}
             </ul>
             <section
-              className="editor-pane editor-enter"
+              className="editor-pane animate-fade-in"
               aria-label="Note editor"
               key={selected?.id ?? "empty"}
             >

@@ -39,6 +39,7 @@ import type {
   ReminderRow,
   TaskRow,
 } from "../lib/types.ts";
+import { useRevealWithin } from "../lib/useReveal.ts";
 
 interface DashboardPageProps {
   notifyNote: string | null;
@@ -100,6 +101,8 @@ export default function DashboardPage(p: DashboardPageProps) {
     { id: number; title: string; endDate: string }[]
   >([]);
   const [receivableCents, setReceivableCents] = useState(0);
+  // Reveal attaches once the cards exist, not while they are still skeletons.
+  const pageRef = useRevealWithin<HTMLDivElement>(!loading);
 
   const reload = useCallback(async () => {
     try {
@@ -212,7 +215,7 @@ export default function DashboardPage(p: DashboardPageProps) {
   const netTodayCents = money.incomeCents - money.expenseCents;
 
   return (
-    <div className="budget-page">
+    <div className="budget-page" ref={pageRef}>
       <header className="page-header">
         <div className="page-header-main">
           <div className="page-title-row">
@@ -260,7 +263,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       {/* Executive KPI Strip */}
       <h2 className="dashboard-section-title">Overview</h2>
       <div className="kpi-grid">
-        <div className="kpi-card card-enter kpi-card-variation is-income">
+        <div className="kpi-card reveal-on-scroll delay-1 kpi-card-variation is-income">
           <div className="kpi-head">
             <span className="kpi-label">Money In Today</span>
             <span className="kpi-icon is-income">
@@ -280,7 +283,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </span>
         </div>
 
-        <div className="kpi-card card-enter kpi-card-variation is-expense">
+        <div className="kpi-card reveal-on-scroll delay-2 kpi-card-variation is-expense">
           <div className="kpi-head">
             <span className="kpi-label">Money Out Today</span>
             <span className="kpi-icon is-expense">
@@ -303,7 +306,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </span>
         </div>
 
-        <div className="kpi-card card-enter kpi-card-variation">
+        <div className="kpi-card reveal-on-scroll delay-3 kpi-card-variation">
           <div className="kpi-head">
             <span className="kpi-label">Total Receivable</span>
             <span className="kpi-icon">
@@ -318,7 +321,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </span>
         </div>
 
-        <div className="kpi-card card-enter kpi-card-variation is-warn">
+        <div className="kpi-card reveal-on-scroll delay-4 kpi-card-variation is-warn">
           <div className="kpi-head">
             <span className="kpi-label">Action Items</span>
             <span className={dueCount > 0 ? "kpi-icon is-warn" : "kpi-icon"}>
@@ -339,7 +342,7 @@ export default function DashboardPage(p: DashboardPageProps) {
       {/* Bento Dashboard Sections */}
       <h2 className="dashboard-section-title">Today</h2>
       <div className="dashboard-grid">
-        <section className="settings-section card-enter">
+        <section className="settings-section reveal-on-scroll delay-5">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -394,7 +397,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section card-enter">
+        <section className="settings-section reveal-on-scroll delay-6">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -429,7 +432,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section card-enter">
+        <section className="settings-section reveal-on-scroll delay-7">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -490,7 +493,7 @@ export default function DashboardPage(p: DashboardPageProps) {
 
       <h2 className="dashboard-section-title">Coming up</h2>
       <div className="dashboard-grid">
-        <section className="settings-section card-enter">
+        <section className="settings-section reveal-on-scroll delay-8">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -545,7 +548,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section card-enter">
+        <section className="settings-section">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">
@@ -585,7 +588,7 @@ export default function DashboardPage(p: DashboardPageProps) {
           </div>
         </section>
 
-        <section className="settings-section card-enter">
+        <section className="settings-section">
           <div className="dash-card-top">
             <div className="dash-card-head">
               <div className="dash-card-title">

@@ -77,7 +77,7 @@ export function Dialog({
         onClick={close}
       />
       <div
-        className={`modal-content${className ? ` ${className}` : ""}`}
+        className={`modal-content animate-scale-in${className ? ` ${className}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}

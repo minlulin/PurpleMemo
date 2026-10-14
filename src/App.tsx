@@ -510,7 +510,13 @@ function AppShell() {
           </button>
         </div>
       </aside>
-      <main className="app-main" id="main-content" tabIndex={-1}>
+      {/* Keyed by page so the workspace re-fades on every route change (13.8). */}
+      <main
+        className="app-main animate-fade-in"
+        id="main-content"
+        tabIndex={-1}
+        key={page}
+      >
         {page === "dashboard" ? (
           <DashboardPage onNavigate={setPage} notifyNote={notifyNote} />
         ) : page === "notes" ? (

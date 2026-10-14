@@ -684,6 +684,11 @@ button.chip {
   font: inherit;
   font-size: var(--text-xs);
   cursor: pointer;
+  /* Explicit properties, never `transition: all` (13.12). */
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
 }
 
 button.chip:hover {
@@ -958,46 +963,33 @@ button.chip:hover {
   overflow: hidden;
 }
 
-/* Entrance + hover motion for anything that behaves like a card. */
-@keyframes card-enter {
-  from {
-    opacity: 0;
-    transform: translateY(0.5rem);
-  }
-  /* `transform` is deliberately absent here: `both` would keep the filled
-     value forever and pin the hover lift. */
-  to {
+/* Scroll-in reveal (plan 13.9). Starts hidden and is released by
+ * `useReveal`; with no IntersectionObserver, or under reduced motion, the hook
+ * reveals immediately so content is never trapped invisible.
+ *
+ * The reveal is an animation, not a transition, so `.delay-N` can stagger it —
+ * a transition has no `animation-delay` to read. `slide-up` omits `transform`
+ * from its `to` frame, so the `both` fill cannot pin a hover lift. */
+.reveal-on-scroll {
+  opacity: 0;
+  transform: translateY(0.75rem);
+}
+
+.reveal-on-scroll.is-revealed {
+  opacity: 1;
+  transform: none;
+}
+
+/* The hook adds `.animate-slide-up` alongside `is-revealed`; a `.delay-N` in
+ * the markup then staggers it (a transition would have no delay to read). */
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal-on-scroll,
+  .reveal-on-scroll.is-revealed {
     opacity: 1;
+    transform: none;
+    animation: none;
   }
-}
-
-.card-enter {
-  animation: card-enter var(--dur-slow) var(--ease-out) both;
-}
-
-/* Staggered entrance — the dashboard reads as it lands instead of snapping. */
-.kpi-grid > .card-enter:nth-child(1),
-.dashboard-grid > .card-enter:nth-child(1) {
-  animation-delay: 0ms;
-}
-.kpi-grid > .card-enter:nth-child(2),
-.dashboard-grid > .card-enter:nth-child(2) {
-  animation-delay: 40ms;
-}
-.kpi-grid > .card-enter:nth-child(3),
-.dashboard-grid > .card-enter:nth-child(3) {
-  animation-delay: 80ms;
-}
-.kpi-grid > .card-enter:nth-child(4),
-.dashboard-grid > .card-enter:nth-child(4) {
-  animation-delay: 120ms;
-}
-.kpi-grid > .card-enter:nth-child(n + 5),
-.dashboard-grid > .card-enter:nth-child(n + 5) {
-  animation-delay: 160ms;
-}
-.dashboard-grid > .card-enter:nth-child(n + 7) {
-  animation-delay: 240ms;
 }
 
 /* One lift rule for the three card types that have it; each card declares its
@@ -1576,6 +1568,9 @@ button.chip:hover {
   border-bottom: var(--border-width) solid var(--color-border-subtle);
   padding: var(--space-3);
   text-align: end;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-inline-start-color var(--dur-fast) var(--ease-out);
 }
 
 .year-table th:first-child,
@@ -2036,6 +2031,7 @@ button.chip:hover {
   padding: var(--space-1) var(--space-2);
   cursor: pointer;
   line-height: 1;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 
 .side-remove:hover {
@@ -2350,12 +2346,95 @@ input.editor-title {
   }
 }
 
-.editor-enter {
-  animation: fade-in var(--dur-base) var(--ease-out);
+/* ---------------------------------------------------------------------------
+ * Motion system (plan 13.1-13.6)
+ *
+ * `transform` is deliberately omitted from the `to` frame of the transform
+ * animations: with `animation-fill-mode: both` a restated end value would win
+ * over the element's own `transform` forever, freezing every hover lift.
+ * ------------------------------------------------------------------------- */
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in var(--dur-base) var(--ease-out) both;
+}
+
+.animate-slide-up {
+  animation: slide-up var(--dur-slow) var(--ease-spring) both;
+}
+
+.animate-scale-in {
+  animation: scale-in var(--dur-base) var(--ease-spring) both;
+}
+
+/* Stagger helpers — markup decides the order, not `:nth-child`. */
+.delay-1 {
+  animation-delay: 40ms;
+}
+.delay-2 {
+  animation-delay: 80ms;
+}
+.delay-3 {
+  animation-delay: 120ms;
+}
+.delay-4 {
+  animation-delay: 160ms;
+}
+.delay-5 {
+  animation-delay: 200ms;
+}
+.delay-6 {
+  animation-delay: 240ms;
+}
+.delay-7 {
+  animation-delay: 280ms;
+}
+.delay-8 {
+  animation-delay: 320ms;
+}
+
+/* 13.13: only the two animations that run forever earn a hint. */
+.skeleton,
+.icon-spin {
+  will-change: transform, opacity;
+}
+
+.app-main:focus {
+  outline: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .editor-enter {
+  .animate-fade-in,
+  .animate-slide-up,
+  .animate-scale-in {
     animation: none;
   }
 }
@@ -2885,9 +2964,27 @@ tbody .week-row {
 }
 
 /* ---------------------------------------------------------------------------
- * Skeletons (plan 12a.1/12a.2) — shape-matched placeholders. A plain opacity
- * pulse; the `shimmer` sweep arrives with the motion system in Phase 13.
+ * Skeletons (plan 12a.1/12a.2) — shape-matched placeholders swept by the
+ * shared `shimmer` (13.4), with the base colour pulsing underneath so the
+ * block still reads as "loading" if the sweep is unsupported.
  * ------------------------------------------------------------------------- */
+
+.skeleton {
+  display: block;
+  background-color: var(--color-surface-raised);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-surface-hover) 45%,
+    transparent 90%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  border-radius: var(--radius-sm);
+  animation:
+    shimmer 1.6s linear infinite,
+    skeleton-pulse 2.4s var(--ease-out) infinite;
+}
 
 @keyframes skeleton-pulse {
   0%,
@@ -2895,15 +2992,8 @@ tbody .week-row {
     opacity: 1;
   }
   50% {
-    opacity: 0.4;
+    opacity: 0.55;
   }
-}
-
-.skeleton {
-  display: block;
-  background: var(--color-surface-raised);
-  border-radius: var(--radius-sm);
-  animation: skeleton-pulse 1.4s var(--ease-out) infinite;
 }
 
 .skeleton-text {
@@ -2955,7 +3045,6 @@ tbody .week-row {
     opacity: 0.55;
   }
 }
-
 /* ---------------------------------------------------------------------------
  * Toasts (plan 12a.4-12a.9)
  * ------------------------------------------------------------------------- */
@@ -3159,17 +3248,6 @@ tbody .week-row {
   cursor: default;
 }
 
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
 .modal-content {
   position: relative;
   display: flex;
@@ -3184,7 +3262,6 @@ tbody .week-row {
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
-  animation: modal-in var(--dur-base) var(--ease-spring) both;
 }
 
 .modal-head {
