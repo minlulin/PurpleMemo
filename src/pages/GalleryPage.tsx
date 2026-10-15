@@ -1,7 +1,14 @@
 // P3e Gallery page (§2.7): photo storage via the driver's content-addressed
-// photo commands (§4); the page adds pick-to-save, thumbnails (object URLs
-// from photo bytes), per-photo note/taken-date, links to notes/memories/jobs
-// (photo_refs) and delete. Talks only to the gallery + picker repos.
+// photo commands (§4); the page adds pick-to-save, thumbnails, per-photo
+// note/taken-date, links to notes/memories/jobs (photo_refs) and delete.
+// Talks only to the gallery + picker repos.
+//
+// Memory discipline (review M-02): the grid holds one ~30 kB thumbnail per
+// photo, and the full-resolution bytes of exactly ONE photo — the open
+// inspector — are decoded at a time and their object URL released the moment
+// the selection changes, closes, or the photo is deleted. Thumbnails are
+// generated here (canvas) once per photo and stored beside it, so a grid visit
+// only ever reads thumbs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "../components/Dialog.tsx";
@@ -22,6 +29,7 @@ import {
 } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 import { photoExtFromName } from "../lib/gallery.ts";
+import { makeThumbnail } from "../lib/thumbs.ts";
 import type {
   JobRow,
   MemoryRow,
@@ -37,14 +45,19 @@ const ENTITY_LABELS: { key: PhotoRefEntity; label: string }[] = [
   { key: "job", label: "Job" },
 ];
 
-function bytesUrl(bytes: number[]): string {
-  return URL.createObjectURL(new Blob([new Uint8Array(bytes) as BlobPart]));
+function bytesUrl(bytes: Uint8Array): string {
+  return URL.createObjectURL(new Blob([bytes as BlobPart]));
 }
 
 export default function GalleryPage() {
   const [photos, setPhotos] = useState<PhotoRow[]>([]);
-  const [urls, setUrls] = useState<Map<number, string>>(new Map());
-  const urlsRef = useRef<Map<number, string>>(new Map());
+  /** Grid object URLs — one small thumbnail per photo. */
+  const [thumbs, setThumbs] = useState<Map<number, string>>(new Map());
+  const thumbsRef = useRef<Map<number, string>>(new Map());
+  /** The ONE full-resolution image that is currently open, if any. */
+  const [full, setFull] = useState<{ id: number; url: string } | null>(null);
+  const fullRef = useRef<{ id: number; url: string } | null>(null);
+  const fullReqRef = useRef(0);
   const [selected, setSelected] = useState<PhotoRow | null>(null);
   const [selectedRefs, setSelectedRefs] = useState<PhotoRefRow[]>([]);
   const [notes, setNotes] = useState<NoteRow[]>([]);
@@ -71,40 +84,75 @@ export default function GalleryPage() {
     }
   }, []);
 
-  const loadThumbnails = useCallback(
+  /**
+   * Small bytes for a grid tile: the stored thumbnail, or one generated from
+   * the full-res bytes and stored for next time. Photos saved before this
+   * phase — and photos restored from a backup, which deliberately carry no
+   * thumbnails — pay that cost once.
+   */
+  const thumbBytesFor = useCallback(async (photo: PhotoRow) => {
+    const stored = await galleryRepo.readThumbBytes(photo.id).catch(() => null);
+    if (stored && stored.length > 0) return stored;
+    const bytes = await galleryRepo.readPhotoBytes(photo.id);
+    if (!bytes) throw new Error(`Photo ${photo.id} could not be read.`);
+    const thumb = await makeThumbnail(bytes);
+    // Best effort: a failed write costs a regeneration later, never a tile.
+    await galleryRepo.saveThumb(photo.id, thumb).catch(() => undefined);
+    return thumb;
+  }, []);
+
+  const loadThumbs = useCallback(
     async (list: PhotoRow[], isCancelled?: () => boolean) => {
       const next = new Map<number, string>();
       for (const photo of list) {
-        if (isCancelled?.()) {
-          for (const url of next.values()) URL.revokeObjectURL(url);
-          return;
-        }
+        if (isCancelled?.()) break;
         try {
-          const bytes = await galleryRepo.readPhotoBytes(photo.id);
-          if (bytes) next.set(photo.id, bytesUrl(bytes));
+          next.set(photo.id, bytesUrl(await thumbBytesFor(photo)));
         } catch {
-          // A missing file shows as a placeholder — never break the grid.
+          // Missing or undecodable: a placeholder tile — never break the grid.
         }
       }
       if (isCancelled?.()) {
         for (const url of next.values()) URL.revokeObjectURL(url);
         return;
       }
-      for (const [id, url] of urlsRef.current) {
+      for (const [id, url] of thumbsRef.current) {
         if (!next.has(id)) URL.revokeObjectURL(url);
       }
-      urlsRef.current = next;
-      setUrls(next);
+      thumbsRef.current = next;
+      setThumbs(next);
     },
-    [],
+    [thumbBytesFor],
   );
+
+  /** Release the open full-resolution image (replacing one drops the old). */
+  const dropFull = useCallback(() => {
+    if (fullRef.current) URL.revokeObjectURL(fullRef.current.url);
+    fullRef.current = null;
+    fullReqRef.current += 1;
+    setFull(null);
+  }, []);
+
+  const loadFull = async (photo: PhotoRow) => {
+    const req = ++fullReqRef.current;
+    try {
+      const bytes = await galleryRepo.readPhotoBytes(photo.id);
+      if (!bytes || req !== fullReqRef.current) return;
+      const url = bytesUrl(bytes);
+      if (fullRef.current) URL.revokeObjectURL(fullRef.current.url);
+      fullRef.current = { id: photo.id, url };
+      setFull(fullRef.current);
+    } catch (e) {
+      if (req === fullReqRef.current) setError(errText(e));
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const list = await reload();
       if (cancelled) return;
-      await loadThumbnails(list, () => cancelled);
+      await loadThumbs(list, () => cancelled);
       if (cancelled) return;
       try {
         const [ns, ms, js] = await Promise.all([
@@ -124,31 +172,34 @@ export default function GalleryPage() {
     })();
     return () => {
       cancelled = true;
-      for (const url of urlsRef.current.values()) URL.revokeObjectURL(url);
-      urlsRef.current = new Map();
+      for (const url of thumbsRef.current.values()) URL.revokeObjectURL(url);
+      thumbsRef.current = new Map();
+      if (fullRef.current) URL.revokeObjectURL(fullRef.current.url);
+      fullRef.current = null;
     };
-  }, [reload, loadThumbnails]);
+  }, [reload, loadThumbs]);
 
   const pickFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     setSaving(true);
     try {
       for (const file of Array.from(fileList)) {
-        const buffer = await file.arrayBuffer();
-        const bytes = Array.from(new Uint8Array(buffer));
+        const bytes = new Uint8Array(await file.arrayBuffer());
         const id = await galleryRepo.savePhoto({
           bytes,
           ext: photoExtFromName(file.name),
         });
-        const photo = await galleryRepo.getPhoto(id);
-        if (photo && !urlsRef.current.has(id)) {
-          const next = new Map(urlsRef.current);
-          next.set(id, bytesUrl(bytes));
-          urlsRef.current = next;
-          setUrls(next);
+        // Thumbnail right away: the grid then never reads these bytes again.
+        // Undecodable in this webview means no tile image (the inspector could
+        // not have shown it either) — the photo itself is saved either way.
+        const thumb = await makeThumbnail(bytes).catch(() => null);
+        if (thumb) {
+          await galleryRepo.saveThumb(id, thumb).catch(() => undefined);
         }
       }
-      await reload();
+      // One reload path for both the list and the thumbnails: a just-saved
+      // photo has a stored thumbnail, so this only reads small bytes.
+      await loadThumbs(await reload());
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -160,6 +211,8 @@ export default function GalleryPage() {
     setSelected(photo);
     setEdit({ note: photo.note, takenDate: photo.taken_date ?? "" });
     setLinkDraft({ type: "note", id: "" });
+    // Full resolution only for the photo that is actually open.
+    void loadFull(photo);
     try {
       setSelectedRefs(await galleryRepo.listRefsForPhoto(photo.id));
     } catch (e) {
@@ -167,7 +220,10 @@ export default function GalleryPage() {
     }
   };
 
-  const closeInspector = useCallback(() => setSelected(null), []);
+  const closeInspector = useCallback(() => {
+    dropFull();
+    setSelected(null);
+  }, [dropFull]);
 
   const saveMeta = async () => {
     if (!selected) return;
@@ -187,13 +243,14 @@ export default function GalleryPage() {
   const removePhoto = async (photo: PhotoRow) => {
     try {
       await galleryRepo.deletePhoto(photo.id);
-      const url = urlsRef.current.get(photo.id);
+      const url = thumbsRef.current.get(photo.id);
       if (url) URL.revokeObjectURL(url);
-      const next = new Map(urlsRef.current);
+      const next = new Map(thumbsRef.current);
       next.delete(photo.id);
-      urlsRef.current = next;
-      setUrls(next);
+      thumbsRef.current = next;
+      setThumbs(next);
       if (selected?.id === photo.id) {
+        if (fullRef.current?.id === photo.id) dropFull();
         setSelected(null);
         setSelectedRefs([]);
       }
@@ -325,7 +382,7 @@ export default function GalleryPage() {
         ) : (
           <div className="photo-grid">
             {photos.map((photo) => {
-              const url = urls.get(photo.id);
+              const url = thumbs.get(photo.id);
               return (
                 <button
                   key={photo.id}
@@ -379,10 +436,18 @@ export default function GalleryPage() {
               </button>
             </div>
           </div>
-          {urls.get(selected.id) ? (
+          {/* Full resolution once it arrives; the thumbnail — already in
+           *  memory — stands in while the bytes are read. */}
+          {full?.id === selected.id ? (
             <img
               className="photo-full"
-              src={urls.get(selected.id)}
+              src={full.url}
+              alt={selected.note || `Photo ${selected.id}`}
+            />
+          ) : thumbs.get(selected.id) ? (
+            <img
+              className="photo-full"
+              src={thumbs.get(selected.id)}
               alt={selected.note || `Photo ${selected.id}`}
             />
           ) : null}

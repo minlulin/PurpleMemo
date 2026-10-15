@@ -6,6 +6,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * Request-header names shared with `src-tauri/src/commands.rs`. The Rust side
+ * reads them through `tauri::ipc::Request::headers`; `ipc.test.ts` pins the two
+ * copies together, because nothing else can: a typo here would only surface as
+ * a "missing header" error on a user's machine.
+ */
+export const PHOTO_EXT_HEADER = "x-photo-ext";
+export const PHOTO_SOURCE_HEADER = "x-photo-source";
+
 /** One result row: column name -> JSON value (blob -> array of byte numbers). */
 export type Row = Record<string, unknown>;
 
@@ -46,8 +55,23 @@ export interface DataDriver {
   begin(): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
-  savePhoto(bytes: number[], ext: string): Promise<string>;
-  readPhoto(relPath: string): Promise<number[]>;
+  /**
+   * Photo bytes cross the IPC boundary as RAW payloads (review M-02): the
+   * request body IS the bytes, so the metadata the Rust side needs travels in
+   * request headers, and a read resolves to an `ArrayBuffer` — never a JSON
+   * array of byte numbers. Headers must be ASCII, which photo paths are
+   * (strict `photos/<yyyy>/<mm>/<sha256>.<ext>` grammar).
+   */
+  savePhoto(bytes: Uint8Array, ext: string): Promise<string>;
+  readPhoto(relPath: string): Promise<Uint8Array>;
+  /**
+   * The thumbnail of a photo, addressed by the SOURCE photo's path — the
+   * thumbnail path itself is derived in Rust and never built here. Rejects
+   * when no thumbnail is stored yet, which the caller treats as "generate
+   * one and `savePhotoThumb` it".
+   */
+  readPhotoThumb(sourceRelPath: string): Promise<Uint8Array>;
+  savePhotoThumb(sourceRelPath: string, bytes: Uint8Array): Promise<string>;
   deletePhoto(relPath: string): Promise<void>;
   /** Read-only keyring read for the Settings key-export step (§5.4). */
   exportDbKey(): Promise<string>;
@@ -68,8 +92,18 @@ export function createTauriDriver(): DataDriver {
     begin: () => invoke("db_begin"),
     commit: () => invoke("db_commit"),
     rollback: () => invoke("db_rollback"),
-    savePhoto: (bytes, ext) => invoke("photo_save", { bytes, ext }),
-    readPhoto: (relPath) => invoke("photo_read", { relPath }),
+    savePhoto: (bytes, ext) =>
+      invoke("photo_save", bytes, { headers: { [PHOTO_EXT_HEADER]: ext } }),
+    readPhoto: async (relPath) =>
+      new Uint8Array(await invoke<ArrayBuffer>("photo_read", { relPath })),
+    readPhotoThumb: async (sourceRelPath) =>
+      new Uint8Array(
+        await invoke<ArrayBuffer>("photo_read_thumb", { sourceRelPath }),
+      ),
+    savePhotoThumb: (sourceRelPath, bytes) =>
+      invoke("photo_save_thumb", bytes, {
+        headers: { [PHOTO_SOURCE_HEADER]: sourceRelPath },
+      }),
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
     exportDbKey: () => invoke("db_key_export"),
     // P5 share controls (§8) — 14 commands total now, still one driver.

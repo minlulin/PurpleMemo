@@ -19,11 +19,13 @@ import {
   type BackupPayload,
   type BackupPhotoEntry,
   buildBackupZip,
+  exportBudget,
   MAX_BACKUP_ARCHIVE_BYTES,
   MAX_BACKUP_ENTRIES,
   MAX_BACKUP_MANIFEST_BYTES,
   MAX_BACKUP_PHOTO_BYTES,
   MAX_BACKUP_PHOTOS,
+  MAX_EXPORT_PHOTO_BYTES,
   type ParsedBackup,
   parseBackupZip,
   readBackupData,
@@ -63,7 +65,19 @@ function samplePayload(): BackupPayload {
 }
 
 function samplePhotos(): BackupPhotoEntry[] {
-  return [{ path: "photos/2026/10/aaa.jpg", bytes: [9, 9, 9] }];
+  return [
+    { path: "photos/2026/10/aaa.jpg", bytes: Uint8Array.from([9, 9, 9]) },
+  ];
+}
+
+// Review M-02: bytes are `Uint8Array` end to end — a `number[]` anywhere in
+// this path is the JSON-array-per-byte problem coming back.
+function expectBytes(value: unknown, expected: number[]): void {
+  assert.ok(
+    value instanceof Uint8Array,
+    `expected a Uint8Array, got ${Object.prototype.toString.call(value)}`,
+  );
+  assert.deepEqual(Array.from(value), expected);
 }
 
 test("BACKUP_TABLES covers the 28 data tables and excludes the derived notes_fts index", () => {
@@ -87,11 +101,16 @@ test("readBackupData queries each table once, reads photo bytes, stamps the mani
   assert.equal(payload.version, BACKUP_FORMAT_VERSION);
   assert.equal(typeof payload.exportedAt, "string");
   assert.deepEqual(payload.data.collections, [{ id: 2, name: "Work" }]);
-  assert.deepEqual(photos, [
-    { path: "photos/2026/10/aaa.jpg", bytes: [1, 2, 3] }, // mock readPhoto bytes
-  ]);
+  assert.equal(photos.length, 1);
+  assert.equal(photos[0]?.path, "photos/2026/10/aaa.jpg");
+  expectBytes(photos[0]?.bytes, [1, 2, 3]); // mock readPhoto bytes
   const queries = driver.callsTo("query").map((c) => c.args[0] as string);
-  assert.equal(queries.length, 29); // 28 tables + the photos path lookup
+  assert.equal(queries.length, 29); // 28 tables + the photo-size lookup
+  // The export cap needs each photo's stored size, so the lookup reads it in
+  // the same pass as the path (no second query, no bytes).
+  assert.ok(
+    queries.includes("SELECT rel_path, size_bytes FROM photos ORDER BY id"),
+  );
   for (const table of BACKUP_TABLES) {
     assert.ok(
       queries.includes(`SELECT * FROM ${table}`),
@@ -106,12 +125,73 @@ test("readBackupData queries each table once, reads photo bytes, stamps the mani
   assert.deepEqual(readCalls[0]?.args, ["photos/2026/10/aaa.jpg"]);
 });
 
-test("buildBackupZip + parseBackupZip roundtrip payload and photos tree", () => {
-  const parsed = parseBackupZip(
-    buildBackupZip(samplePayload(), samplePhotos()),
-  );
+test("buildBackupZip + parseBackupZip roundtrip payload and photos tree", async () => {
+  const bytes = await buildBackupZip(samplePayload(), samplePhotos());
+  const parsed = parseBackupZip(bytes);
   assert.deepEqual(parsed.payload, samplePayload());
   assert.deepEqual(parsed.photos, samplePhotos());
+  expectBytes(parsed.photos[0]?.bytes, [9, 9, 9]);
+});
+
+test("buildBackupZip roundtrips a multi-photo archive byte for byte", async () => {
+  // The async zipper (worker, with a blocking fallback) must produce an
+  // archive this app can read back — that is the whole contract.
+  const photos: BackupPhotoEntry[] = [];
+  for (let i = 0; i < 24; i += 1) {
+    photos.push({
+      path: `photos/2026/10/${String(i).padStart(64, "a")}.jpg`,
+      bytes: Uint8Array.from({ length: 512 }, (_, b) => (i * 31 + b) % 256),
+    });
+  }
+  const parsed = parseBackupZip(await buildBackupZip(samplePayload(), photos));
+  assert.equal(parsed.photos.length, photos.length);
+  for (const [i, photo] of parsed.photos.entries()) {
+    assert.equal(photo.path, photos[i]?.path);
+    assert.deepEqual(photo.bytes, photos[i]?.bytes);
+  }
+});
+
+test("exportBudget: sums stored sizes and refuses one archive above the cap", () => {
+  const rows = [
+    { size_bytes: 3 },
+    { size_bytes: 5 }, // 8 total, comfortably inside a 10-byte limit
+    { size_bytes: Number.NaN }, // a nonsense size is ignored, not fatal
+  ];
+  assert.deepEqual(exportBudget(rows, 10), {
+    bytes: 8,
+    photos: 3,
+    ok: true,
+    limit: 10,
+  });
+  // Exactly at the cap is allowed; one byte over is not.
+  assert.equal(exportBudget([{ size_bytes: 10 }], 10).ok, true);
+  const over = exportBudget([{ size_bytes: 11 }], 10);
+  assert.equal(over.ok, false);
+  assert.equal(over.bytes, 11);
+  // The default cap is the import limit minus the manifest allowance, so an
+  // archive this app writes is one it can always read back.
+  assert.equal(
+    MAX_EXPORT_PHOTO_BYTES,
+    MAX_BACKUP_ARCHIVE_BYTES - MAX_BACKUP_MANIFEST_BYTES,
+  );
+});
+
+test("readBackupData refuses an oversized library BEFORE reading any photo bytes", async () => {
+  const tableResults: Queryable[][] = BACKUP_TABLES.map(() => []);
+  tableResults.push([
+    { rel_path: "photos/2026/10/aaa.jpg", size_bytes: MAX_EXPORT_PHOTO_BYTES },
+    { rel_path: "photos/2026/10/bbb.jpg", size_bytes: 1 },
+  ]);
+  const driver = createMockDriver({ results: tableResults });
+  await assert.rejects(
+    () => readBackupData(driver),
+    /more than the \d+ MiB one backup can hold/i,
+  );
+  assert.deepEqual(
+    driver.callsTo("readPhoto"),
+    [],
+    "a refused export must not pull the library through IPC first",
+  );
 });
 
 test("parseBackupZip rejects bytes that are not a zip", () => {
@@ -246,10 +326,9 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
   const saveIdx = driver.calls.findIndex((c) => c.method === "savePhoto");
   const batchIdx = driver.calls.findIndex((c) => c.method === "batch");
   assert.ok(saveIdx >= 0 && batchIdx >= 0 && saveIdx < batchIdx);
-  assert.deepEqual(first(driver.callsTo("savePhoto"), "save").args, [
-    [9, 9, 9],
-    "jpg",
-  ]);
+  const saved = first(driver.callsTo("savePhoto"), "save").args;
+  expectBytes(saved[0], [9, 9, 9]);
+  assert.equal(saved[1], "jpg");
 
   // FK off before the batch, back on after — in a finally, so a failed
   // import never leaves the connection in FK-off mode.
@@ -319,7 +398,9 @@ test("applyBackup removes newly written photos when the DB import fails", async 
         ],
       },
     },
-    photos: [{ path: "photos/2026/10/new.jpg", bytes: [1, 2, 3] }],
+    photos: [
+      { path: "photos/2026/10/new.jpg", bytes: Uint8Array.from([1, 2, 3]) },
+    ],
   };
 
   await assert.rejects(applyBackup(driver, parsed), /batch failed/);

@@ -5,6 +5,12 @@
 **Reviewer:** independent review pass over the whole tree (source, config, tests, docs, git/CI state, upstream dependency behaviour)
 **Deliverable:** this document and its 2026-10-14 A-05 resolution addendum.
 
+> **Remaining-findings companion (2026-10-15):**
+> [`docs/REVIEW_REMAINING_2026-10-15.md`](REVIEW_REMAINING_2026-10-15.md)
+> re-verifies every finding below against the code and lists what is still
+> open. Where the two disagree, the companion is current and this document is
+> the historical record.
+
 ### A-05 resolution addendum — 2026-10-14
 
 The repository owner cannot use GitHub Actions because of billing constraints.
@@ -322,6 +328,24 @@ pattern Tauri's own docs show for `WebviewBuilder::on_navigation`), and route ex
 links to the system browser via the opener plugin (add the plugin *and* its capability
 entry, per the project's own rule).
 
+**Resolution update — 2026-10-15:** fixed on both sides. A plugin `on_navigation`
+hook (`src-tauri/src/navigation.rs`) cancels every navigation away from the app's own
+origin — `tauri://localhost` on Linux/macOS, `http(s)://tauri.localhost` on Windows —
+with one dev-build-only exception for the configured `devUrl` origin, keyed on
+`tauri::is_dev()` so a `devUrl` left in a shipped config cannot become a route to a
+local server. It is a *plugin* hook rather than `WebviewWindowBuilder::on_navigation`
+because that builder API is creation-time only while the main window is declared in
+`tauri.conf.json`; plugin hooks are consulted for config-defined windows. The front end
+no longer depends on the guard for good behaviour: `src/components/MarkdownLink.tsx`
+routes external links (`http`/`https`/`mailto`/`tel`) through the opener plugin, lets
+in-document anchors scroll, and makes everything else — relative paths, `javascript:`,
+`data:`, `file:` — inert. The opener plugin is `tauri-plugin-opener` /
+`@tauri-apps/plugin-opener` 2.7.2 (max stable 2.x on both sides) with the capability
+entries `opener:allow-open-url` and `opener:allow-default-urls` — the URL scope the
+plugin ships for exactly these schemes, and nothing wider. Both rules are pure and
+unit-tested (4 Rust tests, 5 TS tests); in `tauri dev` the guard was observed allowing
+the app's own startup navigation with zero blocked navigations.
+
 ### L-02 — No throttling on lock-screen attempts
 
 **Severity:** Low · **Evidence:** `src/components/LockScreens.tsx:225-275`
@@ -337,6 +361,18 @@ after N consecutive failures, or a note in the UI that the PIN is the only barri
 also that the fallback allows *replacing* the PIN once the answer is known — an attacker
 with the answer can lock the real user out by changing it. Consider requiring the old PIN
 (or at least warning) when the reset is triggered.
+
+**Resolution update — 2026-10-15:** the remaining half of this finding is closed in the
+UI, not by proof. Requiring the old PIN on the lock screen is impossible by design — that
+screen exists for a PIN the user no longer knows — and **Change PIN** in Settings already
+verifies the current PIN for the case where they do. So the fallback now does the other
+thing the review asked for: it states that it *replaces* the PIN and that anyone who knows
+the answer can lock the owner out, and it refuses to write anything until the operator
+ticks an explicit acknowledgement. The rule itself is pure (`pinResetBlocked`,
+`src/lib/appLock.ts`) and pinned by tests in `src/lib/appLock.test.ts`; the checkbox wiring
+is not covered (there is still no component harness — I-02). The residual risk stands as
+designed: someone who knows the answer can take the lock over, but no longer silently.
+The throttle above is unchanged and still counts both paths together.
 
 ### L-03 — Three of the fourteen IPC commands are dead surface
 

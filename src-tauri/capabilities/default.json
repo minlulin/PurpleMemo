@@ -7,6 +7,8 @@
     "updater:default",
     "notification:default",
     "dialog:default",
-    "fs:write-files"
+    "fs:write-files",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }

@@ -23,6 +23,50 @@ export function lockRetryDelayMs(failures: number): number {
 }
 
 /**
+ * The forgotten-PIN fallback (`LockScreen`'s "Forgot PIN?") REPLACES the
+ * stored PIN once the security answer verifies. Whoever knows the answer can
+ * therefore take the lock over and shut the owner out — the second half of
+ * review L-02.
+ *
+ * Requiring the old PIN here is not an option: the flow exists for a PIN the
+ * user no longer knows, and Settings → Change PIN already verifies the current
+ * PIN for the case where they do. So the fallback cannot be made safe by proof
+ * — only deliberate. This rule is what makes it deliberate: the answer alone
+ * never writes anything; the screen states the consequence and the operator
+ * must acknowledge it first.
+ */
+export type PinResetBlock =
+  | "no-answer"
+  | "short-pin"
+  | "mismatch"
+  | "unacknowledged";
+
+/**
+ * The first reason the fallback reset is refused, or `null` when it may
+ * proceed. Pure, so the rule above is pinned by a test rather than by the
+ * screen; the caller maps each code to its sentence.
+ *
+ * Order (deliberate, and what the tests pin): an unavailable fallback outranks
+ * everything — it fails closed — then the new-PIN rules, then the
+ * acknowledgement, which is the gate on the write itself. A refusal here is
+ * not a failed attempt and must not count against the retry throttle.
+ */
+export function pinResetBlocked(input: {
+  answerHash: unknown;
+  acknowledged: boolean;
+  pin: string;
+  confirm: string;
+}): PinResetBlock | null {
+  if (input.answerHash === null || input.answerHash === undefined) {
+    return "no-answer";
+  }
+  if (input.pin.length < MIN_PIN_LENGTH) return "short-pin";
+  if (input.pin !== input.confirm) return "mismatch";
+  if (!input.acknowledged) return "unacknowledged";
+  return null;
+}
+
+/**
  * True when the app has been idle longer than `minutes` (§2.9 auto-lock).
  * `minutes <= 0` disables auto-lock — an idle app never locks itself.
  * Timestamps are compared in milliseconds (performance.now() or Date.now()).

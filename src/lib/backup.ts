@@ -11,7 +11,7 @@
 // kept in sync by triggers on `notes` (schema.rs), so importing the notes
 // rows rebuilds it — backing it up too would double every entry on import.
 
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { strFromU8, strToU8, unzipSync, zip, zipSync } from "fflate";
 import type { BatchStatement, DataDriver, Row } from "../data/driver.ts";
 import { sha256HexBytes } from "./crypto.ts";
 
@@ -30,6 +30,21 @@ export const MAX_BACKUP_ENTRIES = 10_000;
 export const MAX_BACKUP_MANIFEST_BYTES = 16 * 1024 * 1024;
 export const MAX_BACKUP_PHOTOS = 5_000;
 export const MAX_BACKUP_PHOTO_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Export cap (review M-02). The import path refuses an archive above
+ * `MAX_BACKUP_ARCHIVE_BYTES`, so an archive this app writes must stay under
+ * that: a backup it could not restore is worse than no export button at all.
+ * Photos are stored already compressed, so the photo payload is essentially
+ * the archive; the manifest allowance keeps the sum honest.
+ */
+export const MAX_EXPORT_PHOTO_BYTES =
+  MAX_BACKUP_ARCHIVE_BYTES - MAX_BACKUP_MANIFEST_BYTES;
+
+/** Whole mebibytes, for messages a person reads. */
+function mib(bytes: number): number {
+  return Math.round(bytes / (1024 * 1024));
+}
 
 /** The 28 data tables (the 29th, notes_fts, is trigger-maintained). */
 export const BACKUP_TABLES = [
@@ -73,7 +88,8 @@ export interface BackupPayload {
 export interface BackupPhotoEntry {
   /** Relative path inside the zip, e.g. `photos/2026/10/<sha256>.jpg`. */
   path: string;
-  bytes: number[];
+  /** Raw bytes, never a `number[]` (review M-02). */
+  bytes: Uint8Array;
 }
 
 export interface ParsedBackup {
@@ -94,6 +110,34 @@ export interface BackupApplyResult {
   photos: number;
 }
 
+export interface ExportBudget {
+  /** Bytes of the photos this export would read into the archive. */
+  bytes: number;
+  photos: number;
+  /** False when the library is too large for one importable archive. */
+  ok: boolean;
+  /** The cap `bytes` was measured against. */
+  limit: number;
+}
+
+/**
+ * Pure: can this library be exported as ONE archive? `size_bytes` is stored on
+ * every `photos` row, so the answer needs no bytes to be read — which is the
+ * point: a refused export must not first pull the whole library through IPC.
+ * A row with a nonsense size counts as zero rather than poisoning the sum.
+ */
+export function exportBudget(
+  rows: { size_bytes: number }[],
+  limit: number = MAX_EXPORT_PHOTO_BYTES,
+): ExportBudget {
+  let bytes = 0;
+  for (const row of rows) {
+    const size = Number(row.size_bytes);
+    if (Number.isFinite(size) && size > 0) bytes += size;
+  }
+  return { bytes, photos: rows.length, ok: bytes <= limit, limit };
+}
+
 /** Read every data table + photo bytes into a storable backup (§8). */
 export async function readBackupData(
   driver: DataDriver,
@@ -102,9 +146,16 @@ export async function readBackupData(
   for (const table of BACKUP_TABLES) {
     data[table] = await driver.query<Row>(`SELECT * FROM ${table}`);
   }
-  const photoRows = await driver.query<{ rel_path: string }>(
-    "SELECT rel_path FROM photos ORDER BY id",
-  );
+  const photoRows = await driver.query<{
+    rel_path: string;
+    size_bytes: number;
+  }>("SELECT rel_path, size_bytes FROM photos ORDER BY id");
+  const budget = exportBudget(photoRows);
+  if (!budget.ok) {
+    throw new Error(
+      `This library holds about ${mib(budget.bytes)} MiB of photos, more than the ${mib(budget.limit)} MiB one backup can hold. Delete some photos (or export after removing the largest ones) and try again — the library was not touched.`,
+    );
+  }
   const photos: BackupPhotoEntry[] = [];
   for (const row of photoRows) {
     photos.push({
@@ -123,18 +174,36 @@ export async function readBackupData(
   };
 }
 
-/** Zip the manifest + photos tree into backup bytes (fflate, §3). */
-export function buildBackupZip(
+/**
+ * Zip the manifest + photos tree into backup bytes (fflate, §3).
+ *
+ * Async on purpose (review M-02): `zipSync` deflates the whole archive on the
+ * UI thread, which freezes the window for minutes on a photo-heavy library.
+ * fflate's async path does the deflate in a Web Worker. If that worker cannot
+ * be created — a CSP that does not allow blob workers, or an old webview — the
+ * blocking path still produces the archive, because a complete backup the user
+ * must wait for beats an export that fails outright; the cap above is what
+ * bounds the work either way.
+ */
+export async function buildBackupZip(
   payload: BackupPayload,
   photos: BackupPhotoEntry[],
-): Uint8Array {
+): Promise<Uint8Array> {
   const files: Record<string, Uint8Array> = {
     [BACKUP_JSON_ENTRY]: strToU8(JSON.stringify(payload)),
   };
   for (const photo of photos) {
-    files[photo.path] = new Uint8Array(photo.bytes);
+    files[photo.path] = photo.bytes;
   }
-  return zipSync(files);
+  try {
+    return await new Promise<Uint8Array>((resolve, reject) => {
+      zip(files, (error, data) =>
+        error ? reject(error) : resolve(data as Uint8Array),
+      );
+    });
+  } catch {
+    return zipSync(files);
+  }
 }
 
 /**
@@ -276,7 +345,7 @@ export function parseBackupZip(bytes: Uint8Array): ParsedBackup {
     if (name === BACKUP_JSON_ENTRY || !name.startsWith(PHOTOS_ZIP_PREFIX)) {
       continue;
     }
-    photos.push({ path: name, bytes: Array.from(content) });
+    photos.push({ path: name, bytes: content });
   }
   return { payload, photos };
 }
@@ -369,7 +438,7 @@ export async function applyBackup(
         // sha256/size_bytes still describe the old content is internally
         // inconsistent, and the schema does not catch it.
         row.rel_path = saved;
-        row.sha256 = await sha256HexBytes(Uint8Array.from(entry.bytes));
+        row.sha256 = await sha256HexBytes(entry.bytes);
         row.size_bytes = entry.bytes.length;
       }
       kept.add(saved);
@@ -422,7 +491,7 @@ export function createBackupRepo(driver: DataDriver) {
     }> {
       const parsed = await readBackupData(driver);
       return {
-        bytes: buildBackupZip(parsed.payload, parsed.photos),
+        bytes: await buildBackupZip(parsed.payload, parsed.photos),
         summary: summarizeBackup(parsed),
       };
     },

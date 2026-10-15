@@ -15,6 +15,7 @@ import {
   IconPlus,
   IconSearch,
 } from "../components/icons.tsx";
+import { markdownComponents } from "../components/MarkdownLink.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { journalRepo, notesRepo, settingsRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
@@ -166,7 +167,9 @@ function NoteEditor(p: EditorProps) {
             {p.content.trim().length === 0 ? (
               <p className="empty-state">Live preview appears here.</p>
             ) : (
-              <ReactMarkdown>{p.content}</ReactMarkdown>
+              <ReactMarkdown components={markdownComponents}>
+                {p.content}
+              </ReactMarkdown>
             )}
           </div>
         </div>

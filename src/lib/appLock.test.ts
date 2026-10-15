@@ -9,6 +9,8 @@ import {
   lockGate,
   lockRetryDelayMs,
   MIN_PIN_LENGTH,
+  type PinResetBlock,
+  pinResetBlocked,
 } from "./appLock.ts";
 
 // The lock gate must fail CLOSED (§2.9: the PIN is required and cannot be
@@ -70,6 +72,68 @@ test("isIdle: never locks when auto-lock is disabled (minutes <= 0)", () => {
 test("guard rails: 6+ char PIN, 10 minute default (§2.9)", () => {
   assert.equal(MIN_PIN_LENGTH, 6);
   assert.equal(DEFAULT_AUTO_LOCK_MINUTES, 10);
+});
+
+// The forgotten-PIN fallback *replaces* the PIN once the answer is known, so
+// whoever knows the answer can lock the owner out (review L-02, remaining
+// half). Requiring the old PIN there is impossible by design — the fallback
+// exists precisely for a PIN the user no longer knows — so the rule is that
+// the answer alone is never enough: the screen must state the consequence and
+// the operator must acknowledge it before anything is written.
+const RESET = {
+  answerHash: HASH,
+  acknowledged: true,
+  pin: "newpin1",
+  confirm: "newpin1",
+};
+
+test("pinResetBlocked: the answer alone cannot replace the PIN (L-02)", () => {
+  assert.equal(
+    pinResetBlocked({ ...RESET, acknowledged: false }),
+    "unacknowledged" satisfies PinResetBlock,
+  );
+});
+
+test("pinResetBlocked: an acknowledged, well-formed reset may proceed", () => {
+  assert.equal(pinResetBlocked(RESET), null);
+});
+
+test("pinResetBlocked: a missing answer hash fails closed, ack or not", () => {
+  for (const answerHash of [null, undefined]) {
+    assert.equal(
+      pinResetBlocked({ ...RESET, answerHash }),
+      "no-answer",
+      `${String(answerHash)} answer hash`,
+    );
+    assert.equal(
+      pinResetBlocked({ ...RESET, answerHash, acknowledged: false }),
+      "no-answer",
+      "unavailable fallback outranks the acknowledgement",
+    );
+  }
+});
+
+test("pinResetBlocked: PIN rules still apply once acknowledged", () => {
+  const short = "short"; // 5 chars < MIN_PIN_LENGTH (6)
+  assert.equal(
+    pinResetBlocked({ ...RESET, pin: short, confirm: short }),
+    "short-pin",
+  );
+  assert.equal(
+    pinResetBlocked({ ...RESET, pin: "newpin1", confirm: "newpin2" }),
+    "mismatch",
+  );
+  // The typed fields are validated ahead of the acknowledgement, so a
+  // malformed reset reports the field it can fix rather than the checkbox.
+  assert.equal(
+    pinResetBlocked({
+      ...RESET,
+      acknowledged: false,
+      pin: short,
+      confirm: short,
+    }),
+    "short-pin",
+  );
 });
 
 test("lockRetryDelayMs: free attempts are instant, then a fixed pause (L-02)", () => {

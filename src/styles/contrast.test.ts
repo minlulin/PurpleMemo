@@ -145,6 +145,12 @@ test("every text pair clears WCAG AA in both themes", () => {
     ["--color-warn", "--color-surface-raised"],
     // Badges and alerts: tinted text on the matching soft tint.
     ["--color-accent", "--color-accent-soft", "--color-surface-raised"],
+    // The lock screen's alerts sit on the form (`--color-surface`), not on a
+    // raised card: `.lock-wrap .entry-form` keeps the base entry-form surface.
+    // L-02 added the warn alert here; the note alert was already rendered the
+    // same way, so both are pinned.
+    ["--color-warn", "--color-warn-soft", "--color-surface"],
+    ["--color-accent", "--color-accent-soft", "--color-surface"],
     ["--color-danger", "--color-danger-soft", "--color-surface"],
     ["--color-danger", "--color-danger-soft", "--color-surface-raised"],
     ["--color-success", "--color-success-soft", "--color-surface-raised"],

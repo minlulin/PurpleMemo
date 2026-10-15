@@ -747,6 +747,23 @@ button.chip:hover {
   border-color: var(--color-accent-ring);
 }
 
+.alert-warn {
+  color: var(--color-warn);
+  background: var(--color-warn-soft);
+  border-color: var(--color-warn-border);
+}
+
+/* Lock screen: the acknowledgement row on the PIN-reset form (review L-02).
+ * Same shape as `.settings-check`, but the lock screen is not settings. */
+.lock-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
 .empty-state {
   padding: var(--space-8) var(--space-5);
   color: var(--color-text-muted);

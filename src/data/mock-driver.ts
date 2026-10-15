@@ -24,6 +24,17 @@ export interface MockScript {
   error?: Error;
   /** Thrown by the next `batch` when set — consumed once. */
   batchError?: Error;
+  /** Stored thumbnail bytes for this mock install (see `readPhotoThumb`). */
+  thumbBytes?: Uint8Array;
+}
+
+/** Mirrors the Rust thumbnail derivation: `<hash>.<ext>` -> `<hash>.thumb.<ext>`. */
+export function thumbPath(relPath: string): string {
+  const slash = relPath.lastIndexOf("/");
+  const dir = relPath.slice(0, slash + 1);
+  const file = relPath.slice(slash + 1);
+  const dot = file.indexOf(".");
+  return `${dir}${file.slice(0, dot)}.thumb${file.slice(dot)}`;
 }
 
 export interface MockDriver extends DataDriver {
@@ -102,16 +113,33 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     async rollback(): Promise<void> {
       record("rollback", []);
     },
-    async savePhoto(bytes: number[], ext: string): Promise<string> {
+    async savePhoto(bytes: Uint8Array, ext: string): Promise<string> {
       record("savePhoto", [bytes, ext]);
       return `photos/2026/10/${ext}.${bytes.length}`;
     },
-    async readPhoto(relPath: string): Promise<number[]> {
+    async readPhoto(relPath: string): Promise<Uint8Array> {
       record("readPhoto", [relPath]);
-      return [1, 2, 3];
+      return Uint8Array.from([1, 2, 3]);
+    },
+    async readPhotoThumb(sourceRelPath: string): Promise<Uint8Array> {
+      record("readPhotoThumb", [sourceRelPath]);
+      // Same contract as Rust: no stored thumbnail is an error the caller
+      // answers by generating one.
+      if (!script.thumbBytes)
+        throw new Error(`no thumbnail for ${sourceRelPath}`);
+      return script.thumbBytes;
+    },
+    async savePhotoThumb(
+      sourceRelPath: string,
+      bytes: Uint8Array,
+    ): Promise<string> {
+      record("savePhotoThumb", [sourceRelPath, bytes]);
+      script.thumbBytes = bytes;
+      return thumbPath(sourceRelPath);
     },
     async deletePhoto(relPath: string): Promise<void> {
       record("deletePhoto", [relPath]);
+      script.thumbBytes = undefined;
     },
     async exportDbKey(): Promise<string> {
       record("exportDbKey", []);

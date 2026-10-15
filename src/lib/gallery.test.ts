@@ -1,6 +1,8 @@
 // Gallery repository (§2.7): saving identical bytes twice returns the
 // existing row instead of violating the rel_path UNIQUE constraint; photo
-// links resolve by photo id; extensions come from the picked file name.
+// links resolve by photo id; extensions come from the picked file name; and
+// bytes are `Uint8Array` on both sides of the driver (review M-02), never a
+// JSON array of byte numbers.
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
@@ -15,7 +17,7 @@ test("savePhoto: duplicate bytes return the existing row, no second INSERT", asy
     ],
   });
   const gallery = createGalleryRepo(driver);
-  const bytes = [10, 20, 30, 40];
+  const bytes = Uint8Array.from([10, 20, 30, 40]);
   const first = await gallery.savePhoto({ bytes, ext: "jpg" });
   assert.equal(first, 1);
   const second = await gallery.savePhoto({ bytes, ext: "jpg" });
@@ -50,6 +52,60 @@ test("listRefsForPhoto: queries photo_refs scoped by photo id", async () => {
   assert.match(sql, /FROM photo_refs WHERE photo_id = \?/);
   assert.deepEqual(params, [9]);
   assert.equal(refs[0]?.entity_type, "memory");
+});
+
+test("savePhoto hands the driver raw bytes, never a number array", async () => {
+  const driver = createMockDriver({ results: [[]] });
+  const gallery = createGalleryRepo(driver);
+  const bytes = Uint8Array.from([9, 8, 7]);
+  await gallery.savePhoto({ bytes, ext: "png" });
+  const [saved, ext] = driver.callsTo("savePhoto")[0]?.args ?? [];
+  assert.ok(saved instanceof Uint8Array, "raw bytes cross the driver");
+  assert.equal(ext, "png");
+  // size_bytes describes the bytes that were stored, not a re-encoding.
+  const insert = driver
+    .callsTo("execute")
+    .find((c) => /INSERT INTO photos/.test(c.args[0] as string));
+  assert.ok(insert, "the photo row was inserted");
+  const params = insert.args[1] as unknown[];
+  assert.equal(params[3], 3);
+});
+
+test("readThumbBytes: a stored thumbnail reads back; a missing one rejects", async () => {
+  // Row lookup, then the thumb read — the driver owns the path derivation.
+  const driver = createMockDriver({
+    results: [[{ id: 4, rel_path: "photos/2026/10/aa.jpg" }]],
+  });
+  const gallery = createGalleryRepo(driver);
+  await assert.rejects(
+    gallery.readThumbBytes(4),
+    /no thumbnail/,
+    "no thumbnail yet is a rejection the page turns into generation",
+  );
+  assert.deepEqual(driver.callsTo("readPhotoThumb")[0]?.args, [
+    "photos/2026/10/aa.jpg",
+  ]);
+});
+
+test("saveThumb writes the thumbnail against the photo's own path", async () => {
+  const driver = createMockDriver({
+    results: [[{ id: 4, rel_path: "photos/2026/10/aa.jpg" }]],
+  });
+  const gallery = createGalleryRepo(driver);
+  await gallery.saveThumb(4, Uint8Array.from([1, 2]));
+  const [source, bytes] = driver.callsTo("savePhotoThumb")[0]?.args ?? [];
+  assert.equal(source, "photos/2026/10/aa.jpg");
+  assert.ok(bytes instanceof Uint8Array);
+});
+
+test("readPhotoBytes returns the driver's bytes unchanged", async () => {
+  const driver = createMockDriver({
+    results: [[{ id: 2, rel_path: "photos/2026/10/bb.jpg" }]],
+  });
+  const gallery = createGalleryRepo(driver);
+  const bytes = await gallery.readPhotoBytes(2);
+  assert.ok(bytes instanceof Uint8Array);
+  assert.deepEqual(Array.from(bytes ?? []), [1, 2, 3]);
 });
 
 test("updatePhoto writes only the provided fields", async () => {

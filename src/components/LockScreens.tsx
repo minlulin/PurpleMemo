@@ -10,6 +10,8 @@ import {
   LOCK_RETRY_DELAY_MS,
   lockRetryDelayMs,
   MIN_PIN_LENGTH,
+  type PinResetBlock,
+  pinResetBlocked,
 } from "../lib/appLock.ts";
 import {
   hashAnswer,
@@ -21,6 +23,20 @@ import {
 import { errText } from "../lib/errors.ts";
 import { SETTING_KEYS } from "../lib/settings.ts";
 import { IconLock } from "./icons.tsx";
+
+/**
+ * One sentence per refusal from `pinResetBlocked`, in the order that function
+ * checks them. `unacknowledged` is the L-02 gate: the reset replaces the PIN
+ * and the operator has not yet said they understand that.
+ */
+const RESET_PROBLEM: Record<PinResetBlock, string> = {
+  "no-answer":
+    "The recovery fallback is unavailable for this install — the stored PIN is the only way in.",
+  "short-pin": `New PIN must be at least ${MIN_PIN_LENGTH} characters.`,
+  mismatch: "PINs do not match.",
+  unacknowledged:
+    "Tick the acknowledgement first — a new PIN replaces the old one and cannot be undone.",
+};
 
 /** Progress dots for PIN entry. Decorative — the input keeps the real value. */
 function PinDots({ length }: { length: number }) {
@@ -113,7 +129,9 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
           <p className="page-subtitle">
             Set a local PIN to protect your workspace. The PIN is{" "}
             <b>required</b> — there is <b>no online recovery</b>. Your security
-            question below is the only way back in if you forget your PIN.
+            question below is the only way back in if you forget your PIN, and
+            anyone who knows its answer can set a new PIN with it — so choose
+            something only you know.
           </p>
         </div>
         {error ? (
@@ -229,6 +247,14 @@ export function LockScreen(p: LockScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [shaking, setShaking] = useState(false);
+  /**
+   * The forgotten-PIN fallback replaces the PIN, so it is the one control on
+   * this screen that a person who is not the owner can use against the owner
+   * (review L-02). The consequence is stated in the form and this tick is
+   * required before anything is written — cleared every time the form is
+   * entered, so it is an acknowledgement, not a stored preference.
+   */
+  const [ack, setAck] = useState(false);
   /** Consecutive failed attempts across both paths (PIN + answer). Resets on
    *  the first success; past the free attempts the screen pauses
    *  `LOCK_RETRY_DELAY_MS` before another try (review L-02). */
@@ -276,23 +302,30 @@ export function LockScreen(p: LockScreenProps) {
   const resetPin = async () => {
     if (cooling) return;
     setShaking(false);
-    if (p.answerHash === null) {
-      setError(
-        "The recovery fallback is unavailable for this install — the stored PIN is the only way in.",
-      );
+    // Destructured so the verification below needs no cast. `pinResetBlocked`
+    // re-checks it anyway — it fails closed for every caller — but the order
+    // here keeps the rows below typesafe.
+    const { answerHash } = p;
+    if (answerHash === null) {
+      setError(RESET_PROBLEM["no-answer"]);
       return;
     }
-    if (draft.pin.length < MIN_PIN_LENGTH) {
-      setError(`New PIN must be at least ${MIN_PIN_LENGTH} characters.`);
-      return;
-    }
-    if (draft.pin !== draft.confirm) {
-      setError("PINs do not match.");
+    // The whole rule lives in `pinResetBlocked` (pure, tested): a malformed
+    // new PIN never reaches the write, and neither does an unacknowledged
+    // reset — the answer alone must not replace the PIN (review L-02).
+    const blocked = pinResetBlocked({
+      answerHash,
+      acknowledged: ack,
+      pin: draft.pin,
+      confirm: draft.confirm,
+    });
+    if (blocked !== null) {
+      setError(RESET_PROBLEM[blocked]);
       return;
     }
     setBusy(true);
     try {
-      if (!(await verifyAnswer(draft.answer, p.answerHash))) {
+      if (!(await verifyAnswer(draft.answer, answerHash))) {
         setError("Wrong answer.");
         await noteFailure();
         return;
@@ -376,6 +409,7 @@ export function LockScreen(p: LockScreenProps) {
                 setMode("forgot");
                 setError(null);
                 setShaking(false);
+                setAck(false);
               }}
             >
               Forgot PIN?
@@ -411,7 +445,17 @@ export function LockScreen(p: LockScreenProps) {
           <p className="alert alert-error" role="alert">
             {error}
           </p>
-        ) : null}
+        ) : null}{" "}
+        {/* One child: `.alert` is a flex container, so the sentence (and its
+         *  inline `<b>`) has to live inside a single element or every text run
+         *  becomes its own flex item. */}
+        <p className="alert alert-warn">
+          <span>
+            This <b>replaces</b> your PIN. Anyone who knows your security answer
+            can do the same and lock you out — if you still know your PIN, go
+            back and use Change PIN in Settings instead.
+          </span>
+        </p>
         <p className="alert alert-note">{p.question}</p>
         <label>
           Answer
@@ -448,6 +492,15 @@ export function LockScreen(p: LockScreenProps) {
           </label>
         </div>
         <PinDots length={draft.pin.length} />
+        <label className="lock-ack">
+          <input
+            type="checkbox"
+            checked={ack}
+            onChange={(e) => setAck(e.target.checked)}
+          />
+          I understand this replaces my PIN, and that this is the only way to
+          set one without knowing the current PIN.
+        </label>
         <div className="editor-actions">
           <button
             type="submit"
@@ -463,6 +516,7 @@ export function LockScreen(p: LockScreenProps) {
               setMode("pin");
               setError(null);
               setShaking(false);
+              setAck(false);
             }}
           >
             Back

@@ -3,6 +3,15 @@
 //! keeps the relative path. Reads/deletes guard against path traversal with a
 //! strict grammar — the only accepted shape is
 //! `photos/<4 digits>/<2 digits>/<64 hex>.<1-8 lowercase alnum>`.
+//!
+//! Thumbnails (review M-02) live next to their photo as
+//! `photos/<yyyy>/<mm>/<sha256-hex>.thumb.<ext>`: derived from the photo path,
+//! never stored in the DB — the schema has no migrations, so a `thumb_path`
+//! column would strand every existing database. The frontend never builds
+//! either path itself: `photo_read_thumb`/`photo_save_thumb` take the SOURCE
+//! photo path and derive the sibling internally, which also means the
+//! JS-facing grammar is unchanged (a `.thumb.`-shaped path is rejected as a
+//! source, since its extension would contain two dots).
 
 use std::fs;
 use std::io::ErrorKind;
@@ -61,24 +70,56 @@ pub fn save_photo(
         }
         // Hash mismatch: partial or corrupt file — rewrite it atomically below.
     }
-    let tmp_path = abs_path.with_extension(format!("{ext}.tmp"));
+    write_atomic(&abs_path, bytes, true)?;
+    Ok(rel_path)
+}
+
+/// Bytes -> temp sibling -> rename. The temp path is a sibling in the same
+/// directory so the rename stays on one filesystem, and it can never collide
+/// with a storable path: the photo grammar allows a single dot, so
+/// `<hash>.jpg.tmp` and `<hash>.thumb.jpg.tmp` are both unstorable shapes.
+///
+/// `replace` removes a known-bad destination first: `rename` overwrites on
+/// Unix but not on Windows, and corruption recovery must behave the same on
+/// every supported platform. The caller holds [`PHOTO_WRITE_LOCK`], so the
+/// short remove/rename window is not observable by another write.
+fn write_atomic(abs_path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
+    let Some(parent) = abs_path.parent() else {
+        return Err(format!("no parent directory for {}", abs_path.display()));
+    };
+    fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let Some(file_name) = abs_path.file_name().and_then(|n| n.to_str()) else {
+        return Err(format!("invalid destination {}", abs_path.display()));
+    };
+    let tmp_path = parent.join(format!("{file_name}.tmp"));
     fs::write(&tmp_path, bytes).map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
-    // `rename` replaces an existing destination on Unix but not on Windows.
-    // Remove a known-bad destination first so corruption recovery behaves the
-    // same on every supported platform. The write lock prevents another save
-    // from observing the short remove/rename window.
-    if abs_path.exists() {
-        fs::remove_file(&abs_path)
+    if replace && abs_path.exists() {
+        fs::remove_file(abs_path)
             .map_err(|e| format!("remove corrupt {}: {e}", abs_path.display()))?;
     }
-    fs::rename(&tmp_path, &abs_path).map_err(|e| {
+    fs::rename(&tmp_path, abs_path).map_err(|e| {
         format!(
             "rename {} -> {}: {e}",
             tmp_path.display(),
             abs_path.display()
         )
-    })?;
-    Ok(rel_path)
+    })
+}
+
+/// The thumbnail that belongs to a stored photo: same directory and hash,
+/// with a `.thumb` marker before the extension.
+///
+/// Derived rather than stored (see the module docs). The source path is
+/// validated first, which is what keeps the derived path out of reach of the
+/// frontend: `photos/2026/10/<hash>.thumb.jpg` is not a valid SOURCE path, so
+/// a caller cannot address a thumbnail file directly.
+pub fn thumb_rel_path(rel_path: &str) -> Result<String, String> {
+    validate_rel_path(rel_path)?;
+    let (dir, file) = rel_path
+        .rsplit_once('/')
+        .ok_or_else(|| invalid_rel(rel_path))?;
+    let (hash, ext) = file.split_once('.').ok_or_else(|| invalid_rel(rel_path))?;
+    Ok(format!("{dir}/{hash}.thumb.{ext}"))
 }
 
 /// Read photo bytes by relative path (traversal-guarded).
@@ -87,14 +128,40 @@ pub fn read_photo(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, String> {
     fs::read(data_dir.join(rel_path)).map_err(|e| format!("read {rel_path}: {e}"))
 }
 
-/// Delete a photo file by relative path (traversal-guarded, idempotent).
+/// Read the thumbnail of a stored photo. The caller passes the SOURCE path;
+/// the sibling thumb path is derived here. An error means "no thumbnail yet"
+/// (or a source that does not exist) — the frontend then generates one.
+pub fn read_thumb(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, String> {
+    let thumb = thumb_rel_path(rel_path)?;
+    fs::read(data_dir.join(&thumb)).map_err(|e| format!("read {thumb}: {e}"))
+}
+
+/// Write the thumbnail of a stored photo and return the derived thumb path.
+/// Same atomic-write discipline as a photo save.
+pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<String, String> {
+    let _write_guard = PHOTO_WRITE_LOCK
+        .lock()
+        .map_err(|_| "photo write mutex poisoned".to_string())?;
+    let thumb = thumb_rel_path(rel_path)?;
+    write_atomic(&data_dir.join(&thumb), bytes, false)?;
+    Ok(thumb)
+}
+
+/// Delete a photo file by relative path (traversal-guarded, idempotent). The
+/// derived thumbnail goes with it, so a deleted photo leaves no orphan file.
 pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), String> {
     validate_rel_path(rel_path)?;
     match fs::remove_file(data_dir.join(rel_path)) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("delete {rel_path}: {e}")),
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("delete {rel_path}: {e}")),
     }
+    // Best-effort: a thumbnail is derived data, so failing to unlink one must
+    // never turn a successful (or already-done) photo delete into an error.
+    if let Ok(thumb) = thumb_rel_path(rel_path) {
+        let _ = fs::remove_file(data_dir.join(thumb));
+    }
+    Ok(())
 }
 
 fn is_valid_ext(ext: &str) -> bool {
@@ -246,6 +313,85 @@ mod tests {
             assert!(
                 save_photo(&dir.0, bad_ym, b"x", "jpg").is_err(),
                 "year/month {bad_ym:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn thumb_path_is_derived_from_the_photo_path() {
+        let hash = "a".repeat(64);
+        assert_eq!(
+            thumb_rel_path(&format!("photos/2026/10/{hash}.jpg")).expect("derive"),
+            format!("photos/2026/10/{hash}.thumb.jpg")
+        );
+        // A source path that is not a photo has no thumbnail.
+        for bad in [
+            format!("photos/2026/10/{hash}.thumb.jpg"),
+            "photos/2026/10/short.jpg".to_string(),
+            "../photos/2026/10/x.jpg".to_string(),
+        ] {
+            assert!(
+                thumb_rel_path(&bad).is_err(),
+                "{bad:?} must not derive a thumbnail"
+            );
+        }
+    }
+
+    #[test]
+    fn thumb_shaped_paths_are_rejected_as_photo_paths() {
+        // The frontend can only ever name a SOURCE photo, so a thumb file is
+        // unreachable directly: two dots in the extension fails the grammar.
+        let dir = TempDir::new();
+        let hash = "b".repeat(64);
+        let thumb_shaped = format!("photos/2026/10/{hash}.thumb.jpg");
+        assert!(read_photo(&dir.0, &thumb_shaped).is_err());
+        assert!(delete_photo(&dir.0, &thumb_shaped).is_err());
+        assert!(read_thumb(&dir.0, &thumb_shaped).is_err());
+    }
+
+    #[test]
+    fn thumb_save_read_delete_roundtrip_and_sibling_cleanup() {
+        let dir = TempDir::new();
+        let rel = save_photo(&dir.0, "2026/10", b"photo bytes", "jpg").expect("save");
+        // No thumbnail yet: the frontend generates one on demand.
+        assert!(
+            read_thumb(&dir.0, &rel).is_err(),
+            "no thumb before saving one"
+        );
+
+        let thumb = save_thumb(&dir.0, &rel, b"thumb bytes").expect("save thumb");
+        assert!(thumb.ends_with(".thumb.jpg"), "unexpected thumb: {thumb}");
+        assert_eq!(
+            read_thumb(&dir.0, &rel).expect("read thumb"),
+            b"thumb bytes"
+        );
+        // Re-saving replaces it in place rather than creating a second file.
+        assert_eq!(
+            save_thumb(&dir.0, &rel, b"new thumb").expect("resave"),
+            thumb
+        );
+        assert_eq!(read_thumb(&dir.0, &rel).expect("read again"), b"new thumb");
+
+        // Deleting the photo takes its thumbnail with it.
+        delete_photo(&dir.0, &rel).expect("delete");
+        assert!(!dir.0.join(&rel).exists(), "photo file gone");
+        assert!(!dir.0.join(&thumb).exists(), "thumb file gone");
+        assert!(read_thumb(&dir.0, &rel).is_err());
+        // Idempotent: deleting an already-deleted photo still succeeds.
+        delete_photo(&dir.0, &rel).expect("second delete is a no-op");
+    }
+
+    #[test]
+    fn thumb_save_requires_a_valid_source_path() {
+        let dir = TempDir::new();
+        for bad in [
+            "photos/2026/13/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+            "photos/2026/10/../evil.jpg",
+            "not-a-photo.jpg",
+        ] {
+            assert!(
+                save_thumb(&dir.0, bad, b"x").is_err(),
+                "{bad:?} must not accept a thumbnail write"
             );
         }
     }

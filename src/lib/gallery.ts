@@ -1,7 +1,8 @@
 // Gallery repository (§2.7): photo bytes go through the driver's
 // photo_save/photo_read/photo_delete commands (content-addressed files under
 // the app-data dir); this layer manages the `photos`/`photo_refs` rows and
-// links photos to notes/memories/jobs.
+// links photos to notes/memories/jobs. Bytes are `Uint8Array` end to end
+// (review M-02) — the driver hands them over raw, never as a `number[]`.
 
 import type { DataDriver } from "../data/driver.ts";
 import { sha256HexBytes } from "./crypto.ts";
@@ -9,7 +10,7 @@ import { todayLocal } from "./dates.ts";
 import type { PhotoRefEntity, PhotoRefRow, PhotoRow } from "./types.ts";
 
 export interface SavePhotoInput {
-  bytes: number[];
+  bytes: Uint8Array;
   ext: string;
   takenDate?: string | null;
   note?: string;
@@ -47,7 +48,7 @@ export function createGalleryRepo(driver: DataDriver) {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           relPath,
-          await sha256HexBytes(new Uint8Array(input.bytes)),
+          await sha256HexBytes(input.bytes),
           input.ext,
           input.bytes.length,
           input.takenDate ?? null,
@@ -98,11 +99,30 @@ export function createGalleryRepo(driver: DataDriver) {
       );
     },
 
-    /** Read photo bytes by row id (rel_path -> photo_read command). */
-    async readPhotoBytes(id: number): Promise<number[] | undefined> {
+    /** Read full photo bytes by row id (rel_path -> photo_read command). */
+    async readPhotoBytes(id: number): Promise<Uint8Array | undefined> {
       const photo = await this.getPhoto(id);
       if (!photo) return undefined;
       return driver.readPhoto(photo.rel_path);
+    },
+
+    /**
+     * The stored thumbnail for a photo. Rejects when none has been stored yet
+     * (a photo saved before thumbnails existed, or one imported from a backup
+     * — thumbnails are derived data and never travel in an archive), which
+     * the caller answers by generating one and saving it.
+     */
+    async readThumbBytes(id: number): Promise<Uint8Array | undefined> {
+      const photo = await this.getPhoto(id);
+      if (!photo) return undefined;
+      return driver.readPhotoThumb(photo.rel_path);
+    },
+
+    /** Persist a thumbnail the page generated (canvas downscale). */
+    async saveThumb(id: number, bytes: Uint8Array): Promise<void> {
+      const photo = await this.getPhoto(id);
+      if (!photo) return;
+      await driver.savePhotoThumb(photo.rel_path, bytes);
     },
 
     /** Delete the row + the file (idempotent file delete). */

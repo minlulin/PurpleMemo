@@ -107,10 +107,15 @@ Light app lock (not a login system):
 - Lock screen on app launch, manual lock button, auto-lock after
   10 minutes idle (configurable).
 - **Forgotten-PIN fallback (required):** security question set together
-  with the PIN; correct answer allows setting a new PIN. No online
-  recovery exists — the UI states this plainly at setup.
+  with the PIN; correct answer allows setting a new PIN. That reset
+  *replaces* the PIN, so whoever knows the answer can lock the owner
+  out: the screen says so and refuses to write until the operator
+  ticks an explicit acknowledgement (review L-02) — Change PIN in
+  Settings, which verifies the current PIN, is the route for someone
+  who still knows it. No online recovery exists — the UI states this
+  plainly at setup.
 
-## 3. Tech stack — locked versions (verified 2026-10-07; max-stable re-verified 2026-10-11, semver-sorted)
+## 3. Tech stack — locked versions (verified 2026-10-07; max-stable re-verified 2026-10-11, semver-sorted; opener added 2026-10-15)
 
 | Layer | Choice | Version |
 |---|---|---|
@@ -118,6 +123,7 @@ Light app lock (not a login system):
 | Tauri CLI / API | @tauri-apps/cli / @tauri-apps/api | 2.12.2 / 2.12.3 |
 | Updater (plugin + JS) | tauri-plugin-updater / @tauri-apps/plugin-updater | 2.13.3 |
 | Notifications | tauri-plugin-notification / @tauri-apps/plugin-notification | 2.6.0 |
+| Opener (plugin + JS) | tauri-plugin-opener / @tauri-apps/plugin-opener | 2.7.2 |
 | DB | rusqlite (`bundled-sqlcipher-vendored-openssl`) — SQLite 3.51.3 + SQLCipher | 0.40.2 |
 | Key storage | keyring crate (OS credential store) | 4.2.0 |
 | UI | React + react-dom | 19.3.0 |
@@ -146,9 +152,10 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
 - **One driver:** Tauri only. No multi-backend abstraction.
 - **UI never touches the DB directly.** Pages call feature libraries;
   libraries call the single async data driver; the driver calls Tauri IPC.
-- **Rust IPC surface (14 commands):** the 10 database/photo commands —
+- **Rust IPC surface (16 commands):** the 12 database/photo commands —
   `db_query`, `db_execute`, `db_batch`, `db_begin`, `db_commit`,
-  `db_rollback`, `photo_save`, `photo_read`, `photo_delete`, `db_key_export` —
+  `db_rollback`, `photo_save`, `photo_read`, `photo_read_thumb`,
+  `photo_save_thumb`, `photo_delete`, `db_key_export` —
   plus the 4 P5 share controls `share_start`, `share_stop`, `share_status`,
   `share_publish`. The share commands are still reached through the single
   driver (§4's one-driver rule holds); they touch no SQL, no filesystem and
@@ -161,7 +168,26 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
   sections and are never held across UI awaits.
 - **Photos:** bytes hashed (sha256) → stored at
   `photos/<yyyy>/<mm>/<sha256-hex>.<ext>` under app-data; DB keeps the
-  relative path; reads guard against path traversal.
+  relative path; reads guard against path traversal. Bytes cross IPC as
+  **raw payloads**, not JSON byte arrays, and a thumbnail lives beside
+  each photo as `<sha256-hex>.thumb.<ext>` — derived in Rust from the
+  photo path, never stored in the DB (M-02; see
+  `docs/M02_PHOTO_PIPELINE_PLAN.md`). Backup export is capped below the
+  import limit, so an archive the app writes is one it can restore.
+- **Webview navigation:** every navigation away from the app's own origin is
+  cancelled by a plugin `on_navigation` hook (`src-tauri/src/navigation.rs`).
+  It is a plugin hook rather than `WebviewWindowBuilder::on_navigation`
+  because that builder API is creation-time only and the main window is
+  declared in `tauri.conf.json`. The single exception is the frontend's own
+  `devUrl` origin while `tauri dev` runs, keyed on a dev **build**
+  (`tauri::is_dev`), never on the config value alone — so a `devUrl` cannot
+  become a route to a local server in a release. Rendered markdown does not
+  rely on that guard: external links (`http`/`https`/`mailto`/`tel`) open in
+  the system default app through the opener plugin
+  (`src/components/MarkdownLink.tsx` + the `opener:allow-open-url` and
+  `opener:allow-default-urls` capability entries), in-document anchors
+  scroll, and everything else — relative paths, `javascript:`, `data:`,
+  `file:` — is inert (review L-01).
 - **Tests:** TS via `node --test` with an explicit
   `src/**/*.test.ts` glob (§7); Rust via `cargo test`.
 - **Dates:** local `yyyy-mm-dd` everywhere ("today" = user's local date).
@@ -204,6 +230,13 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
    (bundling them would make the zip a plaintext-equivalent copy of
    the DB). A DB backup without the key is unopenable, and the UI says
    so before export.
+5. **Renderer boundary:** the webview is a full-trust domain — it can run
+   arbitrary SQL through the driver and read the DB key — so it must never
+   execute foreign code. The invariants: strict CSP, no remote content, no
+   `innerHTML`/`dangerouslySetInnerHTML`, no `eval` (biome's recommended
+   preset fails the gate on both), markdown rendered without raw HTML, and
+   no navigation away from the app's own origin (§4, review L-01) — a
+   rendered link opens in the system browser instead of the webview.
 
 ## 6. Design system — PurpleShade theme
 

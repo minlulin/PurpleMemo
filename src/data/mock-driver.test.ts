@@ -53,11 +53,27 @@ test("mock driver records batch/begin/commit/rollback and photo calls", async ()
   ]);
   await driver.begin();
   await driver.commit();
-  const rel = await driver.savePhoto([1, 2, 3], "jpg");
+  const rel = await driver.savePhoto(Uint8Array.from([1, 2, 3]), "jpg");
   assert.equal(rel, "photos/2026/10/jpg.3");
-  assert.deepEqual(await driver.readPhoto(rel), [1, 2, 3]);
+  // Photo bytes are Uint8Array on both sides of the driver (review M-02).
+  assert.deepEqual(await driver.readPhoto(rel), Uint8Array.from([1, 2, 3]));
   await driver.deletePhoto(rel);
   assert.equal(driver.callsTo("batch").length, 1);
   assert.equal(driver.callsTo("begin").length, 1);
   assert.equal(driver.callsTo("savePhoto").length, 1);
+});
+
+test("mock driver mirrors the thumbnail contract: missing thumb rejects, saved thumb reads back", async () => {
+  const driver = createMockDriver();
+  const rel = await driver.savePhoto(Uint8Array.from([1]), "jpg");
+  await assert.rejects(
+    driver.readPhotoThumb(rel),
+    /no thumbnail/,
+    "no stored thumbnail is an error the caller answers by generating one",
+  );
+  const thumb = await driver.savePhotoThumb(rel, Uint8Array.from([7, 7]));
+  assert.equal(thumb, "photos/2026/10/jpg.thumb.1");
+  assert.deepEqual(await driver.readPhotoThumb(rel), Uint8Array.from([7, 7]));
+  await driver.deletePhoto(rel);
+  await assert.rejects(driver.readPhotoThumb(rel), /no thumbnail/);
 });
