@@ -16,18 +16,23 @@ import {
   IconSearch,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { journalRepo, notesRepo } from "../data/app.ts";
+import { journalRepo, notesRepo, settingsRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
+import {
+  appendJournalBlock,
+  clearNoteDraft,
+  draftBaseMatches,
+  loadJournalDraft,
+  loadNoteDraft,
+  type NoteEditorFields,
+  noteEditorDiffersFromRow,
+  saveJournalDraft,
+  saveNoteDraft,
+  storedNoteForm,
+} from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
-import { noteExcerpt } from "../lib/notes.ts";
+import { noteExcerpt, parseTags } from "../lib/notes.ts";
 import type { CollectionRow, NoteRow } from "../lib/types.ts";
-
-function parseTags(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0);
-}
 
 interface EditorProps {
   title: string;
@@ -37,6 +42,8 @@ interface EditorProps {
   saving: boolean;
   pinned: boolean;
   archived: boolean;
+  /** Editor differs from the stored note (a draft exists or edits are live). */
+  dirty: boolean;
   collections: CollectionRow[];
   onTitle: (v: string) => void;
   onContent: (v: string) => void;
@@ -47,6 +54,8 @@ interface EditorProps {
   onArchive: () => void;
   onToJournal: () => void;
   onDelete: () => void;
+  /** Discard the unsaved draft and reload the stored note (M-01). */
+  onDiscard: () => void;
   /** Editor/preview split, owned by the page so it survives note switches. */
   splitRatio: number;
   onSplitRatio: (ratio: number) => void;
@@ -171,6 +180,21 @@ function NoteEditor(p: EditorProps) {
         >
           {p.saving ? "Saving…" : "Save"}
         </button>
+        {p.dirty && (
+          <span className="badge badge-warn" aria-live="polite">
+            Unsaved draft
+          </span>
+        )}
+        {p.dirty && (
+          <button
+            type="button"
+            className="btn"
+            title="Discard the unsaved draft and reload the saved note"
+            onClick={p.onDiscard}
+          >
+            Discard draft
+          </button>
+        )}
         <button
           type="button"
           className={p.pinned ? "btn is-on" : "btn"}
@@ -230,6 +254,24 @@ export default function NotesPage() {
    * editor only repopulates when the SELECTED NOTE changes.
    */
   const populatedIdRef = useRef<number | null>(null);
+  /** Mirror of the editor fields for decisions made after an awaited save —
+   *  closures over state cannot see keystrokes typed while a save is in
+   *  flight (M-01: those keystrokes must keep their draft). */
+  const editorRef = useRef<NoteEditorFields>({
+    title: "",
+    content: "",
+    tags: "",
+    collection: "none",
+  });
+  /** The row's `updated_at` the editor — and every draft written from it —
+   *  is based on. Refreshed when the note is populated and after each save
+   *  (updateNote stamps `updated_at = todayLocal()`). */
+  const baseRef = useRef<string>("");
+  /** Set by any keystroke; stops a slow draft read from clobbering typing. */
+  const touchedRef = useRef(false);
+  /** Bumped on populate and on discard: a stale draft read must never
+   *  resurrect text over a discard that landed while it was in flight. */
+  const draftSeqRef = useRef(0);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -265,13 +307,110 @@ export default function NotesPage() {
   useEffect(() => {
     if (selected && selected.id !== populatedIdRef.current) {
       populatedIdRef.current = selected.id;
-      setTitle(selected.title);
-      setContent(selected.content);
-      setTags(selected.tags);
-      setNoteCollection(selected.collection_id ?? "none");
+      touchedRef.current = false;
+      baseRef.current = selected.updated_at;
+      const rowFields: NoteEditorFields = {
+        title: selected.title,
+        content: selected.content,
+        tags: selected.tags,
+        collection: selected.collection_id ?? "none",
+      };
+      editorRef.current = rowFields;
+      setTitle(rowFields.title);
+      setContent(rowFields.content);
+      setTags(rowFields.tags);
+      setNoteCollection(rowFields.collection);
+      // Overlay an unsaved draft written before the last lock/navigation,
+      // but only onto the exact row state it was written for (M-01). A
+      // failed or stale draft read leaves the saved row in the editor.
+      const noteId = selected.id;
+      const rowBase = selected.updated_at;
+      const seq = ++draftSeqRef.current;
+      void loadNoteDraft(settingsRepo, noteId)
+        .then((draft) => {
+          if (draft === null) return;
+          if (seq !== draftSeqRef.current) return;
+          if (populatedIdRef.current !== noteId || touchedRef.current) return;
+          if (!draftBaseMatches(draft.baseUpdatedAt, rowBase)) {
+            // The row moved on since the draft was written — drop it rather
+            // than resurrect stale text over newer content.
+            void clearNoteDraft(settingsRepo, noteId).catch(() => undefined);
+            return;
+          }
+          const draftFields: NoteEditorFields = {
+            title: draft.title,
+            content: draft.content,
+            tags: draft.tags,
+            collection: draft.collection,
+          };
+          editorRef.current = draftFields;
+          setTitle(draftFields.title);
+          setContent(draftFields.content);
+          setTags(draftFields.tags);
+          setNoteCollection(draftFields.collection);
+        })
+        .catch(() => undefined);
     }
     if (!selected) populatedIdRef.current = null;
   }, [selected]);
+
+  /** True when the editor holds changes the stored note does not have. */
+  const dirty =
+    selected !== null &&
+    noteEditorDiffersFromRow(
+      { title, content, tags, collection: noteCollection },
+      selected,
+    );
+
+  /**
+   * The single path for every editor keystroke: update state, mirror it into
+   * `editorRef`, and persist a draft against the row state the editor was
+   * populated from (M-01). Draft persistence is best-effort — typing must
+   * never wait on it, and the explicit Save still reports its own errors.
+   */
+  function editNote(patch: Partial<NoteEditorFields>): void {
+    touchedRef.current = true;
+    const next: NoteEditorFields = {
+      title: patch.title ?? title,
+      content: patch.content ?? content,
+      tags: patch.tags ?? tags,
+      collection: patch.collection ?? noteCollection,
+    };
+    if (patch.title !== undefined) setTitle(patch.title);
+    if (patch.content !== undefined) setContent(patch.content);
+    if (patch.tags !== undefined) setTags(patch.tags);
+    if (patch.collection !== undefined) setNoteCollection(patch.collection);
+    editorRef.current = next;
+    if (selected === null) return;
+    const op = noteEditorDiffersFromRow(next, selected)
+      ? saveNoteDraft(settingsRepo, selected.id, {
+          baseUpdatedAt: baseRef.current,
+          savedAt: Date.now(),
+          ...next,
+        })
+      : clearNoteDraft(settingsRepo, selected.id);
+    void op.catch(() => undefined);
+  }
+
+  /** Explicit escape hatch for a restored draft: reload the saved note. */
+  function handleDiscardDraft(): void {
+    if (selected === null) return;
+    touchedRef.current = false;
+    draftSeqRef.current += 1;
+    baseRef.current = selected.updated_at;
+    const rowFields: NoteEditorFields = {
+      title: selected.title,
+      content: selected.content,
+      tags: selected.tags,
+      collection: selected.collection_id ?? "none",
+    };
+    editorRef.current = rowFields;
+    setTitle(rowFields.title);
+    setContent(rowFields.content);
+    setTags(rowFields.tags);
+    setNoteCollection(rowFields.collection);
+    void clearNoteDraft(settingsRepo, selected.id).catch(() => undefined);
+  }
 
   async function handleNew(): Promise<void> {
     setError(null);
@@ -293,6 +432,14 @@ export default function NotesPage() {
     if (selectedId === null) return;
     setSaving(true);
     setError(null);
+    // Snapshot what this save persists: closures may predate keystrokes
+    // typed while the save is in flight (see editorRef).
+    const savedFields: NoteEditorFields = {
+      title,
+      content,
+      tags,
+      collection: noteCollection,
+    };
     try {
       await notesRepo.updateNote(selectedId, {
         title: title.trim().length > 0 ? title : "Untitled",
@@ -300,6 +447,23 @@ export default function NotesPage() {
         tags: parseTags(tags),
         collectionId: noteCollection === "none" ? null : noteCollection,
       });
+      // updateNote stamped updated_at = todayLocal(); rebase every later
+      // draft onto the new row state (M-01).
+      baseRef.current = todayLocal();
+      const movedOn = noteEditorDiffersFromRow(
+        editorRef.current,
+        storedNoteForm(savedFields),
+      );
+      const op = movedOn
+        ? // Keystrokes landed while the save was in flight: keep them as a
+          // draft against the freshly saved row rather than losing them.
+          saveNoteDraft(settingsRepo, selectedId, {
+            baseUpdatedAt: baseRef.current,
+            savedAt: Date.now(),
+            ...editorRef.current,
+          })
+        : clearNoteDraft(settingsRepo, selectedId);
+      await op;
       await refresh();
     } catch (e) {
       setError(errText(e));
@@ -332,6 +496,8 @@ export default function NotesPage() {
     setError(null);
     try {
       await notesRepo.deleteNote(id);
+      // A deleted note's draft is meaningless — never let it reappear.
+      await clearNoteDraft(settingsRepo, id).catch(() => undefined);
       setSelectedId(null);
       await refresh();
     } catch (e) {
@@ -374,14 +540,32 @@ export default function NotesPage() {
     try {
       const today = todayLocal();
       const existing = await journalRepo.getEntry(today);
+      const baseBefore = existing?.updated_at ?? null;
       const heading = title.trim().length > 0 ? title.trim() : "Untitled";
       const block = `# ${heading}\n\n${content}`.trim();
       await journalRepo.upsertEntry(
         today,
-        existing && existing.content.length > 0
-          ? `${existing.content}\n\n---\n\n${block}`
-          : block,
+        appendJournalBlock(existing?.content ?? "", block),
       );
+      // The day's unsaved journal draft (if any) was written against the
+      // pre-append entry — fold the same block into it so restoring the draft
+      // keeps both the reflection and the appended note (M-01). Best-effort:
+      // the entry append above already succeeded.
+      try {
+        const draft = await loadJournalDraft(settingsRepo, today);
+        if (
+          draft !== null &&
+          draftBaseMatches(draft.baseUpdatedAt, baseBefore)
+        ) {
+          await saveJournalDraft(settingsRepo, today, {
+            baseUpdatedAt: todayLocal(),
+            savedAt: Date.now(),
+            content: appendJournalBlock(draft.content, block),
+          });
+        }
+      } catch {
+        // Best-effort: the appended entry is already stored.
+      }
     } catch (e) {
       setError(errText(e));
     }
@@ -574,16 +758,18 @@ export default function NotesPage() {
                   saving={saving}
                   pinned={selected.pinned === 1}
                   archived={selected.archived === 1}
+                  dirty={dirty}
                   collections={collections}
-                  onTitle={setTitle}
-                  onContent={setContent}
-                  onTags={setTags}
-                  onCollection={setNoteCollection}
+                  onTitle={(v) => editNote({ title: v })}
+                  onContent={(v) => editNote({ content: v })}
+                  onTags={(v) => editNote({ tags: v })}
+                  onCollection={(v) => editNote({ collection: v })}
                   onSave={() => void handleSave()}
                   onPin={() => void handlePin(selected)}
                   onArchive={() => void handleArchive(selected)}
                   onToJournal={() => void handleToJournal()}
                   onDelete={() => void handleDelete(selected.id)}
+                  onDiscard={handleDiscardDraft}
                   splitRatio={splitRatio}
                   onSplitRatio={setSplitRatio}
                 />

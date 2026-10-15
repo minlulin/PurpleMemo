@@ -18,6 +18,18 @@ export interface NoteFilter {
   includeArchived?: boolean;
 }
 
+/**
+ * Split a comma-separated tag string into clean tags (the editor's input
+ * shape → the row's stored shape). Shared by the Notes editor and the draft
+ * helpers so both normalize identically.
+ */
+export function parseTags(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+}
+
 /** Plain-text excerpt cap for list views (§2.4 — 140 chars, ellipsis included). */
 export const EXCERPT_MAX_CHARS = 140;
 

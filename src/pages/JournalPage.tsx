@@ -1,7 +1,7 @@
 // P3a Journal page (§2.5): one entry per day, month grid navigation,
 // markdown editor + live preview. Talks only to the journal repo (§4).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   IconCalendar,
@@ -10,8 +10,14 @@ import {
   IconJournal,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { journalRepo } from "../data/app.ts";
+import { journalRepo, settingsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
+import {
+  clearJournalDraft,
+  draftBaseMatches,
+  loadJournalDraft,
+  saveJournalDraft,
+} from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
 import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
 
@@ -30,9 +36,18 @@ export default function JournalPage() {
   const [entryDates, setEntryDates] = useState<string[]>([]);
   const [activeDate, setActiveDate] = useState(() => todayLocal());
   const [content, setContent] = useState("");
+  /** The entry's stored content — `dirty` is `content !== savedContent`. */
+  const [savedContent, setSavedContent] = useState("");
+  /** The entry row's `updated_at` (null = no row yet): the draft base. */
+  const [entryBase, setEntryBase] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Mirror of the textarea for decisions made after an awaited save —
+   *  closures cannot see keystrokes typed while a save is in flight. */
+  const contentRef = useRef("");
+  /** Monotonic load token: a slow load for day A must never clobber day B. */
+  const loadSeqRef = useRef(0);
 
   const refreshGrid = useCallback(async (ym: string) => {
     try {
@@ -43,15 +58,42 @@ export default function JournalPage() {
   }, []);
 
   const loadEntry = useCallback(async (date: string) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const row = await journalRepo.getEntry(date);
-      setContent(row?.content ?? "");
+      const base = row?.updated_at ?? null;
+      const rowContent = row?.content ?? "";
+      // Restore an unsaved draft written before the last lock/navigation,
+      // but only onto the exact entry state it was written for (M-01).
+      // Best-effort: a failed draft read leaves the stored entry in place.
+      let draftContent: string | null = null;
+      let staleDraft = false;
+      try {
+        const draft = await loadJournalDraft(settingsRepo, date);
+        if (draft !== null) {
+          if (draftBaseMatches(draft.baseUpdatedAt, base)) {
+            draftContent = draft.content;
+          } else {
+            staleDraft = true;
+          }
+        }
+      } catch {
+        // Best-effort: the stored entry still loads without the draft.
+      }
+      if (seq !== loadSeqRef.current) return; // superseded by a newer load
+      if (staleDraft) {
+        void clearJournalDraft(settingsRepo, date).catch(() => undefined);
+      }
+      setEntryBase(base);
+      setSavedContent(rowContent);
+      contentRef.current = draftContent ?? rowContent;
+      setContent(draftContent ?? rowContent);
     } catch (e) {
-      setError(errText(e));
+      if (seq === loadSeqRef.current) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -63,12 +105,57 @@ export default function JournalPage() {
     void loadEntry(activeDate);
   }, [activeDate, loadEntry]);
 
+  const dirty = !loading && content !== savedContent;
+
+  /**
+   * Single keystroke path: update state and mirror a draft against the entry
+   * state the editor was loaded from (M-01). Best-effort — typing never
+   * waits on it; the explicit Save still reports its own errors.
+   */
+  function editContent(value: string): void {
+    contentRef.current = value;
+    setContent(value);
+    const op =
+      value === savedContent
+        ? clearJournalDraft(settingsRepo, activeDate)
+        : saveJournalDraft(settingsRepo, activeDate, {
+            baseUpdatedAt: entryBase,
+            savedAt: Date.now(),
+            content: value,
+          });
+    void op.catch(() => undefined);
+  }
+
+  /** Explicit escape hatch for a restored draft: reload the stored entry. */
+  function handleDiscardDraft(): void {
+    contentRef.current = savedContent;
+    setContent(savedContent);
+    void clearJournalDraft(settingsRepo, activeDate).catch(() => undefined);
+  }
+
   async function handleSave(): Promise<void> {
+    const date = activeDate;
+    const snapshot = content; // what this save persists
     setSaving(true);
     setError(null);
     try {
-      await journalRepo.upsertEntry(activeDate, content);
-      await refreshGrid(yearMonthOf(activeDate));
+      await journalRepo.upsertEntry(date, snapshot);
+      // upsertEntry stamped updated_at = todayLocal(); rebase every later
+      // draft onto the new entry state (M-01).
+      const base = todayLocal();
+      setEntryBase(base);
+      setSavedContent(snapshot);
+      // Keystrokes typed while the save was in flight keep their draft.
+      const movedOn = contentRef.current !== snapshot;
+      const op = movedOn
+        ? saveJournalDraft(settingsRepo, date, {
+            baseUpdatedAt: base,
+            savedAt: Date.now(),
+            content: contentRef.current,
+          })
+        : clearJournalDraft(settingsRepo, date);
+      await op.catch(() => undefined);
+      await refreshGrid(yearMonthOf(date));
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -77,11 +164,17 @@ export default function JournalPage() {
   }
 
   async function handleDelete(): Promise<void> {
+    const date = activeDate;
     setError(null);
     try {
-      await journalRepo.deleteEntry(activeDate);
+      await journalRepo.deleteEntry(date);
+      // A deleted day's draft is meaningless — never let it reappear.
+      await clearJournalDraft(settingsRepo, date).catch(() => undefined);
+      contentRef.current = "";
+      setEntryBase(null);
+      setSavedContent("");
       setContent("");
-      await refreshGrid(yearMonthOf(activeDate));
+      await refreshGrid(yearMonthOf(date));
     } catch (e) {
       setError(errText(e));
     }
@@ -218,6 +311,21 @@ export default function JournalPage() {
             ) : null}
           </div>
           <span className="toolbar-spacer" />
+          {dirty && (
+            <span className="badge badge-warn" aria-live="polite">
+              Unsaved draft
+            </span>
+          )}
+          {dirty && (
+            <button
+              type="button"
+              className="btn"
+              title="Discard the unsaved draft and reload the saved entry"
+              onClick={handleDiscardDraft}
+            >
+              Discard draft
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-primary"
@@ -259,7 +367,7 @@ export default function JournalPage() {
               <textarea
                 className="textarea editor-input"
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
+                onChange={(e) => editContent(e.target.value)}
                 placeholder="Write today's entry in markdown…"
                 aria-label="Journal entry content (markdown)"
               />
