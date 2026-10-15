@@ -31,6 +31,7 @@ git config core.hooksPath .githooks   # once per clone
 ```
 
 `npm run verify` =
+`node scripts/check-hooks.mjs` → `node scripts/check-versions.mjs` →
 `biome check --error-on-warnings .` → token lint → `tsc --noEmit` →
 `node --test "src/**/*.test.ts"` →
 `cargo test --manifest-path src-tauri/Cargo.toml` →

@@ -111,6 +111,16 @@ npm run tauri -- signer generate -w .keys/updater.key
 
 - **The signature is the file's *contents*.** A path or URL in the manifest's
   `signature` field is rejected; `scripts/make-latest-json.mjs` reads it for you.
+- **The signature must carry the version.** `tauri.conf.json` sets the
+  updater's `requireSignedVersion: true`, so every artifact's minisign
+  trusted comment must carry the version it was signed for. `npm run tauri
+  build` does that automatically with the pinned CLI — but `tauri signer
+  sign` does **not** unless `--app-version` is passed (the CLI warns when it
+  is omitted). Anyone signing by hand — or re-signing an artifact, which the
+  updater plugin's own docs describe as the reason to re-publish rather than
+  re-sign — will produce a build every client rejects with a
+  signature-verification error. Use `tauri build`, or pass `--app-version`
+  explicitly.
 - **Version mismatch**: `latest.json` version, the tag and the app version must
   all agree, or the updater either ignores the release or loops offering an
   update the user already has.

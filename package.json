@@ -11,7 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "verify": "node scripts/check-hooks.mjs && npm run lint && npm run token-lint && npm run typecheck && npm run test && npm run test:rust && npm run clippy && npm run fmt:check && npm run build",
+    "verify": "node scripts/check-hooks.mjs && node scripts/check-versions.mjs && npm run lint && npm run token-lint && npm run typecheck && npm run test && npm run test:rust && npm run clippy && npm run fmt:check && npm run build",
     "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --write .",
     "token-lint": "node scripts/token-lint.mjs",
