@@ -7,6 +7,22 @@ export const MIN_PIN_LENGTH = 6;
 export const DEFAULT_AUTO_LOCK_MINUTES = 10;
 
 /**
+ * Lock-screen failure delay (review L-02): after this many consecutive
+ * failed attempts the screen pauses before another try may start. The
+ * 600k-iteration PBKDF2 hash already costs hundreds of ms per attempt, but
+ * that is a side effect, not a policy — this makes the throttle explicit.
+ * The count resets on the first success, and the delay is a UI pause only:
+ * it never locks the user out.
+ */
+export const LOCK_MAX_FREE_ATTEMPTS = 5;
+export const LOCK_RETRY_DELAY_MS = 5_000;
+
+/** Consecutive-failure counter → ms the screen must wait before retrying. */
+export function lockRetryDelayMs(failures: number): number {
+  return failures >= LOCK_MAX_FREE_ATTEMPTS ? LOCK_RETRY_DELAY_MS : 0;
+}
+
+/**
  * True when the app has been idle longer than `minutes` (§2.9 auto-lock).
  * `minutes <= 0` disables auto-lock — an idle app never locks itself.
  * Timestamps are compared in milliseconds (performance.now() or Date.now()).

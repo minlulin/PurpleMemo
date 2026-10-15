@@ -63,6 +63,12 @@ pub fn db_batch(state: State<'_, AppState>, statements: Vec<BatchStatement>) -> 
 
 /// Start a manual transaction — short critical sections only (§4), the UI
 /// must never hold it across awaits.
+///
+/// These commands are intentionally retained even though no app code calls
+/// them today (review L-03): the plan mandates the surface, and every
+/// multi-statement write already goes through [`db_batch`]. An abandoned
+/// manual transaction makes [`db_batch`] fail until the app restarts or
+/// something rolls it back — see the `manual_transaction_*` tests.
 #[tauri::command]
 pub fn db_begin(state: State<'_, AppState>) -> CmdResult<()> {
     let conn = lock_conn(&state)?;

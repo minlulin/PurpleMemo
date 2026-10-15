@@ -36,7 +36,7 @@ npm run tauri -- signer generate -w .keys/updater.key
 2. **Green local gate** — run the complete check locally:
 
    ```bash
-   npm run verify        # biome, token-lint, tsc, JS + Rust tests, clippy, fmt, build
+   npm run verify        # hook + version checks, biome, token-lint, tsc, JS + Rust tests, clippy, fmt, build
    ```
 
 3. **Bump the version in all three places** — they must agree:

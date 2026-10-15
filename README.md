@@ -14,7 +14,6 @@ that plan.
 ```
 npm install        # once
 npm run tauri dev  # desktop app (Vite dev server on :1420)
-npm run dev        # web-only UI, no Tauri shell
 npm run build      # production frontend build (dist/)
 npm run verify     # the full local gate (see below)
 ```

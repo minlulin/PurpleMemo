@@ -6,7 +6,11 @@
 
 import { useState } from "react";
 import { settingsRepo } from "../data/app.ts";
-import { MIN_PIN_LENGTH } from "../lib/appLock.ts";
+import {
+  LOCK_RETRY_DELAY_MS,
+  lockRetryDelayMs,
+  MIN_PIN_LENGTH,
+} from "../lib/appLock.ts";
 import {
   hashAnswer,
   hashPin,
@@ -225,17 +229,42 @@ export function LockScreen(p: LockScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [shaking, setShaking] = useState(false);
+  /** Consecutive failed attempts across both paths (PIN + answer). Resets on
+   *  the first success; past the free attempts the screen pauses
+   *  `LOCK_RETRY_DELAY_MS` before another try (review L-02). */
+  const [failures, setFailures] = useState(0);
+  const [cooling, setCooling] = useState(false);
+
+  const noteFailure = async () => {
+    const next = failures + 1;
+    setFailures(next);
+    setShaking(true);
+    const waitMs = lockRetryDelayMs(next);
+    if (waitMs > 0) {
+      setCooling(true);
+      setError(
+        `Too many wrong attempts — wait ${LOCK_RETRY_DELAY_MS / 1000} seconds before trying again.`,
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      // A success cannot land while cooling (both submitters return early),
+      // so unconditionally clearing here never wipes a newer state.
+      setCooling(false);
+      setError(null);
+    }
+  };
 
   const unlockWithPin = async () => {
+    if (cooling) return;
     setShaking(false);
     setBusy(true);
     try {
       if (await verifyPin(pin, p.pinHash)) {
+        setFailures(0);
         p.onUnlock();
       } else {
         setError("Wrong PIN.");
         setPin("");
-        setShaking(true);
+        await noteFailure();
       }
     } catch (e) {
       setError(errText(e));
@@ -245,6 +274,7 @@ export function LockScreen(p: LockScreenProps) {
   };
 
   const resetPin = async () => {
+    if (cooling) return;
     setShaking(false);
     if (p.answerHash === null) {
       setError(
@@ -264,12 +294,13 @@ export function LockScreen(p: LockScreenProps) {
     try {
       if (!(await verifyAnswer(draft.answer, p.answerHash))) {
         setError("Wrong answer.");
-        setShaking(true);
+        await noteFailure();
         return;
       }
       await settingsRepo.setManyJSON([
         { key: SETTING_KEYS.pinHash, value: await hashPin(draft.pin) },
       ]);
+      setFailures(0);
       p.onUnlock();
     } catch (e) {
       setError(errText(e));
@@ -327,9 +358,9 @@ export function LockScreen(p: LockScreenProps) {
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={busy || pin.length === 0}
+              disabled={busy || cooling || pin.length === 0}
             >
-              {busy ? "Checking…" : "Unlock"}
+              {busy ? "Checking…" : cooling ? "Wait…" : "Unlock"}
             </button>
             <span className="toolbar-spacer" />
             <button
@@ -418,8 +449,12 @@ export function LockScreen(p: LockScreenProps) {
         </div>
         <PinDots length={draft.pin.length} />
         <div className="editor-actions">
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? "Checking…" : "Set new PIN"}
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={busy || cooling}
+          >
+            {busy ? "Checking…" : cooling ? "Wait…" : "Set new PIN"}
           </button>
           <button
             type="button"

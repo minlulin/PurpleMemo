@@ -1,5 +1,12 @@
 # Codebase audit — 2026-10-14
 
+> **Status note (2026-10-15): this audit is historical — it describes the
+> tree as it was on 2026-10-14. Its findings A-01, A-03, A-04 and A-05 are
+> all fixed (see the status table in `docs/CODE_REVIEW_2026-10-14.md` §5),
+> and its "Recommended release order" is superseded by that review's §7.
+> Read this document for the original reasoning; read the code review for
+> what remains to do.**
+
 ## Executive summary
 
 > **A-05 decision:** hosted CI is intentionally not used because GitHub Actions

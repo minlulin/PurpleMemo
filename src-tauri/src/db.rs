@@ -712,6 +712,21 @@ mod tests {
         // Commit/rollback without a transaction fail.
         assert!(commit_tx(&conn).is_err());
         assert!(rollback_tx(&conn).is_err());
+
+        // A batch's own statements run inside the batch's transaction, so a
+        // transaction-control statement smuggled into `execute` or any batch
+        // statement is refused (review L-03: the `txn_open` state machine).
+        // `batch` while a manual transaction is already open is refused by
+        // `db_batch` in commands.rs (flag check, not reachable here); at this
+        // layer the equivalent guard is: an open manual transaction makes a
+        // second BEGIN fail, and a COMMIT smuggled through `execute` is
+        // rejected before it can close the manual transaction behind the
+        // flag's back.
+        begin_tx(&conn).expect("begin");
+        let err = execute(&conn, "COMMIT", &[]).expect_err("COMMIT must be refused");
+        assert!(err.contains("not allowed"), "unexpected error: {err}");
+        assert!(begin_tx(&conn).is_err(), "manual txn still open");
+        rollback_tx(&conn).expect("cleanup rollback");
     }
 
     #[test]

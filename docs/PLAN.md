@@ -251,6 +251,10 @@ No hosted CI is used. The local gate is the enforcement:
   the build if hex colors / hardcoded spacing appear outside
   `tokens.css`. It trivially passes until P3a writes the first
   components — then it bites from day one instead of a P4 retrofit.
+- **Version check:** `scripts/check-versions.mjs` (added post-review,
+  L-05) fails `verify` when `package.json`, `src-tauri/tauri.conf.json`
+  and `src-tauri/Cargo.toml` disagree — the exact drift that makes the
+  updater silently ignore a release.
 - Every phase below has its own gate; a phase is done only when its
   gate is green.
 

@@ -3,8 +3,11 @@ import { test } from "node:test";
 import {
   DEFAULT_AUTO_LOCK_MINUTES,
   isIdle,
+  LOCK_MAX_FREE_ATTEMPTS,
+  LOCK_RETRY_DELAY_MS,
   type LockGate,
   lockGate,
+  lockRetryDelayMs,
   MIN_PIN_LENGTH,
 } from "./appLock.ts";
 
@@ -67,4 +70,17 @@ test("isIdle: never locks when auto-lock is disabled (minutes <= 0)", () => {
 test("guard rails: 6+ char PIN, 10 minute default (§2.9)", () => {
   assert.equal(MIN_PIN_LENGTH, 6);
   assert.equal(DEFAULT_AUTO_LOCK_MINUTES, 10);
+});
+
+test("lockRetryDelayMs: free attempts are instant, then a fixed pause (L-02)", () => {
+  assert.equal(LOCK_MAX_FREE_ATTEMPTS, 5);
+  assert.equal(LOCK_RETRY_DELAY_MS, 5_000);
+  for (let failures = 0; failures < LOCK_MAX_FREE_ATTEMPTS; failures += 1) {
+    assert.equal(lockRetryDelayMs(failures), 0, `${failures} failures`);
+  }
+  assert.equal(lockRetryDelayMs(LOCK_MAX_FREE_ATTEMPTS), LOCK_RETRY_DELAY_MS);
+  assert.equal(
+    lockRetryDelayMs(LOCK_MAX_FREE_ATTEMPTS + 40),
+    LOCK_RETRY_DELAY_MS,
+  );
 });
