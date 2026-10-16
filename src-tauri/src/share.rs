@@ -563,6 +563,25 @@ mod tests {
         (state, port, code)
     }
 
+    /// `status()` until the server reports itself stopped, or the deadline
+    /// passes and the caller's assertion fails as it always would.
+    ///
+    /// The 403 that trips the abuse counter is written to the socket *before*
+    /// the accept loop sets its shutdown flag, so the flag lags the response the
+    /// client has already read. Reading `status()` straight after the last
+    /// response is therefore a race (observed: about one run in twenty), not a
+    /// shorter test — wait for the effect instead of asserting into that window.
+    fn status_once_stopped(state: &ShareState) -> ShareInfo {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let info = state.status().expect("status");
+            if !info.running || std::time::Instant::now() >= deadline {
+                return info;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     #[test]
     fn generated_codes_are_six_alphabet_chars_and_random() {
         let a = generate_code().expect("code");
@@ -714,7 +733,7 @@ mod tests {
             let (status, _) = get(port, "/?k=WRONG1");
             assert_eq!(status, 403);
         }
-        let info = state.status().expect("status");
+        let info = status_once_stopped(&state);
         assert!(!info.running, "the server must stop itself");
         let note = info.note.unwrap_or_default();
         assert!(
