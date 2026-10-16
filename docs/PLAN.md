@@ -110,7 +110,7 @@ Light app lock (not a login system):
   with the PIN; correct answer allows setting a new PIN. That reset
   *replaces* the PIN, so whoever knows the answer can lock the owner
   out: the screen says so and refuses to write until the operator
-  ticks an explicit acknowledgement (review L-02) — Change PIN in
+  ticks an explicit acknowledgement — Change PIN in
   Settings, which verifies the current PIN, is the route for someone
   who still knows it. No online recovery exists — the UI states this
   plainly at setup.
@@ -187,7 +187,18 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
   (`src/components/MarkdownLink.tsx` + the `opener:allow-open-url` and
   `opener:allow-default-urls` capability entries), in-document anchors
   scroll, and everything else — relative paths, `javascript:`, `data:`,
-  `file:` — is inert (review L-01).
+  `file:` — is inert.
+- **Testable-by-construction shell:** `node --test` runs modules, not
+  components, so anything living inside `App.tsx` is unreachable for the suite.
+  The app shell therefore holds only React concerns — state, effects, timers,
+  listeners — and its coordination sits in `src/lib/session.ts`
+  (`lockSession`, `createShareTicker`, `createReminderTicker`) behind injected
+  ports, with the reminder re-arm rule in `lib/tasks.ts` (`nextReminderAt`,
+  the datetime sibling of `nextDueDate`). The rules that matter — locking ends
+  sharing, the publisher's one-shot stop notice, the
+  once-per-session permission ask, ticks that never stack — are pinned by
+  `src/lib/session.test.ts`. A DOM harness is still absent, so
+  the wiring itself (the effects and their timers) remains untested.
 - **Tests:** TS via `node --test` with an explicit
   `src/**/*.test.ts` glob (§7); Rust via `cargo test`.
 - **Dates:** local `yyyy-mm-dd` everywhere ("today" = user's local date).
@@ -235,8 +246,22 @@ UI pages → feature lib (src/lib/*) → data driver (src/data) → Tauri IPC �
    execute foreign code. The invariants: strict CSP, no remote content, no
    `innerHTML`/`dangerouslySetInnerHTML`, no `eval` (biome's recommended
    preset fails the gate on both), markdown rendered without raw HTML, and
-   no navigation away from the app's own origin (§4, review L-01) — a
+   no navigation away from the app's own origin (§4) — a
    rendered link opens in the system browser instead of the webview.
+6. **Boot failures are visible and recoverable:** if the key cannot be read or
+   the DB cannot be opened, the app does not exit silently. It shows a native
+   error dialog (error kind, title "Purple Memo can't start") carrying the cause
+   and, for a credential-store problem, the keyring hint; writes
+   `boot-error.log` next to the DB; prints the same line to stderr. The main
+   window is hidden first, because everything behind it fails with "state not
+   managed". The dialog offers **Retry** — the likeliest failure is an
+   environment the user can fix without restarting the app (a credential store
+   that is locked, missing or unreachable in this session) — and **Quit**, which
+   exits non-zero. A retry re-runs the boot work off the dialog thread; success
+   reloads the hidden window and brings it back, failure asks again. A watchdog
+   ends the wait if no dialog ever renders, and is retired on recovery.
+   Debug builds reproduce the whole path with
+   `PURPLE_MEMO_FORCE_BOOT_FAILURE=keyring[:N]` (a release build ignores it).
 
 ## 6. Design system — PurpleShade theme
 

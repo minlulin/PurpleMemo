@@ -1,7 +1,6 @@
 # M-02 phase plan — the photo pipeline
 
-**Finding:** `docs/CODE_REVIEW_2026-10-14.md` §4 M-02 — photo bytes cross IPC as
-JSON number arrays, the gallery holds full-resolution bytes for every photo, and
+**Finding:** photo bytes cross IPC as JSON number arrays, the gallery holds full-resolution bytes for every photo, and
 backup export builds the whole archive synchronously on the UI thread with no
 cap. **Severity:** Medium (performance, memory, UI freeze).
 

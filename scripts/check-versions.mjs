@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Version-consistency check (review L-05): the release requires
+ * Version-consistency check: the release requires
  * `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` to
  * agree, and the tag keeps the `v` while the manifests do not. A drift is
  * exactly the mistake that makes the updater silently ignore a release or
