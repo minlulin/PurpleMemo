@@ -8,8 +8,11 @@
 //!
 //! Access control: a random pairing code minted at start, required on every
 //! request (`?k=`). Sharing is off until the user turns it on and never
-//! survives a restart (fail closed — §8 is opt-in). Repeated wrong codes shut
-//! the server down instead of allowing an unbounded brute-force.
+//! survives a restart (fail closed — §8 is opt-in). Ten *consecutive* wrong
+//! codes shut the server down instead of allowing an unbounded brute-force;
+//! a request that presents the right code resets the count, so stray bad
+//! requests spread over a session (a mistyped link, a browser's automatic
+//! `/favicon.ico` fetch without the code) can never add up to a shutdown.
 
 use std::io::Cursor;
 use std::net::{SocketAddr, UdpSocket};
@@ -30,7 +33,8 @@ const CODE_LEN: usize = 6;
 /// `byte % 32` is uniform (256 / 32 = 8).
 const CODE_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
-/// Wrong-code attempts tolerated before the server shuts itself down.
+/// Consecutive wrong-code attempts tolerated before the server shuts itself
+/// down. A request presenting the right code resets the count (see [`Shared`]).
 pub const MAX_BAD_CODES: u32 = 10;
 
 /// The page inlined into the binary — the phone never loads a file from disk.
@@ -122,7 +126,13 @@ pub struct StoredSnapshot {
 #[derive(Default)]
 struct Shared {
     stop: AtomicBool,
-    bad_codes: AtomicU32,
+    /// Wrong pairing codes since the last request that presented the right
+    /// one. Consecutive, not cumulative: only a caller who does not know the
+    /// code can run this up, because knowing the code resets it — so ten in
+    /// a row still means "someone is guessing", while ten spread across a
+    /// session of legitimate use (the owner's typos, a phone's code-less
+    /// `/favicon.ico` fetch) no longer shut sharing down.
+    consecutive_bad_codes: AtomicU32,
     stopped_for_abuse: AtomicBool,
 }
 
@@ -340,7 +350,9 @@ impl Running {
         self.shared
             .stopped_for_abuse
             .load(Ordering::SeqCst)
-            .then(|| format!("Stopped sharing after {MAX_BAD_CODES} wrong pairing codes."))
+            .then(|| {
+                format!("Stopped sharing after {MAX_BAD_CODES} consecutive wrong pairing codes.")
+            })
     }
 
     fn info(&self, note: Option<String>) -> ShareInfo {
@@ -555,6 +567,22 @@ fn host_is_allowed(host: &str) -> bool {
     name.eq_ignore_ascii_case("localhost") || name.parse::<std::net::IpAddr>().is_ok()
 }
 
+/// The request's `Host` headers, taken together, are acceptable only when
+/// there is **exactly one** and it is allowed.
+///
+/// HTTP permits a request to carry the header more than once, and the old
+/// check accepted the request if *any* of them was allowed — so a rebound
+/// name could ride in alongside a good one (`Host: evil.example.com` +
+/// `Host: 127.0.0.1`, in either order) and be waved through by its companion.
+/// Zero headers is rejected too: a request that names no host was never one
+/// we issued a link for.
+fn single_host_is_allowed(hosts: &[&str]) -> bool {
+    match hosts {
+        [only] => host_is_allowed(only),
+        _ => false,
+    }
+}
+
 /// Serve one request. Returns false when the loop must end.
 fn handle(
     request: Request,
@@ -566,18 +594,17 @@ fn handle(
         let _ = request.respond(plain(405, "only GET is served here\n"));
         return true;
     }
-    match request
+    let hosts: Vec<&str> = request
         .headers()
         .iter()
-        .find(|h| h.field.equiv("Host") && host_is_allowed(h.value.as_str()))
-    {
-        Some(_) => {}
+        .filter(|h| h.field.equiv("Host"))
+        .map(|h| h.value.as_str())
+        .collect();
+    if !single_host_is_allowed(&hosts) {
         // Reject BEFORE the pairing-code check so a rebound host cannot even
         // burn one of the ten attempts.
-        None => {
-            let _ = request.respond(plain(421, "unexpected host\n"));
-            return true;
-        }
+        let _ = request.respond(plain(421, "unexpected host\n"));
+        return true;
     }
     let url = request.url().to_string();
     let (path, query) = match url.split_once('?') {
@@ -590,7 +617,7 @@ fn handle(
             403,
             "wrong or missing pairing code — open the link shown in Purple Memo\n",
         ));
-        let attempts = shared.bad_codes.fetch_add(1, Ordering::SeqCst) + 1;
+        let attempts = shared.consecutive_bad_codes.fetch_add(1, Ordering::SeqCst) + 1;
         if attempts >= MAX_BAD_CODES {
             shared.stopped_for_abuse.store(true, Ordering::SeqCst);
             shared.stop.store(true, Ordering::SeqCst);
@@ -598,6 +625,14 @@ fn handle(
         }
         return true;
     }
+    // The right code was presented: whoever sent this request already knows
+    // the secret, so the failures before it cannot have been their guessing.
+    // Resetting here is what makes the limit *consecutive* — brute force is
+    // still bounded (an attacker cannot produce this reset, and ten of their
+    // own attempts in a row still shut the server down), while bad requests
+    // that merely happen over a long session stop accumulating towards a
+    // shutdown the owner never caused.
+    shared.consecutive_bad_codes.store(0, Ordering::SeqCst);
 
     match path {
         "/" | "/index.html" => {
@@ -636,13 +671,20 @@ mod tests {
 
     /// Minimal raw HTTP/1.1 GET — enough to exercise the listener.
     fn get(port: u16, path: &str) -> (u16, String) {
+        get_with_hosts(port, path, &["127.0.0.1"])
+    }
+
+    /// A GET carrying exactly the given `Host` headers, in the given order.
+    /// The duplicate-Host regression needs to send two, which `get` cannot.
+    fn get_with_hosts(port: u16, path: &str, hosts: &[&str]) -> (u16, String) {
         let mut stream = StdTcpStream::connect(("127.0.0.1", port)).expect("connect to share");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("timeout");
+        let host_lines: String = hosts.iter().map(|h| format!("Host: {h}\r\n")).collect();
         write!(
             stream,
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            "GET {path} HTTP/1.1\r\n{host_lines}Connection: close\r\n\r\n"
         )
         .expect("write request");
         let mut raw = String::new();
@@ -915,6 +957,19 @@ mod tests {
     }
 
     #[test]
+    fn host_header_guard_needs_exactly_one_allowed_host() {
+        assert!(single_host_is_allowed(&["127.0.0.1:8765"]));
+        assert!(single_host_is_allowed(&["localhost"]));
+        assert!(!single_host_is_allowed(&[]), "no Host header at all");
+        assert!(!single_host_is_allowed(&["evil.example.com"]));
+        // The regression: a good header must not wave a bad one through,
+        // whichever order they arrive in, and two good ones are still two.
+        assert!(!single_host_is_allowed(&["evil.example.com", "127.0.0.1"]));
+        assert!(!single_host_is_allowed(&["127.0.0.1", "evil.example.com"]));
+        assert!(!single_host_is_allowed(&["127.0.0.1", "127.0.0.1"]));
+    }
+
+    #[test]
     fn requests_need_the_pairing_code() {
         let (state, port, code) = started();
         assert_eq!(get(port, "/").0, 403, "no code -> rejected");
@@ -970,6 +1025,55 @@ mod tests {
         let (state, port, code) = started();
         assert_eq!(get(port, &format!("/nope?k={code}")).0, 404);
         assert_eq!(get(port, &format!("/favicon.ico?k={code}")).0, 404);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn duplicate_host_headers_are_rejected_and_burn_no_attempts() {
+        let (state, port, code) = started();
+        // More rejections than the whole wrong-code budget: if a duplicate
+        // Host were let through to the pairing-code check, the wrong code
+        // below would shut the server down before this loop finished.
+        for _ in 0..=MAX_BAD_CODES {
+            for hosts in [
+                ["evil.example.com", "127.0.0.1"],
+                ["127.0.0.1", "evil.example.com"],
+            ] {
+                assert_eq!(
+                    get_with_hosts(port, "/?k=WRONG1", &hosts).0,
+                    421,
+                    "two Host headers ({hosts:?}) must be rejected outright"
+                );
+            }
+        }
+        assert_eq!(
+            get(port, &format!("/?k={code}")).0,
+            200,
+            "sharing must still be up, with its code budget untouched"
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_correct_code_resets_the_wrong_code_count() {
+        let (state, port, code) = started();
+        // One short of the limit, then proof of possession, then one short
+        // again: cumulatively that is nearly twice the budget, so a counter
+        // that never reset would have shut the server down mid-test.
+        for round in 0..2 {
+            for _ in 0..MAX_BAD_CODES - 1 {
+                assert_eq!(get(port, "/?k=WRONG1").0, 403, "round {round}");
+            }
+            assert_eq!(
+                get(port, &format!("/?k={code}")).0,
+                200,
+                "the right code must reset the count (round {round})"
+            );
+        }
+        assert!(
+            state.status().expect("status").running,
+            "bad codes spread across successful requests must never add up to a shutdown"
+        );
         state.stop().expect("stop");
     }
 

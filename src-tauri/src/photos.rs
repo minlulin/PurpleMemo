@@ -20,9 +20,12 @@ use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
-/// Serialize content-addressed writes. The destination path is derived from
-/// the bytes, so concurrent saves of the same photo would otherwise race on
-/// the same temporary and final paths.
+/// Serialize content-addressed writes *and deletes*. The destination path is
+/// derived from the bytes, so concurrent saves of the same photo would
+/// otherwise race on the same temporary and final paths — and a delete that
+/// did not take this lock could unlink a file a concurrent save had just
+/// written (or was about to rename into place), leaving the row the save
+/// returned pointing at a file that no longer exists.
 static PHOTO_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Save photo bytes; returns the relative path to store in the DB.
@@ -149,7 +152,16 @@ pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<Strin
 
 /// Delete a photo file by relative path (traversal-guarded, idempotent). The
 /// derived thumbnail goes with it, so a deleted photo leaves no orphan file.
+///
+/// Takes [`PHOTO_WRITE_LOCK`] like the saves do: paths are content-addressed,
+/// so the file being deleted may be the very file a concurrent save of the
+/// same bytes is verifying, writing or renaming into place. Serializing the
+/// delete against the saves keeps "save returned this path" and "the file at
+/// this path exists" from coming apart.
 pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), String> {
+    let _write_guard = PHOTO_WRITE_LOCK
+        .lock()
+        .map_err(|_| "photo write mutex poisoned".to_string())?;
     validate_rel_path(rel_path)?;
     match fs::remove_file(data_dir.join(rel_path)) {
         Ok(()) => {}
@@ -315,6 +327,35 @@ mod tests {
                 "year/month {bad_ym:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn delete_photo_waits_for_the_write_lock() {
+        // The regression test for the unlocked delete: while the write lock
+        // is held (as a save would hold it), a delete of the same file must
+        // not complete; once the lock is released it goes through. Without
+        // the lock in `delete_photo` the delete finishes immediately and the
+        // first assertion fails.
+        let dir = TempDir::new();
+        let rel = save_photo(&dir.0, "2026/10", b"lock race bytes", "jpg").expect("save");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let guard = PHOTO_WRITE_LOCK.lock().expect("hold the write lock");
+        let dir_path = dir.0.clone();
+        let rel_clone = rel.clone();
+        let deleter = std::thread::spawn(move || {
+            let result = delete_photo(&dir_path, &rel_clone);
+            let _ = tx.send(result);
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "delete must wait for the photo write lock, not race the save side"
+        );
+        drop(guard);
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("delete must complete once the lock is released")
+            .expect("delete");
+        deleter.join().expect("deleter thread");
+        assert!(!dir.0.join(&rel).exists(), "file deleted after the wait");
     }
 
     #[test]
