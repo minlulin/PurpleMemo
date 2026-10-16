@@ -2,7 +2,7 @@
 // (primary flag + order), tags, addresses and birthdays (full date or
 // month-day). Talks only to the contacts repo from the composition root (§4).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconCalendar,
@@ -19,6 +19,7 @@ import {
   searchContacts,
 } from "../lib/contacts.ts";
 import { errText } from "../lib/errors.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import type {
   ContactChannelKind,
   ContactChannelRow,
@@ -76,6 +77,8 @@ export default function ContactsPage() {
     primary: false,
   });
   const [newTag, setNewTag] = useState("");
+  /** Guards the detail pane against an out-of-order select (review H-4). */
+  const detailGuard = useMemo(() => createLoadGuard(), []);
 
   const reload = useCallback(async () => {
     try {
@@ -88,28 +91,45 @@ export default function ContactsPage() {
     }
   }, []);
 
-  const reloadDetail = useCallback(async (id: number | null) => {
-    if (id === null) {
-      setDetail(null);
-      return;
-    }
-    try {
-      const d = await contactsRepo.getContactDetail(id);
-      setDetail(d);
-      if (d.contact) {
-        setEdit({
-          name: d.contact.name,
-          address: d.contact.address,
-          mode: modeOf(d.contact.birthday),
-          birthday: d.contact.birthday ?? "",
-          notes: d.contact.notes,
-        });
+  /**
+   * Refresh the open contact.
+   *
+   * `repopulateForm` is the whole point (review H-3). The channel and tag
+   * actions all refresh the detail, but the row they read back has the
+   * *stored* name/address/birthday/notes — so repopulating the edit form from it
+   * silently threw away whatever the user had typed. Only selecting a different
+   * contact (or a save, where the form already holds what was written) may
+   * overwrite the form.
+   */
+  const reloadDetail = useCallback(
+    async (id: number | null, repopulateForm: boolean) => {
+      if (id === null) {
+        setDetail(null);
+        return;
       }
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    }
-  }, []);
+      // Clicking contact A then B can resolve in the other order, which left A's
+      // detail rendered under B (review H-4).
+      const token = detailGuard.begin();
+      try {
+        const d = await contactsRepo.getContactDetail(id);
+        if (!detailGuard.isCurrent(token)) return;
+        setDetail(d);
+        if (d.contact && repopulateForm) {
+          setEdit({
+            name: d.contact.name,
+            address: d.contact.address,
+            mode: modeOf(d.contact.birthday),
+            birthday: d.contact.birthday ?? "",
+            notes: d.contact.notes,
+          });
+        }
+        setError(null);
+      } catch (e) {
+        if (detailGuard.isCurrent(token)) setError(errText(e));
+      }
+    },
+    [detailGuard],
+  );
 
   useEffect(() => {
     void reload();
@@ -118,7 +138,8 @@ export default function ContactsPage() {
   const select = async (id: number) => {
     setSelectedId(id);
     setBirthdayError(null);
-    await reloadDetail(id);
+    // A different contact: the old form's unsaved edits are deliberately gone.
+    await reloadDetail(id, true);
   };
 
   const addContact = async () => {
@@ -180,7 +201,9 @@ export default function ContactsPage() {
         notes: edit.notes,
       });
       await reload();
-      await reloadDetail(selectedId);
+      // A save may repopulate: the form already holds exactly what was
+      // written, so this only normalises the trimmed values back into it.
+      await reloadDetail(selectedId, true);
     } catch (e) {
       setError(errText(e));
     }
@@ -197,7 +220,7 @@ export default function ContactsPage() {
         isPrimary: channelDraft.primary,
       });
       setChannelDraft({ kind: "phone", value: "", primary: false });
-      await reloadDetail(selectedId);
+      await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
     }
@@ -207,7 +230,7 @@ export default function ContactsPage() {
     if (selectedId === null) return;
     try {
       await contactsRepo.setPrimaryChannel(selectedId, channelId);
-      await reloadDetail(selectedId);
+      await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
     }
@@ -217,7 +240,7 @@ export default function ContactsPage() {
     if (selectedId === null) return;
     try {
       await contactsRepo.deleteChannel(channelId);
-      await reloadDetail(selectedId);
+      await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
     }
@@ -229,7 +252,7 @@ export default function ContactsPage() {
     try {
       await contactsRepo.addTag(selectedId, tag);
       setNewTag("");
-      await reloadDetail(selectedId);
+      await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
     }
@@ -239,7 +262,7 @@ export default function ContactsPage() {
     if (selectedId === null) return;
     try {
       await contactsRepo.removeTag(selectedId, tag);
-      await reloadDetail(selectedId);
+      await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
     }

@@ -32,6 +32,7 @@ import {
   storedNoteForm,
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import { noteExcerpt, parseTags } from "../lib/notes.ts";
 import type { CollectionRow, NoteRow } from "../lib/types.ts";
 
@@ -275,8 +276,14 @@ export default function NotesPage() {
   /** Bumped on populate and on discard: a stale draft read must never
    *  resurrect text over a discard that landed while it was in flight. */
   const draftSeqRef = useRef(0);
+  /** Guards the list against an out-of-order search result (review H-4). */
+  const listGuard = useMemo(() => createLoadGuard(), []);
 
   const refresh = useCallback(async () => {
+    // Every keystroke in the search box starts a load, so a slow query for
+    // "a" could otherwise resolve after a fast one for "abc" and leave the
+    // list showing the old result set (review H-4).
+    const token = listGuard.begin();
     setLoading(true);
     setError(null);
     try {
@@ -289,14 +296,15 @@ export default function NotesPage() {
                 activeCollection === "all" ? undefined : activeCollection,
               includeArchived: showArchived,
             });
+      if (!listGuard.isCurrent(token)) return; // superseded by a newer search
       setCollections(cols);
       setNotes(list);
     } catch (e) {
-      setError(errText(e));
+      if (listGuard.isCurrent(token)) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (listGuard.isCurrent(token)) setLoading(false);
     }
-  }, [activeCollection, search, showArchived]);
+  }, [activeCollection, listGuard, search, showArchived]);
 
   useEffect(() => {
     void refresh();

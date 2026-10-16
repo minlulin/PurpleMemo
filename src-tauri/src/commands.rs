@@ -101,7 +101,13 @@ pub fn db_batch(state: State<'_, AppState>, statements: Vec<BatchStatement>) -> 
 /// them today (review L-03): the plan mandates the surface, and every
 /// multi-statement write already goes through [`db_batch`]. An abandoned
 /// manual transaction makes [`db_batch`] fail until the app restarts or
-/// something rolls it back — see the `manual_transaction_*` tests.
+/// something rolls it back.
+///
+/// The flag is only trustworthy because no *other* command can end a
+/// transaction behind its back: `db::reject_dangerous_statement` now runs on
+/// reads as well as writes, so `db_query` cannot COMMIT an open transaction or
+/// BEGIN one the flag never saw. `db::tests::db_query_cannot_commit_or_begin_around_the_txn_flag`
+/// is the regression that keeps it that way.
 #[tauri::command]
 pub fn db_begin(state: State<'_, AppState>) -> CmdResult<()> {
     let conn = lock_conn(&state)?;

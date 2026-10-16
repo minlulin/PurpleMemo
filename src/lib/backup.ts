@@ -32,6 +32,27 @@ export const MAX_BACKUP_PHOTOS = 5_000;
 export const MAX_BACKUP_PHOTO_BYTES = 25 * 1024 * 1024;
 
 /**
+ * Row ceiling for one import (review H-5). Every other resource in an import
+ * was bounded — archive bytes, expanded bytes, entries, manifest bytes, photo
+ * count — but the manifest's *row* count was not, so a 16 MB manifest
+ * (well inside `MAX_BACKUP_MANIFEST_BYTES`) could expand to ~10^5 rows. Each
+ * one becomes a JS statement object held in renderer memory until the batch
+ * is handed to Rust.
+ *
+ * The cap is set against that memory, not against plausibility: a statement
+ * costs roughly half a kilobyte with its params array, so 100 000 rows is
+ * ~50 MB — a lot, but survivable on a desktop during a deliberate "replace
+ * everything" operation. It is still ~27x a decade of daily journal entries,
+ * so it rejects a pathological or hand-crafted manifest rather than any real
+ * backup.
+ *
+ * The import stays ONE transaction on purpose. Chunking the batch would bound
+ * memory further, but a failure between chunks would leave the database half
+ * replaced — far worse than a refused import.
+ */
+export const MAX_BACKUP_ROWS = 100_000;
+
+/**
  * Export cap (review M-02). The import path refuses an archive above
  * `MAX_BACKUP_ARCHIVE_BYTES`, so an archive this app writes must stay under
  * that: a backup it could not restore is worse than no export button at all.
@@ -257,11 +278,18 @@ function parseBackupJson(text: string): BackupPayload {
   ) {
     throw new Error("backup.json is corrupt (no data) — import rejected.");
   }
+  let totalRows = 0;
   for (const table of BACKUP_TABLES) {
     const rows = (obj.data as Record<string, unknown>)[table];
     if (rows !== undefined && !Array.isArray(rows)) {
       throw new Error(
         `backup.json is corrupt (table ${table}) — import rejected.`,
+      );
+    }
+    totalRows += rows === undefined ? 0 : rows.length;
+    if (totalRows > MAX_BACKUP_ROWS) {
+      throw new Error(
+        `Backup holds more than ${MAX_BACKUP_ROWS.toLocaleString()} rows — import rejected.`,
       );
     }
   }

@@ -10,7 +10,7 @@
 // generated here (canvas) once per photo and stored beside it, so a grid visit
 // only ever reads thumbs.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog } from "../components/Dialog.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
@@ -29,6 +29,7 @@ import {
 } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 import { photoExtFromName } from "../lib/gallery.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import { makeThumbnail } from "../lib/thumbs.ts";
 import type {
   JobRow,
@@ -133,6 +134,9 @@ export default function GalleryPage() {
     setFull(null);
   }, []);
 
+  /** Guards the link list against an out-of-order select (review H-4). */
+  const refsGuard = useMemo(() => createLoadGuard(), []);
+
   const loadFull = async (photo: PhotoRow) => {
     const req = ++fullReqRef.current;
     try {
@@ -213,17 +217,22 @@ export default function GalleryPage() {
     setLinkDraft({ type: "note", id: "" });
     // Full resolution only for the photo that is actually open.
     void loadFull(photo);
+    // Clicking photo A then photo B can resolve in the other order, which left
+    // A's link list rendered under B (review H-4).
+    const token = refsGuard.begin();
     try {
-      setSelectedRefs(await galleryRepo.listRefsForPhoto(photo.id));
+      const refs = await galleryRepo.listRefsForPhoto(photo.id);
+      if (refsGuard.isCurrent(token)) setSelectedRefs(refs);
     } catch (e) {
-      setError(errText(e));
+      if (refsGuard.isCurrent(token)) setError(errText(e));
     }
   };
 
   const closeInspector = useCallback(() => {
     dropFull();
+    refsGuard.cancel();
     setSelected(null);
-  }, [dropFull]);
+  }, [dropFull, refsGuard]);
 
   const saveMeta = async () => {
     if (!selected) return;

@@ -25,6 +25,7 @@ import {
   MAX_BACKUP_MANIFEST_BYTES,
   MAX_BACKUP_PHOTO_BYTES,
   MAX_BACKUP_PHOTOS,
+  MAX_BACKUP_ROWS,
   MAX_EXPORT_PHOTO_BYTES,
   type ParsedBackup,
   parseBackupZip,
@@ -231,6 +232,67 @@ test("parseBackupZip rejects too many entries", () => {
   }
   const zip = zipSync(files);
   assert.throws(() => parseBackupZip(zip), /more than .* entries/i);
+});
+
+/** A zip whose manifest is `payload`, for the limit tests below. */
+function zipWithPayload(payload: BackupPayload): Uint8Array {
+  return zipSync({
+    [BACKUP_JSON_ENTRY]: new TextEncoder().encode(JSON.stringify(payload)),
+  });
+}
+
+test("an import is refused when the manifest holds more rows than the cap", () => {
+  // Review H-5: every other import resource was bounded, but row count was
+  // not — so a manifest well inside the 16 MB limit could expand to enough
+  // rows to exhaust renderer memory once each became a batch statement.
+  const overCap = zipWithPayload({
+    ...samplePayload(),
+    data: {
+      notes: Array.from({ length: MAX_BACKUP_ROWS + 1 }, (_, i) => ({
+        ...NOTE_ROW,
+        id: i + 1,
+      })),
+      photos: [],
+    },
+  });
+  assert.throws(() => parseBackupZip(overCap), /more than .* rows/i);
+});
+
+test("the row cap sums across tables, it is not per table", () => {
+  // Neither table alone is over the limit; together they are. Summing is what
+  // has to happen, because the cap protects the import, not any one table.
+  const half = Math.ceil((MAX_BACKUP_ROWS + 1) / 2);
+  const spread = zipWithPayload({
+    ...samplePayload(),
+    data: {
+      notes: Array.from({ length: half }, (_, i) => ({
+        ...NOTE_ROW,
+        id: i + 1,
+      })),
+      journal_entries: Array.from({ length: half }, (_, i) => ({
+        ...NOTE_ROW,
+        id: i + 1,
+      })),
+      photos: [],
+    },
+  });
+  assert.throws(() => parseBackupZip(spread), /more than .* rows/i);
+});
+
+test("a manifest exactly at the row cap is still accepted", () => {
+  // The cap must reject pathological manifests, not merely large real ones.
+  const atCap = zipWithPayload({
+    ...samplePayload(),
+    data: {
+      notes: Array.from({ length: MAX_BACKUP_ROWS }, (_, i) => ({
+        ...NOTE_ROW,
+        id: i + 1,
+      })),
+      photos: [],
+    },
+  });
+  const parsed = parseBackupZip(atCap);
+  assert.equal(parsed.payload.data.notes?.length, MAX_BACKUP_ROWS);
 });
 
 test("parseBackupZip rejects too many and oversized photos before extraction", () => {

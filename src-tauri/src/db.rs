@@ -25,6 +25,9 @@ const KEYRING_SERVICE: &str = "com.minlulin.purplememo";
 const KEYRING_ACCOUNT: &str = "db-encryption-key";
 const KEY_HEX_LEN: usize = 64;
 
+/// How long a write waits for a lock held elsewhere before giving up.
+pub const BUSY_TIMEOUT_SECS: u64 = 5;
+
 /// A JSON object keyed by column name — one result row.
 pub type JsonObj = JsonMap<String, JsonValue>;
 
@@ -202,6 +205,15 @@ pub fn open_encrypted_db(path: &Path, key_hex: &str) -> Result<Connection, Strin
         .map_err(|e| format!("failed to enable WAL: {e}"))?;
     conn.pragma_update(None, "foreign_keys", "ON")
         .map_err(|e| format!("failed to enable foreign keys: {e}"))?;
+    // SQLite's busy handler is off by default, which turns any contention
+    // into an instant SQLITE_BUSY rather than a short wait (review H-5). The
+    // single in-process connection cannot contend with itself, but anything
+    // else holding the file can: a second app instance, an external sqlite3
+    // session, or a backup tool reading the exported DB. Five seconds is
+    // well past any legitimate hold and still short enough that a genuine
+    // conflict surfaces as an error rather than a hang.
+    conn.busy_timeout(std::time::Duration::from_secs(BUSY_TIMEOUT_SECS))
+        .map_err(|e| format!("failed to set busy timeout: {e}"))?;
     Ok(conn)
 }
 
@@ -300,12 +312,141 @@ fn sql_to_json(value: SqlValue) -> JsonValue {
 // Query / write primitives (used by the IPC commands in `commands.rs`)
 // ---------------------------------------------------------------------------
 
+/// The first `n` SQL keywords of `sql`, with leading whitespace **and
+/// comments** skipped.
+///
+/// Stripping comments is the point: a check that only reads the first
+/// whitespace-separated token sees `--` for `-- x\nCOMMIT` and `/*c*/` for
+/// `/*c*/COMMIT`, while SQLite happily prepares the `COMMIT` underneath.
+fn leading_keywords(sql: &str, n: usize) -> Vec<String> {
+    let rest = strip_leading_noise(sql).unwrap_or("");
+    rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|token| !token.is_empty())
+        .take(n)
+        .map(|k| k.to_ascii_uppercase())
+        .collect()
+}
+
+/// The name of the pragma `sql` sets, or `None` when it is not a pragma.
+///
+/// Scanned from the raw text rather than from keyword tokens because a pragma
+/// name may be dotted (`PRAGMA main.rekey`) or quoted (`PRAGMA "rekey"`) —
+/// both mean exactly the thing the bare form does.
+fn pragma_name_of(sql: &str) -> Option<String> {
+    let rest = strip_leading_noise(sql)?;
+    let rest = strip_keyword(rest, "PRAGMA")?;
+    let name: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '"')
+        .collect();
+    let name = name.rsplit('.').next().unwrap_or("").trim_matches('"');
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_ascii_uppercase())
+    }
+}
+
+/// Drop leading whitespace and comments, returning the remainder.
+fn strip_leading_noise(mut sql: &str) -> Option<&str> {
+    loop {
+        sql = sql.trim_start();
+        if let Some(after) = sql.strip_prefix("--") {
+            sql = match after.find('\n') {
+                Some(i) => &after[i + 1..],
+                None => "",
+            };
+        } else if let Some(after) = sql.strip_prefix("/*") {
+            sql = match after.find("*/") {
+                Some(i) => &after[i + 2..],
+                None => "",
+            };
+        } else {
+            return Some(sql);
+        }
+    }
+}
+
+/// Consume `keyword` (case-insensitively) from the front of `sql`, returning
+/// what follows it. Hand-rolled rather than `split_at_checked` to stay inside
+/// the crate's 1.77 MSRV.
+fn strip_keyword<'a>(sql: &'a str, keyword: &str) -> Option<&'a str> {
+    if !sql.is_char_boundary(keyword.len()) {
+        return None;
+    }
+    let (head, tail) = sql.split_at(keyword.len());
+    if head.eq_ignore_ascii_case(keyword) {
+        Some(tail)
+    } else {
+        None
+    }
+}
+
+/// Transaction-control statements. `batch` wraps its statements in
+/// BEGIN/COMMIT itself, and a COMMIT/ROLLBACK smuggled through any other
+/// command would commit or abort a manual transaction behind the `txn_open`
+/// flag's back — silently breaking the atomicity the feature layer relies on.
+const TXN_CONTROL: [&str; 6] = ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"];
+
+/// Refuse statements that escape the app's data model or break the
+/// connection contract.
+///
+/// This is defence in depth, not a sandbox: PLAN §5 already establishes that
+/// the renderer is trusted (it can run arbitrary SQL and read the DB key).
+/// What it buys is that a bug in the TypeSQL layer — which builds some
+/// statements by interpolating a validated identifier — cannot escalate into
+/// destroying data or escaping the file.
+///
+/// Every app statement starts with SELECT/INSERT/UPDATE/DELETE/WITH or is
+/// `PRAGMA foreign_keys` (the backup import toggles it), so the app's real
+/// vocabulary never reaches a rejection.
+fn reject_dangerous_statement(sql: &str) -> Result<(), String> {
+    let keywords = leading_keywords(sql, 1);
+    let first = keywords.first().map(String::as_str).unwrap_or("");
+
+    if TXN_CONTROL.contains(&first) {
+        return Err(format!(
+            "transaction-control statements are not allowed here: {first}"
+        ));
+    }
+    // ATTACH/DETACH read and write SQLite files outside this database: after an
+    // ATTACH, `CREATE TABLE other.t` creates or overwrites a file anywhere the
+    // process can write, and `SELECT * FROM other.t` reads any of them.
+    if first == "ATTACH" || first == "DETACH" {
+        return Err(format!(
+            "{first} is not allowed: it reaches outside this database file"
+        ));
+    }
+    // `PRAGMA key` replaces the key for the connection and `PRAGMA rekey`
+    // re-encrypts the whole file. Either one leaves the database encrypted
+    // under a key that never reaches the credential store: total data loss.
+    if first == "PRAGMA" {
+        let name = pragma_name_of(sql).unwrap_or_default();
+        if name == "KEY" || name == "REKEY" {
+            return Err(
+                "PRAGMA key/rekey is not allowed: it would leave the database \
+                 encrypted under a key that is not in the credential store"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Run a query and return rows as JSON objects keyed by column name.
 pub fn query_rows(
     conn: &Connection,
     sql: &str,
     params: &[JsonValue],
 ) -> Result<Vec<JsonObj>, String> {
+    // Reads get the same guard as writes (review H-2). Without it
+    // `db_query("COMMIT")` committed an open manual transaction while
+    // `txn_open` stayed true, and `db_query("BEGIN")` opened a transaction
+    // the flag did not know about — after which every `db_batch` failed with
+    // "cannot start a transaction within a transaction" for the life of the
+    // process.
+    reject_dangerous_statement(sql)?;
     let params = json_params(params)?;
     let mut stmt = conn
         .prepare(sql)
@@ -335,34 +476,13 @@ pub fn query_rows(
     Ok(out)
 }
 
-/// Reject transaction-control statements on the write path (§4). `batch`
-/// wraps its statements in BEGIN/COMMIT itself, and a COMMIT/ROLLBACK smuggled
-/// through `execute` would commit or abort a manual transaction behind the
-/// `txn_open` flag's back — silently breaking the atomicity the feature layer
-/// relies on. All app SQL is generated by the feature libraries and starts
-/// with SELECT/INSERT/UPDATE/DELETE/WITH, so legitimate statements never hit
-/// this.
-fn reject_txn_control(sql: &str) -> Result<(), String> {
-    let first = sql
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    match first.as_str() {
-        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "SAVEPOINT" | "RELEASE" => Err(format!(
-            "transaction-control statements are not allowed here: {first}"
-        )),
-        _ => Ok(()),
-    }
-}
-
 /// Run a single write statement; returns affected-row count + rowid.
 pub fn execute(
     conn: &Connection,
     sql: &str,
     params: &[JsonValue],
 ) -> Result<ExecuteOutcome, String> {
-    reject_txn_control(sql)?;
+    reject_dangerous_statement(sql)?;
     let params = json_params(params)?;
     let rows_affected = conn
         .execute(sql, rusqlite::params_from_iter(params.iter()))
@@ -373,26 +493,49 @@ pub fn execute(
     })
 }
 
+/// Undo the transaction `batch` opened, and report honestly.
+///
+/// A failed ROLLBACK used to be discarded with `let _`, which left the
+/// connection *inside* a transaction while `txn_open` stayed false. Every
+/// later `db_batch` then failed at BEGIN and every `db_execute` failed with
+/// "cannot start a transaction within a transaction" — a permanent wedge with
+/// no message explaining it and no path out but a restart (review H-4). The
+/// error text asserted a rollback that may not have happened, so the caller
+/// could not even tell this case from an ordinary statement failure.
+fn rollback_after_failure(conn: &Connection, what: &str) -> String {
+    match conn.execute_batch("ROLLBACK") {
+        Ok(()) => format!("batch {what} failed and was rolled back"),
+        Err(rollback_err) => format!(
+            "batch {what} failed AND the rollback failed ({rollback_err}); \
+             the connection is left mid-transaction and every later write will \
+             fail until Purple Memo is restarted"
+        ),
+    }
+}
+
 /// Run several writes as a single transaction — all-or-nothing (§4).
 pub fn batch(conn: &Connection, statements: &[BatchStatement]) -> Result<(), String> {
     for (idx, stmt) in statements.iter().enumerate() {
-        reject_txn_control(&stmt.sql)
+        reject_dangerous_statement(&stmt.sql)
             .map_err(|e| format!("batch statement {idx} rejected: {e}"))?;
     }
     conn.execute_batch("BEGIN")
         .map_err(|e| format!("batch begin failed: {e}"))?;
     for (idx, stmt) in statements.iter().enumerate() {
         if let Err(e) = execute(conn, &stmt.sql, &stmt.params) {
-            let _ = conn.execute_batch("ROLLBACK");
             return Err(format!(
-                "batch statement {idx} failed and was rolled back: {e}"
+                "{rollback_note}: {e}",
+                rollback_note = rollback_after_failure(conn, &format!("statement {idx}"))
             ));
         }
     }
-    conn.execute_batch("COMMIT").map_err(|e| {
-        let _ = conn.execute_batch("ROLLBACK");
-        format!("batch commit failed: {e}")
-    })
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        return Err(format!(
+            "{rollback_note}: {e}",
+            rollback_note = rollback_after_failure(conn, "commit")
+        ));
+    }
+    Ok(())
 }
 
 /// Start a manual transaction (short critical sections only — §4).
@@ -855,6 +998,229 @@ mod tests {
         assert!(err.contains("not allowed"), "unexpected error: {err}");
         assert!(begin_tx(&conn).is_err(), "manual txn still open");
         rollback_tx(&conn).expect("cleanup rollback");
+    }
+
+    // -- The statement guard (review H-2 / H-3) --------------------------------
+
+    #[test]
+    fn db_query_cannot_commit_or_begin_around_the_txn_flag() {
+        // H-2: the guard used to run on writes only, so a READ could commit an
+        // open manual transaction while `txn_open` stayed true, or open one
+        // the flag never knew about — after which every batch failed for the
+        // life of the process.
+        let (_dir, conn) = open_baseline("query-txn");
+        conn.execute_batch("CREATE TABLE t (v TEXT NOT NULL)")
+            .expect("scratch table");
+
+        begin_tx(&conn).expect("begin");
+        conn.execute("INSERT INTO t(v) VALUES ('x')", []).unwrap();
+
+        for smuggled in [
+            "COMMIT",
+            "BEGIN",
+            "END",
+            "ROLLBACK",
+            "SAVEPOINT s",
+            "RELEASE s",
+        ] {
+            let err = query_rows(&conn, smuggled, &[])
+                .expect_err("db_query must refuse transaction control");
+            assert!(
+                err.contains("transaction-control"),
+                "{smuggled} gave: {err}"
+            );
+        }
+        // The transaction is untouched, so the flag still matches reality.
+        assert!(
+            begin_tx(&conn).is_err(),
+            "the manual txn must still be open"
+        );
+        rollback_tx(&conn).expect("cleanup rollback");
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM t"), 0);
+    }
+
+    #[test]
+    fn the_guard_sees_through_leading_comments() {
+        // H-3: the old check read only the first whitespace-separated token, so
+        // `-- x\nCOMMIT` and `/*c*/COMMIT` both passed while SQLite happily
+        // prepared the COMMIT underneath.
+        for smuggled in [
+            "-- a helpful comment\nCOMMIT",
+            "/*c*/COMMIT",
+            "  \n\t -- comment\n  ROLLBACK",
+            "/* multi\nline */ BEGIN",
+        ] {
+            let err = reject_dangerous_statement(smuggled)
+                .expect_err("a comment must not hide the statement");
+            assert!(
+                err.contains("transaction-control"),
+                "{smuggled:?} gave: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn attach_and_detach_are_refused() {
+        // After an ATTACH, `CREATE TABLE other.t` creates or overwrites a file
+        // anywhere the process can write, and `SELECT * FROM other.t` reads
+        // any SQLite file on disk.
+        for smuggled in [
+            "ATTACH DATABASE '/tmp/evil.db' AS other",
+            "attach database '/tmp/evil.db' as other",
+            "  -- note\n  ATTACH DATABASE 'x' AS y",
+            "DETACH DATABASE other",
+        ] {
+            let err =
+                reject_dangerous_statement(smuggled).expect_err("ATTACH/DETACH must be refused");
+            assert!(
+                err.contains("outside this database"),
+                "{smuggled:?} gave: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn pragma_key_and_rekey_are_refused() {
+        // `PRAGMA rekey` re-encrypts the whole file under a key that never
+        // reaches the credential store: silent, total data loss.
+        for smuggled in [
+            "PRAGMA key = \"x'00'\"",
+            "PRAGMA rekey = \"x'00'\"",
+            "pragma rekey=\"x'00'\"",
+            "  PRAGMA main.rekey = \"x'00'\"",
+            "PRAGMA \"rekey\" = \"x'00'\"",
+            "-- c\nPRAGMA rekey = \"x'00'\"",
+        ] {
+            let err =
+                reject_dangerous_statement(smuggled).expect_err("PRAGMA key/rekey must be refused");
+            assert!(err.contains("credential store"), "{smuggled:?} gave: {err}");
+        }
+    }
+
+    #[test]
+    fn the_guard_allows_every_statement_the_app_actually_issues() {
+        // A guard that broke real SQL would be worse than none. This is the
+        // app's whole vocabulary, including the only pragma the frontend uses
+        // (the backup import toggles foreign_keys) and partial UPDATE lists
+        // built by interpolating validated identifiers.
+        for legit in [
+            "SELECT * FROM settings WHERE key = ?",
+            "SELECT 1",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            "UPDATE vault_items SET ciphertext = ?, salt = ?, iv = ?, updated_at = ? WHERE id = ?",
+            "DELETE FROM vault_items WHERE id = ?",
+            // backup.ts toggles these around the import.
+            "PRAGMA foreign_keys = OFF",
+            "PRAGMA foreign_keys = ON",
+            "PRAGMA user_version",
+            // Comments are legal prefix on a legitimate statement.
+            "-- pick the newest\nSELECT * FROM notes ORDER BY created_at DESC",
+            "/* filtered */ DELETE FROM drafts WHERE id = ?",
+        ] {
+            reject_dangerous_statement(legit)
+                .unwrap_or_else(|e| panic!("{legit:?} must be allowed, got: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_batch_rolls_back_and_says_so() {
+        let (_dir, conn) = open_baseline("batch-rollback");
+        let err = batch(
+            &conn,
+            &[
+                BatchStatement {
+                    sql: "INSERT INTO settings(key, value) VALUES (?1, ?2)".to_string(),
+                    params: vec![json!("k1"), json!("v1")],
+                },
+                BatchStatement {
+                    sql: "INSERT INTO nope_missing_table(x) VALUES (1)".to_string(),
+                    params: vec![],
+                },
+            ],
+        )
+        .expect_err("the second statement must fail the batch");
+        assert!(err.contains("rolled back"), "unexpected error: {err}");
+        // Nothing survived.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM settings"), 0);
+        // And the connection is usable again.
+        batch(
+            &conn,
+            &[BatchStatement {
+                sql: "INSERT INTO settings(key, value) VALUES (?1, ?2)".to_string(),
+                params: vec![json!("k1"), json!("v1")],
+            }],
+        )
+        .expect("the connection is not wedged");
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM settings"), 1);
+    }
+
+    // -- Connection pragmas (review H-5) --------------------------------------
+
+    #[test]
+    fn the_connection_waits_for_a_busy_lock_instead_of_failing_instantly() {
+        let dir = TempDir::new("busy");
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open");
+
+        // WAL and FK enforcement are still on (they were already asserted
+        // nowhere, which is the other half of this gap).
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("journal_mode");
+        assert_eq!(journal.to_lowercase(), "wal");
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .expect("foreign_keys");
+        assert_eq!(fk, 1, "foreign_keys must be enforced");
+
+        // The busy handler is actually installed.
+        let timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .expect("busy_timeout");
+        assert_eq!(timeout_ms, (BUSY_TIMEOUT_SECS * 1000) as i64);
+    }
+
+    #[test]
+    fn a_contended_write_waits_for_the_lock_instead_of_failing_instantly() {
+        // H-5: SQLite's busy handler is off by default, so any contention was
+        // an instant SQLITE_BUSY. The app connection's timeout is asserted in
+        // `the_connection_waits_for_a_busy_lock_instead_of_failing_instantly`;
+        // here we prove the mechanism itself — a blocked writer waits, and is
+        // only refused once the timeout is actually spent.
+        let dir = TempDir::new("busy2");
+        let key = mint_key_hex().expect("mint key");
+        let holder = open_encrypted_db(&dir.db_path(), &key).expect("open holder");
+        init_schema(&holder).expect("init schema");
+
+        let contender = open_encrypted_db(&dir.db_path(), &key).expect("open contender");
+        // A short timeout so the test stays fast; the app uses 5 s.
+        contender
+            .busy_timeout(std::time::Duration::from_millis(300))
+            .expect("set short timeout");
+
+        // Hold a write transaction open from the other connection.
+        begin_tx(&holder).expect("begin");
+        holder
+            .execute("INSERT INTO settings(key, value) VALUES ('k', 'v')", [])
+            .expect("writer takes the lock");
+
+        let started = std::time::Instant::now();
+        let result = contender.execute("INSERT INTO settings(key, value) VALUES ('k2', 'v2')", []);
+        let waited = started.elapsed();
+
+        assert!(result.is_err(), "the contended write must be refused");
+        assert!(
+            waited >= std::time::Duration::from_millis(250),
+            "the writer must WAIT for the lock, not fail instantly (waited {waited:?})"
+        );
+
+        // Once the holder is done the same statement succeeds, so the refusal
+        // was contention and not a broken connection.
+        commit_tx(&holder).expect("release the lock");
+        contender
+            .execute("INSERT INTO settings(key, value) VALUES ('k2', 'v2')", [])
+            .expect("the write succeeds once the lock is free");
     }
 
     #[test]
