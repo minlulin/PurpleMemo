@@ -37,6 +37,9 @@ const APP_DIR_NAME: &str = "com.minlulin.purplememo";
 /// Audit log of every key disclosure (§5.4), written next to the database.
 const KEY_EXPORT_LOG: &str = "key-export.log";
 
+/// Audit log of every LAN-share disclosure (§8), written next to the database.
+const SHARE_LOG: &str = "share.log";
+
 /// Added to the dialog body — the log line stays the plain, quotable failure.
 const RETRY_GUIDANCE: &str = " Fix that and choose Retry, or choose Quit to close Purple Memo.";
 
@@ -91,6 +94,7 @@ pub fn run() {
             commands::photo_save_thumb,
             commands::photo_delete,
             commands::db_key_save,
+            commands::share_arm,
             commands::share_start,
             commands::share_stop,
             commands::share_status,
@@ -391,34 +395,44 @@ fn remember_data_dir(dir: &std::path::Path) {
     let _ = DATA_DIR.set(dir.to_path_buf());
 }
 
+/// Append one timestamped line to `name` in the app-data dir.
+///
+/// Best-effort: refusing to do the thing because the audit write failed would
+/// be worse than a missing record, and these are for the user's benefit after
+/// the fact, not controls on the operation.
+fn append_audit_line(name: &str, line: &str) {
+    use std::io::Write;
+    let Some(mut path) = dirs_next_to_db() else {
+        return;
+    };
+    path.push(name);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{timestamp} {line}", timestamp = timestamp_utc());
+    }
+}
+
 /// Append one key-export record to `key-export.log`, next to the database.
 ///
 /// This is the audit trail for the single most sensitive thing the app can do:
 /// let the database's master key out of the credential store. The line records
 /// when and where it went and nothing else — see [`db::key_export_audit_line`],
 /// which has no parameter through which key material could be threaded.
-///
-/// Best-effort, like the boot log: refusing to disclose the key because the
-/// audit write failed would be worse than a missing record, and this is for
-/// the user's benefit after the fact, not a control on the export.
 pub(crate) fn note_key_export(destination: &str) {
-    use std::io::Write;
-    let Some(mut path) = dirs_next_to_db() else {
-        return;
-    };
-    path.push(KEY_EXPORT_LOG);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(
-            file,
-            "{} {}",
-            timestamp_utc(),
-            db::key_export_audit_line(destination)
-        );
-    }
+    append_audit_line(KEY_EXPORT_LOG, &db::key_export_audit_line(destination));
+}
+
+/// Append one LAN-share disclosure to `share.log`.
+///
+/// Starting the share server puts a read-only view of the user's money and
+/// notes on the local network. The user finds out by looking in Settings; this
+/// is how they find out *afterwards*, including if the machine was not theirs
+/// at the time. The pairing code is never recorded — see [`share::ShareEvent`].
+pub(crate) fn note_share_event(event: share::ShareEvent) {
+    append_audit_line(SHARE_LOG, &event.audit_line());
 }
 
 /// RFC 3339 in UTC. Hand-rolled rather than pulling in a date crate for one

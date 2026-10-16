@@ -134,6 +134,33 @@ test("the key export is one-way: a path goes out, nothing comes back", () => {
   );
 });
 
+test("the LAN share cannot be started without a consent token", () => {
+  // Review H-8: `share_start` used to be one bare call that bound 0.0.0.0 and
+  // put a read-only view of the user's notes and balances on the network. Rust
+  // now refuses it without a one-shot token from `share_arm`, and the token has
+  // to travel as `consentToken` — camelCase, via the command's `rename_all`.
+  assert.match(
+    commandsSrc,
+    /pub fn share_arm\(state: State<'_, ShareState>\) -> CmdResult<String>/,
+    "share_arm must exist and issue a token",
+  );
+  assert.match(
+    commandsSrc,
+    /#\[tauri::command\(rename_all = "camelCase"\)\]\s*pub fn share_start\(state: State<'_, ShareState>, consent_token: String\)/,
+    "share_start must take a snake_case arg exposed as consentToken",
+  );
+  assert.match(
+    driverSrc,
+    /shareArm: \(\) => invoke\("share_arm"\)/,
+    "the driver must arm consent",
+  );
+  assert.match(
+    driverSrc,
+    /shareStart: \(consentToken\) =>\s*invoke\("share_start", \{ consentToken \}\)/,
+    "share_start must receive the token",
+  );
+});
+
 test("the window label Rust focuses is the window Tauri actually creates", () => {
   // `focus_main_window` looks the window up by label. A rename in
   // tauri.conf.json would leave the second launch silently doing nothing —

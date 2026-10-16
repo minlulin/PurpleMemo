@@ -85,11 +85,17 @@ export interface DataDriver {
    */
   saveDbKeyFile(path: string): Promise<void>;
   /** Start the LAN snapshot server (§8). Idempotent while running. */
-  shareStart(): Promise<ShareInfo>;
+  shareStart(consentToken: string): Promise<ShareInfo>;
   shareStop(): Promise<ShareInfo>;
   shareStatus(): Promise<ShareInfo>;
   /** Publish a freshly built snapshot payload for the LAN server to serve. */
   sharePublish(snapshotJson: string): Promise<ShareInfo>;
+  /**
+   * Record that the user confirmed the LAN-share prompt and return a one-shot
+   * token for `shareStart` (§8). Issuing is not consent — only starting the
+   * listener consumes the token, and only once (review H-8).
+   */
+  shareArm(): Promise<string>;
 }
 
 /** The one production driver: Tauri IPC commands (§4, §8). */
@@ -116,7 +122,8 @@ export function createTauriDriver(): DataDriver {
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
     saveDbKeyFile: (path) => invoke("db_key_save", { path }),
     // P5 share controls (§8) — 14 commands total now, still one driver.
-    shareStart: () => invoke("share_start"),
+    shareStart: (consentToken) => invoke("share_start", { consentToken }),
+    shareArm: () => invoke("share_arm"),
     shareStop: () => invoke("share_stop"),
     shareStatus: () => invoke("share_status"),
     sharePublish: (snapshotJson) => invoke("share_publish", { snapshotJson }),

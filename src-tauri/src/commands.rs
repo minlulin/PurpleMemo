@@ -2,7 +2,7 @@
 //! `db_begin`, `db_commit`, `db_rollback`, `photo_save`, `photo_read`,
 //! `photo_read_thumb`, `photo_save_thumb`, `photo_delete`,
 //! `db_key_save` (write the key to a file the user chose, §5.4), plus the
-//! P5 share controls — `share_start`, `share_stop`, `share_status`,
+//! P5 share controls — `share_arm`, `share_start`, `share_stop`, `share_status`,
 //! `share_publish` (§8). The share commands touch no SQL: they only control
 //! the listener and the snapshot bytes the desktop published.
 //!
@@ -225,11 +225,31 @@ pub fn db_key_save(path: String) -> CmdResult<()> {
     db::save_db_key_file(std::path::Path::new(&path))
 }
 
+/// Record that the user confirmed the LAN-share consent prompt, and return a
+/// one-shot token for [`share_start`] (§8, review H-8).
+///
+/// Issuing a token is not consent — only starting the server consumes it, and
+/// only once. Splitting it out means the bare `share_start` call, which is what
+/// an accident or a stray invocation looks like, no longer opens a listener on
+/// its own.
+#[tauri::command]
+pub fn share_arm(state: State<'_, ShareState>) -> CmdResult<String> {
+    state.arm()
+}
+
 /// Turn on the read-only LAN share (§8): binds a fresh port, mints a pairing
 /// code and serves the last published snapshot. Idempotent while running.
-#[tauri::command]
-pub fn share_start(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
-    state.start()
+///
+/// Requires the token from [`share_arm`]; see the refusal in
+/// [`ShareState::start`]. Every start and stop is recorded in `share.log`
+/// beside the database.
+///
+/// `rename_all` is what lets the Rust-side name stay snake_case while the JS
+/// driver sends `consentToken` — the IPC contract is camelCase, same as the
+/// `rowsAffected`/`lastInsertRowid` fields on [`db::ExecuteOutcome`].
+#[tauri::command(rename_all = "camelCase")]
+pub fn share_start(state: State<'_, ShareState>, consent_token: String) -> CmdResult<ShareInfo> {
+    state.start(&consent_token)
 }
 
 /// Turn the LAN share off and close the listener. Idempotent.

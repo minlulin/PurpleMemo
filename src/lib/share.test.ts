@@ -241,3 +241,49 @@ test("createShareRepo: start/stop/status go through the driver (single IPC surfa
   assert.equal(driver.callsTo("shareStop").length, 1);
   assert.equal(driver.callsTo("shareStatus").length, 1);
 });
+
+test("starting the share arms consent first and presents the token", async () => {
+  // Review H-8: the listener must not be reachable by one bare call. Rust
+  // refuses `share_start` without a token from `share_arm`, and the repo is the
+  // one place that has to put the two halves in order.
+  const driver = createMockDriver();
+  const repo = createShareRepo(driver);
+  await repo.start();
+
+  const armIndex = driver.calls.findIndex((c) => c.method === "shareArm");
+  const startIndex = driver.calls.findIndex((c) => c.method === "shareStart");
+  assert.ok(armIndex >= 0, "consent must be armed");
+  assert.ok(startIndex > armIndex, "arming must come before starting");
+
+  const presented = driver.calls[startIndex]?.args[0];
+  assert.equal(typeof presented, "string", "a token is presented, not nothing");
+  assert.ok(
+    (presented as string).length > 0,
+    "an empty token is exactly what Rust refuses",
+  );
+});
+
+test("starting the share without consent is refused, not silently allowed", async () => {
+  // The mock mirrors the Rust refusal, so a future edit that drops the arm step
+  // from `shareRepo.start` fails here rather than only in production.
+  const driver = createMockDriver();
+  await assert.rejects(() => driver.shareStart(""), /must be confirmed first/);
+  // Calling it with no argument at all does not compile: `shareStart` takes a
+  // required `consentToken`, so the gate is also a type-level fact rather than
+  // only a runtime one. This assertion is the runtime half of that pair.
+});
+
+test("each start presents a distinct consent token", async () => {
+  // One token per disclosure: a second start cannot ride on the first's
+  // confirmation.
+  const driver = createMockDriver();
+  const repo = createShareRepo(driver);
+  await repo.start();
+  await repo.stop();
+  await repo.start();
+
+  const tokens = driver.callsTo("shareStart").map((c) => c.args[0]);
+  assert.equal(tokens.length, 2);
+  assert.ok(tokens[0], "a token is presented");
+  assert.notEqual(tokens[0], tokens[1], "the second start is separately armed");
+});

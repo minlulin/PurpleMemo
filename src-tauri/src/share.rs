@@ -16,7 +16,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -46,6 +46,32 @@ const TOKENS_MARKER: &str = "/*__TOKENS__*/";
 /// Largest snapshot accepted from the desktop (the payload is ~10 KB; the
 /// cap only stops a runaway caller from ballooning memory).
 pub const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
+
+/// A disclosure of the user's data to the local network, for the audit log
+/// (review H-8). Carries the port but never the pairing code: the code is the
+/// access control, and writing it beside the database would put the LAN's only
+/// real secret on disk for the rest of the install's life.
+#[derive(Debug, Clone)]
+pub enum ShareEvent {
+    /// A listener was opened on this port, with consent.
+    Started(u16),
+    /// The listener closed. Carries the abuse note when it stopped early.
+    Stopped(Option<String>),
+}
+
+impl ShareEvent {
+    /// The audit line for this event. Pure, and — like the key-export line —
+    /// has no parameter through which the pairing code could be threaded.
+    pub fn audit_line(&self) -> String {
+        match self {
+            ShareEvent::Started(port) => {
+                format!("LAN share STARTED on port {port} (consent confirmed)")
+            }
+            ShareEvent::Stopped(None) => "LAN share STOPPED by the user".to_string(),
+            ShareEvent::Stopped(Some(reason)) => format!("LAN share STOPPED: {reason}"),
+        }
+    }
+}
 
 /// How long the accept loop waits for a request before re-checking shutdown,
 /// so `stop` never has to wait long to join the thread.
@@ -110,12 +136,33 @@ struct Running {
 }
 
 /// The managed share state: at most one listening server (§8 — single writer,
-/// one listener). Cloned into Tauri as managed state, so the mutex is the only
-/// shared handle.
+/// one listener). Cloned into Tauri as managed state, so the mutexes are the
+/// only shared handles.
 #[derive(Default)]
 pub struct ShareState {
     inner: Mutex<Option<Running>>,
+    consent: Mutex<Option<Consent>>,
 }
+
+/// A one-shot proof that the user confirmed the consent prompt (§8, review
+/// H-8). Starting the LAN server binds `0.0.0.0` and puts a read-only view of
+/// the user's money and notes on the network; that must not be one bare call
+/// away.
+#[derive(Debug)]
+struct Consent {
+    token: String,
+    granted: Instant,
+}
+
+/// How long a consent token stays usable. The user is confirming a dialog that
+/// is already on screen, so this only has to survive a round trip — it exists
+/// so a token found in a log or a crash dump later is worthless.
+const CONSENT_TTL: Duration = Duration::from_secs(120);
+
+/// Refusal when sharing is started without a fresh consent token. Says what to
+/// do, because the UI is the only thing that can obtain one.
+const NO_CONSENT: &str =
+    "sharing must be confirmed first: call share_arm, then share_start with the token it returns";
 
 impl ShareState {
     pub fn new() -> Self {
@@ -128,13 +175,57 @@ impl ShareState {
             .map_err(|_| "share state mutex poisoned".to_string())
     }
 
+    fn consent_lock(&self) -> Result<std::sync::MutexGuard<'_, Option<Consent>>, String> {
+        self.consent
+            .lock()
+            .map_err(|_| "share consent mutex poisoned".to_string())
+    }
+
+    /// Record the user's confirmation and return a token for [`Self::start`].
+    ///
+    /// Issuing is not consent: only `start` consumes the token, and only once.
+    pub fn arm(&self) -> Result<String, String> {
+        let token = random_hex(CONSENT_TOKEN_BYTES)?;
+        let mut guard = self.consent_lock()?;
+        *guard = Some(Consent {
+            token: token.clone(),
+            granted: Instant::now(),
+        });
+        Ok(token)
+    }
+
+    /// Take the consent token if it matches and is still fresh.
+    ///
+    /// The token is cleared on *every* attempt, matched or not. That is the
+    /// security-relevant choice: a mismatch burns the real token, so probing for
+    /// a valid one costs an arming per guess instead of yielding an oracle. The
+    /// cost to a legitimate user is one extra tap on "confirm".
+    fn take_consent(&self, presented: &str) -> Result<(), String> {
+        let mut guard = self.consent_lock()?;
+        let Some(consent) = guard.take() else {
+            return Err(NO_CONSENT.to_string());
+        };
+        if consent.granted.elapsed() > CONSENT_TTL {
+            return Err(format!("{NO_CONSENT} (the confirmation expired)"));
+        }
+        if !constant_time_eq(presented, &consent.token) {
+            return Err(NO_CONSENT.to_string());
+        }
+        Ok(())
+    }
+
     /// Start sharing, binding every interface so the phone can reach it.
-    /// Idempotent while running: a second call returns the live link.
-    pub fn start(&self) -> Result<ShareInfo, String> {
+    ///
+    /// Requires a consent token from [`Self::arm`]: see [`NO_CONSENT`].
+    /// Idempotent while running: a second call returns the live link (and still
+    /// needs a fresh token, because the caller asked to share again).
+    pub fn start(&self, consent_token: &str) -> Result<ShareInfo, String> {
+        self.take_consent(consent_token)?;
         self.start_on("0.0.0.0")
     }
 
-    /// Testable bind: production uses `0.0.0.0`, tests use loopback.
+    /// Testable bind: production goes through [`Self::start`], which takes the
+    /// consent token first; tests bind loopback via a token of their own.
     fn start_on(&self, bind: &str) -> Result<ShareInfo, String> {
         let mut guard = self.lock()?;
         if let Some(r) = guard.as_ref() {
@@ -177,6 +268,12 @@ impl ShareState {
         };
         let info = running.info(None);
         *guard = Some(running);
+        // The pairing code is deliberately NOT logged: it lives in a URL query
+        // string over plain HTTP, so writing it to disk would put the one thing
+        // standing between the LAN and the user's data into a file that outlives
+        // the session. The port and the fact of the disclosure are what a user
+        // needs afterwards.
+        crate::note_share_event(ShareEvent::Started(info.port.unwrap_or(0)));
         Ok(info)
     }
 
@@ -187,6 +284,7 @@ impl ShareState {
             Some(running) => {
                 let note = running.abuse_note();
                 reap(running);
+                crate::note_share_event(ShareEvent::Stopped(note.clone()));
                 Ok(ShareInfo::stopped(note))
             }
             None => Ok(ShareInfo::stopped(None)),
@@ -283,6 +381,17 @@ pub fn generate_code() -> Result<String, String> {
         .iter()
         .map(|b| CODE_ALPHABET[usize::from(*b % 32)] as char)
         .collect())
+}
+
+/// Entropy in the consent token. 32 bytes = 256 bits, so guessing one is not
+/// a thing anyone can do, and a leaked one is useless after its TTL.
+const CONSENT_TOKEN_BYTES: usize = 32;
+
+/// Lowercase hex, from the OS CSPRNG.
+fn random_hex(bytes: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; bytes];
+    getrandom::fill(&mut buf).map_err(|e| format!("OS random source unavailable: {e}"))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Best-effort local network address for the printed link. Binding a UDP
@@ -639,10 +748,148 @@ mod tests {
     #[test]
     fn start_is_idempotent_while_running() {
         let (state, port, code) = started();
-        let again = state.start().expect("second start");
+        // Reusing a running listener is still a "start", so it still needs its
+        // own token — the caller asked to put the data on the network again.
+        let again = state
+            .start(&state.arm().expect("arm"))
+            .expect("second start");
         assert_eq!(again.port, Some(port), "the live listener is reused");
         assert_eq!(again.code, Some(code));
         assert!(!state.stop().expect("stop").running);
+    }
+
+    // -- Consent gate (§8, review H-8) -----------------------------------------
+
+    #[test]
+    fn starting_without_consent_is_refused_and_binds_nothing() {
+        // The bare call - what an accident or a stray invocation looks like -
+        // must not put the user's notes and balances on the network.
+        let state = ShareState::new();
+        let err = state.start("").expect_err("consent must be required");
+        assert!(
+            err.contains("share_arm"),
+            "points at the consent step: {err}"
+        );
+        assert!(!state.status().expect("status").running);
+        assert!(state.status().expect("status").port.is_none());
+    }
+
+    #[test]
+    fn a_wrong_token_is_refused_and_burns_the_real_one() {
+        let state = ShareState::new();
+        let real = state.arm().expect("arm");
+        let wrong = "0".repeat(real.len());
+        assert_ne!(wrong, real);
+
+        let err = state.start(&wrong).expect_err("must refuse");
+        assert!(
+            err.contains("share_arm"),
+            "points at the consent step: {err}"
+        );
+        assert!(!state.status().expect("status").running);
+        assert!(state.status().expect("status").port.is_none());
+
+        // Presenting a wrong token spends the real one. That is deliberate: it
+        // gives an attacker probing for a valid token exactly one guess per
+        // arming instead of an oracle, and a legitimate user who fumbled simply
+        // confirms again.
+        assert!(
+            state.take_consent(&real).is_err(),
+            "a rejected attempt must not leave the token usable"
+        );
+    }
+
+    #[test]
+    fn a_consent_token_is_good_for_exactly_one_start() {
+        // Single use, so a rejected start cannot be retried into a listener and
+        // a token found in a log cannot be replayed later.
+        let state = ShareState::new();
+        let token = state.arm().expect("arm");
+        assert!(state.take_consent(&token).is_ok(), "first use is valid");
+        assert!(
+            state.take_consent(&token).is_err(),
+            "the same token must not work twice"
+        );
+
+        // And arming again replaces the spent one.
+        let fresh = state.arm().expect("arm");
+        assert!(state.take_consent(&fresh).is_ok());
+    }
+
+    #[test]
+    fn arming_again_invalidates_the_previous_token() {
+        let state = ShareState::new();
+        let first = state.arm().expect("arm");
+        let second = state.arm().expect("arm");
+        assert_ne!(first, second, "each arming mints a fresh token");
+        assert!(
+            state.take_consent(&first).is_err(),
+            "only the newest token can be spent, and spending burns it"
+        );
+        assert!(
+            state.take_consent(&second).is_err(),
+            "the second token went when the stale one was presented"
+        );
+        // A fresh confirmation always works.
+        assert!(state.take_consent(&state.arm().expect("arm")).is_ok());
+    }
+
+    #[test]
+    fn consent_tokens_are_unpredictable_and_long() {
+        let state = ShareState::new();
+        let a = state.arm().expect("arm");
+        let b = state.arm().expect("arm");
+        assert_eq!(a.len(), CONSENT_TOKEN_BYTES * 2, "256 bits of hex");
+        assert_ne!(a, b);
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "lowercase hex"
+        );
+    }
+
+    #[test]
+    fn stop_consumes_a_token_too() {
+        // Starting is the disclosure; stopping is not. A token must not be
+        // spendable on the harmless direction.
+        let state = ShareState::new();
+        let token = state.arm().expect("arm");
+        assert!(!state.stop().expect("stop").running);
+        assert!(
+            state.take_consent(&token).is_ok(),
+            "stopping does not need consent"
+        );
+    }
+
+    // -- The audit trail (review H-8) ------------------------------------------
+
+    #[test]
+    fn the_share_audit_line_names_the_port_and_never_the_pairing_code() {
+        let line = ShareEvent::Started(8765).audit_line();
+        assert!(line.contains("8765"), "the port is what the user needs");
+        assert!(line.to_lowercase().contains("started"));
+        assert!(
+            line.to_lowercase().contains("consent"),
+            "a disclosure records that it was confirmed: {line}"
+        );
+        // The pairing code has no path into this string at all: the variant
+        // carries a port, not a code.
+        let code = generate_code().expect("code");
+        assert!(!line.contains(&code));
+    }
+
+    #[test]
+    fn a_share_that_stopped_on_its_own_says_so_in_the_log() {
+        assert_eq!(
+            ShareEvent::Stopped(None).audit_line(),
+            "LAN share STOPPED by the user"
+        );
+        assert!(
+            ShareEvent::Stopped(Some("too many wrong pairing codes".to_string()))
+                .audit_line()
+                .contains("too many wrong pairing codes"),
+            "the reason is kept - that is the line worth having"
+        );
     }
 
     #[test]

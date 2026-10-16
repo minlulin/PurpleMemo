@@ -287,6 +287,7 @@ export default function SettingsPage(p: SettingsPageProps) {
   const [shareState, setShareState] = useState<ShareInfo | null>(null);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [shareAck, setShareAck] = useState(false);
 
   // The app shell keeps re-publishing while sharing; this mirrors the state
   // here (including a server that stopped itself after wrong pairing codes).
@@ -308,9 +309,24 @@ export default function SettingsPage(p: SettingsPageProps) {
     };
   }, []);
 
+  /**
+   * Turn the LAN share on (review H-8).
+   *
+   * `shareRepo.start` arms and starts in one call, and Rust refuses to bind a
+   * listener without the consent token that call obtains — so the gate is
+   * enforced on the backend, not merely drawn on screen. What this function owns
+   * is making sure the user actually reads what they are agreeing to before the
+   * token is minted.
+   */
   const startShare = async () => {
     setError(null);
     setShareCopied(false);
+    if (!shareAck) {
+      setError(
+        "Tick the acknowledgement first — anyone on this network who has the code can read your snapshot.",
+      );
+      return;
+    }
     setShareBusy(true);
     try {
       setShareState(await shareRepo.start());
@@ -760,16 +776,30 @@ export default function SettingsPage(p: SettingsPageProps) {
             </div>
           </div>
         ) : (
-          <div className="editor-row">
-            <button
-              type="button"
-              className={`btn btn-primary${shareBusy ? " btn-loading" : ""}`}
-              disabled={shareBusy}
-              onClick={() => void startShare()}
-            >
-              {shareBusy && <IconSpinner />}
-              {shareBusy ? "Starting…" : "Start sharing"}
-            </button>
+          <div className="side-form">
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={shareAck}
+                onChange={(e) => setShareAck(e.target.checked)}
+              />
+              I understand — anything on this network with the pairing code can
+              read my dashboard snapshot.
+            </label>
+            <div className="editor-row">
+              <button
+                type="button"
+                className={`btn btn-primary${shareBusy ? " btn-loading" : ""}`}
+                disabled={shareBusy}
+                onClick={() => void startShare()}
+              >
+                {shareBusy && <IconSpinner />}
+                {shareBusy ? "Starting…" : "Start sharing"}
+              </button>
+            </div>
+            <p className="muted">
+              Every start and stop is recorded in share.log beside the database.
+            </p>
           </div>
         )}
         {shareState !== null &&

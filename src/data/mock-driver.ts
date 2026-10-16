@@ -62,6 +62,9 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     calls.push({ method, args });
   };
 
+  // Distinct per arming, so a test can tell a fresh consent from a spent one.
+  let armCounter = 0;
+
   const nextRowid = () => ++lastRowid;
 
   const mock: MockDriver = {
@@ -149,8 +152,14 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         throw e;
       }
     },
-    async shareStart(): Promise<ShareInfo> {
-      record("shareStart", []);
+    async shareStart(consentToken: string): Promise<ShareInfo> {
+      record("shareStart", [consentToken]);
+      // Mirrors Rust: a start without a fresh consent token binds nothing.
+      if (consentToken.length === 0) {
+        throw new Error(
+          "sharing must be confirmed first: call share_arm, then share_start with the token it returns",
+        );
+      }
       share = {
         running: true,
         url: "http://192.168.1.5:8765/?k=TESTCODE",
@@ -160,6 +169,11 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         note: null,
       };
       return { ...share };
+    },
+    async shareArm(): Promise<string> {
+      record("shareArm", []);
+      armCounter += 1;
+      return `consent-${armCounter}`;
     },
     async shareStop(): Promise<ShareInfo> {
       record("shareStop", []);

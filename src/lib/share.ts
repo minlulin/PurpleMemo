@@ -10,7 +10,7 @@
 // phone page is a dumb painter and the Vault is structurally absent — the
 // snapshot builder takes no vault/settings/photo input at all (§5.3).
 
-import type { DataDriver } from "../data/driver.ts";
+import type { DataDriver, ShareInfo } from "../data/driver.ts";
 import { createBudgetRepo, type DayEntry } from "./budget.ts";
 import { createBusinessRepo } from "./business.ts";
 import { birthdayLabel, createContactsRepo } from "./contacts.ts";
@@ -166,7 +166,18 @@ export function createShareRepo(driver: DataDriver) {
   const notes = createNotesRepo(driver);
 
   return {
-    start: () => driver.shareStart(),
+    /**
+     * Start the LAN share (§8).
+     *
+     * Two steps on purpose (review H-8): `armConsent` records that the user
+     * confirmed the prompt and returns a one-shot token, which `start` must
+     * present. Opening a listener on `0.0.0.0` puts a read-only view of the
+     * user's notes and balances on the network, and that must not be one bare
+     * call away. The token is good for exactly one attempt.
+     */
+    async start(): Promise<ShareInfo> {
+      return driver.shareStart(await driver.shareArm());
+    },
     stop: () => driver.shareStop(),
     status: () => driver.shareStatus(),
 
