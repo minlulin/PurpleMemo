@@ -23,6 +23,11 @@ const WATCHDOG_TICK: Duration = Duration::from_secs(5);
 const RETRY_LABEL: &str = "Retry";
 const QUIT_LABEL: &str = "Quit";
 
+/// The main window's label, matching `tauri.conf.json`. Named here because
+/// `focus_main_window` has to find the window to raise, and a typo in a string
+/// literal would only show up as "the second launch does nothing".
+const MAIN_WINDOW_LABEL: &str = "main";
+
 /// Added to the dialog body — the log line stays the plain, quotable failure.
 const RETRY_GUIDANCE: &str = " Fix that and choose Retry, or choose Quit to close Purple Memo.";
 
@@ -37,6 +42,16 @@ static WATCHDOG_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub fn run() {
     tauri::Builder::default()
+        // MUST stay first. A second launch is turned away before this app
+        // reaches `setup` — and therefore before `boot` — which is what keeps
+        // two copies from racing the database. That race was not cosmetic:
+        // both could reach `load_or_mint_db_key` while the database file did
+        // not yet exist, both would mint a different key, and the loser's
+        // `set_password` would overwrite the only credential-store slot with a
+        // key that cannot open the database the winner just created (C-4).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            focus_main_window(app);
+        }))
         // Cancels any navigation away from the app's own origin (review L-01);
         // external links go to the system browser instead (MarkdownLink).
         .plugin(navigation::init())
@@ -272,6 +287,25 @@ fn arm_watchdog() {
         eprintln!("purple-memo: no answer to the boot-failure dialog; exiting");
         std::process::exit(1);
     });
+}
+
+/// Raise and un-minimise the main window, so the copy that is already running
+/// answers the user who just launched it again.
+///
+/// Focusing is the whole behaviour: a message box was the alternative, but the
+/// person who double-clicked the icon wants their notebook, not a modal — and
+/// when the running copy is sitting on the boot-failure dialog, bringing its
+/// window forward is already how that dialog gets attention.
+///
+/// Best-effort throughout: a window that is already gone, or a platform that
+/// refuses the request, must not turn a harmless second launch into a crash.
+fn focus_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// `run` itself failed — window creation, the event loop, or a `setup` error

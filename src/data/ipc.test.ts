@@ -91,3 +91,37 @@ test("raw-payload commands take the bytes as the request body", () => {
     );
   }
 });
+
+test("the single-instance plugin is registered first", () => {
+  // The plugin claims the instance lock while the builder is assembled, so a
+  // second launch must be turned away before `setup` — and therefore before
+  // `boot` reaches `load_or_mint_db_key`. Two copies booting at once could
+  // each mint a different DB key, and the loser would overwrite the only
+  // credential-store slot with one that cannot open the database (review C-4).
+  const plugins = [...libSrc.matchAll(/\.plugin\(\s*([A-Za-z0-9_:]+)/g)].map(
+    (match) => match[1] ?? "",
+  );
+  assert.ok(plugins.length > 0, "lib.rs must register plugins");
+  assert.equal(
+    plugins[0],
+    "tauri_plugin_single_instance::init",
+    "the single-instance plugin must be the FIRST one registered",
+  );
+});
+
+test("the window label Rust focuses is the window Tauri actually creates", () => {
+  // `focus_main_window` looks the window up by label. A rename in
+  // tauri.conf.json would leave the second launch silently doing nothing —
+  // exactly the kind of drift this file exists to catch.
+  const confSrc = readFileSync(
+    new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+    "utf8",
+  );
+  const label = /"label"\s*:\s*"([^"]+)"/.exec(confSrc)?.[1];
+  assert.ok(label, "tauri.conf.json must declare a main window label");
+  assert.match(
+    libSrc,
+    new RegExp(`const MAIN_WINDOW_LABEL: &str = "${label}"`),
+    `MAIN_WINDOW_LABEL must match tauri.conf.json ("${label}")`,
+  );
+});
