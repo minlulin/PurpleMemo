@@ -3,6 +3,8 @@
 // configurable idle window (default 10 minutes), and a security-question
 // fallback that allows setting a new PIN. There is NO online recovery.
 
+import type { PinHash } from "./crypto.ts";
+
 export const MIN_PIN_LENGTH = 6;
 export const DEFAULT_AUTO_LOCK_MINUTES = 10;
 
@@ -86,20 +88,102 @@ export const AUTO_LOCK_CHOICES = [5, 10, 15, 30, 0] as const;
 /**
  * Which gate the app shows before the shell (§2.9).
  *
- * - `setup`    — first run: no PIN has ever been stored.
- * - `pin`      — locked, with the security-question fallback available.
+ * - `setup`   — first run: no PIN has ever been stored.
+ * - `pin`     — locked, with the security-question fallback available.
  * - `pin-only` — locked, fallback unavailable (the answer hash is missing).
+ * - `locked`  — a PIN **is** stored but cannot be read or trusted. Neither
+ *   setup nor unlock is offered.
  *
  * The rule is deliberately fail-closed: the setup screen writes a new PIN
  * WITHOUT verifying any existing one, so it must be reachable only when no
- * PIN exists at all. Keying off both hashes instead would let a partially
- * written settings row — a corrupt value (`getJSON` returns null on a parse
- * failure) or a backup import whose settings table lacks one key — drop a
- * locked app straight into first-run setup, which is a full lock bypass.
+ * PIN exists at all. `classifyPin` exists because "no PIN" and "unreadable
+ * PIN" used to be the same `null` — `settingsRepo.getJSON` returns null both
+ * when a key has no row and when its JSON fails to parse. That collapsed a
+ * corrupt `pin_hash`, or an imported backup whose settings table predates the
+ * PIN, straight into first-run setup: a complete lock bypass (review C-3).
  */
-export type LockGate = "setup" | "pin" | "pin-only";
+export type LockGate = "setup" | "pin" | "pin-only" | "locked";
 
-export function lockGate(pinHash: unknown, answerHash: unknown): LockGate {
-  if (pinHash === null || pinHash === undefined) return "setup";
+/** What the settings table says about the PIN, before it is trusted. */
+export type PinState =
+  | { kind: "absent" }
+  | { kind: "stored"; hash: PinHash }
+  | { kind: "unreadable"; reason: PinUnreadable };
+
+export type PinUnreadable = "corrupt" | "malformed" | "weak-iterations";
+
+/**
+ * A stored hash must be at least this strong to be believed. The app has only
+ * ever written `PBKDF2_ITERATIONS` (600k); anything far below that is either
+ * a downgrade attack or a foreign row, and honouring it would turn PIN
+ * verification into an instant oracle (review M-8). Such a row is unreadable,
+ * not weak-but-accepted.
+ */
+export const MIN_PIN_HASH_ITERATIONS = 100_000;
+
+function isPinHashShape(value: unknown): value is PinHash {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<PinHash>;
+  return (
+    typeof v.salt === "string" &&
+    v.salt.length > 0 &&
+    typeof v.hash === "string" &&
+    v.hash.length > 0 &&
+    typeof v.iterations === "number" &&
+    Number.isInteger(v.iterations)
+  );
+}
+
+/**
+ * Classify the RAW `pin_hash` settings value. Takes the raw string (not the
+ * parsed one) precisely because the parse is where the old bypass lived: a
+ * caller using `settingsRepo.getJSON` cannot tell this function "absent" from
+ * "unparseable", so it must be handed the value before anything collapses it.
+ */
+export function classifyPin(raw: string | undefined): PinState {
+  if (raw === undefined) return { kind: "absent" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: "unreadable", reason: "corrupt" };
+  }
+  if (!isPinHashShape(parsed)) {
+    return { kind: "unreadable", reason: "malformed" };
+  }
+  if (parsed.iterations < MIN_PIN_HASH_ITERATIONS) {
+    return { kind: "unreadable", reason: "weak-iterations" };
+  }
+  return { kind: "stored", hash: parsed };
+}
+
+export function lockGate(pin: PinState, answerHash: unknown): LockGate {
+  // Only a PIN that was never stored may open the setup screen.
+  if (pin.kind === "absent") return "setup";
+  // Stored but untrusted: fail closed. Offering setup would overwrite the
+  // existing PIN with no verification; offering unlock would have nothing to
+  // verify against.
+  if (pin.kind === "unreadable") return "locked";
   return answerHash === null || answerHash === undefined ? "pin-only" : "pin";
+}
+
+/**
+ * The settings keys the lock screen's trust root is built from. The shell
+ * reads `pin_hash` once per `loadSecurity` and hands it to the lock screen, so
+ * a write to any of these keys MUST be followed by a reload of that state —
+ * otherwise the next lock verifies against a stale hash and rejects the PIN
+ * the user just set (review C-2).
+ */
+export const SECURITY_TRUST_ROOT_KEYS: readonly string[] = [
+  "pin_hash",
+  "security_answer_hash",
+];
+
+/**
+ * True when a settings write touched the lock screen's trust root and the
+ * shell must re-read its security state before the next lock. Kept pure so
+ * every PIN-writing path can share the rule instead of each remembering it.
+ */
+export function securityReloadNeeded(writtenKeys: readonly string[]): boolean {
+  return writtenKeys.some((k) => SECURITY_TRUST_ROOT_KEYS.includes(k));
 }

@@ -11,6 +11,7 @@ import {
   lockRetryDelayMs,
   MIN_PIN_LENGTH,
   type PinResetBlock,
+  type PinUnreadable,
   pinResetBlocked,
 } from "../lib/appLock.ts";
 import {
@@ -223,7 +224,13 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
 }
 
 interface LockScreenProps {
-  pinHash: PinHash;
+  /**
+   * `undefined` only when the shell could not classify a stored PIN — the
+   * `locked` gate in `lockGate` normally routes that case to `LockedScreen`
+   * instead. It stays optional so this screen fails closed on its own too: it
+   * renders the unrecoverable notice and never calls `verifyPin`.
+   */
+  pinHash: PinHash | undefined;
   question: string;
   /**
    * May be null when the stored settings lost the answer hash (corrupt row or
@@ -233,6 +240,45 @@ interface LockScreenProps {
    */
   answerHash: PinHash | null;
   onUnlock: () => void;
+}
+
+/**
+ * Shown when a PIN **is** stored but cannot be read or trusted (review C-3).
+ * Deliberately offers nothing: no setup (that would overwrite the existing
+ * PIN without verifying anything) and no unlock (there is no hash to verify
+ * against). Restoring the row by hand or re-importing a known-good backup are
+ * the only ways forward, and the notice says so instead of guessing.
+ */
+export function LockedScreen({ reason }: { reason: PinUnreadable }) {
+  const detail: Record<PinUnreadable, string> = {
+    corrupt: "The stored PIN record could not be read.",
+    malformed: "The stored PIN record is not in a recognised format.",
+    "weak-iterations":
+      "The stored PIN record was made with a key-derivation strength this version will not accept.",
+  };
+  return (
+    <div className="lock-wrap">
+      <div className="entry-form vault-narrow">
+        <div className="lock-brand-head">
+          <img
+            className="lock-brand-mark"
+            src="/brand/purple-memo-mark.png"
+            alt=""
+            width={44}
+            height={44}
+          />
+          <h1>Purple Memo is locked</h1>
+        </div>
+        <p className="alert alert-error" role="alert">
+          {detail[reason]} A PIN is set on this install, so the first-run setup
+          is not offered and nothing can be unlocked until this record is
+          readable. Restore the database from a backup taken before the problem
+          started, or restore the settings row from another copy of this
+          install.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 /** Lock screen (§2.9) + forgotten-PIN fallback via the security question. */
@@ -282,6 +328,12 @@ export function LockScreen(p: LockScreenProps) {
   const unlockWithPin = async () => {
     if (cooling) return;
     setShaking(false);
+    // Fail closed: with no hash to verify against there is no correct answer,
+    // so no PIN may unlock (review C-3).
+    if (p.pinHash === undefined) {
+      setError("The stored PIN record could not be read.");
+      return;
+    }
     setBusy(true);
     try {
       if (await verifyPin(pin, p.pinHash)) {

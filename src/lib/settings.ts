@@ -18,17 +18,31 @@ export type Theme = "dark" | "light";
 export function createSettingsRepo(driver: DataDriver) {
   return {
     async getJSON<T>(key: string): Promise<T | null> {
-      const rows = await driver.query<{ value: string }>(
-        "SELECT value FROM settings WHERE key = ?",
-        [key],
-      );
-      const raw = rows[0]?.value;
+      const raw = await this.getRaw(key);
       if (raw === undefined) return null;
       try {
         return JSON.parse(raw) as T;
       } catch {
         return null;
       }
+    },
+
+    /**
+     * The raw stored value: `undefined` when the row does not exist, the
+     * unparsed string when it does.
+     *
+     * `getJSON` deliberately collapses "no row" and "unparseable JSON" into a
+     * single `null`, which is fine for ordinary settings but NOT for the lock
+     * shell: `classifyPin` must be able to tell a PIN that was never set
+     * (first-run setup is allowed) from one that is stored but unreadable
+     * (setup must be refused) — see review C-3.
+     */
+    async getRaw(key: string): Promise<string | undefined> {
+      const rows = await driver.query<{ value: string }>(
+        "SELECT value FROM settings WHERE key = ?",
+        [key],
+      );
+      return rows[0]?.value;
     },
 
     async setJSON(key: string, value: unknown): Promise<void> {

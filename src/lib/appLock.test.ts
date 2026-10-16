@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
+  classifyPin,
   DEFAULT_AUTO_LOCK_MINUTES,
   isIdle,
   LOCK_MAX_FREE_ATTEMPTS,
@@ -8,9 +9,12 @@ import {
   type LockGate,
   lockGate,
   lockRetryDelayMs,
+  MIN_PIN_HASH_ITERATIONS,
   MIN_PIN_LENGTH,
   type PinResetBlock,
+  type PinState,
   pinResetBlocked,
+  securityReloadNeeded,
 } from "./appLock.ts";
 
 // The lock gate must fail CLOSED (§2.9: the PIN is required and cannot be
@@ -19,15 +23,21 @@ import {
 // the setup screen, because setup overwrites the PIN without proving the old
 // one. That is a full lock bypass.
 const HASH = { salt: "c2FsdA==", hash: "aGFzaA==", iterations: 600_000 };
+const STORED: PinState = { kind: "stored", hash: HASH };
+const ABSENT: PinState = { kind: "absent" };
 
-test("lockGate: a genuine first run (no PIN hash) is the only path to setup", () => {
-  assert.equal(lockGate(null, null), "setup");
+test("lockGate: a genuine first run (no PIN row) is the only path to setup", () => {
+  assert.equal(lockGate(ABSENT, null), "setup");
+  // What the shell actually reads: the raw value is `undefined` when the
+  // settings row does not exist.
+  assert.deepEqual(classifyPin(undefined), ABSENT);
+  assert.equal(lockGate(classifyPin(undefined), null), "setup");
 });
 
 test("lockGate: a stored PIN always locks, even without the answer hash", () => {
-  const cases: [LockGate, ReturnType<typeof lockGate>][] = [
-    ["pin", lockGate(HASH, HASH)],
-    ["pin-only", lockGate(HASH, null)],
+  const cases: [LockGate, LockGate][] = [
+    ["pin", lockGate(STORED, HASH)],
+    ["pin-only", lockGate(STORED, null)],
   ];
   for (const [expected, actual] of cases) {
     assert.equal(actual, expected);
@@ -38,21 +48,110 @@ test("lockGate: a stray answer hash without a PIN is still first run", () => {
   // No pin_hash means no PIN was ever set, so there is no lock to bypass and
   // nothing to verify against — setup is the only way forward. (The reverse
   // asymmetry is the real risk: see the two tests below.)
-  assert.equal(lockGate(null, HASH), "setup");
-  assert.equal(lockGate(undefined, HASH), "setup");
+  assert.equal(lockGate(ABSENT, HASH), "setup");
 });
 
 test("lockGate: setup is unreachable once a PIN exists", () => {
   // The regression that matters: a stored pin_hash must NEVER fall through to
   // first-run setup, whatever the answer hash looks like.
   for (const answer of [HASH, null, undefined]) {
-    const gate = lockGate(HASH, answer);
     assert.notEqual(
-      gate,
+      lockGate(STORED, answer),
       "setup",
       "a stored PIN must never fall through to first-run setup",
     );
   }
+});
+
+// -- Review C-3: the bypass ------------------------------------------------------
+//
+// `settingsRepo.getJSON` returns null BOTH when a settings key has no row and
+// when its JSON fails to parse. `lockGate` keyed "setup" off that null, so a
+// corrupt `pin_hash` — or an imported backup taken before a PIN existed —
+// opened the setup screen, which writes a new PIN with no verification at all.
+// The distinction has to survive the read, so the shell reads raw and
+// `classifyPin` decides.
+
+test("classifyPin: an unreadable PIN is unreadable, never absent", () => {
+  for (const raw of [
+    "", // empty row
+    "not json at all",
+    "{", // truncated JSON
+    "null",
+    "undefined",
+    '"just a string"',
+    "42",
+    "[]",
+    "{}",
+    JSON.stringify({ salt: "c2FsdA==" }), // no hash
+    JSON.stringify({ salt: "c2FsdA==", hash: "aGFzaA==" }), // no iterations
+    JSON.stringify({ ...HASH, iterations: "600000" }), // wrong type
+    JSON.stringify({ ...HASH, iterations: 1.5 }), // not an integer
+    JSON.stringify({ ...HASH, salt: "" }),
+  ]) {
+    const state = classifyPin(raw);
+    assert.notEqual(
+      state.kind,
+      "absent",
+      `raw ${JSON.stringify(raw)} must not be read as "no PIN stored"`,
+    );
+    assert.notEqual(
+      lockGate(state, HASH),
+      "setup",
+      `raw ${JSON.stringify(raw)} must not reach first-run setup`,
+    );
+  }
+});
+
+test("classifyPin: a tampered iteration count is refused, not honoured", () => {
+  // Honouring `iterations: 1` would make PIN verification an instant oracle.
+  const weak = classifyPin(JSON.stringify({ ...HASH, iterations: 1 }));
+  assert.deepEqual(weak, { kind: "unreadable", reason: "weak-iterations" });
+  assert.equal(lockGate(weak, HASH), "locked");
+
+  const weak2 = classifyPin(
+    JSON.stringify({ ...HASH, iterations: MIN_PIN_HASH_ITERATIONS - 1 }),
+  );
+  assert.equal(lockGate(weak2, HASH), "locked");
+
+  // At the floor it is still trusted.
+  const ok = classifyPin(
+    JSON.stringify({ ...HASH, iterations: MIN_PIN_HASH_ITERATIONS }),
+  );
+  assert.equal(ok.kind, "stored");
+  assert.equal(lockGate(ok, HASH), "pin");
+});
+
+test("lockGate: an unreadable PIN locks, refusing BOTH setup and unlock", () => {
+  for (const reason of ["corrupt", "malformed", "weak-iterations"] as const) {
+    const state: PinState = { kind: "unreadable", reason };
+    assert.equal(lockGate(state, HASH), "locked");
+    assert.equal(lockGate(state, null), "locked");
+  }
+});
+
+test("classifyPin: a real hash round-trips to `stored`", () => {
+  const state = classifyPin(JSON.stringify(HASH));
+  assert.equal(state.kind, "stored");
+  if (state.kind !== "stored") throw new Error("unreachable");
+  assert.deepEqual(state.hash, HASH);
+});
+
+test("securityReloadNeeded: a PIN write must refresh the lock shell's hash", () => {
+  // Review C-2: the shell reads pin_hash once and hands it to the lock
+  // screen, so a PIN write that skips the reload leaves the next lock
+  // verifying against the previous PIN.
+  assert.equal(securityReloadNeeded(["pin_hash"]), true);
+  assert.equal(securityReloadNeeded(["security_answer_hash"]), true);
+  assert.equal(
+    securityReloadNeeded(["pin_hash", "security_question"]),
+    true,
+    "a mixed write still needs the reload",
+  );
+  // Writes that cannot affect the lock screen.
+  assert.equal(securityReloadNeeded(["theme"]), false);
+  assert.equal(securityReloadNeeded(["auto_lock_minutes"]), false);
+  assert.equal(securityReloadNeeded([]), false);
 });
 
 test("isIdle: locks once the quiet window passes the configured minutes", () => {

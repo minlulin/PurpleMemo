@@ -5,7 +5,7 @@
 // are never stored; there is no recovery — the UI says so before the
 // password is set.
 
-import type { DataDriver } from "../data/driver.ts";
+import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import {
   decryptWithKey,
   deriveVaultKey,
@@ -28,6 +28,45 @@ export const VAULT_SETUP_KEY = "vault_setup";
  */
 export const VAULT_VERIFY_KEY = "vault_verify";
 
+/**
+ * Thrown when the supplied password demonstrably failed to open the vault —
+ * an AES-GCM auth-tag rejection or a verifier mismatch. Everything else (a
+ * locked database, a full disk, an IPC failure) throws its own error and must
+ * NOT be reported as "wrong password" (review C-1): the old UI caught
+ * everything and claimed nothing had changed, which hid a real failure behind
+ * a wrong and reassuring sentence.
+ */
+export class WrongPasswordError extends Error {
+  constructor(message = "wrong vault password") {
+    super(message);
+    this.name = "WrongPasswordError";
+  }
+}
+
+/**
+ * Decrypt with `key`, translating a GCM tag mismatch into the one error the UI
+ * may honestly call a wrong password.
+ *
+ * Only `OperationError` qualifies — that is what WebCrypto raises when the
+ * auth tag does not verify, i.e. "this key did not open this ciphertext". A
+ * malformed base64 field raises `InvalidCharacterError` instead, which is
+ * stored-data corruption, not a mistyped password, and must not be reported as
+ * one.
+ */
+async function decryptItem(
+  key: CryptoKey,
+  cipher: { ciphertext: string; iv: string },
+): Promise<string> {
+  try {
+    return await decryptWithKey(key, cipher);
+  } catch (e) {
+    if (e instanceof Error && e.name === "OperationError") {
+      throw new WrongPasswordError();
+    }
+    throw e;
+  }
+}
+
 const VERIFIER_PLAINTEXT = "purple-memo/vault/verifier/v1";
 
 interface VaultVerifier {
@@ -36,10 +75,22 @@ interface VaultVerifier {
   ciphertext: string;
 }
 
-async function sealVerifier(
-  driver: DataDriver,
-  password: string,
-): Promise<void> {
+/**
+ * The verifier write, as a BATCH STATEMENT rather than an executed one.
+ *
+ * Two rules ride on this shape (review C-1 / H-1):
+ *
+ * 1. It upserts. `settings.key` is the table's primary key, so a plain INSERT
+ *    raised a UNIQUE violation on every password change — and it raised it
+ *    *after* `changePassword` had already committed the re-encrypted items,
+ *    leaving the vault readable only with the new password while the UI
+ *    reported that nothing had changed. Same upsert as `settings.setJSON`.
+ * 2. It is returned instead of executed so callers can seal it in the SAME
+ *    transaction as the rows it has to agree with. A verifier that committed
+ *    separately could disagree with the items it verifies; a setup marker that
+ *    committed separately could strand `isSetUp()` true with no usable vault.
+ */
+async function verifierSeal(password: string): Promise<BatchStatement> {
   const salt = randomSaltB64();
   const key = await deriveVaultKey(password, salt);
   const cipher = await encryptWithKey(key, VERIFIER_PLAINTEXT);
@@ -48,10 +99,11 @@ async function sealVerifier(
     iv: cipher.iv,
     ciphertext: cipher.ciphertext,
   };
-  await driver.execute("INSERT INTO settings (key, value) VALUES (?, ?)", [
-    VAULT_VERIFY_KEY,
-    JSON.stringify(verifier),
-  ]);
+  return {
+    sql: `INSERT INTO settings (key, value) VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    params: [VAULT_VERIFY_KEY, JSON.stringify(verifier)],
+  };
 }
 
 async function checkVerifier(
@@ -132,13 +184,19 @@ export function createVaultRepo(driver: DataDriver) {
      */
     async setupVault(password: string): Promise<void> {
       if (await this.isSetUp()) throw new Error("vault is already set up");
-      await driver.execute("INSERT INTO settings (key, value) VALUES (?, ?)", [
-        VAULT_SETUP_KEY,
-        JSON.stringify({ version: 1 }),
+      // Marker and verifier in ONE batch, so a failed seal rolls the marker
+      // back with it. Committing the marker alone would leave isSetUp() true
+      // with nothing to unlock against — setup unreachable forever (H-1).
+      await driver.batch([
+        // Deliberately NOT an upsert: isSetUp() above is the guard, and a plain
+        // INSERT is what makes a concurrent second setup fail rather than
+        // silently overwrite the first one's marker.
+        {
+          sql: "INSERT INTO settings (key, value) VALUES (?, ?)",
+          params: [VAULT_SETUP_KEY, JSON.stringify({ version: 1 })],
+        },
+        await verifierSeal(password),
       ]);
-      // Seal the verifier FIRST: if this throws, the marker above is never
-      // followed by a usable vault, and setupVault rejects.
-      await sealVerifier(driver, password);
       await this.unlock(password);
     },
 
@@ -155,7 +213,7 @@ export function createVaultRepo(driver: DataDriver) {
       const first = rows[0];
       if (first) {
         const { key } = await deriveItemKey(first.id, password);
-        await decryptWithKey(key, {
+        await decryptItem(key, {
           ciphertext: first.ciphertext,
           iv: first.iv,
         });
@@ -171,7 +229,7 @@ export function createVaultRepo(driver: DataDriver) {
         [VAULT_SETUP_KEY],
       );
       if (marker[0]) {
-        throw new Error("wrong vault password");
+        throw new WrongPasswordError();
       }
     },
 
@@ -221,7 +279,7 @@ export function createVaultRepo(driver: DataDriver) {
       const row = rows[0];
       if (!row) return undefined;
       const { key } = await deriveItemKey(id, password);
-      const plaintext = await decryptWithKey(key, {
+      const plaintext = await decryptItem(key, {
         ciphertext: row.ciphertext,
         iv: row.iv,
       });
@@ -242,7 +300,7 @@ export function createVaultRepo(driver: DataDriver) {
       const { key } = await deriveItemKey(id, password);
       const plaintext =
         fields.plaintext ??
-        (await decryptWithKey(key, { ciphertext: row.ciphertext, iv: row.iv }));
+        (await decryptItem(key, { ciphertext: row.ciphertext, iv: row.iv }));
       const cipher = await encryptWithKey(key, plaintext);
       await driver.execute(
         "UPDATE vault_items SET title = ?, ciphertext = ?, iv = ?, updated_at = ? WHERE id = ?",
@@ -277,7 +335,7 @@ export function createVaultRepo(driver: DataDriver) {
       // With no items the loop below cannot prove the old password, so the
       // verifier does it instead.
       if (items.length === 0 && !(await checkVerifier(driver, oldPassword))) {
-        throw new Error("wrong current password");
+        throw new WrongPasswordError("wrong current password");
       }
       const migrated: {
         id: number;
@@ -288,7 +346,7 @@ export function createVaultRepo(driver: DataDriver) {
       }[] = [];
       for (const item of items) {
         const { key } = await deriveItemKey(item.id, oldPassword);
-        const plaintext = await decryptWithKey(key, {
+        const plaintext = await decryptItem(key, {
           ciphertext: item.ciphertext,
           iv: item.iv,
         });
@@ -303,15 +361,17 @@ export function createVaultRepo(driver: DataDriver) {
           key: newKey,
         });
       }
-      await driver.batch(
-        migrated.map((m) => ({
+      // Items AND the re-sealed verifier in ONE batch: a later unlock proves
+      // against the NEW password, and there is no window in which the items
+      // have moved to the new password but the verifier still expects the old
+      // one (which would lock the user out of their own vault).
+      await driver.batch([
+        ...migrated.map((m) => ({
           sql: "UPDATE vault_items SET ciphertext = ?, salt = ?, iv = ?, updated_at = ? WHERE id = ?",
           params: [m.ciphertext, m.salt, m.iv, todayLocal(), m.id],
         })),
-      );
-      // Re-seal the verifier under the new password, so a later unlock proves
-      // against the NEW password rather than the one just replaced.
-      await sealVerifier(driver, newPassword);
+        await verifierSeal(newPassword),
+      ]);
       const newPwdHash = await sha256HexText(newPassword);
       for (const m of migrated) {
         keyCache.set(m.id, { salt: m.salt, key: m.key, pwdHash: newPwdHash });

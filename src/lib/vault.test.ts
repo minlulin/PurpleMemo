@@ -3,10 +3,36 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import type { BatchStatement } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import type { VaultItemRow } from "./types.ts";
-import { createVaultRepo } from "./vault.ts";
+import { createVaultRepo, WrongPasswordError } from "./vault.ts";
+
+/**
+ * Every write the vault issued, as `[sql, params]` — from single `execute`
+ * calls AND from statements inside a `batch`. The vault writes atomically, so
+ * assertions have to look in both places or they silently stop checking
+ * anything.
+ */
+function writesFrom(driver: MockDriver): [string, unknown[]][] {
+  const out: [string, unknown[]][] = driver
+    .callsTo("execute")
+    .map((c) => [c.args[0] as string, (c.args[1] as unknown[]) ?? []]);
+  for (const call of driver.callsTo("batch")) {
+    for (const s of call.args[0] as BatchStatement[]) {
+      out.push([s.sql, s.params ?? []]);
+    }
+  }
+  return out;
+}
+
+/** The sealed verifier row the vault last wrote, or undefined. */
+function verifierWritten(driver: MockDriver): string | undefined {
+  return writesFrom(driver).find(([, p]) => p[0] === "vault_verify")?.[1][1] as
+    | string
+    | undefined;
+}
 
 /** Rebuild the vault_items row from the addItem INSERT this driver recorded. */
 function rowFromInsert(driver: MockDriver, id: number): VaultItemRow {
@@ -70,7 +96,8 @@ test("changePassword migrates every item in one atomic batch", async () => {
     sql: string;
     params: unknown[];
   }[];
-  assert.equal(statements.length, 1);
+  // One statement per item, plus the re-sealed verifier.
+  assert.equal(statements.length, 2);
   assert.match(statements[0]?.sql ?? "", /UPDATE vault_items SET ciphertext/);
 
   // The re-encrypted row decrypts with the new password, not the old.
@@ -90,6 +117,127 @@ test("changePassword migrates every item in one atomic batch", async () => {
   await assert.rejects(vault2.getItem(newRow.id, "old-pass"));
 });
 
+// Review C-1 — this is the bug that broke the feature entirely. The verifier
+// was re-sealed with a plain INSERT into `settings`, whose `key` is the
+// PRIMARY KEY, so every password change failed with a UNIQUE violation — and
+// it failed AFTER the re-encrypted items had already committed. The UI showed
+// "wrong current password, nothing was changed" and left the user with items
+// only the new password could read.
+test("changePassword re-seals the verifier by UPSERT, in the item batch", async () => {
+  const driver = createMockDriver();
+  const vault = createVaultRepo(driver);
+  const id = await vault.addItem("email", "s3cret", "old-pass");
+  const row = rowFromInsert(driver, id);
+  driver.pushResults([[row]]);
+  await vault.changePassword("old-pass", "new-pass");
+
+  const statements = driver.callsTo("batch")[0]?.args[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  const seal = statements.at(-1);
+  assert.ok(seal, "the verifier must be re-sealed");
+  assert.equal((seal.params ?? [])[0], "vault_verify");
+  assert.match(
+    seal.sql,
+    /ON CONFLICT\(key\) DO UPDATE SET value = excluded\.value/,
+    "a plain INSERT would violate the settings primary key",
+  );
+  // Same batch as the items: no window where the items have moved to the new
+  // password but the verifier still expects the old one.
+  assert.equal(statements.length, 2);
+  assert.match(statements[0]?.sql ?? "", /UPDATE vault_items/);
+});
+
+test("changePassword leaves the verifier proving the new password", async () => {
+  const driver = createMockDriver();
+  const vault = createVaultRepo(driver);
+  const id = await vault.addItem("email", "s3cret", "old-pass");
+  const row = rowFromInsert(driver, id);
+  driver.pushResults([[row]]);
+  await vault.changePassword("old-pass", "new-pass");
+  const sealed = verifierWritten(driver);
+  assert.ok(sealed);
+
+  // Empty vault + the verifier the change just wrote: the NEW password opens
+  // it, the OLD one does not.
+  const okDriver = createMockDriver();
+  okDriver.pushResults([[], [{ value: sealed }]]);
+  await createVaultRepo(okDriver).unlock("new-pass");
+
+  const badDriver = createMockDriver();
+  badDriver.pushResults([[], [{ value: sealed }], [{ key: "vault_setup" }]]);
+  await assert.rejects(
+    () => createVaultRepo(badDriver).unlock("old-pass"),
+    /password/i,
+  );
+});
+
+test("changePassword writes nothing when the batch fails", async () => {
+  // `batchError` only fires on batch, so addItem (an execute) still works.
+  const driver = createMockDriver({
+    batchError: new Error("database is locked"),
+  });
+  const vault = createVaultRepo(driver);
+  const id = await vault.addItem("email", "s3cret", "old-pass");
+  const row = rowFromInsert(driver, id);
+  driver.pushResults([[row]]);
+  const err = await vault
+    .changePassword("old-pass", "new-pass")
+    .then(() => null)
+    .catch((e: unknown) => e);
+  // The second half of C-1: the UI told the user "wrong current password"
+  // here, which was false — the write failed, the password was fine.
+  assert.ok(
+    !(err instanceof WrongPasswordError),
+    "a write failure must not masquerade as a wrong password",
+  );
+  assert.match(String((err as Error).message), /database is locked/);
+  assert.equal(driver.callsTo("execute").length, 1);
+});
+
+test("a wrong password is reported as WrongPasswordError, not a bare Error", async () => {
+  const driver = createMockDriver();
+  const vault = createVaultRepo(driver);
+  const id = await vault.addItem("email", "s3cret", "correct-horse");
+  const row = rowFromInsert(driver, id);
+  driver.pushResults([[row], [{ salt: row.salt }]]);
+  await assert.rejects(
+    () => vault.changePassword("wrong-old", "new-pass"),
+    WrongPasswordError,
+  );
+
+  // And on the unlock path, so "wrong password" stays honest there too.
+  driver.pushResults([[row], [{ salt: row.salt }]]);
+  await assert.rejects(
+    () => vault.getItem(id, "wrong-old"),
+    WrongPasswordError,
+  );
+});
+
+test("corrupt stored ciphertext is NOT reported as a wrong password", async () => {
+  // A GCM tag mismatch is an OperationError and does mean "wrong password".
+  // An undecodable field is corruption of the stored row — telling the user
+  // they mistyped their password would send them looking in the wrong place.
+  const driver = createMockDriver();
+  const vault = createVaultRepo(driver);
+  const id = await vault.addItem("email", "s3cret", "correct-horse");
+  const row = rowFromInsert(driver, id);
+  driver.pushResults([
+    [{ ...row, ciphertext: "!!!not base64!!!" }],
+    [{ salt: row.salt }],
+  ]);
+  const err = await vault
+    .getItem(id, "correct-horse")
+    .then(() => null)
+    .catch((e: unknown) => e);
+  assert.ok(err, "it must still fail");
+  assert.ok(
+    !(err instanceof WrongPasswordError),
+    "corruption must not masquerade as a mistyped password",
+  );
+});
+
 test("setupVault refuses a second setup — the marker is written once", async () => {
   const driver = createMockDriver({
     results: [[{ key: "vault_setup" }]], // isSetUp: marker already present
@@ -97,6 +245,7 @@ test("setupVault refuses a second setup — the marker is written once", async (
   const vault = createVaultRepo(driver);
   await assert.rejects(vault.setupVault("any-pass"), /already set up/);
   assert.equal(driver.callsTo("execute").length, 0);
+  assert.equal(driver.callsTo("batch").length, 0);
 });
 
 // Pre-release audit: with no items yet there was nothing to decrypt, so
@@ -107,13 +256,10 @@ test("setupVault stores a password verifier so the password is proven immediatel
   const driver = createMockDriver({ results: [[]] }); // isSetUp: no marker
   const vault = createVaultRepo(driver);
   await vault.setupVault("correct-horse");
-  const writes = driver
-    .callsTo("execute")
-    .map((c) => c.args as [string, unknown[]]);
-  const verifier = writes.find(([, params]) => params[0] === "vault_verify");
+  const verifier = verifierWritten(driver);
   assert.ok(verifier, "a verifier must be written at setup");
   // Same shape as a vault item: salt + iv + ciphertext, never the password.
-  const stored = JSON.parse(verifier[1][1] as string) as {
+  const stored = JSON.parse(verifier) as {
     salt: string;
     iv: string;
     ciphertext: string;
@@ -122,18 +268,39 @@ test("setupVault stores a password verifier so the password is proven immediatel
   assert.ok(!JSON.stringify(stored).includes("correct-horse"));
 });
 
+// Review H-1: the setup marker and the verifier used to commit separately, so
+// a seal that failed after the marker left isSetUp() true with nothing to
+// unlock against — setup unreachable and unlock impossible, permanently.
+test("setupVault writes the marker and the verifier in one batch", async () => {
+  const driver = createMockDriver({ results: [[]] });
+  const vault = createVaultRepo(driver);
+  await vault.setupVault("correct-horse");
+
+  const batches = driver.callsTo("batch");
+  assert.equal(batches.length, 1, "one atomic batch, not two writes");
+  const statements = batches[0]?.args[0] as BatchStatement[];
+  const keys = statements.map((s) => (s.params ?? [])[0]);
+  assert.deepEqual(keys, ["vault_setup", "vault_verify"]);
+});
+
+test("setupVault leaves no marker behind when the batch fails", async () => {
+  const driver = createMockDriver({
+    results: [[]], // isSetUp: no marker
+    batchError: new Error("disk full"),
+  });
+  const vault = createVaultRepo(driver);
+  await assert.rejects(() => vault.setupVault("correct-horse"), /disk full/);
+  // The marker rode in the same batch, so the rollback took it with it.
+  assert.equal(driver.callsTo("execute").length, 0);
+});
+
 test("unlock with no items still verifies the stored verifier, rejecting a wrong password", async () => {
   // The verifier was written by a real setup run below, then replayed here.
   const driver = createMockDriver({ results: [[]] });
   const vault = createVaultRepo(driver);
   await vault.setupVault("correct-horse");
-  const writes = driver
-    .callsTo("execute")
-    .map((c) => c.args as [string, unknown[]]);
-  const verifierRaw = writes.find(
-    ([, p]) => p[0] === "vault_verify",
-  )?.[1][1] as string;
-  assert.ok(verifierRaw.includes("ciphertext"), "verifier must be sealed");
+  const verifierRaw = verifierWritten(driver);
+  assert.ok(verifierRaw?.includes("ciphertext"), "verifier must be sealed");
 
   // No items, correct password: the verifier decrypts, unlock succeeds.
   const okDriver = createMockDriver();

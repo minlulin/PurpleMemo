@@ -23,7 +23,11 @@ import {
 import { useToast } from "../components/Toast.tsx";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
 import type { ShareInfo } from "../data/driver.ts";
-import { AUTO_LOCK_CHOICES, MIN_PIN_LENGTH } from "../lib/appLock.ts";
+import {
+  AUTO_LOCK_CHOICES,
+  MIN_PIN_LENGTH,
+  securityReloadNeeded,
+} from "../lib/appLock.ts";
 import { MAX_BACKUP_ARCHIVE_BYTES } from "../lib/backup.ts";
 import { hashAnswer, hashPin, type PinHash, verifyPin } from "../lib/crypto.ts";
 import { todayLocal } from "../lib/dates.ts";
@@ -148,6 +152,10 @@ export default function SettingsPage(p: SettingsPageProps) {
       }
       await settingsRepo.setManyJSON(changes);
       setPin({ current: "", next: "", confirm: "", question: "", answer: "" });
+      // Re-read the security state (review C-2): the shell's `boot.pin` is what
+      // the lock screen verifies against, and without this the next lock
+      // rejected the PIN just set and accepted the previous one.
+      if (securityReloadNeeded(changes.map((c) => c.key))) p.onChanged();
       toast.success("PIN updated.");
     } catch (e) {
       setError(errText(e));

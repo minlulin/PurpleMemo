@@ -25,11 +25,21 @@ import {
   IconTasks,
   IconVault,
 } from "./components/icons.tsx";
-import { LockScreen, SetupScreen } from "./components/LockScreens.tsx";
+import {
+  LockedScreen,
+  LockScreen,
+  SetupScreen,
+} from "./components/LockScreens.tsx";
 import { Skeleton } from "./components/Skeleton.tsx";
 import { ToastProvider } from "./components/Toast.tsx";
 import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
-import { DEFAULT_AUTO_LOCK_MINUTES, isIdle, lockGate } from "./lib/appLock.ts";
+import {
+  classifyPin,
+  DEFAULT_AUTO_LOCK_MINUTES,
+  isIdle,
+  lockGate,
+  type PinState,
+} from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
 import { localISODateTime } from "./lib/dates.ts";
 import { errText } from "./lib/errors.ts";
@@ -186,7 +196,12 @@ interface BootState {
   ready: boolean;
   /** Set when the settings read itself failed — distinct from "no PIN set". */
   error: string | null;
-  pinHash: PinHash | null;
+  /**
+   * Tri-state, not `PinHash | null` (review C-3): the lock shell must be able
+   * to tell "no PIN was ever stored" (setup is allowed) from "a PIN is stored
+   * but cannot be trusted" (setup must be refused). A nullable hash cannot.
+   */
+  pin: PinState;
   answerHash: PinHash | null;
   question: string;
   theme: Theme;
@@ -205,7 +220,7 @@ function AppShell() {
   const [boot, setBoot] = useState<BootState>({
     ready: false,
     error: null,
-    pinHash: null,
+    pin: { kind: "absent" },
     answerHash: null,
     question: "",
     theme: "dark",
@@ -222,21 +237,22 @@ function AppShell() {
 
   const loadSecurity = useCallback(async () => {
     try {
-      const [pinHash, answerHash, question, theme, minutes] = await Promise.all(
-        [
-          settingsRepo.getJSON<PinHash>(SETTING_KEYS.pinHash),
-          settingsRepo.getJSON<PinHash>(SETTING_KEYS.securityAnswerHash),
-          settingsRepo.getJSON<string>(SETTING_KEYS.securityQuestion),
-          settingsRepo.getTheme(),
-          settingsRepo.getAutoLockMinutes(),
-        ],
-      );
+      // The PIN is read RAW and classified (review C-3): `getJSON` returns
+      // null for a row that does not exist AND for one whose JSON is
+      // unparseable, and telling those apart is the whole fail-closed rule.
+      const [pinRaw, answerHash, question, theme, minutes] = await Promise.all([
+        settingsRepo.getRaw(SETTING_KEYS.pinHash),
+        settingsRepo.getJSON<PinHash>(SETTING_KEYS.securityAnswerHash),
+        settingsRepo.getJSON<string>(SETTING_KEYS.securityQuestion),
+        settingsRepo.getTheme(),
+        settingsRepo.getAutoLockMinutes(),
+      ]);
       const t = theme ?? "dark";
       document.documentElement.dataset.theme = t;
       setBoot({
         ready: true,
         error: null,
-        pinHash,
+        pin: classifyPin(pinRaw),
         answerHash,
         question:
           typeof question === "string" && question.length > 0
@@ -274,10 +290,18 @@ function AppShell() {
     });
   }, []);
 
-  const handleUnlock = useCallback(() => {
+  /**
+   * Entering the shell always re-reads the security state first (review C-2).
+   * `LockScreen` writes a NEW pin hash on the forgot-PIN reset path before
+   * calling this, so unlocking without reloading left `boot.pin` pointing at
+   * the old hash: the very next lock rejected the user's new PIN and still
+   * accepted the old one.
+   */
+  const handleUnlock = useCallback(async () => {
+    await loadSecurity();
     lastActivity.current = Date.now();
     setUnlocked(true);
-  }, []);
+  }, [loadSecurity]);
 
   const handleSetupDone = useCallback(async () => {
     await loadSecurity();
@@ -378,19 +402,20 @@ function AppShell() {
   if (!unlocked) {
     // Fail closed (§2.9): the setup screen overwrites the PIN without
     // verifying the old one, so it is reachable ONLY when no PIN has ever
-    // been stored. Keying off the answer hash as well used to let a partial
-    // settings row (corrupt value, or an import that replaced settings)
-    // drop a locked app into first-run setup.
-    const gate = lockGate(boot.pinHash, boot.answerHash);
+    // been stored. `classifyPin` is what makes that checkable — see C-3.
+    const gate = lockGate(boot.pin, boot.answerHash);
     if (gate === "setup") {
       return <SetupScreen onDone={() => void handleSetupDone()} />;
     }
+    if (gate === "locked" && boot.pin.kind === "unreadable") {
+      return <LockedScreen reason={boot.pin.reason} />;
+    }
     return (
       <LockScreen
-        pinHash={boot.pinHash as PinHash}
+        pinHash={boot.pin.kind === "stored" ? boot.pin.hash : undefined}
         question={boot.question}
         answerHash={boot.answerHash}
-        onUnlock={handleUnlock}
+        onUnlock={() => void handleUnlock()}
       />
     );
   }

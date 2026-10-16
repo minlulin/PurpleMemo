@@ -90,22 +90,85 @@ pub fn read_db_key() -> Result<String, String> {
     }
 }
 
+/// A DB key plus where it came from, so the caller knows whether it may still
+/// remove it.
+#[derive(Debug, Clone)]
+pub struct DbKey {
+    pub hex: String,
+    /// True when this call minted and stored the key. If the database then
+    /// fails to open, the caller MUST call [`discard_minted_key`] so a first
+    /// run that never worked does not leave a key that can never open anything
+    /// in the one slot the credential store has.
+    pub freshly_minted: bool,
+}
+
 /// Load the DB key from the OS credential store; mint and store one on first
-/// run. Never re-mints over an existing entry.
-pub fn load_or_mint_db_key() -> Result<String, String> {
+/// run.
+///
+/// `db_path` decides what "first run" means (review C-4). The credential store
+/// alone cannot: if it has no entry, this used to mint a fresh 256-bit key,
+/// **write it into the store**, and only then fail `open_encrypted_db`'s
+/// verify. That left the user with an unopenable database *and* a wrong key
+/// occupying the only slot, behind a message that blamed neither the real
+/// cause nor the exported-key restore path (§5.4).
+///
+/// So minting is allowed only when there is genuinely no database yet. With a
+/// database present and no stored key we refuse, and say what to do instead.
+pub fn load_or_mint_db_key(db_path: &Path) -> Result<DbKey, String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
         .map_err(|e| format!("keyring entry unavailable: {e}"))?;
     match entry.get_password() {
-        Ok(key) => validate_stored_key(&key),
+        Ok(key) => Ok(DbKey {
+            hex: validate_stored_key(&key)?,
+            freshly_minted: false,
+        }),
         Err(keyring::Error::NoEntry) => {
+            if db_file_exists(db_path) {
+                return Err(missing_key_for_existing_db(db_path));
+            }
             let key = mint_key_hex()?;
             entry
                 .set_password(&key)
                 .map_err(|e| format!("failed to store DB key in credential store: {e}"))?;
-            Ok(key)
+            Ok(DbKey {
+                hex: key,
+                freshly_minted: true,
+            })
         }
         Err(e) => Err(format!("failed to read DB key from credential store: {e}")),
     }
+}
+
+/// Remove a key this process just minted, after the database refused it. Best
+/// effort: a store that will not delete leaves the same situation the guard
+/// above prevents on the next run (a database with no key), which at least
+/// fails with an actionable message instead of silently re-keying anything.
+pub fn discard_minted_key() {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        let _ = entry.delete_credential();
+    }
+}
+
+/// Whether a database file is already there. Pure over the path (no IO beyond
+/// the metadata read) so the mint guard is testable without a keyring.
+pub fn db_file_exists(db_path: &Path) -> bool {
+    match std::fs::metadata(db_path) {
+        Ok(meta) => meta.is_file() && meta.len() > 0,
+        Err(_) => false,
+    }
+}
+
+/// The refusal message for "a database exists but the credential store has no
+/// key". Pure, so the wording — which is the only guidance the user gets — is
+/// pinned by a test rather than left to drift in the error arm.
+pub fn missing_key_for_existing_db(db_path: &Path) -> String {
+    format!(
+        "the database {} already exists but no encryption key is in the OS credential store. \
+         Purple Memo will not generate a new key over existing data. Restore the key you \
+         exported in Settings (Backup & key), or move the database aside to start fresh — \
+         doing so discards the data in it.",
+        db_path.display()
+    )
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -416,6 +479,71 @@ mod tests {
     fn scalar_i64(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |row| row.get(0))
             .expect("scalar query")
+    }
+
+    // -- Key minting must never re-key an existing database (review C-4) -------
+
+    #[test]
+    fn no_database_means_first_run() {
+        let dir = TempDir::new("first-run");
+        assert!(
+            !db_file_exists(&dir.db_path()),
+            "a fresh data dir has no database, so minting is allowed"
+        );
+    }
+
+    #[test]
+    fn a_non_empty_database_file_counts_as_existing() {
+        let dir = TempDir::new("exists");
+        let key = mint_key_hex().expect("mint key");
+        open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        assert!(db_file_exists(&dir.db_path()));
+    }
+
+    #[test]
+    fn a_zero_length_file_is_not_treated_as_a_database() {
+        // SQLCipher creating/verifying must not be blocked by an empty
+        // placeholder left behind by an interrupted first run.
+        let dir = TempDir::new("empty-file");
+        std::fs::write(dir.db_path(), b"").expect("write placeholder");
+        assert!(!db_file_exists(&dir.db_path()));
+    }
+
+    #[test]
+    fn a_directory_is_not_treated_as_a_database() {
+        let dir = TempDir::new("dir-db");
+        std::fs::create_dir(dir.db_path()).expect("create dir");
+        assert!(!db_file_exists(&dir.db_path()));
+    }
+
+    #[test]
+    fn the_missing_key_refusal_names_the_restore_paths() {
+        // This message is the user's only guidance, and the old behaviour
+        // reported "wrong key or corrupt file" — which named neither the real
+        // cause nor what to do about it.
+        let msg = missing_key_for_existing_db(Path::new("/data/purple-memo.db"));
+        assert!(msg.contains("purple-memo.db"), "names the database: {msg}");
+        assert!(
+            msg.to_lowercase().contains("credential store"),
+            "says where the key should have been: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("export"),
+            "points at the exported-key restore path (§5.4): {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("will not generate"),
+            "states plainly that nothing was overwritten: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_mint_guard_does_not_leak_key_material_in_its_error() {
+        let dir = TempDir::new("no-leak");
+        let key = mint_key_hex().expect("mint key");
+        open_encrypted_db(&dir.db_path(), &key).expect("open");
+        let msg = missing_key_for_existing_db(&dir.db_path());
+        assert!(!msg.contains(&key), "the refusal must not echo a key");
     }
 
     // -- FTS5-under-SQLCipher spike (P1 scope) ------------------------------

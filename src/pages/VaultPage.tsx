@@ -9,6 +9,7 @@ import { IconLock, IconVault } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { vaultRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
+import { WrongPasswordError } from "../lib/vault.ts";
 
 type VaultPhase = "loading" | "setup" | "unlock" | "open";
 
@@ -20,6 +21,17 @@ interface ItemMeta {
 }
 
 const MIN_PASSWORD = 6;
+
+/**
+ * The honest message for a failed vault operation (review C-1). Only a
+ * `WrongPasswordError` may claim the password was wrong: a locked database or
+ * a failed write is a different problem, and telling the user "wrong password,
+ * nothing was changed" about a write that actually committed left them unable
+ * to open their own vault with no explanation.
+ */
+function vaultErrorText(e: unknown, wrongPassword: string): string {
+  return e instanceof WrongPasswordError ? wrongPassword : errText(e);
+}
 
 export default function VaultPage() {
   const [phase, setPhase] = useState<VaultPhase>("loading");
@@ -103,8 +115,8 @@ export default function VaultPage() {
       setPhase("open");
       setError(null);
       await loadItems();
-    } catch {
-      setError("Wrong password — nothing was unlocked.");
+    } catch (e) {
+      setError(vaultErrorText(e, "Wrong password — nothing was unlocked."));
     } finally {
       setBusy(false);
     }
@@ -150,8 +162,10 @@ export default function VaultPage() {
         next.set(id, got.plaintext);
         setRevealed(next);
       }
-    } catch {
-      setError("Could not decrypt this item — wrong password.");
+    } catch (e) {
+      setError(
+        vaultErrorText(e, "Could not decrypt this item — wrong password."),
+      );
     }
   };
 
@@ -160,8 +174,10 @@ export default function VaultPage() {
     try {
       const got = await vaultRepo.getItem(item.id, password);
       setEdit({ id: item.id, title: item.title, secret: got?.plaintext ?? "" });
-    } catch {
-      setError("Could not decrypt this item — wrong password.");
+    } catch (e) {
+      setError(
+        vaultErrorText(e, "Could not decrypt this item — wrong password."),
+      );
     }
   };
 
@@ -217,8 +233,10 @@ export default function VaultPage() {
       setPassword(change.next);
       setChange({ open: false, old: "", next: "", confirm: "" });
       setError(null);
-    } catch {
-      setError("Wrong current password — nothing was changed.");
+    } catch (e) {
+      setError(
+        vaultErrorText(e, "Wrong current password — nothing was changed."),
+      );
     } finally {
       setBusy(false);
     }

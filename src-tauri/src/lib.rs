@@ -104,9 +104,25 @@ fn boot(app: &tauri::AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("failed to create data dir {}: {e}", data_dir.display()))?;
-    let key = db::load_or_mint_db_key()?;
-    let conn = db::open_encrypted_db(&data_dir.join(db::DB_FILE_NAME), &key)?;
-    db::init_schema(&conn)?;
+    let db_path = data_dir.join(db::DB_FILE_NAME);
+    let key = db::load_or_mint_db_key(&db_path)?;
+    // A key this process minted is only correct if the database it opens with
+    // it verifies. If the very first run fails anyway, take the key back out
+    // rather than leave an unopenable key in the credential store's only slot
+    // (review C-4).
+    let opened = db::open_encrypted_db(&db_path, &key.hex).and_then(|conn| {
+        db::init_schema(&conn)?;
+        Ok(conn)
+    });
+    let conn = match opened {
+        Ok(conn) => conn,
+        Err(e) => {
+            if key.freshly_minted {
+                db::discard_minted_key();
+            }
+            return Err(e);
+        }
+    };
     app.manage(db::AppState {
         conn: Mutex::new(conn),
         txn_open: AtomicBool::new(false),
