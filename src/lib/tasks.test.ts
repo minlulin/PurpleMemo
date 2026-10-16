@@ -3,7 +3,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createMockDriver } from "../data/mock-driver.ts";
-import { createTasksRepo, nextDueDate } from "./tasks.ts";
+import { createTasksRepo, nextDueDate, nextReminderAt } from "./tasks.ts";
 
 test("updateTask writes only the provided fields (no NULL wipe)", async () => {
   const driver = createMockDriver();
@@ -46,6 +46,51 @@ test("nextDueDate: repeat rolls the due date to the next future occurrence (§2.
   assert.equal(
     nextDueDate("2026-01-31", "monthly", "2026-01-31"),
     "2026-02-28",
+  );
+});
+
+test("nextReminderAt: a repeating reminder re-arms to its next future occurrence (§2.7)", () => {
+  // Fire time still ahead in this period -> one period forward.
+  assert.equal(
+    nextReminderAt("2026-01-01T09:00", "daily", "2026-01-01T08:00"),
+    "2026-01-02T09:00",
+  );
+  assert.equal(
+    nextReminderAt("2026-03-01T07:30", "weekly", "2026-03-01T08:00"),
+    "2026-03-08T07:30",
+  );
+  // Month clamp, through the datetime helper (Jan 31 -> Feb 28).
+  assert.equal(
+    nextReminderAt("2026-01-31T09:00", "monthly", "2026-02-01T00:00"),
+    "2026-02-28T09:00",
+  );
+  // Overdue by many periods: re-arm into the future, not one period at a time
+  // — a single step would leave it overdue and fire on every poll.
+  assert.equal(
+    nextReminderAt("2026-01-01T09:00", "daily", "2026-01-05T09:00"),
+    "2026-01-06T09:00",
+  );
+  assert.equal(
+    nextReminderAt("2026-01-01T09:00", "weekly", "2026-02-20T09:00"),
+    "2026-02-26T09:00",
+  );
+});
+
+test("nextReminderAt: an absurd backlog and a malformed stamp both terminate", () => {
+  // A decade of missed daily periods runs into the catch-up cap: the value
+  // comes back advanced, but still behind `now`, instead of looping forever.
+  const capped = nextReminderAt(
+    "2016-01-01T09:00",
+    "daily",
+    "2026-10-16T09:00",
+  );
+  assert.ok(capped > "2016-01-01T09:00", "the cap still advances the time");
+  assert.ok(capped <= "2026-10-16T09:00", `the cap is a cap: ${capped}`);
+  // A malformed stamp comes back unchanged from the date helpers; the
+  // no-progress guard, not the cap, is what ends the walk.
+  assert.equal(
+    nextReminderAt("not-a-date", "daily", "2026-10-16T09:00"),
+    "not-a-date",
   );
 });
 

@@ -3,7 +3,13 @@
 // UI concern — this layer stores and queries them).
 
 import type { DataDriver } from "../data/driver.ts";
-import { addDays, addMonths, todayLocal } from "./dates.ts";
+import {
+  addDays,
+  addDaysToDateTime,
+  addMonths,
+  addMonthsToDateTime,
+  todayLocal,
+} from "./dates.ts";
 import type { ReminderRow, TaskRow } from "./types.ts";
 
 /** Hard cap on catch-up steps when rolling an overdue repeat forward. */
@@ -35,6 +41,45 @@ export function nextDueDate(
     if (next > today) return next;
   }
   // Pathological (a decade of daily catch-up) — re-arm one period out.
+  return next;
+}
+
+/**
+ * One period of a repeating reminder, through the datetime helpers in
+ * `lib/dates.ts` (single source of truth for the month-end clamp).
+ */
+function stepReminderTime(
+  remindAt: string,
+  repeat: Exclude<ReminderRow["repeat"], "none">,
+): string {
+  if (repeat === "daily") return addDaysToDateTime(remindAt, 1);
+  if (repeat === "weekly") return addDaysToDateTime(remindAt, 7);
+  return addMonthsToDateTime(remindAt, 1);
+}
+
+/**
+ * Next fire time for a repeating reminder (§2.7) — the datetime sibling of
+ * [`nextDueDate`], and the reason the notification loop lives in the app shell
+ * rather than in TasksPage. A reminder left overdue for many periods must
+ * re-arm to its next *future* occurrence, not one period at a time: rolling a
+ * single step would leave it still overdue, and it would fire again on every
+ * poll until it had caught up.
+ *
+ * The walk is hard-capped like `nextDueDate`, and a step that does not advance
+ * the time ends it instead of looping forever (an unparseable value comes back
+ * unchanged from the date helpers, so that guard is what terminates it).
+ */
+export function nextReminderAt(
+  remindAt: string,
+  repeat: Exclude<ReminderRow["repeat"], "none">,
+  now: string,
+): string {
+  let next = stepReminderTime(remindAt, repeat);
+  for (let i = 0; i < REPEAT_ROLL_MAX_STEPS && next <= now; i++) {
+    const advanced = stepReminderTime(next, repeat);
+    if (advanced <= next) break; // no progress — never loop forever
+    next = advanced;
+  }
   return next;
 }
 

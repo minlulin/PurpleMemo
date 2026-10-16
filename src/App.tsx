@@ -31,15 +31,15 @@ import { ToastProvider } from "./components/Toast.tsx";
 import { settingsRepo, shareRepo, tasksRepo, vaultRepo } from "./data/app.ts";
 import { DEFAULT_AUTO_LOCK_MINUTES, isIdle, lockGate } from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
-import {
-  addDaysToDateTime,
-  addMonthsToDateTime,
-  localISODateTime,
-} from "./lib/dates.ts";
+import { localISODateTime } from "./lib/dates.ts";
 import { errText } from "./lib/errors.ts";
 import type { PageKey } from "./lib/navigation.ts";
+import {
+  createReminderTicker,
+  createShareTicker,
+  lockSession,
+} from "./lib/session.ts";
 import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
-import { REPEAT_ROLL_MAX_STEPS } from "./lib/tasks.ts";
 import BudgetPage from "./pages/BudgetPage";
 import BusinessPage from "./pages/BusinessPage";
 import ContactsPage from "./pages/ContactsPage";
@@ -111,45 +111,15 @@ async function ensureNotifyPermission(): Promise<boolean> {
 }
 
 /**
- * Roll a repeating reminder's time forward one period, via the shared
- * datetime helpers in lib/dates.ts (single source of truth for the
- * month-end clamp — no inline re-implementation).
- */
-function rollReminderTime(
-  remindAt: string,
-  repeat: "daily" | "weekly" | "monthly",
-): string {
-  if (repeat === "daily") return addDaysToDateTime(remindAt, 1);
-  if (repeat === "weekly") return addDaysToDateTime(remindAt, 7);
-  return addMonthsToDateTime(remindAt, 1);
-}
-
-/**
- * Roll forward until the time is in the future. A repeating reminder left
- * overdue for many periods must re-arm to its next future occurrence — not
- * one period at a time, which would re-fire on every poll until caught up.
- */
-function rollReminderForward(
-  remindAt: string,
-  repeat: "daily" | "weekly" | "monthly",
-  now: string,
-): string {
-  let next = rollReminderTime(remindAt, repeat);
-  for (let i = 0; i < REPEAT_ROLL_MAX_STEPS && next <= now; i++) {
-    const advanced = rollReminderTime(next, repeat);
-    if (advanced <= next) break; // no progress — never loop forever
-    next = advanced;
-  }
-  return next;
-}
-
-/**
  * Reminder notification loop (§2.7). Lives in the app shell — not in
- * TasksPage — so navigating to another section never stops the polling.
- * Polls for due reminders, fires a local notification, marks fired.
- * Repeating reminders re-arm to their next future occurrence. Paused while
- * the app is locked (§2.9) so notifications never surface over the lock
+ * TasksPage — so navigating to another section never stops the polling, and
+ * pauses while locked (§2.9) so notifications never surface over the lock
  * screen.
+ *
+ * The rules — permission asked once, ticks that never stack, and the re-arm
+ * walk for a repeating reminder left overdue for many periods — are in
+ * `lib/session.ts`, where the suite can reach them (review I-02); this hook is
+ * only the wiring and the timer.
  */
 function useReminderPoll(
   setNotifyNote: (note: string | null) => void,
@@ -158,43 +128,19 @@ function useReminderPoll(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    let inFlight = false;
-    let requested = false;
-    const tick = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const now = localISODateTime(new Date());
-        const due = await tasksRepo.dueReminders(now);
-        if (due.length === 0 || cancelled) return;
-        if (!requested) {
-          requested = true;
-          const granted = await ensureNotifyPermission();
-          if (!granted) {
-            setNotifyNote(
-              "Notifications are blocked — due reminders stay listed in Tasks.",
-            );
-            return;
-          }
-        }
-        for (const r of due) {
-          sendNotification({ title: `Reminder: ${r.title}`, body: r.note });
-          if (r.repeat === "none") {
-            await tasksRepo.markReminderFired(r.id);
-          } else {
-            await tasksRepo.rescheduleReminder(
-              r.id,
-              rollReminderForward(r.remind_at, r.repeat, now),
-            );
-          }
-        }
-      } catch {
-        // The notification loop must never break the app (§2.7 wiring
-        // is best-effort; the reminders list itself is the source of truth).
-      } finally {
-        inFlight = false;
-      }
-    };
+    const tick = createReminderTicker({
+      now: () => localISODateTime(new Date()),
+      due: (now) => tasksRepo.dueReminders(now),
+      markFired: (id) => tasksRepo.markReminderFired(id),
+      reschedule: (id, remindAt) => tasksRepo.rescheduleReminder(id, remindAt),
+      requestPermission: ensureNotifyPermission,
+      notify: ({ title, body }) => sendNotification({ title, body }),
+      onPermissionDenied: () =>
+        setNotifyNote(
+          "Notifications are blocked — due reminders stay listed in Tasks.",
+        ),
+      isCancelled: () => cancelled,
+    });
     void tick();
     const timer = setInterval(() => void tick(), 30_000);
     return () => {
@@ -211,7 +157,8 @@ function useReminderPoll(
  * the only writer: this only re-reads rows and re-publishes them.
  *
  * A server that stopped itself (too many wrong pairing codes) is surfaced
- * through the same in-app note channel as notifications.
+ * through the same in-app note channel as notifications. That edge, and the
+ * best-effort rules, are in `createShareTicker` (`lib/session.ts`).
  */
 function useSharePublisher(
   setNotifyNote: (note: string | null) => void,
@@ -220,23 +167,12 @@ function useSharePublisher(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    let wasRunning = false;
-    const tick = async () => {
-      try {
-        const info = await shareRepo.status();
-        if (cancelled) return;
-        if (!info.running) {
-          if (wasRunning && info.note) setNotifyNote(info.note);
-          wasRunning = false;
-          return;
-        }
-        wasRunning = true;
-        await shareRepo.publishSnapshot();
-      } catch {
-        // Sharing is best-effort: the database is the source of truth, and a
-        // failed publish must never break the app.
-      }
-    };
+    const tick = createShareTicker({
+      status: () => shareRepo.status(),
+      publish: () => shareRepo.publishSnapshot(),
+      onNote: setNotifyNote,
+      isCancelled: () => cancelled,
+    });
     void tick();
     const timer = setInterval(() => void tick(), 30_000);
     return () => {
@@ -325,13 +261,17 @@ function AppShell() {
     void loadSecurity();
   }, [loadSecurity]);
 
-  /** Lock now (§2.9): drop the vault keys too (§5.3 auto-lock bounds). */
+  /**
+   * Lock now (§2.9): drops the vault keys too (§5.3 auto-lock bounds) and ends
+   * any active LAN session (audit A-01). The rules live in `lockSession`, which
+   * is tested — including that the shell locks even if a step fails.
+   */
   const lockNow = useCallback(() => {
-    vaultRepo.lockVault();
-    setUnlocked(false);
-    // Locking ends any active LAN session. This is deliberately best-effort:
-    // the lock screen must never wait on the network listener teardown.
-    void shareRepo.stop().catch(() => undefined);
+    lockSession({
+      lockVault: () => vaultRepo.lockVault(),
+      stopSharing: () => shareRepo.stop(),
+      onLocked: () => setUnlocked(false),
+    });
   }, []);
 
   const handleUnlock = useCallback(() => {
