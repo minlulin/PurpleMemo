@@ -180,15 +180,17 @@ impl ShareState {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<Running>>, String> {
-        self.inner
-            .lock()
-            .map_err(|_| "share state mutex poisoned".to_string())
+        // Recover from a poisoned mutex (FIX-01): a panic while holding the
+        // guard drops it atomically, so the state is consistent — refusing
+        // every later call would wedge sharing for the rest of the session.
+        Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn consent_lock(&self) -> Result<std::sync::MutexGuard<'_, Option<Consent>>, String> {
-        self.consent
-            .lock()
-            .map_err(|_| "share consent mutex poisoned".to_string())
+        // Recovery, same rule as `lock` (FIX-01): a poison left by a panicking
+        // command must not make consent unobtainable for the rest of the
+        // session — there is no path back except restarting the app.
+        Ok(self.consent.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Record the user's confirmation and return a token for [`Self::start`].
@@ -325,10 +327,9 @@ impl ShareState {
         match guard.as_ref() {
             Some(r) if !r.server_is_gone() => {
                 {
-                    let mut slot = r
-                        .snapshot
-                        .lock()
-                        .map_err(|_| "share snapshot mutex poisoned".to_string())?;
+                    // Recover from poison (FIX-01) — same rule as `lock`: the
+                    // slot is Option<StoredSnapshot>, consistent after a panic.
+                    let mut slot = r.snapshot.lock().unwrap_or_else(|e| e.into_inner());
                     *slot = Some(snapshot);
                     // Dropped before `info` reads the slot back — the mutex is
                     // not reentrant.

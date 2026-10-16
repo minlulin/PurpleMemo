@@ -8,7 +8,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { zipSync } from "fflate";
 import type { Queryable } from "../data/driver.ts";
-import { createMockDriver } from "../data/mock-driver.ts";
+import { createMockDriver, type MockDriver } from "../data/mock-driver.ts";
 import { first } from "../test-utils.ts";
 import {
   applyBackup,
@@ -488,6 +488,53 @@ test("applyBackup restores FK on even when the batch fails", async () => {
   const last = driver.lastCall();
   assert.equal(last?.method, "execute");
   assert.equal(last?.args[0], "PRAGMA foreign_keys = ON");
+});
+
+test("a failed FK restore cannot mask the batch error (FIX-05)", async () => {
+  // Worst case: the batch fails AND the connection dies before the restore
+  // pragma runs. The restore is best-effort — its failure must be logged,
+  // not thrown, or the exception from the `finally` block would replace the
+  // batch error the caller needs to see.
+  const base = createMockDriver({ batchError: new Error("batch exploded") });
+  const driver: MockDriver = {
+    ...base,
+    execute: async (sql, params) => {
+      if (sql === "PRAGMA foreign_keys = ON") {
+        // The base mock records inside `execute`, which this override never
+        // reaches — record the attempt here so the test can assert the
+        // restore was still tried.
+        base.calls.push({ method: "execute", args: [sql, params] });
+        throw new Error("connection died");
+      }
+      return base.execute(sql, params);
+    },
+  };
+  const logged: string[] = [];
+  const realConsoleError = console.error;
+  console.error = (message?: unknown) => {
+    logged.push(String(message));
+  };
+  try {
+    await assert.rejects(
+      () =>
+        applyBackup(driver, {
+          payload: { ...samplePayload(), data: { notes: [NOTE_ROW] } },
+          photos: [],
+        }),
+      /batch exploded/,
+      "the original batch error must propagate, not the restore failure",
+    );
+  } finally {
+    console.error = realConsoleError;
+  }
+  // FK OFF ran before the batch; the ON restore was still attempted after.
+  assert.deepEqual(
+    driver.callsTo("execute").map((c) => c.args[0]),
+    ["PRAGMA foreign_keys = OFF", "PRAGMA foreign_keys = ON"],
+  );
+  assert.deepEqual(logged, [
+    "[backup] failed to restore foreign_keys = ON after import",
+  ]);
 });
 
 test("applyBackup deletes orphaned old photo files, but only after the batch commits", async () => {

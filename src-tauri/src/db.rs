@@ -16,6 +16,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
+use crate::bytes_to_hex;
 use crate::schema;
 
 /// Database file name inside the app data dir.
@@ -219,10 +220,6 @@ pub fn missing_key_for_existing_db(db_path: &Path) -> String {
          doing so discards the data in it.",
         db_path.display()
     )
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn is_key_hex(s: &str) -> bool {
@@ -523,13 +520,18 @@ pub fn query_rows(
     Ok(out)
 }
 
-/// Run a single write statement; returns affected-row count + rowid.
-pub fn execute(
+/// Run a single write statement **without** the statement guard.
+///
+/// Only `batch` (which pre-validates the whole list before opening the
+/// transaction) and tests may use this; every other caller goes through
+/// [`execute`], which is the guarded public entry point (FIX-02: the guard
+/// must never be silently skipped by a change to `execute` — `batch` is
+/// the one place that deliberately runs it up front instead).
+fn execute_inner(
     conn: &Connection,
     sql: &str,
     params: &[JsonValue],
 ) -> Result<ExecuteOutcome, String> {
-    reject_dangerous_statement(sql)?;
     let params = json_params(params)?;
     let rows_affected = conn
         .execute(sql, rusqlite::params_from_iter(params.iter()))
@@ -538,6 +540,17 @@ pub fn execute(
         rows_affected: rows_affected as u64,
         last_insert_rowid: conn.last_insert_rowid(),
     })
+}
+
+/// Run a single write statement (guarded); returns affected-row count +
+/// rowid. The public API — the statement guard lives here.
+pub fn execute(
+    conn: &Connection,
+    sql: &str,
+    params: &[JsonValue],
+) -> Result<ExecuteOutcome, String> {
+    reject_dangerous_statement(sql)?;
+    execute_inner(conn, sql, params)
 }
 
 /// Undo the transaction `batch` opened, and report honestly.
@@ -569,7 +582,10 @@ pub fn batch(conn: &Connection, statements: &[BatchStatement]) -> Result<(), Str
     conn.execute_batch("BEGIN")
         .map_err(|e| format!("batch begin failed: {e}"))?;
     for (idx, stmt) in statements.iter().enumerate() {
-        if let Err(e) = execute(conn, &stmt.sql, &stmt.params) {
+        // `execute_inner`, not `execute`: the guard already ran above, over
+        // the whole list, before BEGIN — running it again per statement would
+        // duplicate the check and obscure which guard is load-bearing.
+        if let Err(e) = execute_inner(conn, &stmt.sql, &stmt.params) {
             return Err(format!(
                 "{rollback_note}: {e}",
                 rollback_note = rollback_after_failure(conn, &format!("statement {idx}"))
@@ -886,6 +902,26 @@ mod tests {
             .expect("read user_version");
         assert_eq!(version, 1);
         assert_eq!(table_count(&conn), 29);
+    }
+
+    // -- Hot foreign-key columns are indexed (FIX-04) ---------------------
+
+    #[test]
+    fn expected_indexes_exist() {
+        // The schema has no migrations (§4), so these indexes exist only in
+        // databases created from this baseline on — the test pins that
+        // baseline against silent removal.
+        let (_dir, conn) = open_baseline("indexes");
+        for name in ["idx_notes_collection", "idx_contact_channels_contact"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("index query");
+            assert_eq!(count, 1, "index {name} must exist in the baseline schema");
+        }
     }
 
     #[test]

@@ -491,7 +491,16 @@ export async function applyBackup(
       }
       await driver.batch(statements);
     } finally {
-      await driver.execute("PRAGMA foreign_keys = ON");
+      await driver.execute("PRAGMA foreign_keys = ON").catch(() => {
+        // Best-effort: FK restore failing (e.g. the connection died during
+        // the batch) is logged here but must not mask the batch error — or
+        // the import success — the caller needs to see, and must not leave
+        // the session silently FK-off. Swallowing it in `.catch` keeps the
+        // original rejection from `batch` propagating out of this `finally`.
+        console.error(
+          "[backup] failed to restore foreign_keys = ON after import",
+        );
+      });
     }
   } catch (error) {
     for (const path of created)

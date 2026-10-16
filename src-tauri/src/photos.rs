@@ -20,6 +20,8 @@ use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
+use crate::bytes_to_hex;
+
 /// Serialize content-addressed writes *and deletes*. The destination path is
 /// derived from the bytes, so concurrent saves of the same photo would
 /// otherwise race on the same temporary and final paths — and a delete that
@@ -44,9 +46,9 @@ pub fn save_photo(
     bytes: &[u8],
     ext: &str,
 ) -> Result<String, String> {
-    let _write_guard = PHOTO_WRITE_LOCK
-        .lock()
-        .map_err(|_| "photo write mutex poisoned".to_string())?;
+    let _write_guard = PHOTO_WRITE_LOCK.lock().map_err(|_| {
+        "photo storage is temporarily unavailable — restart Purple Memo".to_string()
+    })?;
     let ext = ext.to_ascii_lowercase();
     if !is_valid_ext(&ext) {
         return Err(format!(
@@ -55,7 +57,7 @@ pub fn save_photo(
     }
     let (year, month) = parse_year_month(year_month)?;
     let digest = Sha256::digest(bytes);
-    let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let hash: String = bytes_to_hex(digest.as_slice());
     let rel_path = format!("photos/{year}/{month}/{hash}.{ext}");
     let abs_path = data_dir.join(&rel_path);
     if let Some(parent) = abs_path.parent() {
@@ -64,10 +66,7 @@ pub fn save_photo(
     if abs_path.exists() {
         let existing =
             fs::read(&abs_path).map_err(|e| format!("read {}: {e}", abs_path.display()))?;
-        let existing_hash: String = Sha256::digest(&existing)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let existing_hash: String = bytes_to_hex(Sha256::digest(&existing).as_slice());
         if existing_hash == hash {
             return Ok(rel_path);
         }
@@ -142,9 +141,9 @@ pub fn read_thumb(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, String> {
 /// Write the thumbnail of a stored photo and return the derived thumb path.
 /// Same atomic-write discipline as a photo save.
 pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<String, String> {
-    let _write_guard = PHOTO_WRITE_LOCK
-        .lock()
-        .map_err(|_| "photo write mutex poisoned".to_string())?;
+    let _write_guard = PHOTO_WRITE_LOCK.lock().map_err(|_| {
+        "photo storage is temporarily unavailable — restart Purple Memo".to_string()
+    })?;
     let thumb = thumb_rel_path(rel_path)?;
     write_atomic(&data_dir.join(&thumb), bytes, false)?;
     Ok(thumb)
@@ -159,9 +158,9 @@ pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<Strin
 /// delete against the saves keeps "save returned this path" and "the file at
 /// this path exists" from coming apart.
 pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), String> {
-    let _write_guard = PHOTO_WRITE_LOCK
-        .lock()
-        .map_err(|_| "photo write mutex poisoned".to_string())?;
+    let _write_guard = PHOTO_WRITE_LOCK.lock().map_err(|_| {
+        "photo storage is temporarily unavailable — restart Purple Memo".to_string()
+    })?;
     validate_rel_path(rel_path)?;
     match fs::remove_file(data_dir.join(rel_path)) {
         Ok(()) => {}
@@ -347,7 +346,8 @@ mod tests {
             let _ = tx.send(result);
         });
         assert!(
-            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            rx.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
             "delete must wait for the photo write lock, not race the save side"
         );
         drop(guard);

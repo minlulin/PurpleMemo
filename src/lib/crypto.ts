@@ -115,12 +115,11 @@ export async function verifyPin(
   );
   const expected = b64ToBytes(stored.hash);
   if (hash.length !== expected.length) return false;
+  // Both arrays have the same verified length; Uint8Array indexing within
+  // bounds always returns number — no undefined check needed.
   let diff = 0;
   for (let i = 0; i < hash.length; i++) {
-    const h = hash[i];
-    const e = expected[i];
-    if (h === undefined || e === undefined) return false;
-    diff |= h ^ e;
+    diff |= (hash[i] as number) ^ (expected[i] as number);
   }
   return diff === 0;
 }

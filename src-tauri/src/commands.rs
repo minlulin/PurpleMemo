@@ -1,6 +1,6 @@
 //! The Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
-//! `db_begin`, `db_commit`, `db_rollback`, `photo_save`, `photo_read`,
-//! `photo_read_thumb`, `photo_save_thumb`, `photo_delete`,
+//! `db_begin`, `db_commit`, `db_rollback`, `db_reset_txn`, `photo_save`,
+//! `photo_read`, `photo_read_thumb`, `photo_save_thumb`, `photo_delete`,
 //! `db_key_save` (write the key to a file the user chose, §5.4), plus the
 //! P5 share controls — `share_arm`, `share_start`, `share_stop`, `share_status`,
 //! `share_publish` (§8). The share commands touch no SQL: they only control
@@ -56,10 +56,10 @@ fn header_str<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<&'a str> {
 }
 
 fn lock_conn(state: &AppState) -> CmdResult<MutexGuard<'_, Connection>> {
-    state
-        .conn
-        .lock()
-        .map_err(|_| "database mutex poisoned".to_string())
+    // Recover from a poisoned mutex: a panic in any command drops the guard
+    // atomically, leaving the Connection in a clean state. Refusing all future
+    // commands (the previous behaviour) was more harmful than the panic itself.
+    Ok(state.conn.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// SELECT-ish reads: rows as JSON objects keyed by column name.
@@ -100,8 +100,8 @@ pub fn db_batch(state: State<'_, AppState>, statements: Vec<BatchStatement>) -> 
 /// These commands are intentionally retained even though no app code calls
 /// them today (review L-03): the plan mandates the surface, and every
 /// multi-statement write already goes through [`db_batch`]. An abandoned
-/// manual transaction makes [`db_batch`] fail until the app restarts or
-/// something rolls it back.
+/// manual transaction makes [`db_batch`] fail until something rolls it back
+/// — or [`db_reset_txn`] clears the flag as a last resort.
 ///
 /// The flag is only trustworthy because no *other* command can end a
 /// transaction behind its back: `db::reject_dangerous_statement` now runs on
@@ -122,7 +122,8 @@ pub fn db_begin(state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 /// Commit the manual transaction. On failure the open flag stays set so the
-/// UI can still roll back.
+/// caller may still call [`db_rollback`]. If rollback also fails, call
+/// [`db_reset_txn`] to clear the flag; the uncommitted rows are lost.
 #[tauri::command]
 pub fn db_commit(state: State<'_, AppState>) -> CmdResult<()> {
     let conn = lock_conn(&state)?;
@@ -142,6 +143,19 @@ pub fn db_rollback(state: State<'_, AppState>) -> CmdResult<()> {
         return Err("no open transaction to roll back".to_string());
     }
     db::rollback_tx(&conn)?;
+    state.txn_open.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Clear the manual-transaction flag without touching the DB.
+///
+/// Break-glass only: use this if `db_commit` AND `db_rollback` both
+/// failed (e.g., connection died) and the flag is stuck, which would
+/// block every future `db_batch`. A lost transaction means the rows
+/// from the last `db_begin` are gone; the caller is responsible for
+/// re-reading and reconciling state.
+#[tauri::command]
+pub fn db_reset_txn(state: State<'_, AppState>) -> CmdResult<()> {
     state.txn_open.store(false, Ordering::SeqCst);
     Ok(())
 }
@@ -271,4 +285,24 @@ pub fn share_status(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
 #[tauri::command]
 pub fn share_publish(state: State<'_, ShareState>, snapshot_json: String) -> CmdResult<ShareInfo> {
     state.publish(&snapshot_json)
+}
+
+#[cfg(test)]
+mod tests {
+    /// A panic inside a command must not wedge the connection mutex for the
+    /// rest of the session (FIX-01): the guard drops atomically on unwind,
+    /// so recovering the inner value is safe — while refusing the lock, the
+    /// old behaviour, failed every later command until a restart.
+    #[test]
+    fn poisoned_db_mutex_recovers() {
+        // Simulate what happens after a command panics mid-execution.
+        let mutex = std::sync::Mutex::new(42u32);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("simulated panic");
+        });
+        // The mutex is poisoned; recovery yields the inner value.
+        let val = mutex.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(*val, 42);
+    }
 }

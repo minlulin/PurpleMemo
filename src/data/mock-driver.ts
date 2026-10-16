@@ -116,6 +116,9 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     async rollback(): Promise<void> {
       record("rollback", []);
     },
+    async resetTxn(): Promise<void> {
+      record("resetTxn", []);
+    },
     async savePhoto(bytes: Uint8Array, ext: string): Promise<string> {
       record("savePhoto", [bytes, ext]);
       return `photos/2026/10/${ext}.${bytes.length}`;

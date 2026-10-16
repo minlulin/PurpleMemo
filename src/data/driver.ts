@@ -56,6 +56,13 @@ export interface DataDriver {
   commit(): Promise<void>;
   rollback(): Promise<void>;
   /**
+   * Clear the manual-transaction flag without touching the DB — break-glass
+   * for when `commit` AND `rollback` both failed (e.g., the connection died)
+   * and the stuck flag would block every future `batch` (FIX-10). The
+   * uncommitted rows are lost; the caller re-reads and reconciles state.
+   */
+  resetTxn(): Promise<void>;
+  /**
    * Photo bytes cross the IPC boundary as RAW payloads (review M-02): the
    * request body IS the bytes, so the metadata the Rust side needs travels in
    * request headers, and a read resolves to an `ArrayBuffer` — never a JSON
@@ -107,6 +114,7 @@ export function createTauriDriver(): DataDriver {
     begin: () => invoke("db_begin"),
     commit: () => invoke("db_commit"),
     rollback: () => invoke("db_rollback"),
+    resetTxn: () => invoke("db_reset_txn"),
     savePhoto: (bytes, ext) =>
       invoke("photo_save", bytes, { headers: { [PHOTO_EXT_HEADER]: ext } }),
     readPhoto: async (relPath) =>
@@ -121,7 +129,7 @@ export function createTauriDriver(): DataDriver {
       }),
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
     saveDbKeyFile: (path) => invoke("db_key_save", { path }),
-    // P5 share controls (§8) — 14 commands total now, still one driver.
+    // P5 share controls (§8) — 18 commands total now, still one driver.
     shareStart: (consentToken) => invoke("share_start", { consentToken }),
     shareArm: () => invoke("share_arm"),
     shareStop: () => invoke("share_stop"),

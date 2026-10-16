@@ -170,6 +170,39 @@ test("the share ticker does nothing after the shell locked", async () => {
   assert.equal(published, 0, "the publisher is paused while locked (§2.9)");
 });
 
+test("concurrent share ticks do not double-fire the stop note", async () => {
+  // A `status()` read that started before sharing stopped answers late, with
+  // the stale `running: true` view it took when it began. Without the
+  // inFlight guard (FIX-03), a newer tick can observe the stop in between,
+  // raise the note, and then the stale answer re-arms `wasRunning` — so the
+  // next tick raises the same note a second time.
+  const notes: string[] = [];
+  let running = true;
+  let slowNext = false;
+  const tick = createShareTicker({
+    status: async () => {
+      if (slowNext) {
+        slowNext = false;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { running: true, note: null };
+      }
+      return { running, note: running ? null : "Stopped sharing." };
+    },
+    publish: async () => undefined,
+    onNote: (note) => notes.push(note),
+    isCancelled: () => false,
+  });
+
+  await tick(); // server up → wasRunning is armed
+  running = false; // the server stops...
+  slowNext = true;
+  const stale = tick(); // ...while a stale read is still in flight
+  await tick(); // must be a no-op while the stale tick runs
+  await stale; // the stale answer re-arms wasRunning
+  await tick(); // the first tick to actually see the stop raises the note
+  assert.equal(notes.length, 1, "the stop note fires exactly once");
+});
+
 function reminderTick(over: Partial<ReminderTickPorts> = {}) {
   const events: string[] = [];
   const ports: ReminderTickPorts = {

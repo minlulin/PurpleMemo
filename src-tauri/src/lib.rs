@@ -88,6 +88,7 @@ pub fn run() {
             commands::db_begin,
             commands::db_commit,
             commands::db_rollback,
+            commands::db_reset_txn,
             commands::photo_save,
             commands::photo_read,
             commands::photo_read_thumb,
@@ -395,6 +396,13 @@ fn remember_data_dir(dir: &std::path::Path) {
     let _ = DATA_DIR.set(dir.to_path_buf());
 }
 
+/// Lowercase hex of a byte slice — the single copy shared by the key mint
+/// (`db::mint_key_hex`) and the photo content hash (`photos::save_photo`),
+/// which previously each rolled their own (FIX-07).
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Append one timestamped line to `name` in the app-data dir.
 ///
 /// Best-effort: refusing to do the thing because the audit write failed would
@@ -443,6 +451,16 @@ fn timestamp_utc() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    format_timestamp_utc(secs)
+}
+
+/// Format `secs` since the Unix epoch as RFC 3339 UTC.
+///
+/// The date math, split out from [`timestamp_utc`] so tests can pin known
+/// instants (epoch, year boundaries, leap days) against it without a real
+/// clock (FIX-06) — the shape check in `key_export_log_tests` proves the
+/// format, not the calendar.
+fn format_timestamp_utc(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -531,6 +549,32 @@ mod key_export_log_tests {
             hh < 24 && mm < 60 && ss < 60,
             "clock fields in range: {stamp}"
         );
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::format_timestamp_utc;
+
+    /// Pinned against known-correct RFC 3339 instants (FIX-06). The shape
+    /// check in `key_export_log_tests` only proves the *format*; these pin
+    /// the calendar math itself at the places days-from-civil breaks if it
+    /// ever breaks: the epoch, a year boundary, and a leap day.
+    #[test]
+    fn unix_epoch() {
+        assert_eq!(format_timestamp_utc(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn year_2021_new_year() {
+        // 2021-01-01T00:00:00Z = 1609459200
+        assert_eq!(format_timestamp_utc(1609459200), "2021-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn leap_day_2024() {
+        // 2024-02-29T12:00:00Z = 1709208000
+        assert_eq!(format_timestamp_utc(1709208000), "2024-02-29T12:00:00Z");
     }
 }
 

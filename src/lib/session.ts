@@ -89,7 +89,14 @@ export interface ShareTickPorts {
  */
 export function createShareTicker(ports: ShareTickPorts): () => Promise<void> {
   let wasRunning = false;
+  let inFlight = false;
   return async () => {
+    // Ticks never stack (FIX-03), same rule as the reminder poll: if a slow
+    // `status()` or `publish()` is still awaited, the next interval fire is a
+    // no-op, so a newer tick can never read `wasRunning` mid-flight of an
+    // older one and raise a spurious stop note on the wrong tick.
+    if (inFlight) return;
+    inFlight = true;
     try {
       const info = await ports.status();
       if (ports.isCancelled()) return;
@@ -102,6 +109,8 @@ export function createShareTicker(ports: ShareTickPorts): () => Promise<void> {
       await ports.publish();
     } catch {
       // See above — the poll must never break the app.
+    } finally {
+      inFlight = false;
     }
   };
 }

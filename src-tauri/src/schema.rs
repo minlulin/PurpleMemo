@@ -329,6 +329,8 @@ CREATE INDEX idx_loans_due ON loans(due_date);
 CREATE INDEX idx_habit_logs_habit ON habit_logs(habit_id);
 CREATE INDEX idx_tasks_due ON tasks(due_date);
 CREATE INDEX idx_photo_refs_entity ON photo_refs(entity_type, entity_id);
+CREATE INDEX idx_notes_collection ON notes(collection_id);
+CREATE INDEX idx_contact_channels_contact ON contact_channels(contact_id);
 
 -- ============================================================
 -- Seed data (§2.1, §2.2): default wallets + seeded categories. One-time
