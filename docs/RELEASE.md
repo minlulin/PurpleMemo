@@ -48,9 +48,23 @@ npm run tauri -- signer generate -w .keys/updater.key
 4. **Export the signing key** (a `.env` file does not work here):
 
    ```bash
-   export TAURI_SIGNING_PRIVATE_KEY=.keys/updater.key
+   export TAURI_SIGNING_PRIVATE_KEY="$(cat .keys/updater.key)"
    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''   # only if the key has one
    ```
+
+   The variable holds the **key itself, not its path**. Tauri base64-decodes
+   whatever is in it, so passing `.keys/updater.key` fails with
+   `failed to decode base64 secret key: ... Invalid symbol 46` — 46 is the
+   `.` of the path. PowerShell:
+
+   ```powershell
+   $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content .keys/updater.key -Raw).Trim()
+   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+   ```
+
+   Without the key the build still produces both installers, then fails at the
+   end with `A public key has been found, but no private key` and writes **no
+   `.sig` files** — so check for `bundle/nsis/*.exe.sig` before publishing.
 
 5. **Build** (`bundle.createUpdaterArtifacts` is already `true`):
 
