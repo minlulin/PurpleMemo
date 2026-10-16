@@ -109,6 +109,31 @@ test("the single-instance plugin is registered first", () => {
   );
 });
 
+test("the key export is one-way: a path goes out, nothing comes back", () => {
+  // Review H-7. The command used to be `db_key_export() -> String`, handing the
+  // plaintext master key to the renderer on every call; it lived in React state
+  // and could be pushed onto the system clipboard, which outlives the app. Rust
+  // now does the write, so the command takes a path and returns unit.
+  assert.match(
+    commandsSrc,
+    /pub fn db_key_save\(path: String\) -> CmdResult<\(\)>/,
+    "db_key_save must take a path and return nothing",
+  );
+  assert.ok(
+    !commandsSrc.includes("db_key_export"),
+    "db_key_export must be gone - it returned the plaintext key",
+  );
+  assert.ok(
+    !/\bexportDbKey\s*[:(]/.test(driverSrc),
+    "the driver must not have a way to read the key back",
+  );
+  // And the driver hands Rust a path, not a key it already holds.
+  assert.match(
+    driverSrc,
+    /saveDbKeyFile: \(path\) => invoke\("db_key_save", \{ path \}\)/,
+  );
+});
+
 test("the window label Rust focuses is the window Tauri actually creates", () => {
   // `focus_main_window` looks the window up by label. A rename in
   // tauri.conf.json would leave the second launch silently doing nothing —

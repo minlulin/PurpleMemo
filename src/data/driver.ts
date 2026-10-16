@@ -73,8 +73,17 @@ export interface DataDriver {
   readPhotoThumb(sourceRelPath: string): Promise<Uint8Array>;
   savePhotoThumb(sourceRelPath: string, bytes: Uint8Array): Promise<string>;
   deletePhoto(relPath: string): Promise<void>;
-  /** Read-only keyring read for the Settings key-export step (§5.4). */
-  exportDbKey(): Promise<string>;
+  /**
+   * Write the DB encryption key to a file the user chose (§5.4).
+   *
+   * Deliberately takes a path and returns nothing: Rust reads the key from the
+   * credential store, writes it, and drops it, so the plaintext master key
+   * never crosses into the webview. The driver used to have an `exportDbKey`
+   * that returned it, where it lived in React state and could be pushed onto
+   * the system clipboard — which outlives the app and is readable by every
+   * other program on the machine (review H-7).
+   */
+  saveDbKeyFile(path: string): Promise<void>;
   /** Start the LAN snapshot server (§8). Idempotent while running. */
   shareStart(): Promise<ShareInfo>;
   shareStop(): Promise<ShareInfo>;
@@ -105,7 +114,7 @@ export function createTauriDriver(): DataDriver {
         headers: { [PHOTO_SOURCE_HEADER]: sourceRelPath },
       }),
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
-    exportDbKey: () => invoke("db_key_export"),
+    saveDbKeyFile: (path) => invoke("db_key_save", { path }),
     // P5 share controls (§8) — 14 commands total now, still one driver.
     shareStart: () => invoke("share_start"),
     shareStop: () => invoke("share_stop"),

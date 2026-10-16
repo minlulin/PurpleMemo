@@ -72,3 +72,26 @@ test("setManyJSON writes every entry as one batch of upserts", async () => {
     assert.match(s.sql, /ON CONFLICT\(key\) DO UPDATE/);
   }
 });
+
+test("the key export hands over a path and gets nothing back", async () => {
+  // Review H-7: the repository used to *return* the plaintext key, which put
+  // it in React state and let it onto the system clipboard. The save must be a
+  // one-way trip — path in, nothing out.
+  const driver = createMockDriver();
+  const settings = createSettingsRepo(driver);
+  const result = await settings.saveDatabaseKeyFile("/tmp/purple-memo-key.txt");
+  assert.equal(result, undefined, "no key, and nothing else, comes back");
+  const calls = driver.callsTo("saveDbKeyFile");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.args, ["/tmp/purple-memo-key.txt"]);
+});
+
+test("a failed key export surfaces the error and never a partial key", async () => {
+  const driver = createMockDriver({
+    error: new Error("no DB encryption key stored"),
+  });
+  await assert.rejects(
+    () => createSettingsRepo(driver).saveDatabaseKeyFile("/tmp/k.txt"),
+    /no DB encryption key stored/,
+  );
+});

@@ -5,8 +5,9 @@ mod photos;
 mod schema;
 mod share;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tauri::Manager;
@@ -27,6 +28,14 @@ const QUIT_LABEL: &str = "Quit";
 /// `focus_main_window` has to find the window to raise, and a typo in a string
 /// literal would only show up as "the second launch does nothing".
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// The Tauri app-data directory name. One place, because it was previously
+/// spelled out in three files that could drift (`tauri.conf.json`, the keyring
+/// service name, and the log paths here).
+const APP_DIR_NAME: &str = "com.minlulin.purplememo";
+
+/// Audit log of every key disclosure (§5.4), written next to the database.
+const KEY_EXPORT_LOG: &str = "key-export.log";
 
 /// Added to the dialog body — the log line stays the plain, quotable failure.
 const RETRY_GUIDANCE: &str = " Fix that and choose Retry, or choose Quit to close Purple Memo.";
@@ -81,7 +90,7 @@ pub fn run() {
             commands::photo_read_thumb,
             commands::photo_save_thumb,
             commands::photo_delete,
-            commands::db_key_export,
+            commands::db_key_save,
             commands::share_start,
             commands::share_stop,
             commands::share_status,
@@ -119,6 +128,7 @@ fn boot(app: &tauri::AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("failed to create data dir {}: {e}", data_dir.display()))?;
+    remember_data_dir(&data_dir);
     let db_path = data_dir.join(db::DB_FILE_NAME);
     let key = db::load_or_mint_db_key(&db_path)?;
     // A key this process minted is only correct if the database it opens with
@@ -365,19 +375,149 @@ fn looks_like_keyring_failure(message: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
-/// App-data dir without a running app: mirrors what `setup` resolves via
-/// `app.path().app_data_dir()`. Returns None when the platform home cannot
-/// be determined — the caller treats that as "stderr only".
-#[cfg(target_os = "windows")]
-fn dirs_next_to_db() -> Option<std::path::PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(|base| std::path::PathBuf::from(base).join("com.minlulin.purplememo"))
+/// The app-data dir, remembered once `boot` resolves it.
+///
+/// The log writers can run with no `AppHandle` — `report_run_failure` fires
+/// when there is no event loop left — so they cannot call `app_data_dir()`
+/// themselves. Re-deriving the path from environment variables instead was
+/// wrong on macOS, which is a shipped target: the real directory is
+/// `~/Library/Application Support/<id>`, the guessed `~/.local/share/<id>`
+/// does not exist, and the write failed into a discarded `Result` — so the
+/// "durable record" the plan promises never actually happened there.
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Remember the resolved data dir so later code can reach it without a handle.
+fn remember_data_dir(dir: &std::path::Path) {
+    let _ = DATA_DIR.set(dir.to_path_buf());
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Append one key-export record to `key-export.log`, next to the database.
+///
+/// This is the audit trail for the single most sensitive thing the app can do:
+/// let the database's master key out of the credential store. The line records
+/// when and where it went and nothing else — see [`db::key_export_audit_line`],
+/// which has no parameter through which key material could be threaded.
+///
+/// Best-effort, like the boot log: refusing to disclose the key because the
+/// audit write failed would be worse than a missing record, and this is for
+/// the user's benefit after the fact, not a control on the export.
+pub(crate) fn note_key_export(destination: &str) {
+    use std::io::Write;
+    let Some(mut path) = dirs_next_to_db() else {
+        return;
+    };
+    path.push(KEY_EXPORT_LOG);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(
+            file,
+            "{} {}",
+            timestamp_utc(),
+            db::key_export_audit_line(destination)
+        );
+    }
+}
+
+/// RFC 3339 in UTC. Hand-rolled rather than pulling in a date crate for one
+/// audit line: days-from-civil, which is exact for the proleptic Gregorian
+/// calendar and needs no lookup tables.
+fn timestamp_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    if m <= 2 {
+        y += 1;
+    }
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+/// App-data dir without a running app. The remembered value wins once `boot`
+/// has resolved it; the environment fallback exists only for the paths that
+/// run before that (or after it failed).
 fn dirs_next_to_db() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .map(|base| std::path::PathBuf::from(base).join(".local/share/com.minlulin.purplememo"))
+    if let Some(dir) = DATA_DIR.get() {
+        return Some(dir.clone());
+    }
+    dirs_next_to_db_from_env()
+}
+
+#[cfg(target_os = "windows")]
+fn dirs_next_to_db_from_env() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|base| std::path::PathBuf::from(base).join(APP_DIR_NAME))
+}
+
+#[cfg(target_os = "macos")]
+fn dirs_next_to_db_from_env() -> Option<std::path::PathBuf> {
+    // Tauri resolves `app_data_dir` to ~/Library/Application Support/<id>.
+    std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join(APP_DIR_NAME)
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn dirs_next_to_db_from_env() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join(".local/share")
+            .join(APP_DIR_NAME)
+    })
+}
+
+#[cfg(test)]
+mod key_export_log_tests {
+    use super::timestamp_utc;
+
+    #[test]
+    fn the_audit_timestamp_is_rfc3339_utc() {
+        // The log is read by a person, months later, possibly to explain when a
+        // database was opened. It has to be sortable and unambiguous.
+        let stamp = timestamp_utc();
+        assert_eq!(stamp.len(), 20, "YYYY-MM-DDTHH:MM:SSZ");
+        assert!(
+            stamp.ends_with('Z'),
+            "UTC is stated explicitly, not assumed: {stamp}"
+        );
+        let (date, time) = stamp.split_once('T').expect("date and time");
+        let date_parts: Vec<i64> = date
+            .split('-')
+            .map(|p| p.parse().expect("numeric date part"))
+            .collect();
+        let time_parts: Vec<i64> = time
+            .trim_end_matches('Z')
+            .split(':')
+            .map(|p| p.parse().expect("numeric time part"))
+            .collect();
+        assert_eq!(date_parts.len(), 3, "year-month-day");
+        assert_eq!(time_parts.len(), 3, "hour-minute-second");
+        let (y, m, d) = (date_parts[0], date_parts[1], date_parts[2]);
+        let (hh, mm, ss) = (time_parts[0], time_parts[1], time_parts[2]);
+        assert!((1..=12).contains(&m), "month in range: {stamp}");
+        assert!((1..=31).contains(&d), "day in range: {stamp}");
+        assert!((2020..2200).contains(&y), "a plausible year: {stamp}");
+        assert!(
+            hh < 24 && mm < 60 && ss < 60,
+            "clock fields in range: {stamp}"
+        );
+    }
 }
 
 #[cfg(test)]

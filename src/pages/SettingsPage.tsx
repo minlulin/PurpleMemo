@@ -8,7 +8,7 @@
 // confirms before applying and reloads afterwards.
 
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
 import {
   IconArrowRight,
@@ -166,8 +166,6 @@ export default function SettingsPage(p: SettingsPageProps) {
 
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyAck, setKeyAck] = useState(false);
-  const [exportedKey, setExportedKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   // -- Backup & restore (§8) ----------------------------------------------------
   const [backupBusy, setBackupBusy] = useState(false);
@@ -245,50 +243,43 @@ export default function SettingsPage(p: SettingsPageProps) {
     }
   };
 
+  /**
+   * Export the encryption key to a file the user picks (review H-7).
+   *
+   * One step, and the key is never displayed, copied to the clipboard, or held
+   * in component state: Rust reads it from the credential store, writes it and
+   * drops it. The previous flow rendered the plaintext key into a `<textarea>`
+   * and offered a clipboard copy — the clipboard survives the app being closed
+   * and is readable by any other program, which is a strictly worse place for
+   * the master key than the file the user chose.
+   */
   const exportKey = async () => {
     setError(null);
-    setCopied(false);
     if (!keyAck) {
       setError(
         "Tick the acknowledgement first — the key must go into its own file, never into a backup.",
       );
       return;
     }
+    const path = await save({
+      title: "Save Purple Memo encryption key",
+      defaultPath: "purple-memo-db-key.txt",
+      filters: [{ name: "Text file", extensions: ["txt"] }],
+    });
+    if (path === null) return;
     setKeyBusy(true);
     try {
-      setExportedKey(await settingsRepo.exportDatabaseKey());
+      await settingsRepo.saveDatabaseKeyFile(path);
+      toast.success(
+        `Encryption key saved to ${path}. Store it separately from backups.`,
+      );
+      // The disclosure is now on record; make the user restart from the gate so
+      // the acknowledgement cannot be reused silently for a second export.
+      setKeyAck(false);
     } catch (e) {
       setError(errText(e));
     } finally {
       setKeyBusy(false);
-    }
-  };
-
-  const copyKey = async () => {
-    if (!exportedKey) return;
-    try {
-      await navigator.clipboard.writeText(exportedKey);
-      setCopied(true);
-    } catch {
-      setError("Copy failed — select the key text and copy it manually.");
-    }
-  };
-
-  const saveKeyFile = async () => {
-    if (!exportedKey) return;
-    try {
-      const path = await save({
-        title: "Save Purple Memo encryption key",
-        defaultPath: "purple-memo-db-key.txt",
-        filters: [{ name: "Text file", extensions: ["txt"] }],
-      });
-      if (path === null) return;
-      await writeTextFile(path, `${exportedKey}\n`);
-      toast.success(
-        `Encryption key saved to ${path}. Store it separately from backups.`,
-      );
-    } catch (e) {
-      setError(errText(e));
     }
   };
 
@@ -604,8 +595,10 @@ export default function SettingsPage(p: SettingsPageProps) {
         <p className="muted">
           A database backup without this key is unopenable — and this key on its
           own opens your data. Save it as its own file, stored apart from any
-          backup, and never send it anywhere. Backup export and import live
-          below.
+          backup, and never send it anywhere. The key is written straight to the
+          file you choose and is never shown, copied, or kept in memory by this
+          window. Every export is recorded in key-export.log beside the
+          database. Backup export and import live below.
         </p>
         <label className="settings-check">
           <input
@@ -618,40 +611,13 @@ export default function SettingsPage(p: SettingsPageProps) {
         <div className="editor-row">
           <button
             type="button"
-            className="btn"
+            className="btn btn-primary"
             disabled={keyBusy}
             onClick={() => void exportKey()}
           >
-            {keyBusy ? "Reading…" : "Show encryption key"}
+            {keyBusy ? "Writing…" : "Save encryption key…"}
           </button>
-          {exportedKey !== null && (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void copyKey()}
-            >
-              {copied ? "Copied" : "Copy"}
-            </button>
-          )}
-          {exportedKey !== null && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={saveKeyFile}
-            >
-              Save key file
-            </button>
-          )}
         </div>
-        {exportedKey !== null && (
-          <textarea
-            className="textarea key-export-box"
-            rows={3}
-            readOnly
-            value={exportedKey}
-            onFocus={(e) => e.target.select()}
-          />
-        )}
       </section>
 
       <section

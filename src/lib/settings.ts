@@ -88,11 +88,13 @@ export function createSettingsRepo(driver: DataDriver) {
     },
 
     /**
-     * Read-only DB key export for the Settings key-export step (§2.8, §5.4).
-     * The UI copies the key into its own file — never into the backup zip.
+     * Write the DB encryption key to `path` for the Settings key-export step
+     * (§5.4). The UI copies nothing and holds nothing: the key is read,
+     * written and dropped inside Rust, so it never reaches this process. The
+     * key still never goes into the backup zip.
      */
-    async exportDatabaseKey(): Promise<string> {
-      return driver.exportDbKey();
+    async saveDatabaseKeyFile(path: string): Promise<void> {
+      await driver.saveDbKeyFile(path);
     },
   };
 }

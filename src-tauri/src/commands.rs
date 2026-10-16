@@ -1,7 +1,7 @@
 //! The Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
 //! `db_begin`, `db_commit`, `db_rollback`, `photo_save`, `photo_read`,
 //! `photo_read_thumb`, `photo_save_thumb`, `photo_delete`,
-//! `db_key_export` (read-only keyring read, §5.4), plus the
+//! `db_key_save` (write the key to a file the user chose, §5.4), plus the
 //! P5 share controls — `share_start`, `share_stop`, `share_status`,
 //! `share_publish` (§8). The share commands touch no SQL: they only control
 //! the listener and the snapshot bytes the desktop published.
@@ -209,13 +209,20 @@ pub fn photo_delete(state: State<'_, AppState>, rel_path: String) -> CmdResult<(
     photos::delete_photo(&state.data_dir, &rel_path)
 }
 
-/// Read the DB encryption key back out of the OS credential store for the
-/// Settings key-export step (§2.8, §5.4). Read-only: never mints, never
-/// touches the DB connection — the UI copies the key into its own file,
-/// never into the backup zip.
+/// Write the DB encryption key to a file the user chose (§2.8, §5.4).
+///
+/// The path comes from the native save dialog and travels here as a plain
+/// string — a path is not a secret, and the dialog is what constrains it. The
+/// key does not come back: [`db::save_db_key_file`] reads it from the
+/// credential store, writes it and drops it, so the plaintext master key never
+/// enters the webview and cannot end up in React state, a clipboard, or a
+/// renderer crash dump. Read-only with respect to the database, and never
+/// mints: a missing credential-store entry is an error, not a fresh key.
+///
+/// Every successful call appends to `key-export.log`.
 #[tauri::command]
-pub fn db_key_export() -> CmdResult<String> {
-    db::read_db_key()
+pub fn db_key_save(path: String) -> CmdResult<()> {
+    db::save_db_key_file(std::path::Path::new(&path))
 }
 
 /// Turn on the read-only LAN share (§8): binds a fresh port, mints a pairing

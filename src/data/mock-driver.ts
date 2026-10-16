@@ -141,9 +141,13 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       record("deletePhoto", [relPath]);
       script.thumbBytes = undefined;
     },
-    async exportDbKey(): Promise<string> {
-      record("exportDbKey", []);
-      return "00".repeat(32);
+    async saveDbKeyFile(path: string): Promise<void> {
+      record("saveDbKeyFile", [path]);
+      if (script.error) {
+        const e = script.error;
+        script.error = undefined;
+        throw e;
+      }
     },
     async shareStart(): Promise<ShareInfo> {
       record("shareStart", []);

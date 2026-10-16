@@ -152,6 +152,53 @@ pub fn discard_minted_key() {
     }
 }
 
+/// The audit line for one key export (§5.4). Pure, and deliberately takes the
+/// key nowhere: the signature has no parameter through which key material could
+/// be threaded, so this line *cannot* leak one however it is called. That is
+/// the property the test pins, not a promise in a comment.
+///
+/// The clipboard route was removed rather than logged (a key left on the
+/// system clipboard persists after the app closes and is readable by every
+/// other program), so a file write is currently the only kind of disclosure —
+/// which is why this takes a destination and nothing else.
+pub fn key_export_audit_line(destination: &str) -> String {
+    format!("key file written: {destination}")
+}
+
+/// Write the DB key to `path`, and record that it happened (§5.4).
+///
+/// The key is read from the credential store, used, and dropped inside this
+/// function: it is never returned, so it never crosses into the webview. That
+/// is the point of the command existing at all (review H-7) — the previous
+/// `db_key_export` handed the plaintext key to the renderer on every call,
+/// where it sat in React state and was also pushed onto the system clipboard,
+/// which persists after the app closes and is readable by every other program
+/// on the machine.
+pub fn save_db_key_file(path: &Path) -> Result<(), String> {
+    let key = read_db_key()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Owner-only: the file is the master secret for the whole database.
+        options.mode(0o600);
+    }
+    let write_result = options
+        .open(path)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))
+        .and_then(|mut file| {
+            use std::io::Write;
+            // Trailing newline so the file is well-formed text.
+            file.write_all(format!("{key}\n").as_bytes())
+                .map_err(|e| format!("could not write {}: {e}", path.display()))
+        });
+    // Only record a disclosure that actually happened.
+    write_result?;
+    crate::note_key_export(&path.display().to_string());
+    Ok(())
+}
+
 /// Whether a database file is already there. Pure over the path (no IO beyond
 /// the metadata read) so the mint guard is testable without a keyring.
 pub fn db_file_exists(db_path: &Path) -> bool {
@@ -687,6 +734,57 @@ mod tests {
         open_encrypted_db(&dir.db_path(), &key).expect("open");
         let msg = missing_key_for_existing_db(&dir.db_path());
         assert!(!msg.contains(&key), "the refusal must not echo a key");
+    }
+
+    // -- Key export (§5.4, review H-7) ----------------------------------------
+
+    #[test]
+    fn the_audit_line_has_no_channel_through_which_a_key_could_leak() {
+        // The property that matters is structural, so this asserts it by
+        // construction: a realistic key is nowhere in the rendered line, and
+        // the line names the destination and the action, which is the whole
+        // point of an audit record.
+        let key = mint_key_hex().expect("mint key");
+        let line = key_export_audit_line("/home/me/key.txt");
+        assert!(!line.contains(&key));
+        assert!(!line.contains("x'"), "no SQLCipher key literal form");
+        assert!(line.contains("/home/me/key.txt"), "names the destination");
+        assert!(
+            line.to_lowercase().contains("key file written"),
+            "says what happened: {line}"
+        );
+    }
+
+    #[test]
+    fn saving_the_key_file_does_not_return_the_key() {
+        // The compile-time half of H-7: `save_db_key_file` returns `Result<(), _>`,
+        // so there is no return path by which the plaintext key could reach the
+        // webview. Asserted here because a future "just return it too" edit is
+        // the exact regression being prevented.
+        let dir = TempDir::new("key-save");
+        let out = dir.0.join("key.txt");
+        let result: Result<(), String> = save_db_key_file(&out);
+        // Whether it succeeds depends on the machine's credential store, so
+        // only the shape is asserted — never the value on either path.
+        if let Err(message) = result {
+            let key = mint_key_hex().expect("mint key");
+            assert!(!message.contains(&key), "errors must not echo a key");
+        }
+    }
+
+    #[test]
+    fn a_key_file_write_reports_the_path_not_the_key() {
+        // Both failure messages built in `save_db_key_file` name the path the
+        // user chose; neither can contain key material.
+        let key = mint_key_hex().expect("mint key");
+        let unwritable = Path::new("/definitely/not/a/real/dir/key.txt");
+        if let Err(message) = save_db_key_file(unwritable) {
+            assert!(!message.contains(&key), "must not echo a key: {message}");
+            assert!(
+                message.contains("key.txt"),
+                "should name the destination: {message}"
+            );
+        }
     }
 
     // -- FTS5-under-SQLCipher spike (P1 scope) ------------------------------

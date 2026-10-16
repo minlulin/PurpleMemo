@@ -3543,15 +3543,8 @@ tbody .week-row {
  * Settings + More (P3f, §2.8)
  * ------------------------------------------------------------------------- */
 
-.key-export-box {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  overflow-wrap: break-word;
-  background: var(--color-surface-subtle);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-}
+/* The key is no longer rendered into a box anywhere (review H-7): Rust writes
+   it straight to the file the user picks, so there is nothing here to style. */
 
 .update-notes {
   white-space: pre-wrap;
