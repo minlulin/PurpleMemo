@@ -21,11 +21,14 @@
 | P2-2 | ✅ **fixed** | `loadSecurity` returns its outcome; `shellStage` pins that a failed read never reaches PIN verification |
 | P2-3 | ✅ **fixed** | Thumbnails decode with `imageOrientation: "from-image"` (the audit's `"fromImage"` would have thrown) |
 | P2-4 | ✅ **fixed** | `createThumbUrlBook` owns every grid object URL; mutation-checked |
+| P2-8 | ✅ **fixed** | `reset-session-memory.mjs` + both npm entries deleted; `scripts/` is now exactly the 4 keepers |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
-**No release blockers remain in code or docs.** Open before publishing: P2-8 (dead script), the five scratch-doc deletions, and the rest of the P2/P3 tier.
+**No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
 
-**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → (6) dead-script drop (P2-8); (7) delete the 5 scratch docs; (8) public.
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → (7) delete the 5 scratch docs; (8) public.
+
+Step 7 is now unblocked and is the last mechanical item before publishing.
 
 ### What the P1-1 fix does
 
@@ -142,8 +145,12 @@ Gate: **298/298** TS tests (293 → 298), 92/92 `cargo test`, clippy, fmt, build
 ### P2-7 — 170 `(§X)` plan-section refs in code comments across 37 files will dangle
 e.g. `(§2.9)`, `(§8)`, `(§5.4)` in `src/` and `src-tauri/src/`. Harmless at runtime; a public reader following "§2.9" finds nothing. Options: accept as historical, or strip in the cleanup pass.
 
-### P2-8 — `scripts/reset-session-memory.mjs` becomes dead once `docs/SESSION_MEMORY.md` is deleted
+### P2-8 — `scripts/reset-session-memory.mjs` becomes dead once `docs/SESSION_MEMORY.md` is deleted — ✅ FIXED
 Delete the script **and** the `session:reset` / `memory:reset` entries in `package.json` (nothing else references it — not in the verify chain, not in `.githooks/pre-push`).
+
+**Done.** `scripts/reset-session-memory.mjs` deleted and both npm entries removed. `scripts/` is now exactly the four keepers. Verified before deleting: the only references anywhere were the two `package.json` entries and the script's own docstring — not in `.githooks/pre-push`, not in the `verify` chain, not in any test, not in any README. Gate green: **298/298** TS tests, 92/92 `cargo test`, biome now covering 108 files (was 109).
+
+**One known transient, not an oversight:** `docs/SESSION_MEMORY.md` still tells the reader to run `npm run session:reset` in two places, and that command no longer exists. That file is itself deleted in cleanup step 7 — the audit sequences the script removal and the doc deletion as separate steps, so the dangling mention exists only between them. Do not treat it as a finding; it resolves with step 7.
 
 ### P2-9 — Missing Edit and Delete escape hatches across Business & Budget (2026-10-17 audit)
 **`src/pages/BusinessPage.tsx`, `src/lib/business.ts`, `src/pages/BudgetPage.tsx`, `src/lib/budget.ts`**
@@ -258,15 +265,15 @@ Target: delete agent session files, progress logs, plans — keep the repo clean
 
 ### scripts/ — KEEP (4)
 
-`check-hooks.mjs` (gate step 1) · `check-versions.mjs` (gate step 2) · `token-lint.mjs` (gate) · `make-latest-json.mjs` (release step 6, referenced by RELEASE.md)
+`check-hooks.mjs` (gate step 1) · `check-versions.mjs` (gate step 2) · `token-lint.mjs` (gate) · `make-latest-json.mjs` (release step 6, referenced by RELEASE.md) — **this is now exactly what the directory contains** (P2-8 ✅ done).
 
-### scripts/ — DELETE (1)
+### scripts/ — DELETE (0)
 
-`reset-session-memory.mjs` (+ `session:reset` / `memory:reset` in `package.json`) — only rewrites the deleted SESSION_MEMORY.md; template references deleted PLAN.md.
+None left. `reset-session-memory.mjs` was the only one, and P2-8 has already removed it.
 
 ### KEEP everything else
 
-`README.md` (P1-2…P1-5 ✅ done), `package.json` (minus the two reset scripts), `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `biome.json`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.githooks/` (the local gate — the only enforcement), `src/`, `src-tauri/`, `public/`. Full 186-blob inventory: no other scratch files exist (only 7 `.md` files total, all accounted for).
+`README.md` (P1-2…P1-5 ✅ done), `package.json` (P2-8 ✅ done — the two reset scripts are gone, so nothing else to strip), `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `biome.json`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.githooks/` (the local gate — the only enforcement), `src/`, `src-tauri/`, `public/`. Full 186-blob inventory: no other scratch files exist (only 7 `.md` files total, all accounted for).
 
 ### Deletion mechanics — important
 
