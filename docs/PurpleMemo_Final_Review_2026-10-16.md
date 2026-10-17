@@ -33,9 +33,9 @@
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
 
-**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → ~~(9) P2-5 disproved~~ ✅ → ~~(10) P2-11 submit guards~~ ✅ → ~~(11) P2-6 discard path~~ ✅ → ~~(12) P2-7 accepted~~ 📌 → ~~(13) P2-10 delete confirmations~~ ✅ → (14) delete the 5 scratch docs; (15) public.
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → ~~(9) P2-5 disproved~~ ✅ → ~~(10) P2-11 submit guards~~ ✅ → ~~(11) P2-6 discard path~~ ✅ → ~~(12) P2-7 accepted~~ 📌 → ~~(13) P2-10 delete confirmations~~ ✅ → ~~(14) delete the 5 scratch docs~~ ✅ → (15) public.
 
-Step 14 is the last mechanical item before publishing, and nothing in the code depends on it.
+Step 14 is done and step 15 is unblocked: nothing in the code depended on the deleted docs, and the only remaining cleanup decision is whether this review file itself ships (see the cleanup list below).
 
 **That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed, disproved, or explicitly accepted. **Exactly one P2 remains: P2-9** — the missing Edit/Delete escape hatches in Business Jobs, Business Payables, Budget recurring rules, and Budget wallets/categories. That is new feature work (five sub-paths: repo methods, form state, and UI per module), not a defect, and it is a release decision rather than a blocker.
 
@@ -334,7 +334,9 @@ Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build
 
 ## Public-release cleanup list
 
-Target: delete agent session files, progress logs, plans — keep the repo clean with only README + RELEASE docs. Deletion is authorized (local backups taken); execution is NOT part of this review.
+Target: delete agent session files, progress logs, plans — keep the repo clean with only README + RELEASE docs. Deletion is authorized (local backups taken).
+
+**Status: the five scratch docs are deleted** (commit below). `docs/` now holds `RELEASE.md` and this review.
 
 ### docs/ — KEEP (1)
 
@@ -342,15 +344,27 @@ Target: delete agent session files, progress logs, plans — keep the repo clean
 |---|---|
 | `docs/RELEASE.md` | Explicit wish; the by-hand release procedure. P1-6/P1-7 (§7, §3) ✅ already fixed. |
 
-### docs/ — DELETE (5)
+### docs/ — DELETE (5) — ✅ **DONE**
 
 | File | Reason |
 |---|---|
-| `docs/PLAN.md` | Agent build plan + phase progress log; internal process. (README P1-2…P1-5 ✅ already fixed — nothing links here any more.) |
-| `docs/CODE_REVIEW_FIX_PLAN.md` | Agent scratch from the Oct-14 code review. |
-| `docs/M02_PHOTO_PIPELINE_PLAN.md` | Agent scratch: M-02 implementation plan. |
-| `docs/UI_POLISH_PLAN.md` | Agent scratch: UI phases plan. |
-| `docs/SESSION_MEMORY.md` | Agent scratch: rewritten every session; meaningless in public. |
+| ~~`docs/PLAN.md`~~ | Agent build plan + phase progress log; internal process. (README P1-2…P1-5 ✅ fixed first — nothing linked here.) |
+| ~~`docs/CODE_REVIEW_FIX_PLAN.md`~~ | Agent scratch from the Oct-14 code review. |
+| ~~`docs/M02_PHOTO_PIPELINE_PLAN.md`~~ | Agent scratch: M-02 implementation plan. |
+| ~~`docs/UI_POLISH_PLAN.md`~~ | Agent scratch: UI phases plan. |
+| ~~`docs/SESSION_MEMORY.md`~~ | Agent scratch: rewritten every session; meaningless in public. |
+
+Verified before deleting: **no reference to any of the five existed** in `src/`, `src-tauri/src/`, `scripts/`, `.githooks/`, `package.json`, `README.md` or `docs/RELEASE.md`. The transient noted under P2-8 — SESSION_MEMORY.md pointing at the removed `npm run session:reset` — is gone with the file.
+
+### docs/ — KEEP, pending your call (1)
+
+| File | Question |
+|---|---|
+| `docs/PurpleMemo_Final_Review_2026-10-16.md` | **This file.** It is internal process by exactly the standard the five deletions apply to, and it did not exist when this cleanup list was written, so it appears on neither list. It is also the fix ledger for every finding above. Recommend: **keep it until P2-9 and the P3 tier are triaged, then delete it as part of the Final Init Commit** — at which point its contents belong in the commit history, which is where provenance like this belongs anyway. Nothing references it. |
+
+### Deletion mechanics — note
+
+This list warned that the earlier *hardened push method* (tree built on the remote `base_tree` with an explicit changed-file list) made deletions impossible by construction, and offered two routes: the git-data API path, or folding deletions into the Final Init Commit. **Neither applies here** — this deletion is a normal `git rm` committed to the local branch and pushed with `git push`, which carries deletions natively. The constraint was a property of that one push mechanism, not of the repository.
 
 ### scripts/ — KEEP (4)
 
@@ -362,11 +376,7 @@ None left. `reset-session-memory.mjs` was the only one, and P2-8 has already rem
 
 ### KEEP everything else
 
-`README.md` (P1-2…P1-5 ✅ done), `package.json` (P2-8 ✅ done — the two reset scripts are gone, so nothing else to strip), `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `biome.json`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.githooks/` (the local gate — the only enforcement), `src/`, `src-tauri/`, `public/`. Full 186-blob inventory: no other scratch files exist (only 7 `.md` files total, all accounted for).
-
-### Deletion mechanics — important
-
-The hardened push method (tree built on the remote `base_tree` with an explicit changed-file list) makes deletions **impossible by construction**. Deleting these files needs the git-data API path: create blobs → create tree on the remote tree with `"sha": null` entries for the deleted paths → commit → PATCH ref. **Cleaner alternative:** fold the deletions into the planned Final Init Commit (history squash) — one commit, no intermediate delete-commit on the private history.
+`README.md` (P1-2…P1-5 ✅ done), `package.json` (P2-8 ✅ done — the two reset scripts are gone, so nothing else to strip), `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `biome.json`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.githooks/` (the local gate — the only enforcement), `src/`, `src-tauri/`, `public/`. Inventory re-checked at deletion time: **8** `.md` files existed, 5 deleted, 3 remaining (`README.md`, `docs/RELEASE.md`, and this review). No other scratch files exist.
 
 ---
 
