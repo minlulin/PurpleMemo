@@ -3,6 +3,7 @@
 // it against today's local date. Repayments never overpay (§4).
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconCalendar, IconLoans } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -278,13 +279,13 @@ export default function LoansPage() {
                       </button>
                     )
                   ) : null}
-                  <button
-                    type="button"
+                  <ConfirmButton
                     className="btn btn-ghost"
-                    onClick={() => void remove(l.id)}
+                    what="loan"
+                    onConfirm={() => remove(l.id)}
                   >
                     Delete
-                  </button>
+                  </ConfirmButton>
                 </span>
               </li>
             ))}

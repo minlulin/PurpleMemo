@@ -3,6 +3,7 @@
 // is reused from the journal (same Sunday-start grid, §2.5).
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconChevronDown,
@@ -191,13 +192,15 @@ export default function HabitsPage() {
                     >
                       {doneToday ? "Done today ✓" : "Mark done today"}
                     </button>
-                    <button
-                      type="button"
+                    {/* Cascades to every `habit_logs` row, so the streak history
+                        goes with it and cannot be rebuilt (review P2-10). */}
+                    <ConfirmButton
                       className="btn btn-ghost"
-                      onClick={() => void removeHabit(h.id)}
+                      what={`habit “${h.name}” and its streak history`}
+                      onConfirm={() => removeHabit(h.id)}
                     >
                       Delete
-                    </button>
+                    </ConfirmButton>
                   </span>
                 </div>
 

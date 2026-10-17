@@ -4,6 +4,7 @@
 // occurrence (nextDueDate) instead of closing it.
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconCalendar, IconTasks } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -188,13 +189,13 @@ export default function TasksPage({
                     >
                       Done
                     </button>
-                    <button
-                      type="button"
+                    <ConfirmButton
                       className="btn btn-ghost"
-                      onClick={() => void remove(t.id)}
+                      what="task"
+                      onConfirm={() => remove(t.id)}
                     >
                       Delete
-                    </button>
+                    </ConfirmButton>
                   </span>
                 </li>
               ))}
@@ -367,13 +368,13 @@ function RemindersSection() {
                 </span>
               </div>
               <span className="row-actions">
-                <button
-                  type="button"
+                <ConfirmButton
                   className="btn btn-ghost"
-                  onClick={() => void remove(r.id)}
+                  what="reminder"
+                  onConfirm={() => remove(r.id)}
                 >
                   Delete
-                </button>
+                </ConfirmButton>
               </span>
             </li>
           ))}

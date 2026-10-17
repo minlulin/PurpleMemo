@@ -27,15 +27,19 @@
 | P2-5 | ❌ **disproved** | Premise false — `rename` *does* replace on Windows (probed). The false comment and the `replace` flag it justified are fixed; the assumption is now a test. |
 | P2-11 | ✅ **fixed** | 5 of the 6 named handlers needed a guard (the 6th was already idempotent); `submit-guards.test.ts` pins the shape, mutation-checked |
 | P2-6 | ✅ **fixed** | Discard had no coverage and had a real bug under it: discarding during an in-flight save re-persisted the discarded draft |
+| P2-7 | 📌 **accepted** | 170 `(§X)` comment refs kept as historical provenance — rationale and revisit conditions recorded below |
+| P2-10 | ✅ **fixed** | `ConfirmButton` + pure `confirmTransition` guard all 17 destructive deletes across **12** pages (the finding listed 8); the rule itself is regression-tested |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
 
-**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → (9) delete the 5 scratch docs; (10) public.
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → ~~(9) P2-5 disproved~~ ✅ → ~~(10) P2-11 submit guards~~ ✅ → ~~(11) P2-6 discard path~~ ✅ → ~~(12) P2-7 accepted~~ 📌 → ~~(13) P2-10 delete confirmations~~ ✅ → (14) delete the 5 scratch docs; (15) public.
 
-Step 9 is the last mechanical item before publishing.
+Step 14 is the last mechanical item before publishing, and nothing in the code depends on it.
 
-**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed or disproved. What remains is: the P2 additions from the 2026-10-17 single-user audit, which are all *features the app never had* (P2-9 edit/delete paths across Business + Budget, P2-10 delete confirmations on 8 pages), plus P2-7 and the P3 tier. Those are release decisions, not blockers.
+**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed, disproved, or explicitly accepted. **Exactly one P2 remains: P2-9** — the missing Edit/Delete escape hatches in Business Jobs, Business Payables, Budget recurring rules, and Budget wallets/categories. That is new feature work (five sub-paths: repo methods, form state, and UI per module), not a defect, and it is a release decision rather than a blocker.
+
+Also still open, all cosmetic or hardening: P2-7 (accepted, documented above) and the 33 P3 notes.
 
 ### What the P1-1 fix does
 
@@ -174,6 +178,15 @@ Gate: **317/317** TS tests (311 → 317), 92/92 `cargo test`, clippy, fmt, build
 ### P2-7 — 170 `(§X)` plan-section refs in code comments across 37 files will dangle
 e.g. `(§2.9)`, `(§8)`, `(§5.4)` in `src/` and `src-tauri/src/`. Harmless at runtime; a public reader following "§2.9" finds nothing. Options: accept as historical, or strip in the cleanup pass.
 
+**Decision: accepted as historical. Not stripping.** The tradeoff was weighed against 170 mechanical edits in 37 files:
+
+- **What the refs actually are.** Nearly all of them are *provenance*, not navigation — `(§5.4)` on a line that explains the key-export audit trail records *which requirement that code answers to*. Deleting them removes the only trace of why a non-obvious line exists, in exactly the files whose comments are longest and most deliberate.
+- **The cost is not just churn.** 37 files rewritten for a cosmetic gain puts real review surface on a release-blocking change list, and a mechanical pass over comments is the easiest kind of edit to get subtly wrong — a mangled comment is worse than a dangling one.
+- **A public reader is not misled by them.** `(§2.9)` reads as "this came from a spec we no longer ship", which is true and harmless. It is not a broken link or a broken build; only the deleted `docs/PLAN.md` was ever a navigation target, and nothing links to it any more (P1-2…P1-7 ✅).
+- **Reversible later, cheaply.** If the section titles are ever wanted in public, they can be restored as a short `docs/SECTIONS.md` map, which would *resolve* the refs rather than erase the provenance.
+
+**If this is revisited, do it as its own commit** with no behavioural change in it, so it never rides along with a fix.
+
 ### P2-8 — `scripts/reset-session-memory.mjs` becomes dead once `docs/SESSION_MEMORY.md` is deleted — ✅ FIXED
 Delete the script **and** the `session:reset` / `memory:reset` entries in `package.json` (nothing else references it — not in the verify chain, not in `.githooks/pre-push`).
 
@@ -190,7 +203,7 @@ In single-person day-to-day use, a typo on an entry becomes permanent when a mod
 - **Budget Wallets & Categories (`BudgetPage.tsx:104-302`, `budget.ts:138-183`):** Wallets and income/expense categories can be added in `ManageView`, but cannot be renamed or deleted (when unused).
 - **Budget Transaction Kind Toggle (`BudgetPage.tsx:582-607`):** In `EntriesView`, the Income/Expense toggle buttons are disabled while editing (`disabled={editing !== null}`), forcing delete + re-create if an expense was accidentally logged as income.
 
-### P2-10 — Destructive deletes execute in one click with no confirmation (2026-10-17 audit)
+### P2-10 — Destructive deletes execute in one click with no confirmation — ✅ FIXED
 **`src/pages/VaultPage.tsx:221-232`, `src/pages/ShoppingPage.tsx:236-242`, `src/pages/HabitsPage.tsx:101-108`, `src/pages/LoansPage.tsx:99-107`, `src/pages/NotesPage.tsx:512-522`, `src/pages/JournalPage.tsx:177-191`, `src/pages/ContactsPage.tsx:163-172`, `src/pages/GalleryPage.tsx:275-291`**
 Because the app has no Trash or Undo, a single misclick permanently wipes user data across:
 - **Vault secrets (`VaultPage.tsx:221-232`)** — `removeItem` immediately deletes the encrypted secret row.
@@ -199,6 +212,31 @@ Because the app has no Trash or Undo, a single misclick permanently wipes user d
 - **Loans (`LoansPage.tsx:99-107`)** — `remove` deletes an active loan with an unpaid balance in one click.
 - **Notes, Journal entries, Contacts, and Gallery photos.**
 Fix: require a two-step inline confirmation (e.g. `Delete` → `Confirm delete` / `Cancel`, matching the backup-restore confirmation pattern in `SettingsPage.tsx`) before running destructive deletes.
+
+**Fixed — and the finding's page list was incomplete.** The rule was applied as a rule, not as a list, because half-confirming is worse than not confirming: a user cannot tell which deletes are safe. **`BudgetPage`, `BusinessPage`, `MemoriesPage` and `TasksPage` have the same one-click deletes** (budget entry, spending limit, shop, memory, task, reminder) and were not on the list. **17 confirm controls across 12 pages** now guard every destructive action:
+
+| Page | Confirmed deletes |
+|---|---|
+| Vault | secret · Loans: loan |
+| Shopping | list **and its items** · item |
+| Habits | habit **and its streak history** |
+| Notes | note · collection |
+| Journal | journal entry (named with its date) |
+| Contacts | contact · channel |
+| Gallery | photo |
+| Budget | income/expense entry · spending limit |
+| Business | shop |
+| Memories | memory |
+| Tasks | task · reminder |
+
+- **`ConfirmButton`** (`src/components/ConfirmButton.tsx`) renders the ordinary button until clicked, then offers `Delete <what>` and `Cancel` in its place — the `SettingsPage` backup-restore shape, so the app has exactly one way to ask for a deletion. The confirm button **names its consequence** ("Delete habit *Drinks* and its streak history", "Delete list *Groceries* and its items"), because a second "Delete" under a row of tabs confirms nothing.
+- **The gate is pure and unit-tested** (`src/lib/confirm.ts`, 8 tests). Three properties, each for a specific failure: `arm` is a **no-op while running** (a second click during a slow delete must not queue another — the row it acts on may have changed underneath it); `settle` **always** returns to idle including on failure (an armed button after an error report puts the retry one misclick away — the same accident, reached honestly); `cancel` is refused while running.
+- **It also closes the double-click half.** `onConfirm` is awaited, so the button is disabled for the length of the write — the P2-11 problem, on the one class of action where a duplicate is unrecoverable.
+- **Two deliberate exemptions**, both stated in the test: `galleryRepo.removeRef` (unlinks a note from a photo — both records survive) and `contactsRepo.removeTag` (removes one tag from one contact, `WHERE contact_id = ? AND tag = ?`, beside the add-tag form). Neither destroys data, and a confirm on a chip next to its own add-form is friction without safety.
+
+**Regression-pinning the rule itself** (`src/pages/delete-guards.test.ts`, 6 tests): every destructive repo call in `src/pages` is located, attributed to its enclosing handler, and required to be unreachable from an `onClick` — the exact shape the finding described. Plus a floor on the number of confirm controls (so "someone removed the confirms" fails even if every handler is still referenced), a check that `onConfirm` bodies never call a destructive method directly, and two self-checks on the scanner itself, because a scanner that silently matches nothing would pass the whole file vacuously. **Mutation-checked**: reverting `VaultPage` to a bare `onClick` fails three of them with the right messages.
+
+Gate: **332/332** TS tests (317 → 332), 93/93 `cargo test`, clippy, fmt, build.
 
 ### P2-11 — Rapid double-click on payment / repayment / create buttons books duplicate financial entries (2026-10-17 audit)
 **`src/pages/BusinessPage.tsx:370-411, 726-757` · `src/pages/LoansPage.tsx:66-97`**

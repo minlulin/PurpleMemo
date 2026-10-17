@@ -3,6 +3,7 @@
 // month-day). Talks only to the contacts repo from the composition root (§4).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconCalendar,
@@ -391,13 +392,13 @@ export default function ContactsPage() {
                   >
                     <IconEdit className="icon" /> Save
                   </button>
-                  <button
-                    type="button"
+                  <ConfirmButton
                     className="btn btn-danger"
-                    onClick={() => void removeContact(selectedContact.id)}
+                    what={`contact ${selectedContact.name}`}
+                    onConfirm={() => removeContact(selectedContact.id)}
                   >
                     <IconTrash className="icon" /> Delete contact
-                  </button>
+                  </ConfirmButton>
                 </div>
               </div>
 
@@ -519,13 +520,13 @@ export default function ContactsPage() {
                               Make primary
                             </button>
                           )}
-                          <button
-                            type="button"
+                          <ConfirmButton
                             className="btn btn-ghost"
-                            onClick={() => void removeChannel(ch.id)}
+                            what={`channel ${ch.kind}`}
+                            onConfirm={() => removeChannel(ch.id)}
                           >
                             Delete
-                          </button>
+                          </ConfirmButton>
                         </span>
                       </li>
                     ))}

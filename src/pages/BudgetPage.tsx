@@ -3,6 +3,7 @@
 // Talks only to the budget repo (§4).
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconBudget,
@@ -621,13 +622,13 @@ function EntriesView() {
                       >
                         Edit
                       </button>
-                      <button
-                        type="button"
+                      <ConfirmButton
                         className="btn btn-ghost"
-                        onClick={() => void remove(e)}
+                        what={`${e.kind} entry`}
+                        onConfirm={() => remove(e)}
                       >
                         Delete
-                      </button>
+                      </ConfirmButton>
                     </span>
                   </div>
                 </li>
@@ -1294,13 +1295,13 @@ function LimitsView() {
                     Set limit
                   </button>
                   {r.limitCents !== null ? (
-                    <button
-                      type="button"
+                    <ConfirmButton
                       className="btn btn-ghost"
-                      onClick={() => void removeLimit(r.categoryId)}
+                      what={`spending limit for ${r.name}`}
+                      onConfirm={() => removeLimit(r.categoryId)}
                     >
                       Remove
-                    </button>
+                    </ConfirmButton>
                   ) : null}
                 </span>
               </li>

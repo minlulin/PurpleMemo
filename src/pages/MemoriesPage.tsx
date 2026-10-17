@@ -4,6 +4,7 @@
 // birthdays join On-this-day. Talks only to the memories + contacts repos.
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconCalendar,
@@ -131,13 +132,13 @@ function MemoryList(p: MemoryListProps) {
             >
               Edit
             </button>
-            <button
-              type="button"
+            <ConfirmButton
               className="btn btn-ghost"
-              onClick={() => p.onDelete(m)}
+              what="memory"
+              onConfirm={() => p.onDelete(m)}
             >
               Delete
-            </button>
+            </ConfirmButton>
           </span>
         </li>
       ))}

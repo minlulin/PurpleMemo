@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import {
   IconCalendar,
   IconChevronLeft,
@@ -344,13 +345,13 @@ export default function JournalPage() {
           >
             {saving ? "Saving…" : "Save entry"}
           </button>
-          <button
-            type="button"
+          <ConfirmButton
             className="btn btn-danger"
-            onClick={() => void handleDelete()}
+            what={`journal entry for ${activeDate}`}
+            onConfirm={() => handleDelete()}
           >
             Delete
-          </button>
+          </ConfirmButton>
         </div>
 
         {error !== null && (

@@ -5,6 +5,7 @@
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconEye,
@@ -227,9 +228,13 @@ function NoteEditor(p: EditorProps) {
         <span className="editor-word-count" aria-live="polite">
           {words} {words === 1 ? "word" : "words"}
         </span>
-        <button type="button" className="btn btn-danger" onClick={p.onDelete}>
+        <ConfirmButton
+          className="btn btn-danger"
+          what="note"
+          onConfirm={p.onDelete}
+        >
           Delete
-        </button>
+        </ConfirmButton>
       </div>
     </>
   );
@@ -678,14 +683,14 @@ export default function NotesPage() {
               >
                 <span>{c.name}</span>
               </button>
-              <button
-                type="button"
+              <ConfirmButton
                 className="side-remove"
+                what={`collection “${c.name}”`}
                 aria-label={`Delete collection ${c.name}`}
-                onClick={() => void handleDeleteCollection(c.id)}
+                onConfirm={() => handleDeleteCollection(c.id)}
               >
                 ×
-              </button>
+              </ConfirmButton>
             </li>
           ))}
         </ul>

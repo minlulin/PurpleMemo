@@ -4,6 +4,7 @@
 // only; P3f adds the app-wide auto-lock on top of the repo's lockVault.
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconLock, IconVault } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -501,13 +502,13 @@ export default function VaultPage() {
                     >
                       Edit
                     </button>
-                    <button
-                      type="button"
+                    <ConfirmButton
                       className="btn btn-ghost"
-                      onClick={() => void removeItem(item.id)}
+                      what="secret"
+                      onConfirm={() => removeItem(item.id)}
                     >
                       Delete
-                    </button>
+                    </ConfirmButton>
                   </span>
                 </li>
               ))}

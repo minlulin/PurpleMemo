@@ -2,6 +2,7 @@
 // Talks only to the business + budget repos (§4).
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconBusiness, IconCalendar } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -294,13 +295,13 @@ function ShopsView() {
                           >
                             Edit
                           </button>
-                          <button
-                            type="button"
+                          <ConfirmButton
                             className="btn btn-ghost"
-                            onClick={() => void removeShop(s.id)}
+                            what={`shop ${s.name}`}
+                            onConfirm={() => removeShop(s.id)}
                           >
                             Delete
-                          </button>
+                          </ConfirmButton>
                         </>
                       ) : null}
                     </span>

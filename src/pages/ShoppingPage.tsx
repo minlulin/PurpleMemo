@@ -3,6 +3,7 @@
 // (reorderItems batch).
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconPlus, IconShopping } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -226,14 +227,16 @@ export default function ShoppingPage() {
                 >
                   {l.name}
                 </button>
-                <button
-                  type="button"
+                {/* This `×` sits directly beside the list-selection tab, and it
+                    takes every item in the list with it (review P2-10). */}
+                <ConfirmButton
                   className="btn btn-ghost"
+                  what={`list “${l.name}” and its items`}
                   aria-label={`Delete list ${l.name}`}
-                  onClick={() => void removeList(l.id)}
+                  onConfirm={() => removeList(l.id)}
                 >
                   ×
-                </button>
+                </ConfirmButton>
               </span>
             ))}
           </div>
@@ -323,13 +326,13 @@ export default function ShoppingPage() {
                         >
                           ▼
                         </button>
-                        <button
-                          type="button"
+                        <ConfirmButton
                           className="btn btn-ghost"
-                          onClick={() => void removeItem(item.id)}
+                          what="item"
+                          onConfirm={() => removeItem(item.id)}
                         >
                           Delete
-                        </button>
+                        </ConfirmButton>
                       </span>
                     </li>
                   ))}

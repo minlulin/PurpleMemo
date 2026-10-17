@@ -11,6 +11,7 @@
 // only ever reads thumbs.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { Dialog } from "../components/Dialog.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
@@ -428,13 +429,13 @@ export default function GalleryPage() {
               Photo Inspector
             </h3>
             <div className="editor-row">
-              <button
-                type="button"
+              <ConfirmButton
                 className="btn btn-danger"
-                onClick={() => void removePhoto(selected)}
+                what="photo"
+                onConfirm={() => removePhoto(selected)}
               >
                 <IconTrash className="icon" /> Delete photo
-              </button>
+              </ConfirmButton>
               <button
                 type="button"
                 className="btn btn-icon"
