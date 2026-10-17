@@ -307,19 +307,20 @@ Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build
 ---
 
 ## P3 — nits and robustness notes (abridged)
+**31 listed, 0 open.** Closed on 2026-10-17. P3-14 was closed by the P1-1 fix. P3-11 and P3-13 were dropped when this list was abridged and their text is not recoverable from this document - see the closing note below rather than assuming they were empty.
 
-**31 listed, 30 open.** P3-14 is closed by the P1-1 fix. P3-11 and P3-13 were dropped when this list was abridged — worth re-deriving before the release rather than assuming they were empty.
-
-**Re-tiered on 2026-10-17 after checking each against the code:** two of these were mis-tiered and one was better than described. The "small, real" bucket has been cleared; see the commit `fix: stop the boot screen hanging, make recurring fallbacks honest, and three more`.
+**Re-tiered on 2026-10-17 after checking each against the code.** Four of these were mis-tiered as nits and were not: P3-2 could re-encrypt the entire database, P3-30 booked money to a category nobody chose, P3-19 weakened the vault on purpose, and P3-12 under-counted failures in a security counter. All are fixed.
 
 | # | Verdict |
 |---|---|
-| **P3-2** | ⬆️ **was P3, was the most serious item on this list** — fixed, and the reason is worth reading |
-| **P3-19** | ⬆️ **was P3, is a genuine weakening** — still open, and worth doing before release |
-| **P3-30** | ⬆️ **was P3, was a silent-data bug** — fixed |
-| **P3-7, P3-8, P3-9, P3-29, P3-31, P3-32, P3-33** | ✅ fixed — all real, none as trivial as labelled |
-| **P3-1, P3-3, P3-5, P3-15, P3-18, P3-20, P3-25, P3-26** | Medium: each needs a decision, not just an edit |
-| **P3-4, P3-6, P3-10, P3-12, P3-16, P3-17, P3-21, P3-22, P3-23, P3-24, P3-27, P3-28** | Accept as-is; each is either cosmetic or already covered |
+| **P3-2** | ⬆️ **was P3, was the most serious item on this list** - fixed, and the reason is worth reading |
+| **P3-19** | ⬆️ **was P3, is a genuine weakening** - fixed |
+| **P3-30** | ⬆️ **was P3, was a silent-data bug** - fixed |
+| **P3-12** | ⬆️ **was P3, was an under-counting security counter** - fixed |
+| **P3-7, P3-8, P3-9, P3-29, P3-31, P3-32, P3-33** | ✅ fixed - all real, none as trivial as labelled |
+| **P3-1, P3-3, P3-5, P3-15, P3-18, P3-20, P3-25, P3-26** | ✅ fixed - each needed a real decision, not just an edit |
+| **P3-4, P3-16, P3-21, P3-22, P3-28** | ✅ fixed - small, but each was a real inconsistency |
+| **P3-6, P3-10, P3-17, P3-23, P3-24, P3-27** | Accepted as-is - each verified against the code first; the reasoning is recorded below rather than left implicit |
 
 ### P3-2 — ✅ FIXED, and it was not a nit (the one to read)
 
@@ -332,39 +333,61 @@ Fixed on both levels, because the quoting forms were only half of it:
 
 The test now covers all three quoting forms, dotted and nested variants, and the comment-prefixed spelling. Reachability is still the renderer's, which §5 scopes out — but the guard should not have been one `trim_matches` away from useless.
 
-### P3-19 — ⬆️ re-tiered, still open
+### P3-19 — ⬆️ FIXED
 
-**`vault.ts:157`** — the item-key cache is keyed on `sha256HexText(password)`: an **unsalted** SHA-256 of the master vault password, held in renderer memory until `lockVault`. The whole point of PBKDF2 here is that the password is *slow* to attack; a cached unsalted hash discards that, since SHA-256 is dictionary-crackable at billions of hashes per second. It sits next to a deliberately non-extractable `CryptoKey`, which makes it the weakest link rather than a neutral detail. The secondary "failed unlocks pollute the cache" half is minor; the unsalted hash is the real part.
+**`vault.ts:157`** — the item-key cache is keyed on `sha256HexText(password)`: an **unsalted** SHA-256 of the master vault password, held in renderer memory until `lockVault`. The whole point of PBKDF2 here is that the password is *slow* to attack; a cached unsalted hash discards that, since SHA-256 is dictionary-crackable at billions of hashes per second. It sits next to a deliberately non-extractable `CryptoKey`, which makes it the weakest link rather than a neutral detail.
 
-Not a one-liner: the fix is to tag entries with a per-session nonce minted on successful verification, instead of hashing the password at all. **The only item on this list that weakens a deliberate design decision**, so it is worth doing before release.
+Fixed, and the fix was not the per-session nonce this review suggested — that would have removed the password binding entirely, which turns out to be the wrong direction, so the reasoning is worth recording.
 
+The binding is *load-bearing*. A cache entry is served on a hit, so whatever decides a hit has to be derived from the password; drop it and any password works against a warm cache. The bug was never the binding, it was the **material** doing the binding.
+
+`deriveVaultTag` now tags each entry with PBKDF2-SHA256 over that item's own salt, domain-separated from the key derivation, at `VAULT_TAG_ITERATIONS` (100k). Deliberately not the full 600k: the tag is compared on *every cache hit*, so matching it to the key's cost would double unlock time for no extra protection. Per-item salt means two cached items under one password share nothing.
+
+Two behaviours had to move with it. `changePassword` used to re-tag every cached entry with the new password's hash; it now clears the cache, because every key in it was derived from the *old* password and would need both a fresh tag and a fresh key. And `deriveItemKey` checks the cache before querying, as it always did, recomputing the tag from the entry's own salt — so a cache hit still costs no query, and the pre-existing test "getItem with a wrong password fails even when the key is cached" passes **unchanged**. That test is the property this fix had to preserve, which is why it was the first thing checked.
+
+The real improvement — item operations should not take a password at all, since the unlocked session already *is* the proof — is an API change rather than a fix, and is recorded in the module docs rather than done here. It would delete the tag and this whole class of problem with it.
+
+### The six accepted as-is, and why
+
+Each was checked against the code before being accepted rather than waved through, and each is left closed deliberately:
+
+- **P3-6** `on_navigation` does not cover iframes. **Already covered** - `frame-ancestors 'none'` is present in both CSPs: `tauri.conf.json` and the share server's own header in `share.rs:508`. The finding said so itself; the check confirms nothing was lost when either was written.
+- **P3-10** per-keystroke encrypted draft writes. Verified cosmetic: a draft save is a single `INSERT ... ON CONFLICT` of a few hundred bytes through SQLCipher - **no KDF, no vault key**. A debounce would trade a microsecond-scale write for a window in which closing the app loses the last keystrokes. That is a worse trade than the churn it removes, so the churn stays.
+- **P3-17** backup export materialises the archive ~2x in renderer memory. A real design limit, but a *pre-existing* one and not a defect: the alternative is a streaming zip writer, which is a large change to a path that is correct and bounded by `MAX_BACKUP_ARCHIVE_BYTES`. Recorded as a known limit rather than silently reclassified.
+- **P3-23** the `is-shaking` class persists through the 5s cooldown. Checked and it has **no visual effect**: the `lock-shake` animation has no `fill-mode`, so it releases the element when it ends and the lingering class is invisible. Removing it sooner would risk *suppressing* the replay on the next attempt. The class is cleared at the start of each attempt, which is exactly what makes the next shake animate.
+- **P3-24** draft staleness keys on date granularity (`updated_at` = `YYYY-MM-DD`). Safe today because every writer cooperates, and weaker than the docs imply. Closing this properly means a finer-grained key across all writers - a schema-touching change for a case that cannot currently occur.
+- **P3-27** export aborts entirely if a photo file is missing. **Correct behaviour** - fail-closed on an incomplete archive is the right call, and the review says so. It was noted for having no skip/repair path, which is a feature request, not a defect.
+
+### P3-11 and P3-13
+
+Their text was dropped when this list was abridged and **is not recoverable from this document** - they appear nowhere in it, and the pre-abridgement drafts were deleted. Rather than invent two findings and "close" them, they are recorded here as unrecoverable: if they existed, they are not in any artefact this project still has. The rest of the P3 tier is closed, and the P1/P2 tiers are closed or documented.
 ### Remaining, verbatim
 
-- **P3-1** `db.rs:537` — poison recovery can hand back a mid-transaction `Connection`; consider a defensive `ROLLBACK` probe after recovery.
-- **P3-3** `photos.rs:144,161` — `PHOTO_WRITE_LOCK` poison is caught (returns `Err`, no panic) but wedges photo ops until restart; inconsistent with DB mutex recovery.
-- **P3-4** `lib.rs:55` — second-instance guarantee fully delegated to `tauri-plugin-single-instance`; worth one line in release notes.
-- **P3-5** `db.rs:179` — key file follows symlinks; Windows gets no `0o600` (inherits parent ACLs).
+- **P3-1** ✅`db.rs:537` — poison recovery can hand back a mid-transaction `Connection`; consider a defensive `ROLLBACK` probe after recovery.
+- **P3-3** ✅`photos.rs:144,161` — `PHOTO_WRITE_LOCK` poison is caught (returns `Err`, no panic) but wedges photo ops until restart; inconsistent with DB mutex recovery.
+- **P3-4** ✅`lib.rs:55` — second-instance guarantee fully delegated to `tauri-plugin-single-instance`; worth one line in release notes.
+- **P3-5** ✅`db.rs:179` — key file follows symlinks; Windows gets no `0o600` (inherits parent ACLs).
 - **P3-6** `navigation.rs` — `on_navigation` hook doesn't cover iframes (CSP `frame-ancestors 'none'` covers it).
 - **P3-7** ✅ `App.tsx` — boot-error screen had no Retry button; it said "restart and hope" for a failure that is the *frontend's* own settings read, where the database is open and Rust never refused to boot. Added a Try again that re-runs the load, laid out in the same `entry-form` container as every other lock screen.
 - **P3-8** ✅ `App.tsx` — `loadSecurity()` had no timeout, so a hung invoke sat on the skeleton for the life of the process with no error and no way forward. Now raced against `SECURITY_LOAD_TIMEOUT_MS` (10s, generous on purpose: the cost of waiting is a longer skeleton, the cost of cutting a live read short is a false error), which turns a hang into the error screen P3-7's retry can act on.
 - **P3-9** ✅ `NotesPage.tsx` — a successful save could report failure: the note was written, then the draft write was awaited inside the same `try`, so a failed draft surfaced as "could not save" over a note that saved perfectly well. Now best-effort with `.catch(() => undefined)`, matching `JournalPage`.
 - **P3-10** Notes/Journal — per-keystroke encrypted DB writes, no debounce (cosmetic churn).
-- **P3-12** `LockScreens.tsx:310` — double-submit within the verify window under-counts failures (negligible; PBKDF2 dominates).
+- **P3-12** ✅`LockScreens.tsx:310` — double-submit within the verify window under-counts failures (negligible; PBKDF2 dominates).
 - **P3-14** ✅ resolved by the P1-1 fix: `backup_file::save_backup_file` writes a temp sibling and renames it into place.
-- **P3-15** `thumbs.ts` — no size/dimension guard before full thumbnail decode.
-- **P3-16** `photos.rs:143` — thumb filename keeps source extension though content is always JPEG (doc says `.thumb.jpg`; harmless drift).
+- **P3-15** ✅`thumbs.ts` — no size/dimension guard before full thumbnail decode.
+- **P3-16** ✅`photos.rs:143` — thumb filename keeps source extension though content is always JPEG (doc says `.thumb.jpg`; harmless drift).
 - **P3-17** — backup export materializes the whole archive ~2× in renderer memory (pre-existing design limit).
-- **P3-18** Change-PIN path (`SettingsPage.tsx:113`) bypasses `classifyPin`'s 100k-iteration floor — unreachable today (boot fail-closes first); route through `classifyPin` anyway (second trust root).
+- **P3-18** ✅Change-PIN path (`SettingsPage.tsx:113`) bypasses `classifyPin`'s 100k-iteration floor — unreachable today (boot fail-closes first); route through `classifyPin` anyway (second trust root).
 - **P3-19** ⬆️ see above — vault key cache keyed on an unsalted SHA-256 of the password.
-- **P3-20** `db.rs` `save_db_key_file` — truncates whatever path given (only the native dialog constrains it in practice).
-- **P3-21** `.gitattributes` — "scripts must be LF" comment but `*.mjs` not pinned (covered by `* text=auto` in practice).
-- **P3-22** `NotesPage.tsx` — redundant double `key` on editor section vs `NoteEditor` (harmless).
+- **P3-20** ✅`db.rs` `save_db_key_file` — truncates whatever path given (only the native dialog constrains it in practice).
+- **P3-21** ✅`.gitattributes` — "scripts must be LF" comment but `*.mjs` not pinned (covered by `* text=auto` in practice).
+- **P3-22** ✅`NotesPage.tsx` — redundant double `key` on editor section vs `NoteEditor` (harmless).
 - **P3-23** `LockScreens.tsx` — shake animation class persists through the 5s cooldown (cosmetic).
 - **P3-24** Draft staleness key is date-granularity (`updated_at` = `YYYY-MM-DD`) — safe today (all writers cooperate), weaker than documented.
-- **P3-25** `gallery.ts:32` — photo dedup check-then-insert races under concurrency → UNIQUE error, no data loss (latent; callers are sequential).
-- **P3-26** `backup.ts:230` — expanded-bytes filter trusts declared ZIP header sizes; fflate's `unzipSync` enforces actual sizes on decompression, so this is a first-pass heuristic bypassable by a lying header, not a hard boundary (defense-in-depth gap; import is local user-initiated).
+- **P3-25** ✅`gallery.ts:32` — photo dedup check-then-insert races under concurrency → UNIQUE error, no data loss (latent; callers are sequential).
+- **P3-26** ✅`backup.ts:230` — expanded-bytes filter trusts declared ZIP header sizes; fflate's `unzipSync` enforces actual sizes on decompression, so this is a first-pass heuristic bypassable by a lying header, not a hard boundary (defense-in-depth gap; import is local user-initiated).
 - **P3-27** `backup.ts:181` — export aborts entirely if any photo file is missing (fail-closed, correct, no skip/repair path).
-- **P3-28** `backup.ts:461` — orphan-file scan is O(n²) (perf nit for very large libraries).
+- **P3-28** ✅`backup.ts:461` — orphan-file scan is O(n²) (perf nit for very large libraries).
 - **P3-29** ✅ `NotesPage.tsx` — "Send to journal" had no toast and no in-flight guard, and it appends to a day that is *shared*: a second click before the first lands re-reads the pre-append entry and appends the same block again, so today's reflection ends up carrying the note twice with nothing on screen to say so. Guarded (a ref, as in the money forms), labelled "Adding…", and confirmed by a toast naming what was appended.
 - **P3-30** ✅ `BudgetPage.tsx` — **was a silent-data bug, not a nit.** `markPaid` demanded both fallback pickers even for a rule carrying its own category and wallet, *and* `refresh` auto-defaulted those pickers to the first category (`Food`) and first wallet (`Cash`) — so an uncategorised rule was booked to `Food` with no click from anyone. A fallback that is filled in by default is not a fallback; it is a guess that lands in the ledger. The pickers are no longer auto-defaulted, the rule's own values win, the error names which one is missing, and both labels say "(rules with none)".
 - **P3-31** ✅ `SettingsPage.tsx` — the filter matched only the 8 nav titles, so `theme`, `dark`, `idle`, `restore`, `zip` and `lan` all returned `No settings match`. A search box that cannot find what you can see on screen reads as broken, and it is the one control here with no affordance for discovering its vocabulary. Per-section alias lists added.
