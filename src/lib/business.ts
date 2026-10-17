@@ -5,6 +5,7 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { addDays, todayLocal } from "./dates.ts";
+import { deleteLinkedEntity } from "./gallery.ts";
 import { applyPayment, formatMMK, outstandingCents } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import type { JobRow, JobStatus, PayableRow, ShopRow } from "./types.ts";
@@ -262,6 +263,89 @@ export function createBusinessRepo(driver: DataDriver) {
       return rows[0];
     },
 
+    /**
+     * Partial update for a job (review P2-9). `undefined` leaves a column
+     * alone; an explicit `null` clears a nullable one.
+     *
+     * Two things are not left to the caller, because both would silently
+     * corrupt the money:
+     *
+     * 1. **`total_cents` may not drop below what has already been paid.** The
+     *    schema only checks `total_cents > 0`, so a lower total would leave
+     *    `paid_cents > total_cents` and `remaining_cents` — the number on the
+     *    Dashboard and every customer voucher — would go negative. Refused with
+     *    a message rather than clamped: a clamp would make the books agree with
+     *    themselves and lie about the job.
+     * 2. **`status` is recomputed from the new total.** It is a stored column
+     *    with no trigger, so editing a total without recomputing would leave a
+     *    fully-paid job sitting in the open list, or a paid one still owing.
+     */
+    async updateJob(id: number, fields: Partial<JobInput>): Promise<void> {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (fields.title !== undefined) {
+        sets.push("title = ?");
+        params.push(fields.title);
+      }
+      if (fields.shopId !== undefined) {
+        sets.push("shop_id = ?");
+        params.push(fields.shopId);
+      }
+      if (fields.warrantyDays !== undefined) {
+        sets.push("warranty_days = ?");
+        params.push(fields.warrantyDays);
+      }
+      if (fields.jobDate !== undefined) {
+        sets.push("job_date = ?");
+        params.push(fields.jobDate);
+      }
+      if (fields.note !== undefined) {
+        sets.push("note = ?");
+        params.push(fields.note);
+      }
+      if (fields.totalCents !== undefined) {
+        if (fields.totalCents <= 0) {
+          throw new Error("A job total must be greater than zero.");
+        }
+        const job = await this.getJob(id);
+        if (!job) throw new Error(`job ${id} not found`);
+        if (fields.totalCents < job.paid_cents) {
+          throw new Error(
+            `This job has already been paid ${formatMMK(job.paid_cents)}, so its total cannot be lowered below that.`,
+          );
+        }
+        sets.push("total_cents = ?");
+        params.push(fields.totalCents);
+        // Keep the stored status in step with the new total.
+        sets.push("status = ?");
+        params.push(job.paid_cents >= fields.totalCents ? "paid" : "open");
+      }
+      if (sets.length === 0) return;
+      params.push(id);
+      await driver.execute(
+        `UPDATE jobs SET ${sets.join(", ")} WHERE id = ?`,
+        params,
+      );
+    },
+
+    /**
+     * Delete a job (review P2-9). The escape hatch a test job or a mistyped
+     * entry needs — without it a job is permanent and inflates Total Receivable
+     * forever.
+     *
+     * Its photo links go with it: `photo_refs` cascades on `photo_id` but has
+     * nothing to cascade its polymorphic `(entity_type, entity_id)` pair, so
+     * the same helper every note and memory delete uses applies here.
+     *
+     * **Income entries it produced are deliberately left alone.** Cash basis
+     * (§2.1): the money was received, and it is in the Budget as income. Removing
+     * the job does not un-receive it. Those rows keep the job's title in their
+     * note as a historical record.
+     */
+    async deleteJob(id: number): Promise<void> {
+      await driver.batch(deleteLinkedEntity("job", id));
+    },
+
     async listJobs(status?: JobStatus): Promise<JobRow[]> {
       return status
         ? driver.query<JobRow>(
@@ -380,6 +464,73 @@ export function createBusinessRepo(driver: DataDriver) {
         ],
       );
       return r.lastInsertRowid;
+    },
+
+    /**
+     * Partial update for a payable (review P2-9). `undefined` leaves a column
+     * alone; an explicit `null` clears a nullable one.
+     *
+     * The amount may not change once the payable is paid. `markPayablePaid`
+     * booked the expense entry at that moment, so a later amount edit would
+     * leave the Budget and the payable disagreeing with no way to tell which is
+     * right — and the Budget is where the money actually is. Everything else
+     * (title, supplier, due date, note) stays editable.
+     */
+    async updatePayable(
+      id: number,
+      fields: Partial<PayableInput>,
+    ): Promise<void> {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (fields.title !== undefined) {
+        sets.push("title = ?");
+        params.push(fields.title);
+      }
+      if (fields.shopId !== undefined) {
+        sets.push("shop_id = ?");
+        params.push(fields.shopId);
+      }
+      if (fields.dueDate !== undefined) {
+        sets.push("due_date = ?");
+        params.push(fields.dueDate);
+      }
+      if (fields.note !== undefined) {
+        sets.push("note = ?");
+        params.push(fields.note);
+      }
+      if (fields.amountCents !== undefined) {
+        if (fields.amountCents <= 0) {
+          throw new Error("A payable amount must be greater than zero.");
+        }
+        const rows = await driver.query<PayableRow>(
+          "SELECT paid FROM payables WHERE id = ?",
+          [id],
+        );
+        if (rows[0]?.paid === 1) {
+          throw new Error(
+            "This payable is already paid, and its amount is recorded in the Budget as an expense. Change that expense entry instead.",
+          );
+        }
+        sets.push("amount_cents = ?");
+        params.push(fields.amountCents);
+      }
+      if (sets.length === 0) return;
+      params.push(id);
+      await driver.execute(
+        `UPDATE payables SET ${sets.join(", ")} WHERE id = ?`,
+        params,
+      );
+    },
+
+    /**
+     * Delete a payable (review P2-9) — the escape hatch for a typo or a
+     * duplicate. No photo links to clear (`entity_type` is note/memory/job).
+     *
+     * A paid payable's expense entry is left in the Budget, for the same
+     * cash-basis reason a job's income entries are (§2.1).
+     */
+    async deletePayable(id: number): Promise<void> {
+      await driver.execute("DELETE FROM payables WHERE id = ?", [id]);
     },
 
     /**

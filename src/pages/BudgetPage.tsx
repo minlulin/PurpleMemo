@@ -187,6 +187,131 @@ function ManageView() {
     await refresh();
   };
 
+  /**
+   * Rename / delete, for wallets and both kinds of category (review P2-9).
+   *
+   * Rename is always safe — entries reference the row by id, so every past
+   * entry simply starts showing the new name. Delete is only offered while a
+   * row is unused, and the repo refuses it otherwise with a count, so the
+   * button explains itself before it is clicked rather than only in the error
+   * afterwards. `editing`/`draft` is one pair for all three lists: they are the
+   * same operation on three tables, and three copies of an inline rename form
+   * is three places for them to drift.
+   */
+  const [editing, setEditing] = useState<{
+    kind: "wallet" | "expense" | "income";
+    id: number;
+    name: string;
+  } | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startRename = (
+    kind: "wallet" | "expense" | "income",
+    id: number,
+    name: string,
+  ) => {
+    setEditing({ kind, id, name });
+    setDraft(name);
+    setError(null);
+  };
+
+  const saveRename = async () => {
+    if (editing === null) return;
+    const name = cleanName(draft);
+    if (!name) return;
+    try {
+      if (editing.kind === "wallet") {
+        await budgetRepo.renameWallet(editing.id, name);
+      } else if (editing.kind === "expense") {
+        await budgetRepo.renameExpenseCategory(editing.id, name);
+      } else {
+        await budgetRepo.renameIncomeCategory(editing.id, name);
+      }
+      setEditing(null);
+      setDraft("");
+      await refresh();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const removeRow = async (
+    kind: "wallet" | "expense" | "income",
+    id: number,
+  ) => {
+    try {
+      if (kind === "wallet") {
+        await budgetRepo.deleteWallet(id);
+      } else if (kind === "expense") {
+        await budgetRepo.deleteExpenseCategory(id);
+      } else {
+        await budgetRepo.deleteIncomeCategory(id);
+      }
+      if (editing?.id === id) setEditing(null);
+      await refresh();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  /** The rename input + its controls, shared by all three lists. */
+  const renameControls = (kind: "wallet" | "expense" | "income", id: number) =>
+    editing?.kind === kind && editing.id === id ? (
+      <span className="inline-form">
+        <input
+          aria-label={`New name for ${kind} ${id}`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!cleanName(draft)}
+          onClick={() => void saveRename()}
+        >
+          Save name
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => setEditing(null)}
+        >
+          Cancel
+        </button>
+      </span>
+    ) : (
+      <span className="row-actions">
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => {
+            const row =
+              kind === "wallet"
+                ? wallets.find((w) => w.id === id)
+                : kind === "expense"
+                  ? expenseCats.find((c) => c.id === id)
+                  : incomeCats.find((c) => c.id === id);
+            startRename(kind, id, row?.name ?? "");
+          }}
+        >
+          Rename
+        </button>
+        <ConfirmButton
+          className="btn btn-ghost"
+          what={`${kind} “${
+            kind === "wallet"
+              ? (wallets.find((w) => w.id === id)?.name ?? "")
+              : kind === "expense"
+                ? (expenseCats.find((c) => c.id === id)?.name ?? "")
+                : (incomeCats.find((c) => c.id === id)?.name ?? "")
+          }”`}
+          onConfirm={() => removeRow(kind, id)}
+        >
+          Delete
+        </ConfirmButton>
+      </span>
+    );
+
   return (
     <section
       className="budget-manage"
@@ -221,6 +346,7 @@ function ManageView() {
                 <span className="wallet-card-balance figure amount-large">
                   {formatMMK(balances.get(w.id) ?? 0)}
                 </span>
+                {renameControls("wallet", w.id)}
               </div>
             ))}
           </div>
@@ -262,6 +388,7 @@ function ManageView() {
                 <li key={c.id} className="budget-row">
                   <span>{c.name}</span>
                   <span className="badge">Expense</span>
+                  {renameControls("expense", c.id)}
                 </li>
               ))}
             </ul>
@@ -302,6 +429,7 @@ function ManageView() {
                 <li key={c.id} className="budget-row">
                   <span>{c.name}</span>
                   <span className="badge badge-success">Income</span>
+                  {renameControls("income", c.id)}
                 </li>
               ))}
             </ul>
@@ -468,7 +596,14 @@ function EntriesView() {
         note: note.trim(),
       };
       if (editing) {
-        if (editing.kind === "income") {
+        if (editing.kind !== kind) {
+          // The toggle is enabled while editing (review P2-9), so this is the
+          // branch it exists for: the entry moves between the two tables in one
+          // transaction, carrying its amount, date and note. Previously the
+          // buttons were disabled here and the only way out was delete + retype,
+          // which quietly lost the note and date.
+          await budgetRepo.convertEntry(editing.kind, editing.id, input);
+        } else if (editing.kind === "income") {
           await budgetRepo.updateIncomeEntry(editing.id, input);
         } else {
           await budgetRepo.updateExpenseEntry(editing.id, input);
@@ -650,11 +785,15 @@ function EntriesView() {
             </h2>
             <fieldset className="kind-toggle">
               <legend className="visually-hidden">Entry kind</legend>
+              {/* Enabled while editing since P2-9: switching kind now converts
+                  the entry in place (see `convertEntry`) instead of forcing a
+                  delete and a retype. The category list is re-pointed at the
+                  other side, so the chosen category always belongs to the kind
+                  being saved. */}
               <button
                 type="button"
                 className={kind === "income" ? "btn is-on" : "btn"}
                 aria-pressed={kind === "income"}
-                disabled={editing !== null}
                 onClick={() => {
                   setKind("income");
                   setCategoryId("");
@@ -666,7 +805,6 @@ function EntriesView() {
                 type="button"
                 className={kind === "expense" ? "btn is-on" : "btn"}
                 aria-pressed={kind === "expense"}
-                disabled={editing !== null}
                 onClick={() => {
                   setKind("expense");
                   setCategoryId("");
@@ -1325,6 +1463,8 @@ function RecurringView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  /** The rule the form is editing, or null when it creates (review P2-9). */
+  const [editing, setEditing] = useState<RecurringPaymentRow | null>(null);
 
   const [title, setTitle] = useState("");
   const [amountRaw, setAmountRaw] = useState("");
@@ -1393,18 +1533,60 @@ function RecurringView() {
     const name = cleanName(title);
     if (amountCents === null || amountCents <= 0 || !name || !nextDue) return;
     try {
-      await budgetRepo.createRecurring({
-        title: name,
-        amountCents,
-        categoryId: ruleCategory === "" ? null : ruleCategory,
-        walletId: ruleWallet === "" ? null : ruleWallet,
-        frequency,
-        nextDueDate: nextDue,
-      });
+      if (editing !== null) {
+        await budgetRepo.updateRecurring(editing.id, {
+          title: name,
+          amountCents,
+          categoryId: ruleCategory === "" ? null : ruleCategory,
+          walletId: ruleWallet === "" ? null : ruleWallet,
+          frequency,
+          nextDueDate: nextDue,
+        });
+      } else {
+        await budgetRepo.createRecurring({
+          title: name,
+          amountCents,
+          categoryId: ruleCategory === "" ? null : ruleCategory,
+          walletId: ruleWallet === "" ? null : ruleWallet,
+          frequency,
+          nextDueDate: nextDue,
+        });
+      }
       setTitle("");
       setAmountRaw("");
       setRuleCategory("");
       setRuleWallet("");
+      setEditing(null);
+      await refresh(showInactive);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  /** Load a rule into the form for correction (review P2-9). */
+  const startEditRule = (rule: RecurringPaymentRow) => {
+    setEditing(rule);
+    setTitle(rule.title);
+    setAmountRaw(fromCents(rule.amount_cents).toFixed(2));
+    setRuleCategory(rule.category_id ?? "");
+    setRuleWallet(rule.wallet_id ?? "");
+    setFrequency(rule.frequency);
+    setNextDue(rule.next_due_date);
+    setError(null);
+  };
+
+  const cancelEditRule = () => {
+    setEditing(null);
+    setTitle("");
+    setAmountRaw("");
+    setRuleCategory("");
+    setRuleWallet("");
+  };
+
+  const removeRule = async (id: number) => {
+    try {
+      await budgetRepo.deleteRecurring(id);
+      if (editing?.id === id) cancelEditRule();
       await refresh(showInactive);
     } catch (e) {
       setError(errText(e));
@@ -1513,6 +1695,22 @@ function RecurringView() {
                   >
                     {r.active ? "Pause" : "Resume"}
                   </button>
+                  {/* Pause was the only escape hatch before P2-9, so a rule
+                      created by mistake stayed in the list forever. */}
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => startEditRule(r)}
+                  >
+                    Edit
+                  </button>
+                  <ConfirmButton
+                    className="btn btn-ghost"
+                    what={`recurring rule “${r.title}” — expenses it already booked stay in the Budget`}
+                    onConfirm={() => removeRule(r.id)}
+                  >
+                    Delete
+                  </ConfirmButton>
                 </span>
               </li>
             );
@@ -1527,7 +1725,11 @@ function RecurringView() {
           void createRule();
         }}
       >
-        <h2 className="side-heading">New recurring payment</h2>
+        <h2 className="side-heading">
+          {editing === null
+            ? "New recurring payment"
+            : `Edit rule — ${editing.title}`}
+        </h2>
         <div className="form-grid">
           <label>
             Title
@@ -1631,8 +1833,17 @@ function RecurringView() {
               !nextDue
             }
           >
-            Add rule
+            {editing === null ? "Add rule" : "Save changes"}
           </button>
+          {editing !== null ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={cancelEditRule}
+            >
+              Cancel edit
+            </button>
+          ) : null}
         </div>
       </form>
     </section>

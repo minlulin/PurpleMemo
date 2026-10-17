@@ -284,8 +284,7 @@ mod tests {
         let tmp = dir.0.join("existing.jpg.tmp");
         fs::write(&tmp, b"new bytes").expect("write the temp sibling");
 
-        fs::rename(&tmp, &target)
-            .expect("rename must replace an existing file on this platform");
+        fs::rename(&tmp, &target).expect("rename must replace an existing file on this platform");
         assert_eq!(
             fs::read(&target).expect("read back"),
             b"new bytes",
@@ -298,8 +297,14 @@ mod tests {
         let dir = TempDir::new();
         let rel = save_photo(&dir.0, "2026/10", b"correct bytes", "jpg").expect("seed");
         fs::write(dir.0.join(&rel), b"corrupt").expect("corrupt it");
-        assert_eq!(save_photo(&dir.0, "2026/10", b"correct bytes", "jpg").expect("rewrite"), rel);
-        assert_eq!(read_photo(&dir.0, &rel).expect("read repaired"), b"correct bytes");
+        assert_eq!(
+            save_photo(&dir.0, "2026/10", b"correct bytes", "jpg").expect("rewrite"),
+            rel
+        );
+        assert_eq!(
+            read_photo(&dir.0, &rel).expect("read repaired"),
+            b"correct bytes"
+        );
     }
 
     #[test]

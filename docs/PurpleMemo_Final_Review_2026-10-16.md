@@ -28,7 +28,8 @@
 | P2-11 | ✅ **fixed** | 5 of the 6 named handlers needed a guard (the 6th was already idempotent); `submit-guards.test.ts` pins the shape, mutation-checked |
 | P2-6 | ✅ **fixed** | Discard had no coverage and had a real bug under it: discarding during an in-flight save re-persisted the discarded draft |
 | P2-7 | 📌 **accepted** | 170 `(§X)` comment refs kept as historical provenance — rationale and revisit conditions recorded below |
-| P2-10 | ✅ **fixed** | `ConfirmButton` + pure `confirmTransition` guard all 17 destructive deletes across **12** pages (the finding listed 8); the rule itself is regression-tested |
+| P2-10 | ✅ **fixed** | `ConfirmButton` + pure `confirmTransition` guard all destructive deletes (the finding listed 8 pages); the rule itself is regression-tested |
+| P2-9 | ✅ **fixed** | All five sub-items: job/payable/recurring edit+delete, wallet/category rename+delete, and the kind toggle now converts in one atomic batch |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
@@ -37,9 +38,12 @@
 
 Step 14 is done and step 15 is unblocked: nothing in the code depended on the deleted docs, and the only remaining cleanup decision is whether this review file itself ships (see the cleanup list below).
 
-**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed, disproved, or explicitly accepted. **Exactly one P2 remains: P2-9** — the missing Edit/Delete escape hatches in Business Jobs, Business Payables, Budget recurring rules, and Budget wallets/categories. That is new feature work (five sub-paths: repo methods, form state, and UI per module), not a defect, and it is a release decision rather than a blocker.
+**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review, and every P2 from the 2026-10-17 single-user audit, is now closed, disproved, or explicitly accepted. **Nothing remains between the tree and a public release** except two decisions that are yours, not the code's:
 
-Also still open, all cosmetic or hardening: P2-7 (accepted, documented above) and the 33 P3 notes.
+1. **Does this review file ship?** (see the cleanup list below)
+2. **The P3 tier** — 33 hardening and polish notes, all optional.
+
+Of the P2 tier, three findings did not describe bugs in the shipped behaviour and were resolved as such rather than "fixed": **P2-5** was disproved on the platform it named (and the false comment that produced it is fixed), **P2-7** was accepted as historical provenance, and **P2-10**'s page list turned out to be incomplete in a way that made the rule worth more than the list.
 
 ### What the P1-1 fix does
 
@@ -194,7 +198,7 @@ Delete the script **and** the `session:reset` / `memory:reset` entries in `packa
 
 **One known transient, not an oversight:** `docs/SESSION_MEMORY.md` still tells the reader to run `npm run session:reset` in two places, and that command no longer exists. That file is itself deleted in cleanup step 7 — the audit sequences the script removal and the doc deletion as separate steps, so the dangling mention exists only between them. Do not treat it as a finding; it resolves with step 7.
 
-### P2-9 — Missing Edit and Delete escape hatches across Business & Budget (2026-10-17 audit)
+### P2-9 — Missing Edit and Delete escape hatches across Business & Budget (2026-10-17 audit) — ✅ FIXED
 **`src/pages/BusinessPage.tsx`, `src/lib/business.ts`, `src/pages/BudgetPage.tsx`, `src/lib/budget.ts`**
 In single-person day-to-day use, a typo on an entry becomes permanent when a module has no update or delete path:
 - **Business Jobs (`BusinessPage.tsx:314-565`, `business.ts:95-155`):** `business.ts` has no `updateJob` or `deleteJob`, and neither `JobsView` nor `HistoryView` offers Edit or Delete. A mistyped customer job amount or test job can never be corrected or removed — it permanently inflates `Total Receivable` on the Dashboard and customer vouchers.
@@ -202,6 +206,28 @@ In single-person day-to-day use, a typo on an entry becomes permanent when a mod
 - **Budget Recurring Payments (`BudgetPage.tsx:860-1060`, `budget.ts:235-313`):** Recurring rules can be paused/resumed, but cannot be edited (`updateRecurring`) or deleted (`deleteRecurring`).
 - **Budget Wallets & Categories (`BudgetPage.tsx:104-302`, `budget.ts:138-183`):** Wallets and income/expense categories can be added in `ManageView`, but cannot be renamed or deleted (when unused).
 - **Budget Transaction Kind Toggle (`BudgetPage.tsx:582-607`):** In `EntriesView`, the Income/Expense toggle buttons are disabled while editing (`disabled={editing !== null}`), forcing delete + re-create if an expense was accidentally logged as income.
+
+**All five sub-items fixed.** Ten new repository methods, ten new UI entry points, 25 new tests.
+
+**Repository (the money rules are the substance, not the SQL)**
+
+- **`updateJob`** re-derives `status` from the new total — it is a stored column with no trigger, so editing `total_cents` without recomputing would leave a fully-paid job in the open list, or a paid one still owing. And it **refuses to lower `total_cents` below `paid_cents`**: the schema only checks `> 0`, so a lower total would leave `remaining_cents` — on the Dashboard and every customer voucher — negative. Refused, not clamped: a clamp makes the books agree with themselves and lie about the job.
+- **`deleteJob`** uses the `deleteLinkedEntity("job", …)` helper from P2-12, so the job's `photo_refs` go with it — exactly the case the audit flagged as "any future `deleteJob`". **Income entries it produced are deliberately left alone**: cash basis (§2.1), the money was received. A test asserts no statement of the delete touches the Budget.
+- **`updatePayable`** freezes the amount once the payable is paid, because `markPayablePaid` already booked the expense — a later amount edit would leave the Budget and the payable disagreeing with no way to tell which is right. Everything else stays editable.
+- **`deleteWallet` / `deleteExpenseCategory` / `deleteIncomeCategory`** are **refused while the row is in use**, with the count in the message. The FKs have no `ON DELETE` action, so SQLite would refuse anyway; this turns that into a sentence, and `expenseCategoryUsage` lets the page explain itself before the click.
+- **`convertEntry`** replaces an entry in the other table as **one `driver.batch`** — DELETE then INSERT. Atomicity is the whole point: two separate calls would allow an INSERT that succeeded beside a failed DELETE, which double-counts the transaction, and the entry would briefly be in both tables or in neither, showing a day's total that is wrong.
+
+**UI**
+
+- One form per module serves create and edit (as `BudgetPage.EntriesView` already did) rather than a second parallel form that can drift: `JobsView`, `PayablesView` and `RecurringView` gain an `editing` state, a heading that names the row, and a "Cancel edit" that resets.
+- **`HistoryView` was named in the finding and had nothing** — a completed job's title was permanent. It gets Edit (title + note only; a paid job's total is money already received and recorded) and Delete.
+- **A gap the finding did not list:** *paid* payables sat inside a `p.paid === 0 ? … : null` block, so a paid payable had **no row actions at all** — permanently uncorrectable, and invisible because the default list hides paid rows. Edit and Delete moved outside that block.
+- Every new delete goes through `ConfirmButton` and states its consequence: "Delete job *Roof repair* — payments already received stay in the Budget".
+- `delete-guards.test.ts`'s floors raised from 17 to 22 confirm controls and 23 destructive handlers, so the P2-10 rule keeps covering what P2-9 added.
+
+**Not added, deliberately:** no bulk edit, and no way to delete a wallet or category that still has entries against it — that data is history, and the message says so rather than cascading.
+
+Gate: **357/357** TS tests (332 → 357), 93/93 `cargo test`, clippy, fmt, build.
 
 ### P2-10 — Destructive deletes execute in one click with no confirmation — ✅ FIXED
 **`src/pages/VaultPage.tsx:221-232`, `src/pages/ShoppingPage.tsx:236-242`, `src/pages/HabitsPage.tsx:101-108`, `src/pages/LoansPage.tsx:99-107`, `src/pages/NotesPage.tsx:512-522`, `src/pages/JournalPage.tsx:177-191`, `src/pages/ContactsPage.tsx:163-172`, `src/pages/GalleryPage.tsx:275-291`**

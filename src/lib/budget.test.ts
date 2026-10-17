@@ -432,3 +432,173 @@ test("recurringDisplay reports due occurrences and overdue state (§2.1)", () =>
   ]);
   assert.equal(behind.overdue, true);
 });
+
+// -- P2-9: rename/delete escape hatches, and recurring edit/delete -----------------
+
+test("renameWallet / renameCategory: one UPDATE, id-scoped", async () => {
+  const driver = createMockDriver();
+  const budget = createBudgetRepo(driver);
+  await budget.renameWallet(2, "Cash");
+  await budget.renameExpenseCategory(3, "Food");
+  const renames = driver.callsTo("execute");
+  assert.equal(renames[0]?.args[0], "UPDATE wallets SET name = ? WHERE id = ?");
+  assert.deepEqual(renames[0]?.args[1], ["Cash", 2]);
+  assert.equal(
+    renames[1]?.args[0],
+    "UPDATE expense_categories SET name = ? WHERE id = ?",
+  );
+  assert.deepEqual(renames[1]?.args[1], ["Food", 3]);
+});
+
+test("deleteWallet: refused while entries reference it, and says how many", async () => {
+  // The FKs have no ON DELETE action so SQLite would refuse anyway; this turns
+  // that into a sentence the user can act on instead of a constraint error.
+  const driver = createMockDriver({ results: [[{ uses: 7 }]] });
+  await assert.rejects(
+    () => createBudgetRepo(driver).deleteWallet(2),
+    /7 entries recorded against it/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), [], "nothing deleted");
+});
+
+test("deleteWallet: singular wording for one entry", async () => {
+  const driver = createMockDriver({ results: [[{ uses: 1 }]] });
+  await assert.rejects(
+    () => createBudgetRepo(driver).deleteWallet(2),
+    /1 entry recorded against it/,
+  );
+});
+
+test("deleteWallet: an unused wallet is deleted", async () => {
+  const driver = createMockDriver({ results: [[{ uses: 0 }]] });
+  await createBudgetRepo(driver).deleteWallet(2);
+  const sql = at(driver.callsTo("execute"), 0, "execute").args[0] as string;
+  assert.equal(sql, "DELETE FROM wallets WHERE id = ?");
+  assert.deepEqual(at(driver.callsTo("execute"), 0, "execute").args[1], [2]);
+});
+
+test("deleteExpenseCategory: refused while in use, allowed when not", async () => {
+  const used = createMockDriver({ results: [[{ uses: 3 }]] });
+  await assert.rejects(
+    () => createBudgetRepo(used).deleteExpenseCategory(3),
+    /3 expense entries in it/,
+  );
+  assert.deepEqual(used.callsTo("execute"), []);
+
+  const unused = createMockDriver({ results: [[{ uses: 0 }]] });
+  await createBudgetRepo(unused).deleteExpenseCategory(3);
+  const call = at(unused.callsTo("execute"), 0, "execute");
+  assert.equal(call.args[0], "DELETE FROM expense_categories WHERE id = ?");
+  assert.deepEqual(call.args[1], [3]);
+});
+
+test("deleteIncomeCategory: same usage rule on the income side", async () => {
+  const used = createMockDriver({ results: [[{ uses: 2 }]] });
+  await assert.rejects(
+    () => createBudgetRepo(used).deleteIncomeCategory(3),
+    /2 income entries in it/,
+  );
+  const unused = createMockDriver({ results: [[{ uses: 0 }]] });
+  await createBudgetRepo(unused).deleteIncomeCategory(3);
+  const call = at(unused.callsTo("execute"), 0, "execute");
+  assert.equal(call.args[0], "DELETE FROM income_categories WHERE id = ?");
+});
+
+test("expenseCategoryUsage: reported so the UI can explain itself before a click", async () => {
+  const driver = createMockDriver({ results: [[{ uses: 5 }]] });
+  assert.equal(await createBudgetRepo(driver).expenseCategoryUsage(3), 5);
+});
+
+test("updateRecurring: writes only the provided fields", async () => {
+  const driver = createMockDriver();
+  await createBudgetRepo(driver).updateRecurring(6, {
+    title: "Internet",
+    frequency: "monthly",
+    categoryId: null,
+  });
+  const call = at(driver.callsTo("execute"), 0, "execute");
+  assert.match(
+    call.args[0] as string,
+    /UPDATE recurring_payments SET title = \?, category_id = \?, frequency = \? WHERE id = \?/,
+  );
+  assert.deepEqual(call.args[1], ["Internet", null, "monthly", 6]);
+});
+
+test("updateRecurring: a non-positive amount is refused before any write", async () => {
+  const driver = createMockDriver();
+  await assert.rejects(
+    () => createBudgetRepo(driver).updateRecurring(6, { amountCents: 0 }),
+    /greater than zero/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), []);
+});
+
+test("deleteRecurring: removes the rule, and nothing else", async () => {
+  const driver = createMockDriver();
+  await createBudgetRepo(driver).deleteRecurring(6);
+  const call = at(driver.callsTo("execute"), 0, "execute");
+  assert.equal(call.args[0], "DELETE FROM recurring_payments WHERE id = ?");
+  assert.deepEqual(call.args[1], [6]);
+  assert.deepEqual(driver.callsTo("batch"), []);
+});
+
+test("convertEntry: the delete and the insert are ONE batch, in that order", async () => {
+  // The whole point of the method. `db::batch` is a single transaction, so the
+  // entry is never briefly absent from the day's totals and never momentarily
+  // present in both tables — either would show a total that is wrong, which is
+  // the one thing a money ledger may not do. Two separate calls would allow an
+  // INSERT that succeeded beside a failed DELETE, which double-counts.
+  const driver = createMockDriver();
+  await createBudgetRepo(driver).convertEntry("income", 7, {
+    amountCents: 12_000,
+    categoryId: 2,
+    walletId: 1,
+    entryDate: "2026-10-17",
+    note: "moved by mistake",
+  });
+  assert.deepEqual(
+    driver.callsTo("execute"),
+    [],
+    "no statement outside the batch",
+  );
+  const batch = at(driver.callsTo("batch"), 0, "batch");
+  const statements = batch.args[0] as { sql: string; params: unknown[] }[];
+  assert.equal(statements.length, 2);
+  assert.equal(statements[0]?.sql, "DELETE FROM income_entries WHERE id = ?");
+  assert.deepEqual(statements[0]?.params, [7]);
+  assert.match(
+    statements[1]?.sql ?? "",
+    /INSERT INTO expense_entries \(amount_cents, category_id, wallet_id, entry_date, note, created_at\)/,
+  );
+  assert.deepEqual(statements[1]?.params.slice(0, 5), [
+    12_000,
+    2,
+    1,
+    "2026-10-17",
+    "moved by mistake",
+  ]);
+  // The stamp is the replacement's own — a conversion is a new row, not the old
+  // one relabelled — and it is a local `yyyy-mm-dd`, never a UTC ISO string.
+  const stamp = statements[1]?.params[5];
+  assert.match(
+    String(stamp),
+    /^\d{4}-\d{2}-\d{2}$/,
+    `created_at must be a local date, got ${String(stamp)}`,
+  );
+});
+
+test("convertEntry: the other direction moves expense -> income", async () => {
+  const driver = createMockDriver();
+  await createBudgetRepo(driver).convertEntry("expense", 4, {
+    amountCents: 1000,
+    categoryId: 3,
+    walletId: 1,
+    entryDate: "2026-10-17",
+    note: "",
+  });
+  const statements = at(driver.callsTo("batch"), 0, "batch").args[0] as {
+    sql: string;
+  }[];
+  assert.match(statements[0]?.sql ?? "", /DELETE FROM expense_entries/);
+  assert.match(statements[1]?.sql ?? "", /INSERT INTO income_entries/);
+});

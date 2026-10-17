@@ -120,7 +120,7 @@ function destructiveHandlers(): {
 test("no destructive handler is reachable from an onClick", () => {
   const handlers = destructiveHandlers();
   assert.ok(
-    handlers.length >= 17,
+    handlers.length >= 23,
     `expected the full set of destructive handlers, found ${handlers.length}`,
   );
   const offenders: string[] = [];
@@ -156,12 +156,13 @@ test("every page that deletes something also renders a ConfirmButton", () => {
 
 test("the app has enough confirm controls for the destructive actions it has", () => {
   // A count, so "someone removed the confirms" fails even if every handler is
-  // still referenced somewhere. 17 sites across 12 pages at the time of P2-10.
+  // still referenced somewhere. 22 sites as of P2-9 (17 from P2-10, plus the
+  // job/payable/recurring/wallet/category deletes P2-9 added).
   const wired = PAGES.reduce(
     (n, [, src]) => n + (src.match(/<ConfirmButton/g) ?? []).length,
     0,
   );
-  assert.ok(wired >= 17, `expected >= 17 confirm controls, found ${wired}`);
+  assert.ok(wired >= 22, `expected >= 22 confirm controls, found ${wired}`);
 });
 
 test("the exempt calls are exempt on purpose, with a stated reason", () => {

@@ -72,7 +72,7 @@ const GUARDS: {
     handler: "addJob",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
-    label: "Adding…",
+    label: "Saving…",
   },
   {
     page: "BusinessPage.tsx",
@@ -86,7 +86,7 @@ const GUARDS: {
     handler: "addPayable",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
-    label: "Adding…",
+    label: "Saving…",
   },
   {
     page: "LoansPage.tsx",
@@ -191,14 +191,23 @@ test("the button that triggers each guarded handler reads the flag", () => {
 
 test("an in-flight submit says so on the button, not just by going grey", () => {
   // Grey-only is ambiguous on a money form: the user cannot tell whether the
-  // click registered. Every guarded button swaps its label.
-  const pages = {
-    loans: readPage("LoansPage.tsx"),
-    business: readPage("BusinessPage.tsx"),
-  };
-  for (const src of Object.values(pages)) {
-    assert.match(src, /"Saving…"/);
-    assert.match(src, /"Adding…"/);
+  // click registered. Every guarded button swaps its label — asserted against
+  // the per-handler table above rather than a global string, so renaming one
+  // form's label does not silently excuse another's.
+  for (const guard of GUARDS) {
+    if (guard.label === undefined) continue;
+    assert.ok(
+      readPage(guard.page).includes(`"${guard.label}"`),
+      `${guard.page} ${guard.handler} must say "${guard.label}" while in flight`,
+    );
+  }
+  // The per-row payment buttons all say the same thing, which is deliberate:
+  // one wording for one kind of action.
+  for (const page of ["LoansPage.tsx", "BusinessPage.tsx"]) {
+    assert.ok(
+      readPage(page).includes('"Saving…"'),
+      `${page} must label its in-flight payment button`,
+    );
   }
 });
 

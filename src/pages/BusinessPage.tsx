@@ -393,6 +393,13 @@ function JobsView() {
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [payingId, setPayingId] = useState<number | null>(null);
+  /**
+   * The job the form is editing, or null when it creates (review P2-9). One
+   * form for both, the way `BudgetPage.EntriesView` does it — a mistyped amount
+   * is corrected where the entry already is, not in a second parallel form
+   * that can drift from this one.
+   */
+  const [editing, setEditing] = useState<ReceivableJob | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -430,29 +437,78 @@ function JobsView() {
     savingRef.current = true;
     setSaving(true);
     try {
-      await businessRepo.createJob({
-        title: title.trim(),
-        shopId: shopId === "" ? null : shopId,
-        totalCents: amountCents,
-        jobDate,
-        warrantyDays:
-          warrantyDays.trim() !== "" &&
-          Number.isInteger(warranty) &&
-          warranty > 0
-            ? warranty
-            : null,
-        note: note.trim(),
-      });
+      if (editing !== null) {
+        await businessRepo.updateJob(editing.id, {
+          title: title.trim(),
+          shopId: shopId === "" ? null : shopId,
+          totalCents: amountCents,
+          jobDate,
+          warrantyDays:
+            warrantyDays.trim() !== "" &&
+            Number.isInteger(warranty) &&
+            warranty > 0
+              ? warranty
+              : null,
+          note: note.trim(),
+        });
+      } else {
+        await businessRepo.createJob({
+          title: title.trim(),
+          shopId: shopId === "" ? null : shopId,
+          totalCents: amountCents,
+          jobDate,
+          warrantyDays:
+            warrantyDays.trim() !== "" &&
+            Number.isInteger(warranty) &&
+            warranty > 0
+              ? warranty
+              : null,
+          note: note.trim(),
+        });
+      }
       setTitle("");
       setAmountRaw("");
       setWarrantyDays("");
       setNote("");
+      setEditing(null);
       await reload();
     } catch (e) {
       setError(errText(e));
     } finally {
       savingRef.current = false;
       setSaving(false);
+    }
+  };
+
+  /** Load a job into the form for correction (review P2-9). */
+  const startEditJob = (j: ReceivableJob) => {
+    setEditing(j);
+    setTitle(j.title);
+    setAmountRaw(fromCents(j.total_cents).toFixed(2));
+    setShopId(j.shop_id ?? "");
+    setJobDate(j.job_date);
+    setWarrantyDays(j.warranty_days === null ? "" : String(j.warranty_days));
+    setNote(j.note);
+    setPayFor(null);
+    setError(null);
+  };
+
+  const cancelEditJob = () => {
+    setEditing(null);
+    setTitle("");
+    setAmountRaw("");
+    setShopId("");
+    setWarrantyDays("");
+    setNote("");
+  };
+
+  const removeJob = async (id: number) => {
+    try {
+      await businessRepo.deleteJob(id);
+      if (editing?.id === id) cancelEditJob();
+      await reload();
+    } catch (e) {
+      setError(errText(e));
     }
   };
 
@@ -591,6 +647,26 @@ function JobsView() {
                     Record payment
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => startEditJob(j)}
+                >
+                  Edit
+                </button>
+                {/* Its recorded payments stay in the Budget (cash basis), so
+                    the confirm says what the delete does and does not do. */}
+                <ConfirmButton
+                  className="btn btn-ghost"
+                  what={
+                    j.paid_cents > 0
+                      ? `job “${j.title}” (payments already received stay in the Budget)`
+                      : `job “${j.title}”`
+                  }
+                  onConfirm={() => removeJob(j.id)}
+                >
+                  Delete
+                </ConfirmButton>
               </span>
             </li>
           ))}
@@ -604,7 +680,9 @@ function JobsView() {
           void addJob();
         }}
       >
-        <h2 className="side-heading">New job</h2>
+        <h2 className="side-heading">
+          {editing === null ? "New job" : `Edit job — ${editing.title}`}
+        </h2>
         <div className="form-grid">
           <label>
             Title
@@ -690,8 +768,17 @@ function JobsView() {
               !jobDate
             }
           >
-            {saving ? "Adding…" : "Add job"}
+            {saving ? "Saving…" : editing === null ? "Add job" : "Save changes"}
           </button>
+          {editing !== null ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={cancelEditJob}
+            >
+              Cancel edit
+            </button>
+          ) : null}
         </div>
       </form>
     </section>
@@ -817,32 +904,64 @@ function HistoryView() {
   const [shops, setShops] = useState<ShopRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** The job whose title/note inputs are open (review P2-9). */
+  const [editing, setEditing] = useState<number | null>(null);
+  const [draft, setDraft] = useState({ title: "", note: "" });
+
+  // A `reload` the edit and delete paths can call, rather than each repeating
+  // the fetch — and so an out-of-order load cannot land over a fresh one.
+  const load = useCallback(async () => {
+    try {
+      const [js, ss] = await Promise.all([
+        businessRepo.listHistory(),
+        businessRepo.listShops(),
+      ]);
+      setJobs(js);
+      setShops(ss);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [js, ss] = await Promise.all([
-          businessRepo.listHistory(),
-          businessRepo.listShops(),
-        ]);
-        if (cancelled) return;
-        setJobs(js);
-        setShops(ss);
-        setError(null);
-      } catch (e) {
-        if (!cancelled) setError(errText(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void load();
+  }, [load]);
 
   const shopName = (id: number | null): string =>
     shops.find((s) => s.id === id)?.name ?? "—";
+
+  const removeJob = async (id: number) => {
+    try {
+      await businessRepo.deleteJob(id);
+      if (editing === id) setEditing(null);
+      await load();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  /**
+   * Rename a completed job in place (review P2-9). Title and note only: a paid
+   * job's total is money that has been received and already recorded in the
+   * Budget, so `updateJob` refuses to move it — changing what was charged after
+   * the payment is a different decision from correcting a typo, and the Budget
+   * entry is where that belongs.
+   */
+  const saveTitle = async (
+    id: number,
+    fields: { title: string; note: string },
+  ) => {
+    try {
+      await businessRepo.updateJob(id, fields);
+      setEditing(null);
+      await load();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
 
   return (
     <section className="budget-manage" aria-label="Job history">
@@ -871,9 +990,65 @@ function HistoryView() {
                   <span className="badge figure">{j.job_date}</span>
                 </span>
                 {j.note ? <span className="row-sub">{j.note}</span> : null}
+                {editing === j.id ? (
+                  <span className="inline-form">
+                    <input
+                      aria-label={`Title for job ${j.id}`}
+                      value={draft.title}
+                      onChange={(e) =>
+                        setDraft({ ...draft, title: e.target.value })
+                      }
+                    />
+                    <input
+                      aria-label={`Note for job ${j.id}`}
+                      value={draft.note}
+                      onChange={(e) =>
+                        setDraft({ ...draft, note: e.target.value })
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => void saveTitle(j.id, draft)}
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setEditing(null)}
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                ) : null}
               </div>
               <span className="figure amount-income">
                 {formatMMK(j.total_cents)}
+              </span>
+              {/* The finding named HistoryView as well as JobsView: a completed
+                  job had no escape hatch either, so a mistyped title was
+                  permanent. Edit here is title+note only — see saveTitle. */}
+              <span className="row-actions">
+                {editing === j.id ? null : (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setEditing(j.id);
+                      setDraft({ title: j.title, note: j.note });
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+                <ConfirmButton
+                  className="btn btn-ghost"
+                  what={`job “${j.title}” — payments already received stay in the Budget`}
+                  onConfirm={() => removeJob(j.id)}
+                >
+                  Delete
+                </ConfirmButton>
               </span>
             </li>
           ))}
@@ -906,6 +1081,8 @@ function PayablesView() {
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [payingId, setPayingId] = useState<number | null>(null);
+  /** The payable the form is editing, or null when it creates (review P2-9). */
+  const [editing, setEditing] = useState<PayableRow | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -943,23 +1120,65 @@ function PayablesView() {
     savingRef.current = true;
     setSaving(true);
     try {
-      await businessRepo.createPayable({
-        title: title.trim(),
-        amountCents,
-        shopId: shopId === "" ? null : shopId,
-        dueDate: dueDate === "" ? null : dueDate,
-        note: note.trim(),
-      });
+      if (editing !== null) {
+        await businessRepo.updatePayable(editing.id, {
+          title: title.trim(),
+          amountCents,
+          shopId: shopId === "" ? null : shopId,
+          dueDate: dueDate === "" ? null : dueDate,
+          note: note.trim(),
+        });
+      } else {
+        await businessRepo.createPayable({
+          title: title.trim(),
+          amountCents,
+          shopId: shopId === "" ? null : shopId,
+          dueDate: dueDate === "" ? null : dueDate,
+          note: note.trim(),
+        });
+      }
       setTitle("");
       setAmountRaw("");
       setDueDate("");
       setNote("");
+      setEditing(null);
       await reload();
     } catch (e) {
       setError(errText(e));
     } finally {
       savingRef.current = false;
       setSaving(false);
+    }
+  };
+
+  /** Load a payable into the form for correction (review P2-9). */
+  const startEditPayable = (p: PayableRow) => {
+    setEditing(p);
+    setTitle(p.title);
+    setAmountRaw(fromCents(p.amount_cents).toFixed(2));
+    setShopId(p.shop_id ?? "");
+    setDueDate(p.due_date ?? "");
+    setNote(p.note);
+    setPayFor(null);
+    setError(null);
+  };
+
+  const cancelEditPayable = () => {
+    setEditing(null);
+    setTitle("");
+    setAmountRaw("");
+    setShopId("");
+    setDueDate("");
+    setNote("");
+  };
+
+  const removePayable = async (id: number) => {
+    try {
+      await businessRepo.deletePayable(id);
+      if (editing?.id === id) cancelEditPayable();
+      await reload();
+    } catch (e) {
+      setError(errText(e));
     }
   };
 
@@ -1126,6 +1345,31 @@ function PayablesView() {
                       )}
                     </span>
                   ) : null}
+                  {/* Outside the `paid === 0` block on purpose: before P2-9 a
+                      paid payable had no row actions at all, so it could not be
+                      corrected or removed — the exact "permanent entry" the
+                      finding describes, and invisible because the unpaid list
+                      hid the row that would have shown it. */}
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => startEditPayable(p)}
+                    >
+                      Edit
+                    </button>
+                    <ConfirmButton
+                      className="btn btn-ghost"
+                      what={
+                        p.paid === 1
+                          ? `payable “${p.title}” — its expense stays in the Budget`
+                          : `payable “${p.title}”`
+                      }
+                      onConfirm={() => removePayable(p.id)}
+                    >
+                      Delete
+                    </ConfirmButton>
+                  </span>
                 </div>
               </li>
             );
@@ -1140,7 +1384,9 @@ function PayablesView() {
           void addPayable();
         }}
       >
-        <h2 className="side-heading">New payable</h2>
+        <h2 className="side-heading">
+          {editing === null ? "New payable" : `Edit payable — ${editing.title}`}
+        </h2>
         <div className="form-grid">
           <label>
             Title
@@ -1209,8 +1455,21 @@ function PayablesView() {
               saving || !titleOk || amountCents === null || amountCents <= 0
             }
           >
-            {saving ? "Adding…" : "Add payable"}
+            {saving
+              ? "Saving…"
+              : editing === null
+                ? "Add payable"
+                : "Save changes"}
           </button>
+          {editing !== null ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={cancelEditPayable}
+            >
+              Cancel edit
+            </button>
+          ) : null}
         </div>
       </form>
     </section>

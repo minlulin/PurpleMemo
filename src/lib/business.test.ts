@@ -434,3 +434,188 @@ test("deleteShop: nulls out job/payable references before deleting (§2.2)", asy
   assert.match(at(batch, 2, "batch").sql, /DELETE FROM shops/);
   assert.deepEqual(at(batch, 2, "batch").params, [7]);
 });
+
+// -- P2-9: the edit/delete escape hatches --------------------------------------------
+// Without these, a mistyped amount or a test row is permanent: a job inflates
+// Total Receivable and every customer voucher forever, a payable sits on the
+// supplier list forever. The money rules below are the reason these are not just
+// an UPDATE statement each.
+
+test("updateJob: writes only the provided fields", async () => {
+  const driver = createMockDriver();
+  const business = createBusinessRepo(driver);
+  await business.updateJob(4, { title: "Fix inverter", warrantyDays: 30 });
+  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
+  assert.match(
+    sql,
+    /UPDATE jobs SET title = \?, warranty_days = \? WHERE id = \?/,
+  );
+  assert.deepEqual(params, ["Fix inverter", 30, 4]);
+});
+
+test("updateJob: an explicit null clears a nullable column", async () => {
+  const driver = createMockDriver();
+  await createBusinessRepo(driver).updateJob(4, { warrantyDays: null });
+  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
+  assert.match(sql, /warranty_days = \?/);
+  assert.deepEqual(params, [null, 4], "null clears; undefined would leave it");
+});
+
+test("updateJob: changing the total re-derives status from what is paid", async () => {
+  // `status` is a stored column with no trigger, so an edit that changed
+  // total_cents without recomputing it would leave a fully-paid job sitting in
+  // the open list, or a paid one still owing money.
+  const open = {
+    id: 4,
+    title: "t",
+    shop_id: null,
+    total_cents: 100_000,
+    paid_cents: 100_000,
+    status: "paid",
+    job_date: "2026-10-01",
+    warranty_days: null,
+    note: "",
+    created_at: "2026-10-01",
+  };
+  const raises = createMockDriver({ results: [[open]] });
+  await createBusinessRepo(raises).updateJob(4, { totalCents: 200_000 });
+  const [sql, params] = argsOf(raises, "execute") as [string, unknown[]];
+  assert.match(sql, /total_cents = \?/);
+  assert.match(sql, /status = \?/);
+  assert.deepEqual(
+    params,
+    [200_000, "open", 4],
+    "raising the total reopens it",
+  );
+
+  const lowers = createMockDriver({ results: [[open]] });
+  await createBusinessRepo(lowers).updateJob(4, { totalCents: 100_000 });
+  const [, lowerParams] = argsOf(lowers, "execute") as [string, unknown[]];
+  assert.deepEqual(lowerParams, [100_000, "paid", 4]);
+});
+
+test("updateJob: the total may not drop below what is already paid", async () => {
+  // The schema only checks total_cents > 0, so a lower total would leave
+  // paid_cents > total_cents and remaining_cents — on the Dashboard and every
+  // customer voucher — would go negative. Refused, not clamped: a clamp would
+  // make the books agree with themselves and lie about the job.
+  const paid = {
+    id: 4,
+    title: "t",
+    shop_id: null,
+    total_cents: 100_000,
+    paid_cents: 60_000,
+    status: "open",
+    job_date: "2026-10-01",
+    warranty_days: null,
+    note: "",
+    created_at: "2026-10-01",
+  };
+  const driver = createMockDriver({ results: [[paid]] });
+  await assert.rejects(
+    () => createBusinessRepo(driver).updateJob(4, { totalCents: 50_000 }),
+    /already been paid/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), [], "nothing written on refusal");
+});
+
+test("updateJob: a non-positive total is refused before any write", async () => {
+  const driver = createMockDriver();
+  await assert.rejects(
+    () => createBusinessRepo(driver).updateJob(4, { totalCents: 0 }),
+    /greater than zero/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), []);
+});
+
+test("updateJob: an unknown job is refused rather than silently updating nothing", async () => {
+  const driver = createMockDriver({ results: [[]] });
+  await assert.rejects(
+    () => createBusinessRepo(driver).updateJob(99, { totalCents: 100 }),
+    /not found/,
+  );
+});
+
+test("deleteJob: removes the job and its photo links in one batch", async () => {
+  // photo_refs cascades on photo_id but nothing cascades its polymorphic
+  // (entity_type, entity_id) pair, so the same helper a note or memory delete
+  // uses applies here — the audit named this case when it was written.
+  const driver = createMockDriver();
+  await createBusinessRepo(driver).deleteJob(4);
+  const statements = first(driver.callsTo("batch"), "batch").args[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  assert.equal(statements.length, 2);
+  assert.match(statements[0]?.sql ?? "", /DELETE FROM photo_refs/);
+  assert.deepEqual(statements[0]?.params, ["job", 4]);
+  assert.match(statements[1]?.sql ?? "", /DELETE FROM jobs WHERE id = \?/);
+  assert.deepEqual(statements[1]?.params, [4]);
+});
+
+test("deleteJob: leaves the income the job produced alone", async () => {
+  // Cash basis (§2.1): the money was received and is in the Budget as income.
+  // Removing the job does not un-receive it, so there is no income_entries
+  // delete here — only the row and its links.
+  const driver = createMockDriver();
+  await createBusinessRepo(driver).deleteJob(4);
+  for (const call of driver.calls) {
+    assert.doesNotMatch(
+      JSON.stringify(call.args),
+      /income_entries/,
+      "a job delete must never touch the Budget",
+    );
+  }
+});
+
+test("updatePayable: writes only the provided fields", async () => {
+  const driver = createMockDriver();
+  await createBusinessRepo(driver).updatePayable(9, {
+    title: "Rice",
+    dueDate: null,
+  });
+  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
+  assert.match(
+    sql,
+    /UPDATE payables SET title = \?, due_date = \? WHERE id = \?/,
+  );
+  assert.deepEqual(params, ["Rice", null, 9]);
+});
+
+test("updatePayable: the amount is frozen once the payable is paid", async () => {
+  // markPayablePaid booked the expense at that moment, so a later amount edit
+  // would leave the Budget and the payable disagreeing with no way to tell
+  // which is right — and the Budget is where the money actually is.
+  const driver = createMockDriver({ results: [[{ id: 9, paid: 1 }]] });
+  await assert.rejects(
+    () => createBusinessRepo(driver).updatePayable(9, { amountCents: 50_000 }),
+    /already paid/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), []);
+});
+
+test("updatePayable: the amount may still change while it is unpaid", async () => {
+  const driver = createMockDriver({ results: [[{ id: 9, paid: 0 }]] });
+  await createBusinessRepo(driver).updatePayable(9, { amountCents: 50_000 });
+  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
+  assert.match(sql, /amount_cents = \?/);
+  assert.deepEqual(params, [50_000, 9]);
+});
+
+test("updatePayable: a non-positive amount is refused", async () => {
+  const driver = createMockDriver();
+  await assert.rejects(
+    () => createBusinessRepo(driver).updatePayable(9, { amountCents: -1 }),
+    /greater than zero/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), []);
+});
+
+test("deletePayable: deletes the row, and no photo links (there are none to clear)", async () => {
+  const driver = createMockDriver();
+  await createBusinessRepo(driver).deletePayable(9);
+  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
+  assert.equal(sql, "DELETE FROM payables WHERE id = ?");
+  assert.deepEqual(params, [9]);
+  assert.deepEqual(driver.callsTo("batch"), []);
+});

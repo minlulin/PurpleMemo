@@ -335,6 +335,46 @@ export function createBudgetRepo(driver: DataDriver) {
       return r.lastInsertRowid;
     },
 
+    /**
+     * Rename a wallet (review P2-9). The schema has `name TEXT NOT NULL
+     * UNIQUE`, so a duplicate surfaces as a constraint error — reported to the
+     * user by the page's normal error path rather than pre-checked here, so the
+     * check cannot race the write.
+     *
+     * Entries reference the wallet by id, not by name, so a rename is safe and
+     * rewrites nothing: the label on every past entry follows the id.
+     */
+    async renameWallet(id: number, name: string): Promise<void> {
+      await driver.execute("UPDATE wallets SET name = ? WHERE id = ?", [
+        name,
+        id,
+      ]);
+    },
+
+    /**
+     * Delete a wallet, but only while nothing uses it (review P2-9).
+     *
+     * `income_entries.wallet_id` and `expense_entries.wallet_id` are plain
+     * `REFERENCES` with no `ON DELETE` action, so SQLite would refuse the
+     * delete — correctly. Rather than surface that as an opaque foreign-key
+     * error, the usage is checked and named: a wallet with entries in it is
+     * history, and deleting it would strand those entries.
+     */
+    async deleteWallet(id: number): Promise<void> {
+      const rows = await driver.query<{ uses: number }>(
+        `SELECT (SELECT COUNT(*) FROM income_entries  WHERE wallet_id = ?)
+              + (SELECT COUNT(*) FROM expense_entries WHERE wallet_id = ?) AS uses`,
+        [id, id],
+      );
+      const uses = rows[0]?.uses ?? 0;
+      if (uses > 0) {
+        throw new Error(
+          `This wallet has ${uses} entr${uses === 1 ? "y" : "ies"} recorded against it. Rename it instead, or delete those entries first.`,
+        );
+      }
+      await driver.execute("DELETE FROM wallets WHERE id = ?", [id]);
+    },
+
     /** Balance = income − expense entries naming the wallet (§2.1). */
     async walletBalanceCents(walletId: number): Promise<number> {
       const rows = await driver.query<{ balance_cents: number }>(
@@ -374,6 +414,70 @@ export function createBudgetRepo(driver: DataDriver) {
         [name, todayLocal()],
       );
       return r.lastInsertRowid;
+    },
+
+    /** Rename an income category — entries follow the id, not the name. */
+    async renameIncomeCategory(id: number, name: string): Promise<void> {
+      await driver.execute(
+        "UPDATE income_categories SET name = ? WHERE id = ?",
+        [name, id],
+      );
+    },
+
+    /** Rename an expense category — entries follow the id, not the name. */
+    async renameExpenseCategory(id: number, name: string): Promise<void> {
+      await driver.execute(
+        "UPDATE expense_categories SET name = ? WHERE id = ?",
+        [name, id],
+      );
+    },
+
+    /**
+     * Delete an expense category, only while unused (review P2-9). Its limit
+     * cascades (`expense_limits.category_id ... ON DELETE CASCADE`), but
+     * entries do not — an expense entry naming a deleted category would leave
+     * the Budget's totals unable to explain themselves.
+     */
+    async deleteExpenseCategory(id: number): Promise<void> {
+      const rows = await driver.query<{ uses: number }>(
+        "SELECT COUNT(*) AS uses FROM expense_entries WHERE category_id = ?",
+        [id],
+      );
+      const uses = rows[0]?.uses ?? 0;
+      if (uses > 0) {
+        throw new Error(
+          `This category has ${uses} expense entr${uses === 1 ? "y" : "ies"} in it. Rename it instead, or delete those entries first.`,
+        );
+      }
+      await driver.execute("DELETE FROM expense_categories WHERE id = ?", [id]);
+    },
+
+    /** Delete an income category, only while unused. */
+    async deleteIncomeCategory(id: number): Promise<void> {
+      const rows = await driver.query<{ uses: number }>(
+        "SELECT COUNT(*) AS uses FROM income_entries WHERE category_id = ?",
+        [id],
+      );
+      const uses = rows[0]?.uses ?? 0;
+      if (uses > 0) {
+        throw new Error(
+          `This category has ${uses} income entr${uses === 1 ? "y" : "ies"} in it. Rename it instead, or delete those entries first.`,
+        );
+      }
+      await driver.execute("DELETE FROM income_categories WHERE id = ?", [id]);
+    },
+
+    /**
+     * How many entries name this category — the page shows this next to the
+     * delete control, so an in-use category explains itself before it is
+     * clicked rather than only in the error afterwards.
+     */
+    async expenseCategoryUsage(id: number): Promise<number> {
+      const rows = await driver.query<{ uses: number }>(
+        "SELECT COUNT(*) AS uses FROM expense_entries WHERE category_id = ?",
+        [id],
+      );
+      return rows[0]?.uses ?? 0;
     },
 
     // -- Income / expense entries (§2.1) --------------------------------------
@@ -484,6 +588,55 @@ export function createBudgetRepo(driver: DataDriver) {
 
     async deleteIncomeEntry(id: number): Promise<void> {
       await driver.execute("DELETE FROM income_entries WHERE id = ?", [id]);
+    },
+
+    /**
+     * Turn an entry into the other kind — income to expense, or back (review
+     * P2-9). The Income/Expense toggle used to be disabled while editing, so an
+     * entry logged as the wrong kind could only be fixed by deleting it and
+     * retyping it, which loses the note and the date unless both are remembered.
+     *
+     * This carries them: the old row is removed and the new one inserted with
+     * the amount, date, note and the newly chosen category and wallet. The two
+     * tables are genuinely different facts, so the row cannot be `UPDATE`d
+     * across — it has to be replaced — but "replace" here means "the same
+     * transaction, counted the other way", not "a new transaction".
+     *
+     * **Both statements go in one `driver.batch`, and that is the whole point.**
+     * `db::batch` is a single transaction, so the entry is never briefly absent
+     * from the day's totals and never momentarily present in both tables —
+     * either would show the user a total that is wrong, which is the one thing a
+     * money ledger may not do. Two separate calls would allow exactly that: an
+     * INSERT that succeeded beside a failed DELETE double-counts the
+     * transaction.
+     *
+     * No id comes back, and deliberately: the replacement necessarily has a new
+     * one, and the caller re-reads the day from the database rather than
+     * tracking a row id across a kind change.
+     */
+    async convertEntry(
+      from: "income" | "expense",
+      id: number,
+      input: EntryInput,
+    ): Promise<void> {
+      const fromTable =
+        from === "income" ? "income_entries" : "expense_entries";
+      const toTable = from === "income" ? "expense_entries" : "income_entries";
+      await driver.batch([
+        { sql: `DELETE FROM ${fromTable} WHERE id = ?`, params: [id] },
+        {
+          sql: `INSERT INTO ${toTable} (amount_cents, category_id, wallet_id, entry_date, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)`,
+          params: [
+            input.amountCents,
+            input.categoryId,
+            input.walletId,
+            input.entryDate,
+            input.note,
+            todayLocal(),
+          ],
+        },
+      ]);
     },
 
     async deleteExpenseEntry(id: number): Promise<void> {
@@ -643,6 +796,71 @@ export function createBudgetRepo(driver: DataDriver) {
         "UPDATE recurring_payments SET active = ? WHERE id = ?",
         [active ? 1 : 0, id],
       );
+    },
+
+    /**
+     * Partial update for a recurring rule (review P2-9). `undefined` leaves a
+     * column alone; an explicit `null` clears a nullable one.
+     *
+     * The amount must stay positive to match the schema's own CHECK, so a typo
+     * that would have been rejected by the database is refused here with a
+     * sentence a person can act on.
+     */
+    async updateRecurring(
+      id: number,
+      fields: Partial<RecurringInput>,
+    ): Promise<void> {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (fields.title !== undefined) {
+        sets.push("title = ?");
+        params.push(fields.title);
+      }
+      if (fields.amountCents !== undefined) {
+        if (fields.amountCents <= 0) {
+          throw new Error("A recurring amount must be greater than zero.");
+        }
+        sets.push("amount_cents = ?");
+        params.push(fields.amountCents);
+      }
+      if (fields.categoryId !== undefined) {
+        sets.push("category_id = ?");
+        params.push(fields.categoryId);
+      }
+      if (fields.walletId !== undefined) {
+        sets.push("wallet_id = ?");
+        params.push(fields.walletId);
+      }
+      if (fields.frequency !== undefined) {
+        sets.push("frequency = ?");
+        params.push(fields.frequency);
+      }
+      if (fields.nextDueDate !== undefined) {
+        sets.push("next_due_date = ?");
+        params.push(fields.nextDueDate);
+      }
+      if (fields.note !== undefined) {
+        sets.push("note = ?");
+        params.push(fields.note);
+      }
+      if (sets.length === 0) return;
+      params.push(id);
+      await driver.execute(
+        `UPDATE recurring_payments SET ${sets.join(", ")} WHERE id = ?`,
+        params,
+      );
+    },
+
+    /**
+     * Delete a recurring rule (review P2-9). Pause/resume was the only escape
+     * before, so a rule created by mistake or abandoned for good stayed in the
+     * list forever.
+     *
+     * Expense entries it already produced are left alone — cash basis (§2.1),
+     * same as a job's income entries.
+     */
+    async deleteRecurring(id: number): Promise<void> {
+      await driver.execute("DELETE FROM recurring_payments WHERE id = ?", [id]);
     },
 
     /** See {@link dueOccurrences} — same capped walk, kept on the repo API. */
