@@ -2,8 +2,8 @@
 
 Purple Memo ships in-app updates through GitHub Releases. Verification and
 artifact production are intentionally local: this project does not use hosted
-CI or a GitHub Actions release workflow. The local gate (§7) must be green
-before a release is prepared.
+CI or a GitHub Actions release workflow. The local gate (`npm run verify`)
+must be green before a release is prepared.
 
 The app polls:
 
@@ -31,8 +31,8 @@ npm run tauri -- signer generate -w .keys/updater.key
 
 ## Per release
 
-1. **Dependency re-check** (§3 rule 1): confirm every pinned version is still
-   the max stable one (`npm outdated`; `cargo info <crate>@<major>`).
+1. **Dependency re-check**: confirm every pinned version is still the max
+   stable one (`npm outdated`; `cargo info <crate>@<major>`).
 2. **Green local gate** — run the complete check locally:
 
    ```bash

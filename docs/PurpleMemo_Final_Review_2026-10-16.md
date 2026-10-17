@@ -9,19 +9,23 @@
 
 ## Verdict
 
-**All P1 findings are closed.** Backup export works again (P1-1) and the webview no longer holds a filesystem-write permission (P2-1); the doc P1s (P1-2…P1-7) are still open. Everything else is P2/P3.
+**All P1 findings are closed.** Backup export works again (P1-1) and the webview no longer holds a filesystem-write permission (P2-1); the doc P1s (P1-2…P1-7) are rewritten so the cleanup can delete the scratch docs with nothing left pointing at them. Everything else is P2/P3.
 
 **Fix log**
 
 | # | Status | Commit-level summary |
 |---|---|---|
 | P1-1 | ✅ **fixed** | Backup export rewritten to a Rust IPC command; `fs:write-files` deleted |
-| P2-1 | ✅ **fixed** | Same change — the webview now holds **no** fs permission at all |
-| P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
+| P1-2…P1-7 | ✅ **fixed** | `docs/PLAN.md` / `§N` references removed from README.md and docs/RELEASE.md |
+| P2-1 | ✅ **fixed** | Same change as P1-1 — the webview now holds **no** fs permission at all |
 | P2-2 | ✅ **fixed** | `loadSecurity` returns its outcome; `shellStage` pins that a failed read never reaches PIN verification |
 | P2-3 | ✅ **fixed** | Thumbnails decode with `imageOrientation: "from-image"` (the audit's `"fromImage"` would have thrown) |
+| P2-4 | ✅ **fixed** | `createThumbUrlBook` owns every grid object URL; mutation-checked |
+| P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
-**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → (4) doc P1 fixes (P1-2…P1-7); (5) dead-script drop (P2-8); (6) delete the 5 scratch docs; (7) public.
+**No release blockers remain in code or docs.** Open before publishing: P2-8 (dead script), the five scratch-doc deletions, and the rest of the P2/P3 tier.
+
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → (6) dead-script drop (P2-8); (7) delete the 5 scratch docs; (8) public.
 
 ### What the P1-1 fix does
 
@@ -58,21 +62,29 @@ Result: `scope.is_allowed()` is false for every path, so `writeFile` always thro
 
 Note P3-14: the replacement write must be atomic — `writeFile` is a single non-atomic write, so a disk-full mid-write would leave a truncated zip.
 
-### P1-2 — README.md:8-9 links to `docs/PLAN.md` (slated for deletion)
+### P1-2 — README.md:8-9 links to `docs/PLAN.md` (slated for deletion) — ✅ FIXED
+**Fixed.** The paragraph pointed at `docs/PLAN.md` *and* leaked the internal process ("The coding agent works one phase at a time from that plan"). Replaced with what a public reader actually needs — one line pointing at `## Development` and `docs/RELEASE.md`, the one doc the cleanup keeps.
 
 > "The full build plan lives in [`docs/PLAN.md`](docs/PLAN.md) — main plan plus a phase-by-phase build log. The coding agent works one phase at a time from that plan."
 
 After cleanup this 404s, and "The coding agent works one phase at a time" leaks internal process into the public README. Rewrite/remove the paragraph.
 
-### P1-3 — README.md:40 "see §7 of the plan" — dangles once PLAN.md is deleted.
+### P1-3 — README.md:40 "see §7 of the plan" — ✅ FIXED
+Was: `Rules of the gate (see §7 of the plan for the full rationale):` → now `Rules of the gate:`. The bullets that followed carry the rationale on their own.
 
-### P1-4 — README.md:43 "Keep the Progress log's gate column in [`docs/PLAN.md`](docs/PLAN.md) current" — broken link, and instructs contributors to maintain a log that will not exist. Reword to point at the local gate output only.
+### P1-4 — README.md:43 "Keep the Progress log's gate column in `docs/PLAN.md` current" — ✅ FIXED
+Was: `…revert. Keep the Progress log's gate column in [docs/PLAN.md](docs/PLAN.md) current as the local evidence for the gate.` → now `…revert — the gate's own output on your machine is the evidence.` No link, and no instruction to maintain a log that will not exist.
 
-### P1-5 — README.md:50 "see §9 of the plan and [`docs/RELEASE.md`](docs/RELEASE.md)" — the §9 reference dangles (the RELEASE.md link itself is fine).
+### P1-5 — README.md:50 "see §9 of the plan and `docs/RELEASE.md`" — ✅ FIXED
+Was: `see §9 of the plan and [docs/RELEASE.md](docs/RELEASE.md) for the exact procedure` → now `see [docs/RELEASE.md](docs/RELEASE.md) for the exact procedure`. The RELEASE.md link was fine and is kept.
 
-### P1-6 — docs/RELEASE.md:5 "The local gate (§7)" — dangles once PLAN.md is deleted. (RELEASE.md is kept, so its plan references must go.)
+### P1-6 — docs/RELEASE.md:5 "The local gate (§7)" — ✅ FIXED
+Was: `The local gate (§7) must be green` → now `The local gate (\`npm run verify\`) must be green`. Naming the command is more useful to a public operator than a section number that will not exist.
 
-### P1-7 — docs/RELEASE.md:34 "(§3 rule 1)" — dangles once PLAN.md is deleted.
+### P1-7 — docs/RELEASE.md:34 "(§3 rule 1)" — ✅ FIXED
+Was: `1. **Dependency re-check** (§3 rule 1): confirm every pinned version…` → now `1. **Dependency re-check**: confirm every pinned version…`. The rule itself (max stable only) is stated in full in the sentence after the colon.
+
+**Verified after the rewrite:** `README.md` and `docs/RELEASE.md` — the only two files the cleanup keeps — contain **zero** references to `docs/PLAN.md`, `SESSION_MEMORY.md`, "Progress log", or any `§N` section reference. The cleanup can now delete the five scratch docs with nothing left pointing at them.
 
 ---
 
@@ -108,8 +120,18 @@ Existing thumbnails keep their stored rotation until each photo is re-thumbnaile
 
 Tests: 2 new in `thumbs.test.ts`. Gate: **293/293** TS tests, 92/92 `cargo test`, clippy, fmt, build.
 
-### P2-4 — Object-URL leak on every "Add photos" batch
+### P2-4 — Object-URL leak on every "Add photos" batch — ✅ FIXED
 **`src/pages/GalleryPage.tsx:121`** — `loadThumbs` rebuilds the URL map; the cleanup loop only revokes old URLs whose id is *absent* from the new map, so pre-existing photos get new URLs while old ones leak (~30 kB each, unbounded over bulk imports). Fix: revoke the previous URL before overwriting the entry.
+
+**Fixed structurally, not by patching the loop.** The page kept a bare `thumbsRef` and revoked inline in three places (grid reload, single delete, unmount), which is why the rule was easy to get wrong. `createThumbUrlBook` (`src/lib/gallery.ts`) now owns every grid object URL:
+
+- `swap(next)` revokes every previously-tracked URL **except any URL still present in `next`**, then adopts `next` as the only live set. That rule is correct in both directions: the leak (a photo still in the grid gets a second URL and keeps the first) is closed, and a URL the grid still points at can never be revoked — which the old `!next.has(id)` test did not guarantee.
+- `drop(id)`, `clear()` (unmount) and `revokeAll()` (a cancelled mid-flight load, whose URLs the book never adopted) replace the three ad-hoc loops.
+- `swap` copies the map it is given, so a caller mutating its own map afterwards cannot smuggle an untracked URL into the live set.
+
+Tests: 5 new in `gallery.test.ts`, driven by a counting `create`/`revoke` stand-in because `URL.createObjectURL` needs a document. **Mutation-checked**: restoring the old `if (!next.has(id))` logic in `swap` makes `swap revokes the previous set even when the photo is still in the grid` fail.
+
+Gate: **298/298** TS tests (293 → 298), 92/92 `cargo test`, clippy, fmt, build.
 
 ### P2-5 — `save_thumb` can't replace a thumbnail on Windows
 **`src-tauri/src/photos.rs:148`** — calls `write_atomic(..., replace=false)`; the module's own docs state "`rename` overwrites on Unix but not on Windows." Re-saving a thumb fails on Windows (the dev platform where `npm run verify` runs `cargo test`), contradicting the `thumb_save_read_delete_roundtrip_and_sibling_cleanup` test. Thumbs are derived data — use `replace=true`.
@@ -222,13 +244,13 @@ Target: delete agent session files, progress logs, plans — keep the repo clean
 
 | File | Reason |
 |---|---|
-| `docs/RELEASE.md` | Explicit wish; the by-hand release procedure. Fix P1-6/P1-7 (§7, §3) first. |
+| `docs/RELEASE.md` | Explicit wish; the by-hand release procedure. P1-6/P1-7 (§7, §3) ✅ already fixed. |
 
 ### docs/ — DELETE (5)
 
 | File | Reason |
 |---|---|
-| `docs/PLAN.md` | Agent build plan + phase progress log; internal process. (Fix README P1-2…P1-5 first.) |
+| `docs/PLAN.md` | Agent build plan + phase progress log; internal process. (README P1-2…P1-5 ✅ already fixed — nothing links here any more.) |
 | `docs/CODE_REVIEW_FIX_PLAN.md` | Agent scratch from the Oct-14 code review. |
 | `docs/M02_PHOTO_PIPELINE_PLAN.md` | Agent scratch: M-02 implementation plan. |
 | `docs/UI_POLISH_PLAN.md` | Agent scratch: UI phases plan. |
@@ -244,7 +266,7 @@ Target: delete agent session files, progress logs, plans — keep the repo clean
 
 ### KEEP everything else
 
-`README.md` (after P1-2…P1-5), `package.json` (minus the two reset scripts), `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `biome.json`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.githooks/` (the local gate — the only enforcement), `src/`, `src-tauri/`, `public/`. Full 186-blob inventory: no other scratch files exist (only 7 `.md` files total, all accounted for).
+`README.md` (P1-2…P1-5 ✅ done), `package.json` (minus the two reset scripts), `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `index.html`, `biome.json`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.githooks/` (the local gate — the only enforcement), `src/`, `src-tauri/`, `public/`. Full 186-blob inventory: no other scratch files exist (only 7 `.md` files total, all accounted for).
 
 ### Deletion mechanics — important
 

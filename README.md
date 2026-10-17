@@ -5,9 +5,8 @@ fully offline, encrypted local database.
 
 One person, by design — no accounts, no sync, no cloud.
 
-The full build plan lives in [`docs/PLAN.md`](docs/PLAN.md) — main plan plus
-a phase-by-phase build log. The coding agent works one phase at a time from
-that plan.
+Built and released by hand: [Development](#development) below covers the local
+toolchain, and [`docs/RELEASE.md`](docs/RELEASE.md) is the release procedure.
 
 ## Development
 
@@ -37,16 +36,15 @@ git config core.hooksPath .githooks   # once per clone
 `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` →
 `vite build`
 
-Rules of the gate (see §7 of the plan for the full rationale):
+Rules of the gate:
 
-- Never use `git push --no-verify`. If the gate is red, fix it or
-  revert. Keep the Progress log's gate column in [`docs/PLAN.md`](docs/PLAN.md)
-  current as the local evidence for the gate.
+- Never use `git push --no-verify`. If the gate is red, fix it or revert —
+  the gate's own output on your machine is the evidence.
 - Hosted CI is intentionally out of scope. Every clone must enable the hook
   with `git config core.hooksPath .githooks`; reviewers and release operators
   should request the local gate output when verifying a change.
 - Rust side needs `rustup component add clippy rustfmt` once.
 - Releases are built, signed and published **by hand** — there is no
-  release workflow; see §9 of the plan and [`docs/RELEASE.md`](docs/RELEASE.md)
-  for the exact procedure (`scripts/make-latest-json.mjs` builds the updater
-  manifest, which `tauri build` does not emit).
+  release workflow; see [`docs/RELEASE.md`](docs/RELEASE.md) for the exact
+  procedure (`scripts/make-latest-json.mjs` builds the updater manifest, which
+  `tauri build` does not emit).

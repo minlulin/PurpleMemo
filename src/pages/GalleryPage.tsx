@@ -28,7 +28,7 @@ import {
   notesRepo,
 } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
-import { photoExtFromName } from "../lib/gallery.ts";
+import { createThumbUrlBook, photoExtFromName } from "../lib/gallery.ts";
 import { createLoadGuard } from "../lib/loads.ts";
 import { makeThumbnail } from "../lib/thumbs.ts";
 import type {
@@ -54,7 +54,19 @@ export default function GalleryPage() {
   const [photos, setPhotos] = useState<PhotoRow[]>([]);
   /** Grid object URLs — one small thumbnail per photo. */
   const [thumbs, setThumbs] = useState<Map<number, string>>(new Map());
-  const thumbsRef = useRef<Map<number, string>>(new Map());
+  /**
+   * Owns every grid object URL (review P2-4). The page used to keep a bare
+   * `thumbsRef` and revoke inline, which leaked one URL per still-visible
+   * photo on every reload — see `createThumbUrlBook`.
+   */
+  const thumbUrls = useMemo(
+    () =>
+      createThumbUrlBook({
+        create: bytesUrl,
+        revoke: (url) => URL.revokeObjectURL(url),
+      }),
+    [],
+  );
   /** The ONE full-resolution image that is currently open, if any. */
   const [full, setFull] = useState<{ id: number; url: string } | null>(null);
   const fullRef = useRef<{ id: number; url: string } | null>(null);
@@ -108,22 +120,19 @@ export default function GalleryPage() {
       for (const photo of list) {
         if (isCancelled?.()) break;
         try {
-          next.set(photo.id, bytesUrl(await thumbBytesFor(photo)));
+          next.set(photo.id, thumbUrls.create(await thumbBytesFor(photo)));
         } catch {
           // Missing or undecodable: a placeholder tile — never break the grid.
         }
       }
       if (isCancelled?.()) {
-        for (const url of next.values()) URL.revokeObjectURL(url);
+        // These URLs were never tracked, so the book cannot know about them.
+        thumbUrls.revokeAll(next.values());
         return;
       }
-      for (const [id, url] of thumbsRef.current) {
-        if (!next.has(id)) URL.revokeObjectURL(url);
-      }
-      thumbsRef.current = next;
-      setThumbs(next);
+      setThumbs(thumbUrls.swap(next));
     },
-    [thumbBytesFor],
+    [thumbBytesFor, thumbUrls],
   );
 
   /** Release the open full-resolution image (replacing one drops the old). */
@@ -176,12 +185,11 @@ export default function GalleryPage() {
     })();
     return () => {
       cancelled = true;
-      for (const url of thumbsRef.current.values()) URL.revokeObjectURL(url);
-      thumbsRef.current = new Map();
+      thumbUrls.clear();
       if (fullRef.current) URL.revokeObjectURL(fullRef.current.url);
       fullRef.current = null;
     };
-  }, [reload, loadThumbs]);
+  }, [reload, loadThumbs, thumbUrls]);
 
   const pickFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -252,12 +260,7 @@ export default function GalleryPage() {
   const removePhoto = async (photo: PhotoRow) => {
     try {
       await galleryRepo.deletePhoto(photo.id);
-      const url = thumbsRef.current.get(photo.id);
-      if (url) URL.revokeObjectURL(url);
-      const next = new Map(thumbsRef.current);
-      next.delete(photo.id);
-      thumbsRef.current = next;
-      setThumbs(next);
+      setThumbs(thumbUrls.drop(photo.id));
       if (selected?.id === photo.id) {
         if (fullRef.current?.id === photo.id) dropFull();
         setSelected(null);

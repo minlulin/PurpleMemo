@@ -29,6 +29,77 @@ export function photoExtFromName(fileName: string): string {
   return /^[a-z0-9]{1,8}$/.test(ext) ? ext : "bin";
 }
 
+/**
+ * Who owns the gallery grid's object URLs (review P2-4).
+ *
+ * Every tile is an object URL the renderer must revoke by hand, and the grid
+ * was doing that bookkeeping inline: `loadThumbs` builds a whole new id → URL
+ * map, then revoked only the previous entries whose id was *absent* from the
+ * new map. Since every URL in the new map is freshly minted, a photo that is
+ * still in the grid got a second URL and its first one leaked — ~30 kB per
+ * photo per "Add photos" batch, unbounded over a bulk import, and invisible
+ * because a leaked blob URL is only released when the document goes away.
+ *
+ * The rule the inline version kept getting wrong is "every URL this book
+ * handed out is revoked exactly once, and never while the grid still uses it",
+ * so it is the book's whole job: `swap` revokes the previous set except any
+ * URL that is still in the new one, and adopts the new set as the only live
+ * one. Pure over the `create`/`revoke` pair, so the accounting is testable
+ * without a document — which is the only reason the leak was not caught before.
+ */
+export interface ThumbUrlBook {
+  /** Mint an object URL. Not tracked until `swap`/`drop`/`clear` sees it. */
+  create(bytes: Uint8Array): string;
+  /** The live URLs, for the grid to render. */
+  current(): Map<number, string>;
+  /**
+   * Replace the whole grid. Revokes every previously-tracked URL that is not in
+   * `next`, then tracks `next`. The returned map is a copy: the caller may keep
+   * mutating the one it passed in.
+   */
+  swap(next: Map<number, string>): Map<number, string>;
+  /** Revoke and forget one photo's URL (a delete). */
+  drop(id: number): Map<number, string>;
+  /** Revoke a set the book never tracked — a load that was cancelled. */
+  revokeAll(urls: Iterable<string>): void;
+  /** Revoke everything (unmount). */
+  clear(): void;
+}
+
+export function createThumbUrlBook(io: {
+  create: (bytes: Uint8Array) => string;
+  revoke: (url: string) => void;
+}): ThumbUrlBook {
+  let live = new Map<number, string>();
+  return {
+    create: io.create,
+    current: () => live,
+    swap(next) {
+      const kept = new Set(next.values());
+      for (const url of live.values()) {
+        if (!kept.has(url)) io.revoke(url);
+      }
+      live = new Map(next);
+      return live;
+    },
+    drop(id) {
+      const url = live.get(id);
+      if (url !== undefined) io.revoke(url);
+      const next = new Map(live);
+      next.delete(id);
+      live = next;
+      return next;
+    },
+    revokeAll(urls) {
+      for (const url of urls) io.revoke(url);
+    },
+    clear() {
+      for (const url of live.values()) io.revoke(url);
+      live = new Map();
+    },
+  };
+}
+
 export function createGalleryRepo(driver: DataDriver) {
   return {
     /**
