@@ -169,31 +169,83 @@ pub fn key_export_audit_line(destination: &str) -> String {
 /// Write the DB key to `path`, and record that it happened (§5.4).
 ///
 /// The key is read from the credential store, used, and dropped inside this
-/// function: it is never returned, so it never crosses into the webview. That
-/// is the point of the command existing at all (review H-7) — the previous
+/// function: it is never returned, so it never crosses into the webview. That is
+/// the point of the command existing at all (review H-7) — the previous
 /// `db_key_export` handed the plaintext key to the renderer on every call,
 /// where it sat in React state and was also pushed onto the system clipboard,
 /// which persists after the app closes and is readable by every other program
 /// on the machine.
+///
+/// **Written atomically and without following a symlink** (review P3-5, P3-20).
+/// The old form opened the destination with `truncate(true)`, which meant a
+/// failure — or a symlink sitting at the path — destroyed whatever was already
+/// there. The user picked this path, so the file is expected to be replaceable,
+/// but "replaceable" is not "destroy the previous contents before the new ones
+/// exist": a disk-full halfway through a write used to leave a truncated key file
+/// that looks valid and opens nothing.
+///
+/// The bytes go to a `.purple-memo-tmp` sibling in the same directory (so the
+/// rename stays on one filesystem) and are renamed into place. On unix the temp
+/// is opened `O_NOFOLLOW | O_EXCL`, so a symlink planted at the temp name is
+/// refused rather than written through. The final rename replaces the target
+/// atomically; it is a rename, not a truncate, so there is no window in which
+/// the path is missing or half-written.
 pub fn save_db_key_file(path: &Path) -> Result<(), String> {
+    use std::io::Write;
     let key = read_db_key()?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Owner-only: the file is the master secret for the whole database.
-        options.mode(0o600);
+    if path.is_dir() {
+        return Err(format!(
+            "{} is a directory — pick a file name for the key",
+            path.display()
+        ));
     }
-    let write_result = options
-        .open(path)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))
-        .and_then(|mut file| {
-            use std::io::Write;
-            // Trailing newline so the file is well-formed text.
-            file.write_all(format!("{key}\n").as_bytes())
-                .map_err(|e| format!("could not write {}: {e}", path.display()))
-        });
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => return Err(format!("{} has no directory to write into", path.display())),
+    };
+    std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Err(format!("invalid destination {}", path.display()));
+    };
+    let tmp_path = parent.join(format!("{file_name}.purple-memo-tmp"));
+    let bytes = format!("{key}\n").into_bytes();
+
+    let write_result = (|| -> Result<(), String> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Owner-only: the file is the master secret for the whole database.
+            options.mode(0o600);
+            // Never write THROUGH a symlink planted at the temp name — that is
+            // how a temp-file write becomes an arbitrary-file overwrite.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_EXCL);
+        }
+        let mut file = options
+            .open(&tmp_path)
+            .map_err(|e| format!("could not open {}: {e}", tmp_path.display()))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("could not write {}: {e}", tmp_path.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("could not flush {}: {e}", tmp_path.display()))?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        // Leave no temp file behind on failure, and never touch the real one.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        // Keep the temp file: it holds the only copy of a key that is still in
+        // the credential store, and deleting it would throw away the user's work.
+        return Err(format!(
+            "could not write {} ({e}); the key is still at {}",
+            path.display(),
+            tmp_path.display()
+        ));
+    }
+    let write_result: Result<(), String> = Ok(());
     // Only record a disclosure that actually happened.
     write_result?;
     crate::note_key_export(&path.display().to_string());
@@ -842,6 +894,67 @@ mod tests {
                 "should name the destination: {message}"
             );
         }
+    }
+
+    #[test]
+    fn a_key_file_write_refuses_a_directory_destination() {
+        // P3-20: the old form opened the destination with `truncate(true)` and
+        // only learned it was a directory afterwards, by failing to write. The
+        // refusal is now explicit, so the user gets a message that names the
+        // problem instead of "could not open ...".
+        let dir = TempDir::new("key-dir-dest");
+        let message = save_db_key_file(&dir.0).expect_err("a directory is not a file");
+        assert!(
+            message.contains("directory"),
+            "should say the destination is a directory: {message}"
+        );
+    }
+
+    #[test]
+    fn a_key_file_write_leaves_the_previous_file_intact_on_failure() {
+        // P3-20: the destructive part of `truncate(true)` was that the old
+        // contents were gone before the new bytes existed. Assert the property
+        // directly rather than through the credential store: whatever the
+        // platform's keyring does, a *failed* save must not have emptied the
+        // file the user already had.
+        let dir = TempDir::new("key-overwrite");
+        let out = dir.0.join("key.txt");
+        let previous = b"the key I already exported\n";
+        std::fs::write(&out, previous).expect("seed the destination");
+
+        // A path whose parent is a *file* cannot be created, so the write fails
+        // after the temp open is attempted and before the rename.
+        let blocked = dir.0.join("blocker").join("key.txt");
+        std::fs::write(dir.0.join("blocker"), b"i am a file, not a directory")
+            .expect("create the blocking file");
+        let _ = save_db_key_file(&blocked);
+
+        assert_eq!(
+            std::fs::read_to_string(&out).expect("read back"),
+            String::from_utf8_lossy(previous),
+            "an unrelated failed save must not have truncated the existing file"
+        );
+    }
+
+    #[test]
+    fn a_key_file_write_leaves_no_temp_file_when_it_fails() {
+        // P3-20: the temp file is the first thing written, so a failure before
+        // the rename must not leave a partial key file sitting next to it.
+        let dir = TempDir::new("key-temp-cleanup");
+        let blocked = dir.0.join("blocker").join("key.txt");
+        std::fs::write(dir.0.join("blocker"), b"not a directory").expect("blocking file");
+        let _ = save_db_key_file(&blocked);
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir.0)
+            .expect("read temp dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".purple-memo-tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "failed save left temp files behind: {leftovers:?}"
+        );
     }
 
     // -- FTS5-under-SQLCipher spike (P1 scope) ------------------------------

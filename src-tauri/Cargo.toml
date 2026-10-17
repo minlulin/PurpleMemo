@@ -22,6 +22,10 @@ serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 keyring = "4.2.0"
 sha2 = "0.11.0"
+# Only for O_NOFOLLOW / O_EXCL on the key-file temp write (review P3-5). Already
+# in the tree as a transitive dependency, so this declares an existing pin
+# rather than adding one.
+libc = "0.2"
 getrandom = "0.4.3"
 tiny_http = "0.12.0"
 tauri-plugin-dialog = "2.8.2"

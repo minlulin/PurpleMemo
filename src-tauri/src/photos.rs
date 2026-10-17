@@ -46,9 +46,12 @@ pub fn save_photo(
     bytes: &[u8],
     ext: &str,
 ) -> Result<String, String> {
-    let _write_guard = PHOTO_WRITE_LOCK.lock().map_err(|_| {
-        "photo storage is temporarily unavailable — restart Purple Memo".to_string()
-    })?;
+    // Recover from poisoning rather than refusing forever (review P3-3). The
+    // guard's inner value is `()`, so there is nothing inconsistent to inherit —
+    // unlike a database connection, which may be mid-transaction. This was
+    // inconsistent with the DB mutex, which recovers in `lock_conn`, and it made
+    // one panic wedge every photo operation until the app was restarted.
+    let _write_guard = PHOTO_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let ext = ext.to_ascii_lowercase();
     if !is_valid_ext(&ext) {
         return Err(format!(
@@ -144,9 +147,12 @@ pub fn read_thumb(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, String> {
 /// Write the thumbnail of a stored photo and return the derived thumb path.
 /// Same atomic-write discipline as a photo save.
 pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<String, String> {
-    let _write_guard = PHOTO_WRITE_LOCK.lock().map_err(|_| {
-        "photo storage is temporarily unavailable — restart Purple Memo".to_string()
-    })?;
+    // Recover from poisoning rather than refusing forever (review P3-3). The
+    // guard's inner value is `()`, so there is nothing inconsistent to inherit —
+    // unlike a database connection, which may be mid-transaction. This was
+    // inconsistent with the DB mutex, which recovers in `lock_conn`, and it made
+    // one panic wedge every photo operation until the app was restarted.
+    let _write_guard = PHOTO_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let thumb = thumb_rel_path(rel_path)?;
     write_atomic(&data_dir.join(&thumb), bytes)?;
     Ok(thumb)
@@ -161,9 +167,12 @@ pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<Strin
 /// delete against the saves keeps "save returned this path" and "the file at
 /// this path exists" from coming apart.
 pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), String> {
-    let _write_guard = PHOTO_WRITE_LOCK.lock().map_err(|_| {
-        "photo storage is temporarily unavailable — restart Purple Memo".to_string()
-    })?;
+    // Recover from poisoning rather than refusing forever (review P3-3). The
+    // guard's inner value is `()`, so there is nothing inconsistent to inherit —
+    // unlike a database connection, which may be mid-transaction. This was
+    // inconsistent with the DB mutex, which recovers in `lock_conn`, and it made
+    // one panic wedge every photo operation until the app was restarted.
+    let _write_guard = PHOTO_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     validate_rel_path(rel_path)?;
     match fs::remove_file(data_dir.join(rel_path)) {
         Ok(()) => {}

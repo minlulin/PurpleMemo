@@ -61,7 +61,22 @@ fn lock_conn(state: &AppState) -> CmdResult<MutexGuard<'_, Connection>> {
     // Recover from a poisoned mutex: a panic in any command drops the guard
     // atomically, leaving the Connection in a clean state. Refusing all future
     // commands (the previous behaviour) was more harmful than the panic itself.
-    Ok(state.conn.lock().unwrap_or_else(|e| e.into_inner()))
+    let (conn, was_poisoned) = match state.conn.lock() {
+        Ok(guard) => (guard, false),
+        Err(poisoned) => (poisoned.into_inner(), true),
+    };
+    // A dropped guard is NOT the same as a rolled-back transaction (review P3-1):
+    // the guard releases on unwind, so a panic between `BEGIN` and `COMMIT`
+    // leaves the connection *inside* that transaction, and every later command
+    // runs inside it while `txn_open` still says a transaction is open.
+    //
+    // Only on the poison path — `txn_open` is legitimately true whenever the UI
+    // holds a manual transaction, so probing unconditionally would end those.
+    if was_poisoned && state.txn_open.swap(false, Ordering::SeqCst) {
+        // Best effort: if this ROLLBACK fails there was nothing to roll back.
+        let _ = conn.execute_batch("ROLLBACK;");
+    }
+    Ok(conn)
 }
 
 /// SELECT-ish reads: rows as JSON objects keyed by column name.
