@@ -55,3 +55,45 @@ test("searchNotes excludes archived notes unless asked", async () => {
     /n\.archived = 0/,
   );
 });
+
+test("searchNotes scopes to a collection when one is selected (P2-13)", async () => {
+  // The regression: the sidebar filter reached `listNotes` but not the search,
+  // so clicking a collection during a search highlighted it and then returned
+  // matches from every collection.
+  const driver = createMockDriver({
+    results: [[{ id: 1, title: "Grocery budget", collection_id: 4 }]],
+  });
+  const rows = await searchNotes(driver, "grocery", { collectionId: 4 });
+  assert.equal(rows.length, 1);
+  const call = first(driver.callsTo("query"), "query");
+  const sql = call.args[0] as string;
+  assert.match(sql, /n\.collection_id = \?/);
+  // Bound, never interpolated — and in the MATCH-then-filters order so the
+  // existing params assertion keeps its meaning.
+  assert.deepEqual(call.args[1], ['"grocery"*', 4]);
+  assert.ok(
+    sql.indexOf("notes_fts MATCH ?") < sql.indexOf("n.collection_id = ?"),
+    "the MATCH clause comes first and its param stays first",
+  );
+});
+
+test("searchNotes: no collectionId means no collection clause at all", async () => {
+  // Not `AND n.collection_id = NULL`, which would match nothing.
+  const driver = createMockDriver();
+  await searchNotes(driver, "x");
+  const sql = first(driver.callsTo("query"), "query").args[0] as string;
+  assert.doesNotMatch(sql, /collection_id/);
+  assert.deepEqual(first(driver.callsTo("query"), "query").args[1], ['"x"*']);
+});
+
+test("searchNotes: collection, archived and rank clauses combine", async () => {
+  const driver = createMockDriver();
+  await searchNotes(driver, "x y", { collectionId: 7, includeArchived: true });
+  const call = first(driver.callsTo("query"), "query");
+  const sql = call.args[0] as string;
+  assert.match(sql, /notes_fts MATCH \? AND n\.collection_id = \?/);
+  // includeArchived was asked for, so that clause must be absent.
+  assert.doesNotMatch(sql, /n\.archived = 0/);
+  assert.match(sql, /ORDER BY rank/);
+  assert.deepEqual(call.args[1], ['"x"* "y"*', 7]);
+});

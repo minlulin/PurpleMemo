@@ -288,12 +288,20 @@ export default function NotesPage() {
     setError(null);
     try {
       const cols = await notesRepo.listCollections();
+      // One filter for BOTH paths (review P2-13): the sidebar selection used to
+      // be applied only when the search box was empty, so clicking a collection
+      // during a search highlighted it and then showed matches from every
+      // collection. Deriving it once keeps the two branches from disagreeing.
+      const collectionId =
+        activeCollection === "all" ? undefined : activeCollection;
       const list =
         search.trim().length > 0
-          ? await notesRepo.search(search, { includeArchived: showArchived })
+          ? await notesRepo.search(search, {
+              includeArchived: showArchived,
+              collectionId,
+            })
           : await notesRepo.listNotes({
-              collectionId:
-                activeCollection === "all" ? undefined : activeCollection,
+              collectionId,
               includeArchived: showArchived,
             });
       if (!listGuard.isCurrent(token)) return; // superseded by a newer search

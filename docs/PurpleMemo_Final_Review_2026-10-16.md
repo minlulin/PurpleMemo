@@ -23,13 +23,16 @@
 | P2-4 | ✅ **fixed** | `createThumbUrlBook` owns every grid object URL; mutation-checked |
 | P2-8 | ✅ **fixed** | `reset-session-memory.mjs` + both npm entries deleted; `scripts/` is now exactly the 4 keepers |
 | P2-12 | ✅ **fixed** | `deleteNote`/`deleteMemory` delete their `photo_refs` in the same atomic batch; mutation-checked |
+| P2-13 | ✅ **fixed** | `searchNotes` takes `collectionId`; the page derives the filter once for both branches; mutation-checked |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
 
-**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → (8) delete the 5 scratch docs; (9) public.
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → (9) delete the 5 scratch docs; (10) public.
 
-Step 8 is the last mechanical item before publishing.
+Step 9 is the last mechanical item before publishing.
+
+**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed. What remains is: the P2 additions from the 2026-10-17 single-user audit, which are all *features the app never had* (P2-9 edit/delete paths across Business + Budget, P2-10 delete confirmations on 8 pages, P2-11 busy guards on 6 submit handlers), plus P2-5, P2-6, P2-7 and the P3 tier. Those are release decisions, not blockers.
 
 ### What the P1-1 fix does
 
@@ -192,9 +195,19 @@ Tests: 5 new in `gallery.test.ts` — the exact statement pair and order, the ty
 
 Gate: **303/303** TS tests (298 → 303), 92/92 `cargo test`, clippy, fmt, build.
 
-### P2-13 — Notes full-text search ignores the active sidebar collection filter (2026-10-17 audit)
+### P2-13 — Notes full-text search ignores the active sidebar collection filter — ✅ FIXED
 **`src/pages/NotesPage.tsx:314-323` · `src/lib/notes.ts:178-185` · `src/lib/search.ts:22-39`**
 When `search` is non-empty, `NotesPage` calls `notesRepo.search(search, { includeArchived: showArchived })` without passing `activeCollection`. Clicking a collection in the sidebar while a search query is active highlights the collection and triggers a reload, but still returns matches from all collections. Fix: add `collectionId?: number` to `searchNotes` (`AND n.collection_id = ?`) and pass `collectionId: activeCollection === "all" ? undefined : activeCollection`.
+
+**Fixed at both ends.** `searchNotes` takes `collectionId?: number` and appends `AND n.collection_id = ?`; `notesRepo.search` forwards it; the page derives the filter **once** and passes it to *both* branches of `refresh`.
+
+- The derivation was the actual defect surface: the browse branch computed `activeCollection === "all" ? undefined : activeCollection` inline and the search branch had no equivalent, so the two could only ever agree by accident. One `const collectionId` shared by both is what makes the next edit safe.
+- **`searchNotes` now builds its `WHERE` from a clause list** instead of string-concatenating one optional clause. A second optional clause is where the ad-hoc version would have started growing sentinels: `AND n.collection_id = NULL` matches nothing, so "no filter selected" would silently return zero rows. Omitted means absent, and a test pins that.
+- Every clause stays bound, and the MATCH expression remains first in the param list — so the existing assertion on `['"grocery"*']` keeps its meaning rather than having to be rewritten.
+
+Tests: 4 new in `search.test.ts` (scoped, unscoped-has-no-clause, and the three clauses combined) + 1 in `notes.test.ts` pinning the repo→`searchNotes` seam, since the page itself has no unit-test surface here. **Mutation-checked on both halves**: dropping the clause from `searchNotes` *and* dropping `collectionId` from the page's search call fails 3 of them.
+
+Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build.
 
 ---
 
@@ -251,7 +264,7 @@ When `search` is non-empty, `NotesPage` calls `notesRepo.search(search, { includ
 ## Verification gaps (verified in 2026-10-17 audit)
 
 1. `src-tauri/share/share.html` — **Verified clean:** every value is inserted via `document.createElement` + `node.textContent = String(text)` (`el()` helper); no `innerHTML` is used.
-2. `src/lib/search.ts` — **Verified parameterized** (`buildMatchQuery` double-quotes every whitespace token with internal quotes doubled and binds via `WHERE notes_fts MATCH ?`), **except** `searchNotes` lacks `collectionId` filtering (recorded as **P2-13** above).
+2. `src/lib/search.ts` — **Verified parameterized** (`buildMatchQuery` double-quotes every whitespace token with internal quotes doubled and binds via `WHERE notes_fts MATCH ?`; the optional `collection_id` clause added by P2-13 is bound too, and is *omitted* rather than set to `NULL` when no collection is selected — a `= NULL` clause would match nothing). `searchNotes` also takes a `collectionId` now, so the sidebar filter applies to a search as well as to the browse list (P2-13 ✅).
 3. `scripts/make-latest-json.mjs` — **Verified clean:** delegates to `buildLatestJson` in `src/lib/release.ts`, which strictly validates semver (no leading `v`), non-empty `.sig` contents, non-empty asset URL, and strict RFC 3339 `pub_date`.
 
 ---

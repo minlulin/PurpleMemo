@@ -187,10 +187,17 @@ export function createNotesRepo(driver: DataDriver) {
       await driver.batch(deleteLinkedEntity("note", id));
     },
 
-    /** FTS over title/content/tags/folder (§2.4) — empty input returns []. */
+    /**
+     * FTS over title/content/tags/folder (§2.4) — empty input returns [].
+     *
+     * Takes the same `collectionId` filter as `listNotes` so the sidebar
+     * selection scopes a search exactly as it scopes the browse list (P2-13);
+     * when the search box is empty the page calls `listNotes` with the same
+     * filter, and both agree on what "no filter" means.
+     */
     async search(
       input: string,
-      opts: { includeArchived?: boolean } = {},
+      opts: { includeArchived?: boolean; collectionId?: number } = {},
     ): Promise<NoteRow[]> {
       return searchNotes(driver, input, opts) as Promise<NoteRow[]>;
     },
