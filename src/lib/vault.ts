@@ -9,9 +9,9 @@ import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import {
   decryptWithKey,
   deriveVaultKey,
+  deriveVaultTag,
   encryptWithKey,
   randomSaltB64,
-  sha256HexText,
 } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
 import type { VaultItemRow } from "./types.ts";
@@ -139,24 +139,42 @@ async function checkVerifier(
 
 export function createVaultRepo(driver: DataDriver) {
   /**
-   * In-memory derived keys (item id -> {salt, key, pwdHash}); cleared by
-   * `lockVault`. The pwdHash binds each cached key to the password it was
-   * derived from — without it, a cached key would let ANY password decrypt
-   * the item (e.g. getItem with a wrong password succeeding after unlock,
-   * or changePassword accepting a wrong old password).
+   * In-memory derived keys (item id -> {salt, key, tag}); cleared by
+   * `lockVault` and by a password change.
+   *
+   * The `tag` binds each cached key to the password it was derived from — the
+   * right idea, and the reason a wrong password cannot be answered out of the
+   * cache. What changed (review P3-19) is the **material**: it used to be
+   * `sha256HexText(password)`, an unsalted SHA-256 of the master vault
+   * password held in renderer memory beside a deliberately non-extractable
+   * `CryptoKey`. SHA-256 is dictionary-crackable at billions of hashes per
+   * second, so that tag handed back exactly what PBKDF2 was bought to prevent
+   * and made the non-extractable key beside it pointless — the password is the
+   * cheaper way in. It is now a PBKDF2 tag
+   * ({@link deriveVaultTag}, {@link VAULT_TAG_ITERATIONS}), derived from the
+   * item's own salt so two cached items under one password share nothing.
+   *
+   * The further improvement, not taken here because it is an API change rather
+   * than a fix: item operations should not take a password at all. The unlocked
+   * session already *is* the proof, so the argument exists only to be compared —
+   * and removing it would delete the tag, and this class of problem with it.
    */
   const keyCache = new Map<
     number,
-    { salt: string; key: CryptoKey; pwdHash: string }
+    { salt: string; key: CryptoKey; tag: string }
   >();
 
   async function deriveItemKey(
     itemId: number,
     password: string,
-  ): Promise<{ salt: string; key: CryptoKey }> {
-    const pwdHash = await sha256HexText(password);
+  ): Promise<{ salt: string; key: CryptoKey; tag: string }> {
+    // Cache first, so a hit costs no query — and the entry carries the salt its
+    // tag was derived from, so the tag can be recomputed without one.
     const cached = keyCache.get(itemId);
-    if (cached && cached.pwdHash === pwdHash) return cached;
+    if (cached) {
+      const tag = await deriveVaultTag(password, cached.salt);
+      if (cached.tag === tag) return cached;
+    }
     const rows = await driver.query<{ salt: string }>(
       "SELECT salt FROM vault_items WHERE id = ?",
       [itemId],
@@ -164,7 +182,7 @@ export function createVaultRepo(driver: DataDriver) {
     const salt = rows[0]?.salt;
     if (!salt) throw new Error(`vault item ${itemId} has no salt`);
     const key = await deriveVaultKey(password, salt);
-    const entry = { salt, key, pwdHash };
+    const entry = { salt, key, tag: await deriveVaultTag(password, salt) };
     keyCache.set(itemId, entry);
     return entry;
   }
@@ -212,6 +230,8 @@ export function createVaultRepo(driver: DataDriver) {
       );
       const first = rows[0];
       if (first) {
+        // The GCM auth tag is the proof: a wrong password derives a different
+        // key, and decryption throws here before anything is returned.
         const { key } = await deriveItemKey(first.id, password);
         await decryptItem(key, {
           ciphertext: first.ciphertext,
@@ -254,7 +274,9 @@ export function createVaultRepo(driver: DataDriver) {
       keyCache.set(r.lastInsertRowid, {
         salt,
         key,
-        pwdHash: await sha256HexText(password),
+        // This key was just used to encrypt the item, so the tag is the
+        // password it really came from — not a guess (review P3-19).
+        tag: await deriveVaultTag(password, salt),
       });
       return r.lastInsertRowid;
     },
@@ -372,10 +394,12 @@ export function createVaultRepo(driver: DataDriver) {
         })),
         await verifierSeal(newPassword),
       ]);
-      const newPwdHash = await sha256HexText(newPassword);
-      for (const m of migrated) {
-        keyCache.set(m.id, { salt: m.salt, key: m.key, pwdHash: newPwdHash });
-      }
+      // The cache is dropped rather than re-tagged (review P3-19): every key in
+      // it was derived from the OLD password, so each would need a fresh tag
+      // and a fresh key from the new one. Clearing costs one PBKDF2 per item
+      // on next use, which is the price of keeping a tag of the new password in
+      // memory instead of nothing.
+      keyCache.clear();
     },
 
     async deleteItem(id: number): Promise<void> {

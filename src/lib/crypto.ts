@@ -150,6 +150,58 @@ export interface VaultKey {
 }
 
 /** Derive a vault key from a password + the setup salt. */
+/**
+ * How many PBKDF2 iterations back the vault key cache's password tag
+ * (review P3-19).
+ *
+ * The cache needs *something* that identifies which password an entry belongs
+ * to, so that a wrong password cannot be answered from it. This used to be an
+ * unsalted SHA-256 of the password, which is the wrong material entirely:
+ * SHA-256 is dictionary-crackable at billions of hashes per second, so keeping
+ * one in memory throws back exactly what PBKDF2 was bought to buy, and makes
+ * the non-extractable `CryptoKey` beside it pointless — the password is the
+ * cheaper way in.
+ *
+ * Deliberately **not** the full {@link PBKDF2_ITERATIONS}: the tag is compared
+ * on every cache lookup, so matching it to the key's cost would double unlock
+ * time for no extra protection. 100k is the same floor `classifyPin` accepts as
+ * "not weak", and it is still ~4 orders of magnitude away from a plain hash —
+ * far too slow to make an in-memory copy worth stealing.
+ */
+export const VAULT_TAG_ITERATIONS = 100_000;
+
+/**
+ * A slow, password-specific tag for the vault key cache — see
+ * {@link VAULT_TAG_ITERATIONS}.
+ *
+ * Derived from the item's own salt, so two items cached under the same password
+ * do not share a tag and a leak of one reveals nothing about the other.
+ */
+export async function deriveVaultTag(
+  password: string,
+  saltB64: string,
+): Promise<string> {
+  const salt = b64ToBytes(saltB64);
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: new Uint8Array([...salt, 0x9e]) as BufferSource, // domain-separated
+      iterations: VAULT_TAG_ITERATIONS,
+    },
+    keyMaterial,
+    256,
+  );
+  return bytesToB64(new Uint8Array(bits));
+}
+
 export async function deriveVaultKey(
   password: string,
   saltB64: string,

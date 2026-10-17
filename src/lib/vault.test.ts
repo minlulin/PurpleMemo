@@ -2,10 +2,17 @@
 // validation, and changePassword is all-or-nothing.
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BatchStatement } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
+import {
+  deriveVaultTag,
+  PBKDF2_ITERATIONS,
+  randomSaltB64,
+  VAULT_TAG_ITERATIONS,
+} from "./crypto.ts";
 import type { VaultItemRow } from "./types.ts";
 import { createVaultRepo, WrongPasswordError } from "./vault.ts";
 
@@ -335,4 +342,60 @@ test("listItems never selects ciphertext, salt or iv (§5.3)", async () => {
     /SELECT id, title, created_at, updated_at FROM vault_items/,
   );
   assert.ok(!/ciphertext|salt|\biv\b/.test(sql));
+});
+
+test("the cache tag is a slow KDF, not a fast hash of the password (P3-19)", async () => {
+  // The cache must bind a key to its password — that is what stops a wrong
+  // password being answered out of it — but the binding must not be cheap to
+  // attack. An unsalted SHA-256 of the master password in renderer memory threw
+  // back exactly what PBKDF2 was bought to prevent, and made the
+  // non-extractable CryptoKey beside it pointless.
+  assert.ok(
+    VAULT_TAG_ITERATIONS >= 100_000,
+    `VAULT_TAG_ITERATIONS=${VAULT_TAG_ITERATIONS} is too low to count as slow`,
+  );
+  assert.ok(
+    VAULT_TAG_ITERATIONS < PBKDF2_ITERATIONS,
+    "the tag is matched on every cache hit; matching it to the key's cost " +
+      "would double unlock time for no extra protection",
+  );
+
+  const salt = randomSaltB64();
+  const tag = await deriveVaultTag("correct-horse", salt);
+  assert.equal(
+    await deriveVaultTag("correct-horse", salt),
+    tag,
+    "stable for the same password and salt, so a cache hit compares equal",
+  );
+  assert.notEqual(
+    await deriveVaultTag("wrong-password", salt),
+    tag,
+    "a different password must not match",
+  );
+  assert.notEqual(
+    await deriveVaultTag("correct-horse", randomSaltB64()),
+    tag,
+    "derived per item, so two items under one password share no tag",
+  );
+  assert.match(tag, /^[A-Za-z0-9+/]+=*$/, "base64, as the cache stores it");
+});
+
+test("no password hash is left anywhere in the vault module (P3-19)", () => {
+  // The regression guard: a future edit that reintroduces a fast hash of the
+  // password would not fail any behavioural test, because the cache still
+  // works either way. Comments are stripped first — this module discusses the
+  // old function by name on purpose, and prose about it is not a call to it.
+  const src = readFileSync(new URL("./vault.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  assert.doesNotMatch(
+    src,
+    /sha256HexText|sha256HexBytes/,
+    "the vault must not hash the password with a fast hash again",
+  );
+  assert.match(
+    src,
+    /deriveVaultTag/,
+    "and must bind the cache with the slow tag",
+  );
 });
