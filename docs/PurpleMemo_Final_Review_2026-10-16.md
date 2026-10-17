@@ -80,6 +80,37 @@ e.g. `(§2.9)`, `(§8)`, `(§5.4)` in `src/` and `src-tauri/src/`. Harmless at r
 ### P2-8 — `scripts/reset-session-memory.mjs` becomes dead once `docs/SESSION_MEMORY.md` is deleted
 Delete the script **and** the `session:reset` / `memory:reset` entries in `package.json` (nothing else references it — not in the verify chain, not in `.githooks/pre-push`).
 
+### P2-9 — Missing Edit and Delete escape hatches across Business & Budget (2026-10-17 audit)
+**`src/pages/BusinessPage.tsx`, `src/lib/business.ts`, `src/pages/BudgetPage.tsx`, `src/lib/budget.ts`**
+In single-person day-to-day use, a typo on an entry becomes permanent when a module has no update or delete path:
+- **Business Jobs (`BusinessPage.tsx:314-565`, `business.ts:95-155`):** `business.ts` has no `updateJob` or `deleteJob`, and neither `JobsView` nor `HistoryView` offers Edit or Delete. A mistyped customer job amount or test job can never be corrected or removed — it permanently inflates `Total Receivable` on the Dashboard and customer vouchers.
+- **Business Payables (`BusinessPage.tsx:666-890`, `business.ts:241-295`):** `business.ts` has no `updatePayable` or `deletePayable`, and `PayablesView` has no Edit or Delete controls. A mistyped supplier payable sits in `Supplier Payables` forever unless marked paid (which books a false expense entry in Budget).
+- **Budget Recurring Payments (`BudgetPage.tsx:860-1060`, `budget.ts:235-313`):** Recurring rules can be paused/resumed, but cannot be edited (`updateRecurring`) or deleted (`deleteRecurring`).
+- **Budget Wallets & Categories (`BudgetPage.tsx:104-302`, `budget.ts:138-183`):** Wallets and income/expense categories can be added in `ManageView`, but cannot be renamed or deleted (when unused).
+- **Budget Transaction Kind Toggle (`BudgetPage.tsx:582-607`):** In `EntriesView`, the Income/Expense toggle buttons are disabled while editing (`disabled={editing !== null}`), forcing delete + re-create if an expense was accidentally logged as income.
+
+### P2-10 — Destructive deletes execute in one click with no confirmation (2026-10-17 audit)
+**`src/pages/VaultPage.tsx:221-232`, `src/pages/ShoppingPage.tsx:236-242`, `src/pages/HabitsPage.tsx:101-108`, `src/pages/LoansPage.tsx:99-107`, `src/pages/NotesPage.tsx:512-522`, `src/pages/JournalPage.tsx:177-191`, `src/pages/ContactsPage.tsx:163-172`, `src/pages/GalleryPage.tsx:275-291`**
+Because the app has no Trash or Undo, a single misclick permanently wipes user data across:
+- **Vault secrets (`VaultPage.tsx:221-232`)** — `removeItem` immediately deletes the encrypted secret row.
+- **Shopping lists (`ShoppingPage.tsx:236-242`)** — the `×` button sits right next to the list selection tab and immediately cascades to delete all `shopping_items` in that list.
+- **Habits (`HabitsPage.tsx:101-108`)** — `removeHabit` immediately cascades and wipes the entire historical `habit_logs` streak record.
+- **Loans (`LoansPage.tsx:99-107`)** — `remove` deletes an active loan with an unpaid balance in one click.
+- **Notes, Journal entries, Contacts, and Gallery photos.**
+Fix: require a two-step inline confirmation (e.g. `Delete` → `Confirm delete` / `Cancel`, matching the backup-restore confirmation pattern in `SettingsPage.tsx`) before running destructive deletes.
+
+### P2-11 — Rapid double-click on payment / repayment / create buttons books duplicate financial entries (2026-10-17 audit)
+**`src/pages/BusinessPage.tsx:370-411, 726-757` · `src/pages/LoansPage.tsx:66-97`**
+Unlike `BudgetPage.EntriesView` (which disables submit via `saving`), `BusinessPage` (`JobsView.pay`, `JobsView.addJob`, `PayablesView.pay`, `PayablesView.addPayable`) and `LoansPage` (`repay`, `addLoan`) do not set a `busy` state while awaiting IPC writes. Double-clicking **"Save payment"** on a partial job payment passes the `amountCents <= remaining` check twice and records two job payments plus two Budget income entries; double-clicking **"Save"** on a partial loan repayment records the repayment twice. Fix: gate each async submit handler with a `busy` state that disables the submit button until `finally`.
+
+### P2-12 — Deleting a Note or Memory leaves orphaned `photo_refs` ("Zombie" links in Gallery) (2026-10-17 audit)
+**`src/lib/notes.ts:174-176` · `src/lib/memories.ts:67-69` · `src-tauri/src/schema.rs:343-356` · `src/pages/GalleryPage.tsx:293-300`**
+`photo_refs` has `ON DELETE CASCADE` on `photo_id`, but `(entity_type, entity_id)` is a polymorphic reference with no SQL foreign key. Neither `deleteNote(id)` nor `deleteMemory(id)` removes matching rows from `photo_refs`, so deleting a linked note or memory leaves dangling entries that display as `Note #12` or `Memory #5` under **"Linked to"** in the Gallery Inspector. Fix: wrap `deleteNote` and `deleteMemory` (and any future `deleteJob`) in `driver.batch(...)` to also delete from `photo_refs WHERE entity_type = ? AND entity_id = ?`.
+
+### P2-13 — Notes full-text search ignores the active sidebar collection filter (2026-10-17 audit)
+**`src/pages/NotesPage.tsx:314-323` · `src/lib/notes.ts:178-185` · `src/lib/search.ts:22-39`**
+When `search` is non-empty, `NotesPage` calls `notesRepo.search(search, { includeArchived: showArchived })` without passing `activeCollection`. Clicking a collection in the sidebar while a search query is active highlights the collection and triggers a reload, but still returns matches from all collections. Fix: add `collectionId?: number` to `searchNotes` (`AND n.collection_id = ?`) and pass `collectionId: activeCollection === "all" ? undefined : activeCollection`.
+
 ---
 
 ## P3 — nits and robustness notes (abridged)
@@ -110,6 +141,11 @@ Delete the script **and** the `session:reset` / `memory:reset` entries in `packa
 - **P3-26** `backup.ts:230` — expanded-bytes filter trusts declared ZIP header sizes; fflate's `unzipSync` enforces actual sizes on decompression, so this is a first-pass heuristic bypassable by a lying header, not a hard boundary (defense-in-depth gap; import is local user-initiated).
 - **P3-27** `backup.ts:181` — export aborts entirely if any photo file is missing (fail-closed, correct, no skip/repair path).
 - **P3-28** `backup.ts:461` — orphan-file scan is O(n²) (perf nit for very large libraries).
+- **P3-29** `NotesPage.tsx:547-579` — "Send to journal" gives no toast confirmation and has no `busy` guard while awaiting the append, inviting accidental duplicate appends to today's journal entry.
+- **P3-30** `BudgetPage.tsx:894-929` — `RecurringView.markPaid` requires `fallbackCategoryId` and `fallbackWalletId` to be selected even when the recurring rule already carries its own `category_id` and `wallet_id`; meanwhile on mount both fallbacks auto-default to the first category (`Food`) and wallet (`Cash`), silently booking uncategorized recurring rules there.
+- **P3-31** `SettingsPage.tsx:82-89` — `Filter settings…` only matches the 8 `SETTINGS_SECTIONS` titles (`Appearance`, `App lock & PIN`, etc.), so searching for `"theme"`, `"dark"`, `"idle"`, `"restore"`, `"zip"`, or `"lan"` returns `No settings match`.
+- **P3-32** `App.tsx:135-160` vs `TasksPage.tsx:287-320` — when `useReminderPoll` fires a due reminder in the background, `RemindersSection` on an already-open `TasksPage` does not refresh its list until navigation.
+- **P3-33** `Dialog.tsx:41-60` — `Tab` focus trap only wraps when `document.activeElement` is strictly `first` or `last`; clicking non-focusable modal text and pressing `Tab` can move focus outside the dialog unless `!dialog.contains(document.activeElement)` is also guarded.
 
 ---
 
@@ -127,11 +163,11 @@ Delete the script **and** the `session:reset` / `memory:reset` entries in `packa
 - **Links (L-01):** two layers — `MarkdownLink.tsx` + Rust `navigation.rs` origin allowlist; every `ReactMarkdown` instance covered.
 - **Docs-vs-code:** README verify chain matches `package.json` exactly; versions agree 0.1.0 × 3 (enforced by `check-versions.mjs` in the gate); `npm run dev` exists; no TODOs/console.logs; no secrets; `"private": true`.
 
-## Verification gaps (not findings — files absent from the audit set)
+## Verification gaps (verified in 2026-10-17 audit)
 
-1. `src-tauri/share/share.html` — phone page XSS surface; its CSP allows `script-src 'unsafe-inline'`; snapshot values claimed to render as text — worth one look.
-2. `src/lib/search.ts` — FTS `MATCH` parameterization not verified.
-3. `scripts/make-latest-json.mjs` — RELEASE.md's validation claim not verified.
+1. `src-tauri/share/share.html` — **Verified clean:** every value is inserted via `document.createElement` + `node.textContent = String(text)` (`el()` helper); no `innerHTML` is used.
+2. `src/lib/search.ts` — **Verified parameterized** (`buildMatchQuery` double-quotes every whitespace token with internal quotes doubled and binds via `WHERE notes_fts MATCH ?`), **except** `searchNotes` lacks `collectionId` filtering (recorded as **P2-13** above).
+3. `scripts/make-latest-json.mjs` — **Verified clean:** delegates to `buildLatestJson` in `src/lib/release.ts`, which strictly validates semver (no leading `v`), non-empty `.sig` contents, non-empty asset URL, and strict RFC 3339 `pub_date`.
 
 ---
 
