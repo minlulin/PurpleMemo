@@ -124,6 +124,22 @@ async function ensureNotifyPermission(): Promise<boolean> {
 }
 
 /**
+ * How long a security read may take before it is treated as failed (review
+ * P3-8). Generous on purpose — a cold database on a slow disk, with SQLCipher
+ * opening, is still well under this — because the cost of waiting is only a
+ * slightly longer skeleton, whereas the cost of cutting a live read short is a
+ * false error. Pure and exported so the rule is testable without a timer.
+ */
+export const SECURITY_LOAD_TIMEOUT_MS = 10_000;
+
+/** A promise that rejects after `ms`, for racing against a read that may hang. */
+function rejectAfter(ms: number): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+  });
+}
+
+/**
  * Reminder notification loop (§2.7). Lives in the app shell — not in
  * TasksPage — so navigating to another section never stops the polling, and
  * pauses while locked (§2.9) so notifications never surface over the lock
@@ -230,6 +246,8 @@ function AppShell() {
     autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
   });
   const [unlocked, setUnlocked] = useState(false);
+  /** A "Try again" on the boot-error screen is in flight (review P3-7). */
+  const [retrying, setRetrying] = useState(false);
   const [page, setPage] = useState<PageKey>("dashboard");
   const [notifyNote, setNotifyNote] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -243,13 +261,24 @@ function AppShell() {
       // The PIN is read RAW and classified (review C-3): `getJSON` returns
       // null for a row that does not exist AND for one whose JSON is
       // unparseable, and telling those apart is the whole fail-closed rule.
-      const [pinRaw, answerHash, question, theme, minutes] = await Promise.all([
-        settingsRepo.getRaw(SETTING_KEYS.pinHash),
-        settingsRepo.getJSON<PinHash>(SETTING_KEYS.securityAnswerHash),
-        settingsRepo.getJSON<string>(SETTING_KEYS.securityQuestion),
-        settingsRepo.getTheme(),
-        settingsRepo.getAutoLockMinutes(),
-      ]);
+      //
+      // Raced against a timeout (review P3-8). These are five local reads
+      // against an open database, so they are fast or they have failed — and a
+      // hung `invoke` used to leave the user on the skeleton for the life of
+      // the process, with no error and no way forward. Timing out turns that
+      // into the error screen, which is both honest and retryable.
+      const [pinRaw, answerHash, question, theme, minutes] = await Promise.race(
+        [
+          Promise.all([
+            settingsRepo.getRaw(SETTING_KEYS.pinHash),
+            settingsRepo.getJSON<PinHash>(SETTING_KEYS.securityAnswerHash),
+            settingsRepo.getJSON<string>(SETTING_KEYS.securityQuestion),
+            settingsRepo.getTheme(),
+            settingsRepo.getAutoLockMinutes(),
+          ]),
+          rejectAfter(SECURITY_LOAD_TIMEOUT_MS),
+        ],
+      );
       const t = theme ?? "dark";
       document.documentElement.dataset.theme = t;
       // `error: null` here is the ONLY place that error is cleared, so a
@@ -411,9 +440,33 @@ function AppShell() {
   if (stage === "error") {
     return (
       <div className="lock-wrap">
-        <p className="alert alert-error" role="alert">
-          {boot.error} Restart Purple Memo and try again.
-        </p>
+        <div className="entry-form vault-narrow">
+          <p className="alert alert-error" role="alert">
+            {boot.error}
+          </p>
+          {/* Retry rather than "restart and hope" (review P3-7). This screen is
+              the frontend's own failure to read the settings — the database is
+              open, Rust never refused to boot — so the read is genuinely worth
+              trying again: a transient SQLITE_BUSY or a momentarily locked
+              credential store both clear on their own, and telling someone to
+              relaunch a desktop app over it costs them their session. */}
+          <div className="editor-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={retrying}
+              onClick={() => {
+                setRetrying(true);
+                void loadSecurity().finally(() => setRetrying(false));
+              }}
+            >
+              {retrying ? "Retrying…" : "Try again"}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={lockNow}>
+              Lock workspace
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

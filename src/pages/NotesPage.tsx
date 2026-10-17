@@ -18,6 +18,7 @@ import {
 } from "../components/icons.tsx";
 import { markdownComponents } from "../components/MarkdownLink.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useToast } from "../components/Toast.tsx";
 import { journalRepo, notesRepo, settingsRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import {
@@ -57,6 +58,8 @@ interface EditorProps {
   onPin: () => void;
   onArchive: () => void;
   onToJournal: () => void;
+  /** The journal append is in flight (review P3-29) — disables its button. */
+  sendingToJournal: boolean;
   onDelete: () => void;
   /** Discard the unsaved draft and reload the stored note (M-01). */
   onDiscard: () => void;
@@ -220,9 +223,10 @@ function NoteEditor(p: EditorProps) {
           type="button"
           className="btn"
           title="Append this note to today's journal entry"
+          disabled={p.sendingToJournal}
           onClick={p.onToJournal}
         >
-          Send to journal
+          {p.sendingToJournal ? "Adding…" : "Send to journal"}
         </button>
         <span className="toolbar-spacer" />
         <span className="editor-word-count" aria-live="polite">
@@ -329,6 +333,7 @@ export default function NotesPage() {
     () => notes.find((n) => n.id === selectedId) ?? null,
     [notes, selectedId],
   );
+  const toast = useToast();
 
   useEffect(() => {
     if (selected && selected.id !== populatedIdRef.current) {
@@ -494,7 +499,13 @@ export default function NotesPage() {
             ...editorRef.current,
           })
         : clearNoteDraft(settingsRepo, selectedId);
-      await op;
+      // Draft bookkeeping is best-effort, exactly as `JournalPage` already
+      // treats it (review P3-9). The note is already saved by this point, so a
+      // failed draft write must not be reported as a failed save — it used to
+      // land in this `catch` and show "could not save" over a note that was
+      // saved perfectly well, which is the one message a writer must never get
+      // wrong. The draft is reconstructed on the next keystroke regardless.
+      await op.catch(() => undefined);
       await refresh();
     } catch (e) {
       setError(errText(e));
@@ -564,9 +575,22 @@ export default function NotesPage() {
    * Append the note to today's journal entry. Uses the current editor draft
    * (what the user sees) — not the last saved row — so unsaved edits are
    * included.
+   *
+   * Guarded and confirmed (review P3-29). This appends to a day that is
+   * *shared*: a second click before the first lands re-reads the pre-append
+   * entry and appends the same block again, so today's reflection ends up
+   * carrying the note twice, with nothing on screen to say so. Same in-flight
+   * guard as the money forms (`savingRef`, the authoritative half), and a toast
+   * on success — an action with no visible result and no confirmation is an
+   * action people fire twice out of sheer uncertainty.
    */
+  const toJournalRef = useRef(false);
+  const [sendingToJournal, setSendingToJournal] = useState(false);
+
   async function handleToJournal(): Promise<void> {
-    if (selectedId === null) return;
+    if (toJournalRef.current || selectedId === null) return;
+    toJournalRef.current = true;
+    setSendingToJournal(true);
     setError(null);
     try {
       const today = todayLocal();
@@ -597,8 +621,12 @@ export default function NotesPage() {
       } catch {
         // Best-effort: the appended entry is already stored.
       }
+      toast.success(`Added “${heading}” to today's journal entry.`);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      toJournalRef.current = false;
+      setSendingToJournal(false);
     }
   }
 
@@ -799,6 +827,7 @@ export default function NotesPage() {
                   onPin={() => void handlePin(selected)}
                   onArchive={() => void handleArchive(selected)}
                   onToJournal={() => void handleToJournal()}
+                  sendingToJournal={sendingToJournal}
                   onDelete={() => void handleDelete(selected.id)}
                   onDiscard={handleDiscardDraft}
                   splitRatio={splitRatio}

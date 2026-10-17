@@ -374,17 +374,46 @@ fn leading_keywords(sql: &str, n: usize) -> Vec<String> {
 /// The name of the pragma `sql` sets, or `None` when it is not a pragma.
 ///
 /// Scanned from the raw text rather than from keyword tokens because a pragma
-/// name may be dotted (`PRAGMA main.rekey`) or quoted (`PRAGMA "rekey"`) —
-/// both mean exactly the thing the bare form does.
+/// name may be dotted (`PRAGMA main.rekey`) or quoted — and SQLite accepts
+/// **three** quoting forms for an identifier, not one:
+///
+/// * `"rekey"` — the SQL standard form,
+/// * `` `rekey` `` — MySQL compatibility,
+/// * `[rekey]` — MS-SQL compatibility.
+///
+/// All three name the same pragma, so all three must reach the guard. This
+/// accepted only `"` (review P3-2), which made `PRAGMA [rekey]` scan as an
+/// *empty* name: the take-while stopped at `[`, `None` became `""` via
+/// `unwrap_or_default`, and neither `KEY` nor `REKEY` matched — so the one
+/// statement that must never run was the one spelling the guard did not
+/// recognise, while SQLite happily executed it.
 fn pragma_name_of(sql: &str) -> Option<String> {
     let rest = strip_leading_noise(sql)?;
     let rest = strip_keyword(rest, "PRAGMA")?;
     let name: String = rest
         .trim_start()
         .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '"')
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '"' | '[' | ']' | '`'))
         .collect();
-    let name = name.rsplit('.').next().unwrap_or("").trim_matches('"');
+    // Take the part after any schema prefix, then drop whichever quoting form
+    // wrapped it: `main.[rekey]` -> `[rekey]` -> `rekey`. Repeated, because the
+    // trim has to see through a nested spelling too — `["rekey"]` is not valid
+    // SQLite, but a scanner that mangles it into `"rekey"` (quotes still
+    // attached) would stop matching REKEY, and the fail-closed default below
+    // would never see an unparseable name to catch it.
+    let last = name.rsplit('.').next().unwrap_or("");
+    let mut name = last.to_string();
+    loop {
+        let trimmed = name
+            .trim_matches('"')
+            .trim_matches('`')
+            .trim_matches(['[', ']']);
+        if trimmed.len() == name.len() {
+            break;
+        }
+        name = trimmed.to_string();
+    }
+    let name = name.as_str();
     if name.is_empty() {
         None
     } else {
@@ -465,8 +494,20 @@ fn reject_dangerous_statement(sql: &str) -> Result<(), String> {
     // `PRAGMA key` replaces the key for the connection and `PRAGMA rekey`
     // re-encrypts the whole file. Either one leaves the database encrypted
     // under a key that never reaches the credential store: total data loss.
+    //
+    // **An unidentifiable pragma is refused rather than allowed** (review P3-2).
+    // This used to read `unwrap_or_default()`, so a `PRAGMA` whose name the
+    // scanner could not parse became the empty string, matched neither KEY nor
+    // REKEY, and sailed through — a fail-*open* default on the one guard whose
+    // failure destroys data. Review P3-2 hit exactly that: `pragma_name_of`
+    // accepted SQLite's `"…"` quoting but not its `` `…` `` or `[…]` forms, so
+    // `PRAGMA [rekey]` scanned as empty and was allowed, while SQLite executed
+    // it. The three quoting forms are now handled, and anything still
+    // unparseable is refused: a spelling this scanner has never seen must not
+    // be the spelling that gets through.
     if first == "PRAGMA" {
-        let name = pragma_name_of(sql).unwrap_or_default();
+        let name = pragma_name_of(sql)
+            .ok_or_else(|| "PRAGMA could not be identified and is not allowed here".to_string())?;
         if name == "KEY" || name == "REKEY" {
             return Err(
                 "PRAGMA key/rekey is not allowed: it would leave the database \
@@ -1224,6 +1265,18 @@ mod tests {
             "  PRAGMA main.rekey = \"x'00'\"",
             "PRAGMA \"rekey\" = \"x'00'\"",
             "-- c\nPRAGMA rekey = \"x'00'\"",
+            // The three SQLite identifier-quoting forms. Only `"` was accepted
+            // before review P3-2, so these three scanned as an EMPTY name,
+            // matched neither KEY nor REKEY, and reached SQLite — which then
+            // re-encrypted the database exactly as the guard exists to prevent.
+            "PRAGMA [rekey] = \"x'00'\"",
+            "PRAGMA [key] = \"x'00'\"",
+            "PRAGMA `rekey` = \"x'00'\"",
+            "PRAGMA `key` = \"x'00'\"",
+            "  PRAGMA main.[rekey] = \"x'00'\"",
+            "PRAGMA [main].[rekey] = \"x'00'\"",
+            "PRAGMA [\"rekey\"] = \"x'00'\"",
+            "-- c\nPRAGMA [rekey] = \"x'00'\"",
         ] {
             let err =
                 reject_dangerous_statement(smuggled).expect_err("PRAGMA key/rekey must be refused");
