@@ -24,11 +24,13 @@ import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
 import type { ShareInfo } from "../data/driver.ts";
 import {
   AUTO_LOCK_CHOICES,
+  classifyPin,
   MIN_PIN_LENGTH,
   securityReloadNeeded,
+  UNREADABLE_PIN_REASON,
 } from "../lib/appLock.ts";
 import { MAX_BACKUP_ARCHIVE_BYTES } from "../lib/backup.ts";
-import { hashAnswer, hashPin, type PinHash, verifyPin } from "../lib/crypto.ts";
+import { hashAnswer, hashPin, verifyPin } from "../lib/crypto.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import type { PageKey } from "../lib/navigation.ts";
@@ -136,12 +138,28 @@ export default function SettingsPage(p: SettingsPageProps) {
   const changePin = async () => {
     setError(null);
     try {
-      const stored = await settingsRepo.getJSON<PinHash>(SETTING_KEYS.pinHash);
-      if (!stored) {
+      // Read the RAW value and classify it (review P3-18), rather than
+      // `getJSON<PinHash>`. `getJSON` returns null both when no PIN was ever set
+      // and when the stored row is unparseable, so this path could not tell
+      // "no PIN yet" from "corrupt PIN" — and it never checked the stored
+      // iteration count at all. Boot already fail-closes on a weak hash, so this
+      // is unreachable today; it is fixed because it is a second trust root
+      // reaching the same secret, and a trust root that validates nothing should
+      // not be one. Same function, same rule, two callers.
+      const state = classifyPin(
+        await settingsRepo.getRaw(SETTING_KEYS.pinHash),
+      );
+      if (state.kind === "absent") {
         setError("No PIN is set yet — complete the first-run setup.");
         return;
       }
-      if (!(await verifyPin(pin.current, stored))) {
+      if (state.kind === "unreadable") {
+        setError(
+          `The stored PIN is ${UNREADABLE_PIN_REASON[state.reason]} — nothing was changed.`,
+        );
+        return;
+      }
+      if (!(await verifyPin(pin.current, state.hash))) {
         setError("Current PIN is wrong.");
         return;
       }

@@ -14,6 +14,7 @@ import {
   createGalleryRepo,
   createThumbUrlBook,
   deleteLinkedEntity,
+  isUniqueViolation,
   photoExtFromName,
 } from "./gallery.ts";
 import { createMemoriesRepo } from "./memories.ts";
@@ -330,4 +331,100 @@ test("deleteMemory: one batch, links included, never a lone row delete", async (
   assert.deepEqual(links.params, ["memory", 7]);
   assert.match(row.sql, /DELETE FROM memories WHERE id = \?/);
   assert.deepEqual(row.params, [7]);
+});
+
+test("isUniqueViolation recognises a uniqueness failure and nothing else", () => {
+  // Structural match, because the error shape differs per driver but the
+  // wording of a UNIQUE failure does not.
+  assert.ok(
+    isUniqueViolation(new Error("UNIQUE constraint failed: photos.rel_path")),
+  );
+  assert.ok(
+    isUniqueViolation(new Error("SQLite3Error: constraint failed: UNIQUE")),
+  );
+  assert.ok(!isUniqueViolation(new Error("no such table: photos")));
+  assert.ok(!isUniqueViolation(new Error("database is locked")));
+  assert.ok(!isUniqueViolation(undefined));
+  assert.ok(!isUniqueViolation(null));
+});
+
+test("a lost insert race returns the row it collided with, not an error", async () => {
+  // P3-25: the SELECT and INSERT are a check-then-act. Two concurrent saves of
+  // the same bytes can both see no row; the loser used to surface the UNIQUE
+  // violation as an error, which failed a save of a picture already in the
+  // library. Scripted exactly as the race happens: the pre-INSERT SELECT sees
+  // nothing, the INSERT is refused, and the re-read finds the winner's row.
+  const driver = createMockDriver({
+    results: [[], [{ id: 7 }]], // pre-INSERT miss, then the winner's row
+  });
+  const gallery = createGalleryRepo(driver);
+  const realExecute = driver.execute.bind(driver);
+  let inserts = 0;
+  driver.execute = (async (sql: string, params?: unknown[]) => {
+    if (/INSERT INTO photos/.test(sql)) {
+      inserts += 1;
+      if (inserts === 1) {
+        throw new Error("UNIQUE constraint failed: photos.rel_path");
+      }
+    }
+    return realExecute(sql, params);
+  }) as typeof driver.execute;
+
+  const id = await gallery.savePhoto({
+    bytes: Uint8Array.from([10, 20, 30, 40]),
+    ext: "jpg",
+  });
+
+  assert.equal(id, 7, "the raced save resolves to the row it collided with");
+  // Exactly one insert attempt: the loser must not retry the INSERT. Counted
+  // here rather than via callsTo("execute"), because the interception above
+  // replaces the driver's own recording for the call it throws from.
+  assert.equal(inserts, 1, "one INSERT attempt, no blind retry");
+  // And the re-read happened — that is the recovery, not luck.
+  const selects = driver
+    .callsTo("query")
+    .filter((c) =>
+      /SELECT id FROM photos WHERE rel_path/.test(c.args[0] as string),
+    );
+  assert.equal(selects.length, 2, "pre-INSERT miss plus the post-race re-read");
+});
+
+test("a lost race whose row has since vanished rethrows", async () => {
+  // If the colliding row is gone again, the violation was not ours to absorb —
+  // rethrow instead of inventing an id for a photo that is not there.
+  const driver = createMockDriver({ results: [[], []] });
+  const gallery = createGalleryRepo(driver);
+  const realExecute = driver.execute.bind(driver);
+  let inserts = 0;
+  driver.execute = (async (sql: string, params?: unknown[]) => {
+    if (/INSERT INTO photos/.test(sql)) {
+      inserts += 1;
+      if (inserts === 1) {
+        throw new Error("UNIQUE constraint failed: photos.rel_path");
+      }
+    }
+    return realExecute(sql, params);
+  }) as typeof driver.execute;
+
+  await assert.rejects(
+    () => gallery.savePhoto({ bytes: Uint8Array.from([1, 2, 3]), ext: "jpg" }),
+    /UNIQUE constraint failed/,
+    "no row to absorb the race into, so the error stands",
+  );
+});
+
+test("a non-uniqueness insert failure is not swallowed", async () => {
+  // The recovery must not become a way to lose real errors: if the INSERT fails
+  // for any other reason the caller still hears about it.
+  const driver = createMockDriver();
+  const gallery = createGalleryRepo(driver);
+  driver.execute = (async () => {
+    throw new Error("database is locked");
+  }) as typeof driver.execute;
+
+  await assert.rejects(
+    () => gallery.savePhoto({ bytes: new Uint8Array([1]), ext: "jpg" }),
+    /database is locked/,
+    "a locked database is not a lost race and must propagate",
+  );
 });

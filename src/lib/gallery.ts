@@ -9,6 +9,23 @@ import { sha256HexBytes } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
 import type { PhotoRefEntity, PhotoRefRow, PhotoRow } from "./types.ts";
 
+/**
+ * Did this error come from a UNIQUE constraint rather than from anything worse?
+ *
+ * Structural, not driver-specific: `SQLiteError` codes differ between rusqlite,
+ * sql.js and the Tauri bridge, but every one of them reports a uniqueness
+ * failure in the message text. Used to absorb a lost insert race (review P3-25)
+ * without swallowing real errors — a rethrow is the fallback whenever the shape
+ * does not match.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return (
+    message.includes("UNIQUE constraint failed") ||
+    message.includes("constraint failed: UNIQUE")
+  );
+}
+
 export interface SavePhotoInput {
   bytes: Uint8Array;
   ext: string;
@@ -156,6 +173,15 @@ export function createGalleryRepo(driver: DataDriver) {
      * Save bytes (driver writes the file) + insert the `photos` row.
      * Content-addressed: saving identical bytes again returns the existing
      * row instead of violating the rel_path UNIQUE constraint.
+     *
+     * The SELECT and the INSERT are a check-then-act, so two concurrent saves of
+     * the same bytes can both see no row and both insert (review P3-25). The
+     * loser hit the UNIQUE constraint and surfaced as an error to the caller —
+     * no data loss, since the row it collided with is the row it wanted, but a
+     * save that fails for a picture the user can already see is a bug. On a
+     * UNIQUE violation the existing row is re-read and returned, which is what
+     * the pre-INSERT SELECT was trying to do. `isUniqueViolation` is a
+     * structural test on the message, so it stays correct across drivers.
      */
     async savePhoto(input: SavePhotoInput): Promise<number> {
       const relPath = await driver.savePhoto(input.bytes, input.ext);
@@ -164,20 +190,33 @@ export function createGalleryRepo(driver: DataDriver) {
         [relPath],
       );
       if (existing[0]) return existing[0].id;
-      const r = await driver.execute(
-        `INSERT INTO photos (rel_path, sha256, ext, size_bytes, taken_date, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          relPath,
-          await sha256HexBytes(input.bytes),
-          input.ext,
-          input.bytes.length,
-          input.takenDate ?? null,
-          input.note ?? "",
-          todayLocal(),
-        ],
-      );
-      return r.lastInsertRowid;
+      try {
+        const r = await driver.execute(
+          `INSERT INTO photos (rel_path, sha256, ext, size_bytes, taken_date, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            relPath,
+            await sha256HexBytes(input.bytes),
+            input.ext,
+            input.bytes.length,
+            input.takenDate ?? null,
+            input.note ?? "",
+            todayLocal(),
+          ],
+        );
+        return r.lastInsertRowid;
+      } catch (e) {
+        // Someone else inserted the same bytes between the SELECT and here.
+        if (!isUniqueViolation(e)) throw e;
+        const raced = await driver.query<{ id: number }>(
+          "SELECT id FROM photos WHERE rel_path = ?",
+          [relPath],
+        );
+        // If the colliding row is gone again the violation was not ours to
+        // absorb, so rethrow rather than invent an id.
+        if (!raced[0]) throw e;
+        return raced[0].id;
+      }
     },
 
     async listPhotos(): Promise<PhotoRow[]> {

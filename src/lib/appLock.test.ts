@@ -13,12 +13,14 @@ import {
   MIN_PIN_LENGTH,
   type PinResetBlock,
   type PinState,
+  type PinUnreadable,
   pinResetBlocked,
   reloadOpensEntry,
   type SecurityReload,
   securityReloadNeeded,
   shellStage,
   showReloadWarning,
+  UNREADABLE_PIN_REASON,
 } from "./appLock.ts";
 
 // The lock gate must fail CLOSED (§2.9: the PIN is required and cannot be
@@ -414,4 +416,58 @@ test("lockRetryDelayMs: free attempts are instant, then a fixed pause (L-02)", (
     lockRetryDelayMs(LOCK_MAX_FREE_ATTEMPTS + 40),
     LOCK_RETRY_DELAY_MS,
   );
+});
+
+test("UNREADABLE_PIN_REASON covers every reason classifyPin can produce", () => {
+  // P3-18: the Change-PIN path now names the reason. Every kind the classifier
+  // can return needs a message, or the UI falls back to nothing useful — which
+  // is what it used to do.
+  const reasons: PinUnreadable[] = ["corrupt", "malformed", "weak-iterations"];
+  for (const reason of reasons) {
+    assert.ok(
+      UNREADABLE_PIN_REASON[reason]?.length > 0,
+      `no message for ${reason}`,
+    );
+    assert.doesNotMatch(
+      UNREADABLE_PIN_REASON[reason],
+      /\[object|undefined/,
+      "the message must be plain text the user can read",
+    );
+  }
+  // The iteration floor is named in the message, so the user learns why a PIN
+  // that used to work is now refused.
+  assert.match(
+    UNREADABLE_PIN_REASON["weak-iterations"],
+    new RegExp(
+      String(MIN_PIN_HASH_ITERATIONS).replace(/(\d)(?=(\d{3})+$)/g, "$1,"),
+    ),
+  );
+});
+
+test("a weak-iteration PIN is unreadable, so Change PIN refuses to touch it", () => {
+  // The second trust root. Boot already fails closed on this row, which is why
+  // the audit called the Change-PIN path unreachable — but a trust root that
+  // reaches the same secret and validates nothing is still a trust root.
+  const weak = classifyPin(
+    JSON.stringify({
+      salt: "s".repeat(16),
+      hash: "h".repeat(64),
+      iterations: 1,
+    }),
+  );
+  assert.equal(weak.kind, "unreadable");
+  assert.equal(
+    weak.kind === "unreadable" ? weak.reason : null,
+    "weak-iterations",
+  );
+  // And the message the page will show names the floor.
+  assert.match(UNREADABLE_PIN_REASON["weak-iterations"], /too few iterations/);
+});
+
+test("classifyPin still separates absent from unreadable for the write path", () => {
+  // getJSON returned null for both, which is how Change-PIN could not tell "no
+  // PIN yet" from "corrupt PIN". The raw-value API keeps them apart.
+  assert.equal(classifyPin(undefined).kind, "absent");
+  assert.equal(classifyPin("{nope").kind, "unreadable");
+  assert.equal(classifyPin('{"salt":"s"}').kind, "unreadable");
 });

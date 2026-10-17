@@ -89,6 +89,54 @@ async function decode(blob: Blob): Promise<{
 }
 
 /**
+ * Guard on the bytes before anything decodes them (review P3-15).
+ *
+ * `decode` hands the whole file to `createImageBitmap`, which materialises the
+ * *full* uncompressed image — not the thumbnail. A 100-megapixel phone photo is a
+ * ~5 MB file and ~400 MB of pixels, so a single oversized or deliberately
+ * crafted file could exhaust renderer memory with no way back short of a
+ * restart. The thumbnail is at most `THUMB_MAX_EDGE` on a side, so anything
+ * large enough to matter is already beyond what this function can use.
+ *
+ * Two bounds, because each alone leaves a gap:
+ * - encoded size, so a huge file is rejected before it is read into a decoder;
+ * - pixel count *after* decode, because a small file can still declare huge
+ *   dimensions (a few kilobytes of PNG header claim 100000x100000).
+ *
+ * The pixel bound is checked on the *declared* dimensions, which is what the
+ * decoder allocates from, so the expensive allocation is what gets refused.
+ *
+ * Both ceilings are set by what real cameras produce, not by what is
+ * comfortable to decode. 150 MP is comfortably above a 108 MP phone sensor
+ * (12000x9000 = 108 MP) and 64 MB covers a high-quality full-size JPEG of one;
+ * tighter bounds would reject a user's genuine photo and leave them with a
+ * permanent placeholder tile, which is a worse outcome than a slow thumbnail.
+ * They still refuse the crafted cases by orders of magnitude (100000x100000 is
+ * 10^10 pixels, 66x the ceiling). Lower them only alongside a plan for the
+ * photos that would stop thumbnailing.
+ */
+export const MAX_THUMB_SOURCE_BYTES = 64 * 1024 * 1024;
+export const MAX_THUMB_SOURCE_PIXELS = 150_000_000; // ~150 MP
+
+/** Throw before decoding if the file is too big to thumbnail safely. */
+export function assertThumbableSource(
+  byteLength: number,
+  width: number,
+  height: number,
+): void {
+  if (byteLength > MAX_THUMB_SOURCE_BYTES) {
+    throw new Error(
+      `photo is too large to thumbnail (${Math.round(byteLength / 1024 / 1024)} MB)`,
+    );
+  }
+  if (width * height > MAX_THUMB_SOURCE_PIXELS) {
+    throw new Error(
+      `photo declares too many pixels to thumbnail (${width}x${height})`,
+    );
+  }
+}
+
+/**
  * Downscale encoded image bytes to a JPEG thumbnail. Rejects when the webview
  * cannot decode the file (an unknown format, or a corrupt one) — the caller
  * keeps a placeholder tile and the inspector still offers the full bytes.
@@ -97,9 +145,19 @@ export async function makeThumbnail(
   bytes: Uint8Array,
   maxEdge: number = THUMB_MAX_EDGE,
 ): Promise<Uint8Array> {
+  // Cheap pre-check: refuses an oversized file before it is decoded at all.
+  if (bytes.length > MAX_THUMB_SOURCE_BYTES) {
+    throw new Error(
+      `photo is too large to thumbnail (${Math.round(bytes.length / 1024 / 1024)} MB)`,
+    );
+  }
   const blob = new Blob([bytes as BlobPart]);
   const decoded = await decode(blob);
   try {
+    // Post-decode check: the decoder has already reported the dimensions it
+    // allocated, so a crafted header claiming impossible size is caught here
+    // rather than becoming the allocation itself.
+    assertThumbableSource(bytes.length, decoded.width, decoded.height);
     const box = thumbBox(decoded.width, decoded.height, maxEdge);
     if (box === null) throw new Error("photo has no pixels to thumbnail");
     const canvas = document.createElement("canvas");

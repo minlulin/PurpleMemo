@@ -7,7 +7,14 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { THUMB_IMAGE_ORIENTATION, THUMB_MAX_EDGE, thumbBox } from "./thumbs.ts";
+import {
+  assertThumbableSource,
+  MAX_THUMB_SOURCE_BYTES,
+  MAX_THUMB_SOURCE_PIXELS,
+  THUMB_IMAGE_ORIENTATION,
+  THUMB_MAX_EDGE,
+  thumbBox,
+} from "./thumbs.ts";
 
 const src = readFileSync(new URL("./thumbs.ts", import.meta.url), "utf8");
 
@@ -74,5 +81,65 @@ test("the orientation value is spelled the way WebIDL spells it", () => {
     src,
     /imageOrientation:\s*"fromImage"/,
     "the camelCase spelling is not a member of the ImageOrientation enum",
+  );
+});
+
+test("assertThumbableSource: an ordinary photo passes", () => {
+  // A 12 MP phone photo: ~4 MB encoded, 4000x3000. Well inside both bounds, so
+  // the guard must not get in the way of real use.
+  assert.doesNotThrow(() => assertThumbableSource(4_000_000, 4000, 3000));
+  assert.doesNotThrow(() => assertThumbableSource(1, 1, 1));
+  // The pixel ceiling is generous on purpose: a real 12 MP photo is a small
+  // fraction of it, and a 108 MP sensor photo must still thumbnailable, so the
+  // bound cannot be set by what is comfortable to decode.
+  const realPhoto = 4000 * 3000;
+  assert.ok(
+    realPhoto < MAX_THUMB_SOURCE_PIXELS * 0.25,
+    `the ceiling (${MAX_THUMB_SOURCE_PIXELS}) is uncomfortably close to a real 12 MP photo (${realPhoto})`,
+  );
+  // A 108 MP phone photo must still get a thumbnail, or the user is left with a
+  // permanent placeholder tile — a worse outcome than a slow decode.
+  assert.doesNotThrow(() => assertThumbableSource(12_000_000, 12000, 9000));
+});
+
+test("assertThumbableSource: an oversized file is refused before decoding", () => {
+  // P3-15: decode materialises the FULL image, so bytes are the first bound.
+  assert.throws(
+    () => assertThumbableSource(MAX_THUMB_SOURCE_BYTES + 1, 100, 100),
+    /too large/,
+  );
+  assert.doesNotThrow(() =>
+    assertThumbableSource(MAX_THUMB_SOURCE_BYTES, 100, 100),
+  );
+});
+
+test("assertThumbableSource: a small file claiming huge dimensions is refused", () => {
+  // The gap a byte bound alone leaves: a few KB of PNG header can declare
+  // 100000x100000, and the decoder allocates from the DECLARED dimensions. This
+  // is the bound that actually closes it.
+  assert.throws(
+    () => assertThumbableSource(2_000, 100_000, 100_000),
+    /too many pixels/,
+  );
+  assert.doesNotThrow(() => assertThumbableSource(2_000, 1000, 1000));
+});
+
+test("the byte bound is checked before the decode, not only after", () => {
+  // If the only guard were after decode, the allocation we are guarding against
+  // would already have happened. Assert the ordering in the source: the cheap
+  // length check appears before the decode call.
+  const makeThumbnail = src.slice(
+    src.indexOf("export async function makeThumbnail"),
+  );
+  const preCheck = makeThumbnail.indexOf("MAX_THUMB_SOURCE_BYTES");
+  const decodeCall = makeThumbnail.indexOf("await decode(blob)");
+  assert.ok(preCheck > -1, "makeThumbnail must check the byte length itself");
+  assert.ok(
+    preCheck < decodeCall,
+    "the byte bound must be enforced before decode, not only after it",
+  );
+  assert.ok(
+    makeThumbnail.includes("assertThumbableSource(bytes.length, decoded.width"),
+    "and the decoded dimensions must be re-checked afterwards",
   );
 });

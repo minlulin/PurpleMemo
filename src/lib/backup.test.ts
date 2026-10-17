@@ -5,6 +5,7 @@
 // in one batch with FK off (table order irrelevant), restoring FK on after.
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { zipSync } from "fflate";
 import type { Queryable } from "../data/driver.ts";
@@ -12,6 +13,7 @@ import { createMockDriver, type MockDriver } from "../data/mock-driver.ts";
 import { first } from "../test-utils.ts";
 import {
   applyBackup,
+  assertExpandedLimits,
   BACKUP_APP,
   BACKUP_FORMAT_VERSION,
   BACKUP_JSON_ENTRY,
@@ -22,6 +24,7 @@ import {
   exportBudget,
   MAX_BACKUP_ARCHIVE_BYTES,
   MAX_BACKUP_ENTRIES,
+  MAX_BACKUP_EXPANDED_BYTES,
   MAX_BACKUP_MANIFEST_BYTES,
   MAX_BACKUP_PHOTO_BYTES,
   MAX_BACKUP_PHOTOS,
@@ -666,4 +669,80 @@ test("summarizeBackup counts rows and photos for the import summary", () => {
   assert.equal(summary.rowCount, 2);
   assert.equal(summary.photoCount, 1);
   assert.equal(summary.exportedAt, "2026-10-12T03:00:00.000Z");
+});
+
+test("assertExpandedLimits counts REAL bytes, not what a header declared", () => {
+  // P3-26: the pre-filter sums `originalSize`, which is read out of the archive
+  // and is therefore attacker-controlled. The recovery has to be independent of
+  // it, so these entries carry no header at all — only their actual length.
+  // The zip needed to trip the real 512 MB ceiling cannot be built in a test,
+  // so the rule is pinned here and the ordering is pinned from the source below.
+  const manifest = new Uint8Array(MAX_BACKUP_MANIFEST_BYTES + 1);
+  assert.throws(
+    () =>
+      assertExpandedLimits({
+        [BACKUP_JSON_ENTRY]: manifest,
+      }),
+    /backup\.json is larger/i,
+    "an over-large manifest is caught by real length",
+  );
+
+  const oversizePhoto = new Uint8Array(MAX_BACKUP_PHOTO_BYTES + 1);
+  assert.throws(
+    () =>
+      assertExpandedLimits({
+        [BACKUP_JSON_ENTRY]: new TextEncoder().encode("{}"),
+        "photos/big.jpg": oversizePhoto,
+      }),
+    /backup photo is larger/i,
+    "an over-large photo is caught by real length",
+  );
+
+  // The total is a sum across entries, not a per-entry max: many small entries
+  // are the actual zip-bomb shape.
+  const chunk = new Uint8Array(MAX_BACKUP_PHOTO_BYTES);
+  const bomb: Record<string, Uint8Array> = {
+    [BACKUP_JSON_ENTRY]: new TextEncoder().encode("{}"),
+  };
+  for (
+    let i = 0;
+    i * MAX_BACKUP_PHOTO_BYTES <= MAX_BACKUP_EXPANDED_BYTES;
+    i += 1
+  ) {
+    bomb[`photos/${i}.jpg`] = chunk;
+  }
+  assert.throws(
+    () => assertExpandedLimits(bomb),
+    /expands beyond/i,
+    "a total under many legal entries still trips the aggregate ceiling",
+  );
+});
+
+test("assertExpandedLimits lets a normal archive through", () => {
+  // The guard must not reject what this app itself writes.
+  assert.doesNotThrow(() =>
+    assertExpandedLimits({
+      [BACKUP_JSON_ENTRY]: new TextEncoder().encode("{}"),
+      "photos/2026/10/a.jpg": new Uint8Array(200_000),
+      "photos/2026/10/b.jpg": new Uint8Array(200_000),
+    }),
+  );
+});
+
+test("the real-byte check runs AFTER unzipSync, not only inside its filter", () => {
+  // If the only guard were the filter's header sum, a lying header would walk
+  // straight past it. The ordering is the whole fix, so it is asserted rather
+  // than assumed.
+  const source = readFileSync(new URL("./backup.ts", import.meta.url), "utf8");
+  const start = source.indexOf("entries = unzipSync(");
+  const end = source.indexOf("assertExpandedLimits(entries)", start);
+  assert.ok(start > -1, "parseBackupZip must decompress through unzipSync");
+  assert.ok(
+    end > start,
+    "the real-byte check must run on the extracted entries",
+  );
+  assert.match(
+    source,
+    /for \(const \[name, data\] of Object\.entries\(entries\)\)/,
+  );
 });

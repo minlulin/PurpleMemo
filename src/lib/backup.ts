@@ -244,6 +244,60 @@ function upgradeBackupData(payload: BackupPayload): BackupPayload {
   }
 }
 
+/**
+ * Re-check the size limits against the bytes that were ACTUALLY extracted,
+ * not the sizes the ZIP headers declared (review P3-26).
+ *
+ * The `filter` above sums `originalSize`, which is read straight out of the
+ * archive and is therefore attacker-controlled. A zip can declare 1 KB per
+ * entry and expand to a gigabyte, passing the pre-check and decompressing
+ * anyway. fflate does bound each entry while inflating, so this is
+ * defense-in-depth rather than a live hole — but the pre-check was the only
+ * thing standing between a crafted archive and `MAX_BACKUP_EXPANDED_BYTES` of
+ * allocation, and it was measuring the wrong number.
+ *
+ * Measuring after extraction is the independent version of the same bound: it
+ * cannot be lied to, because it counts what is in memory.
+ *
+ * Exported for direct testing: the zip that would trip the real 512 MB ceiling
+ * is far too large to build in a test, so the *rule* is tested here with
+ * synthetic entries and the *ordering* is asserted by reading the source.
+ */
+export function assertExpandedLimits(
+  entries: Record<string, Uint8Array>,
+): void {
+  let expandedBytes = 0;
+  let photoCount = 0;
+  for (const [name, data] of Object.entries(entries)) {
+    expandedBytes += data.length;
+    if (expandedBytes > MAX_BACKUP_EXPANDED_BYTES) {
+      throw new Error(
+        `Backup expands beyond the ${MAX_BACKUP_EXPANDED_BYTES} byte limit — import rejected.`,
+      );
+    }
+    if (name === BACKUP_JSON_ENTRY) {
+      if (data.length > MAX_BACKUP_MANIFEST_BYTES) {
+        throw new Error(
+          `backup.json is larger than the ${MAX_BACKUP_MANIFEST_BYTES} byte limit — import rejected.`,
+        );
+      }
+      continue;
+    }
+    if (!name.startsWith(PHOTOS_ZIP_PREFIX)) continue;
+    photoCount += 1;
+    if (photoCount > MAX_BACKUP_PHOTOS) {
+      throw new Error(
+        `Backup contains more than ${MAX_BACKUP_PHOTOS} photos — import rejected.`,
+      );
+    }
+    if (data.length > MAX_BACKUP_PHOTO_BYTES) {
+      throw new Error(
+        `A backup photo is larger than the ${MAX_BACKUP_PHOTO_BYTES} byte limit — import rejected.`,
+      );
+    }
+  }
+}
+
 function parseBackupJson(text: string): BackupPayload {
   let raw: unknown;
   try {
@@ -355,6 +409,9 @@ export function parseBackupZip(bytes: Uint8Array): ParsedBackup {
         return true;
       },
     });
+    // The declared sizes above are a cheap first pass only; this is the one
+    // that counts real bytes.
+    assertExpandedLimits(entries);
   } catch (error) {
     if (error instanceof Error && error.message.includes("import rejected")) {
       throw error;

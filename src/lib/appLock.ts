@@ -157,6 +157,17 @@ export function classifyPin(raw: string | undefined): PinState {
   return { kind: "stored", hash: parsed };
 }
 
+/**
+ * How to tell the user their PIN is unreadable. Defined here, beside the
+ * classification that produces it, so the two cannot drift — and reused by the
+ * Change-PIN path, which said nothing at all before (review P3-18).
+ */
+export const UNREADABLE_PIN_REASON: Record<PinUnreadable, string> = {
+  corrupt: "corrupt (not valid JSON)",
+  malformed: "in an unexpected shape",
+  "weak-iterations": `hashed with too few iterations (below ${MIN_PIN_HASH_ITERATIONS.toLocaleString()})`,
+};
+
 export function lockGate(pin: PinState, answerHash: unknown): LockGate {
   // Only a PIN that was never stored may open the setup screen.
   if (pin.kind === "absent") return "setup";
