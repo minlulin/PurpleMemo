@@ -24,6 +24,7 @@
 | P2-8 | ✅ **fixed** | `reset-session-memory.mjs` + both npm entries deleted; `scripts/` is now exactly the 4 keepers |
 | P2-12 | ✅ **fixed** | `deleteNote`/`deleteMemory` delete their `photo_refs` in the same atomic batch; mutation-checked |
 | P2-13 | ✅ **fixed** | `searchNotes` takes `collectionId`; the page derives the filter once for both branches; mutation-checked |
+| P2-5 | ❌ **disproved** | Premise false — `rename` *does* replace on Windows (probed). The false comment and the `replace` flag it justified are fixed; the assumption is now a test. |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
@@ -32,7 +33,7 @@
 
 Step 9 is the last mechanical item before publishing.
 
-**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed. What remains is: the P2 additions from the 2026-10-17 single-user audit, which are all *features the app never had* (P2-9 edit/delete paths across Business + Budget, P2-10 delete confirmations on 8 pages, P2-11 busy guards on 6 submit handlers), plus P2-5, P2-6, P2-7 and the P3 tier. Those are release decisions, not blockers.
+**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed or disproved. What remains is: the P2 additions from the 2026-10-17 single-user audit, which are all *features the app never had* (P2-9 edit/delete paths across Business + Budget, P2-10 delete confirmations on 8 pages, P2-11 busy guards on 6 submit handlers), plus P2-6, P2-7 and the P3 tier. Those are release decisions, not blockers.
 
 ### What the P1-1 fix does
 
@@ -140,8 +141,21 @@ Tests: 5 new in `gallery.test.ts`, driven by a counting `create`/`revoke` stand-
 
 Gate: **298/298** TS tests (293 → 298), 92/92 `cargo test`, clippy, fmt, build.
 
-### P2-5 — `save_thumb` can't replace a thumbnail on Windows
+### P2-5 — `save_thumb` can't replace a thumbnail on Windows — ❌ **DISPROVED** (premise false; underlying comment fixed)
 **`src-tauri/src/photos.rs:148`** — calls `write_atomic(..., replace=false)`; the module's own docs state "`rename` overwrites on Unix but not on Windows." Re-saving a thumb fails on Windows (the dev platform where `npm run verify` runs `cargo test`), contradicting the `thumb_save_read_delete_roundtrip_and_sibling_cleanup` test. Thumbs are derived data — use `replace=true`.
+
+**The reported bug does not exist.** `std::fs::rename` replaces an existing destination on Windows: Rust calls `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`. Probed on this machine (Windows, the platform the finding names) — renaming a temp sibling over an existing file returns `Ok(())` and the destination holds the new bytes. The finding also contradicted itself: it cites `thumb_save_read_delete_roundtrip_and_sibling_cleanup` as the test that *should* catch the failure, while stating that `cargo test` runs on Windows — so that test was passing on the platform the finding claims is broken.
+
+**The false premise was itself a defect, and that part is fixed.** A comment asserting wrong platform behaviour is not documentation, it is a trap, and it had already cost one review pass:
+
+- **`write_atomic`'s doc comment was corrected.** It claimed `rename` "overwrites on Unix but not on Windows" and carried a `replace` flag to delete the destination first. That reasoning was wrong in both directions: the flag was unnecessary, and remove-then-rename is *strictly worse* than rename-overwrite — it briefly unlinks a good file before a rename that was always going to succeed, so a rename failure left nothing at the path.
+- **The `replace` flag is gone.** `save_photo` and `save_thumb` both call `write_atomic(path, bytes)`. The flag could only ever be set wrong, and its two possible values encoded the same false belief.
+- **The assumption is now checked, not asserted.** `photos::tests::rename_replaces_an_existing_file` verifies on whatever machine runs `cargo test` that a rename replaces an existing file, that the temp sibling is consumed, and that a corrupt photo at a content-addressed path is replaced through the real writer. A stdlib-behaviour test earns its place here precisely because a wrong copy of this claim is what produced the finding.
+- `backup_file.rs`'s remove-and-retry fallback keeps its comment honest: it now points at that test instead of asserting the behaviour.
+
+Gate: **307/307** TS tests, **93/93** `cargo test** (92 → 93), clippy, fmt, build.
+
+**No user-visible behaviour changed** — re-saving a thumbnail already worked on every platform. What changed is that the code no longer carries a flag and a comment that describe a platform it was wrong about.
 
 ### P2-6 — The user-facing discard path is untested
 **`src/lib/drafts.test.ts` vs `src/pages/NotesPage.tsx:406`, `src/pages/JournalPage.tsx:131`** — store helpers are covered, but `handleDiscardDraft`, the `draftSeqRef` invalidation, the `touchedRef` race guard, and the "keystrokes during save" path have zero coverage. For a never-lose-text feature, the destructive path needs a test.
@@ -254,7 +268,7 @@ Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build
 - **Crypto:** fresh 16-byte salt per PIN hash; 600k PBKDF2-SHA256; constant-time `verifyPin`; fresh 12-byte IV per vault item; non-extractable vault keys; single CSPRNG.
 - **Lock:** `classifyPin` distinguishes absent/corrupt/malformed/weak-iterations; fail-closed gates; retry throttle (5 free → 5s pause) never bricks; `lockSession` locks even if vault-drop/share-stop throws; Oct-16 lock-bypass fixes verified; **and (P2-2) a failed security reload can no longer be resolved into PIN verification** — `shellStage` checks `error` before `lockGate` and `enterWorkspace` refuses entry unless the reload succeeded.
 - **Share:** consent token 256-bit CSPRNG, single-use, 120s TTL, burn-on-mismatch; 30-bit pairing code + 10-*consecutive*-wrong shutdown; Host-header rebinding defense; snapshot cleared before listener teardown (race-safe); 512KB snapshot cap; audit log never carries the code. (Plain-HTTP transport is a standing accepted risk with UI warning.)
-- **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup; thumbnails decode with EXIF orientation applied (P2-3), matching what `<img>` shows; `photo_refs` cleaned in both directions — photo deletes cascade on `photo_id`, and entity deletes remove their polymorphic links in the same batch (P2-12).
+- **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup; thumbnails decode with EXIF orientation applied (P2-3), matching what `<img>` shows; `photo_refs` cleaned in both directions — photo deletes cascade on `photo_id`, and entity deletes remove their polymorphic links in the same batch (P2-12); the atomic write's platform assumption is a test, not a comment (P2-5 disproved).
 - **DB core:** SQLCipher key verified via `sqlite_master` before schema work; mint-once keyring key; statement guard blocks txn-control/ATTACH/PRAGMA rekey and sees through SQL comments; all values parameter-bound.
 - **IPC:** 19 commands registered, none extra (18 + `backup_save_file`, which took the export write out of the webview); every command validates inputs; photo and backup bytes cross as raw bodies; opener scoped to http/https/mailto/tel.
 - **Drafts (M-01):** base-`updated_at` matching, stale-drop, in-flight keystroke guards, discard escape hatch, delete-clears-draft — all sound.

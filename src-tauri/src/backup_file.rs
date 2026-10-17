@@ -63,11 +63,12 @@ pub fn save_backup_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::write(&tmp_path, bytes).map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
     if let Err(first) = fs::rename(&tmp_path, path) {
         // `rename` replaces an existing file on every platform this app ships
-        // to (Windows uses `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`), so
-        // this arm means something unusual refused — an exFAT/network volume,
-        // or an antivirus holding the destination open. Overwriting an existing
-        // backup is the normal case here, so try once more without the
-        // destination in the way.
+        // to — Windows uses `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`,
+        // which `photos::tests::rename_replaces_an_existing_file` checks rather
+        // than assumes. So reaching this arm means something unusual refused: an
+        // exFAT/network volume, or an antivirus holding the destination open.
+        // Overwriting an existing backup is the normal case here, so try once
+        // more without the destination in the way.
         if !path.exists() {
             let _ = fs::remove_file(&tmp_path);
             return Err(format!(

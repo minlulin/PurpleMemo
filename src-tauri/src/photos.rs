@@ -72,7 +72,7 @@ pub fn save_photo(
         }
         // Hash mismatch: partial or corrupt file — rewrite it atomically below.
     }
-    write_atomic(&abs_path, bytes, true)?;
+    write_atomic(&abs_path, bytes)?;
     Ok(rel_path)
 }
 
@@ -81,11 +81,18 @@ pub fn save_photo(
 /// with a storable path: the photo grammar allows a single dot, so
 /// `<hash>.jpg.tmp` and `<hash>.thumb.jpg.tmp` are both unstorable shapes.
 ///
-/// `replace` removes a known-bad destination first: `rename` overwrites on
-/// Unix but not on Windows, and corruption recovery must behave the same on
-/// every supported platform. The caller holds [`PHOTO_WRITE_LOCK`], so the
-/// short remove/rename window is not observable by another write.
-fn write_atomic(abs_path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
+/// The rename replaces an existing destination on every platform this app ships
+/// to: Windows' `MoveFileExW` is called with `MOVEFILE_REPLACE_EXISTING`, so a
+/// corrupt file is overwritten in one step with no window in which the path is
+/// missing. An earlier version of this comment claimed the opposite — that
+/// `rename` overwrites on Unix but not on Windows — and carried a `replace` flag
+/// to remove the destination first. Both were wrong: review P2-5 was filed
+/// against that comment and reported a `save_thumb` failure on Windows that
+/// cannot happen, and the remove-then-rename it justified briefly unlinked a
+/// good file before a rename that was always going to succeed. `rename_replaces_an_existing_file`
+/// in this module's tests is what keeps the platform assumption checked rather
+/// than asserted.
+fn write_atomic(abs_path: &Path, bytes: &[u8]) -> Result<(), String> {
     let Some(parent) = abs_path.parent() else {
         return Err(format!("no parent directory for {}", abs_path.display()));
     };
@@ -95,10 +102,6 @@ fn write_atomic(abs_path: &Path, bytes: &[u8], replace: bool) -> Result<(), Stri
     };
     let tmp_path = parent.join(format!("{file_name}.tmp"));
     fs::write(&tmp_path, bytes).map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
-    if replace && abs_path.exists() {
-        fs::remove_file(abs_path)
-            .map_err(|e| format!("remove corrupt {}: {e}", abs_path.display()))?;
-    }
     fs::rename(&tmp_path, abs_path).map_err(|e| {
         format!(
             "rename {} -> {}: {e}",
@@ -145,7 +148,7 @@ pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<Strin
         "photo storage is temporarily unavailable — restart Purple Memo".to_string()
     })?;
     let thumb = thumb_rel_path(rel_path)?;
-    write_atomic(&data_dir.join(&thumb), bytes, false)?;
+    write_atomic(&data_dir.join(&thumb), bytes)?;
     Ok(thumb)
 }
 
@@ -258,6 +261,45 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn rename_replaces_an_existing_file() {
+        // A test about the *standard library*, deliberately. `write_atomic`
+        // depends on `rename` replacing an existing destination — it is what
+        // makes corruption recovery a single step with no window in which the
+        // path is missing — and this module used to state the opposite in a
+        // comment ("overwrites on Unix but not on Windows"), which is how review
+        // P2-5 came to report a `save_thumb` failure on Windows that cannot
+        // happen. Windows' `MoveFileExW` is called with
+        // `MOVEFILE_REPLACE_EXISTING`, so it does replace.
+        //
+        // Keeping it checked here means the assumption is verified on whatever
+        // machine runs `cargo test`, instead of being a claim in a comment that
+        // a future reader has to re-derive — and that a wrong copy of which
+        // becomes a filed bug.
+        let dir = TempDir::new();
+        let target = dir.0.join("existing.jpg");
+        fs::write(&target, b"old bytes").expect("seed the destination");
+        let tmp = dir.0.join("existing.jpg.tmp");
+        fs::write(&tmp, b"new bytes").expect("write the temp sibling");
+
+        fs::rename(&tmp, &target)
+            .expect("rename must replace an existing file on this platform");
+        assert_eq!(
+            fs::read(&target).expect("read back"),
+            b"new bytes",
+            "the destination holds the new bytes, not the old ones"
+        );
+        assert!(!tmp.exists(), "the temp sibling is consumed by the rename");
+
+        // And the same shape through the real writer: a corrupt photo at a
+        // content-addressed path is replaced, not appended to or refused.
+        let dir = TempDir::new();
+        let rel = save_photo(&dir.0, "2026/10", b"correct bytes", "jpg").expect("seed");
+        fs::write(dir.0.join(&rel), b"corrupt").expect("corrupt it");
+        assert_eq!(save_photo(&dir.0, "2026/10", b"correct bytes", "jpg").expect("rewrite"), rel);
+        assert_eq!(read_photo(&dir.0, &rel).expect("read repaired"), b"correct bytes");
     }
 
     #[test]
