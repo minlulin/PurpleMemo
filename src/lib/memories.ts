@@ -3,6 +3,7 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { addDays, todayLocal } from "./dates.ts";
+import { deleteLinkedEntity } from "./gallery.ts";
 import type { MemoryRow } from "./types.ts";
 
 export interface MemoryInput {
@@ -65,8 +66,17 @@ export function createMemoriesRepo(driver: DataDriver) {
       );
     },
 
+    /**
+     * Delete the memory **and every photo link pointing at it** (review P2-12).
+     *
+     * `photo_refs` cascades on `photo_id` but not on its polymorphic
+     * `(entity_type, entity_id)`, so a bare `DELETE FROM memories` left rows the
+     * Gallery Inspector showed as `Memory #<id>` under "Linked to" — a link to a
+     * memory that no longer existed. Both statements go in one batch so they
+     * commit together.
+     */
     async deleteMemory(id: number): Promise<void> {
-      await driver.execute("DELETE FROM memories WHERE id = ?", [id]);
+      await driver.batch(deleteLinkedEntity("memory", id));
     },
 
     /** Entries within `days` ahead of today (§2.7 Upcoming, default 14). */

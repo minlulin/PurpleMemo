@@ -6,12 +6,30 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import type { BatchStatement } from "../data/driver.ts";
+import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
+import { at, first } from "../test-utils.ts";
 import {
   createGalleryRepo,
   createThumbUrlBook,
+  deleteLinkedEntity,
   photoExtFromName,
 } from "./gallery.ts";
+import { createMemoriesRepo } from "./memories.ts";
+import { createNotesRepo } from "./notes.ts";
+import type { PhotoRefEntity } from "./types.ts";
+
+/** The two statements of the single batch a delete is expected to issue. */
+function batchOf(
+  driver: MockDriver,
+  what: string,
+): [BatchStatement, BatchStatement] {
+  const call = first(driver.callsTo("batch"), `${what} batch`);
+  const statements = call.args[0] as BatchStatement[];
+  assert.equal(statements.length, 2, `${what} must delete both halves`);
+  return [first(statements, `${what} statements`), at(statements, 1, what)];
+}
 
 test("savePhoto: duplicate bytes return the existing row, no second INSERT", async () => {
   const driver = createMockDriver({
@@ -233,4 +251,83 @@ test("clear revokes everything, and a cancelled load revokes its own urls", () =
   book.clear();
   assert.deepEqual(revoked.sort(), [a, orphan].sort());
   assert.equal(book.current().size, 0);
+});
+
+// -- Deleting a linked entity (review P2-12) ---------------------------------------
+
+test("deleteLinkedEntity: removes the entity's photo links in the same batch", () => {
+  // The regression. `photo_refs` has ON DELETE CASCADE on `photo_id` but
+  // nothing cascades its polymorphic `(entity_type, entity_id)`, so a bare
+  // `DELETE FROM notes` left rows the Gallery Inspector rendered as `Note #12`
+  // under "Linked to" — a link to a note that no longer existed.
+  const statements = deleteLinkedEntity("note", 12);
+  assert.equal(statements.length, 2, "both deletes, one atomic batch");
+  assert.deepEqual(statements[0], {
+    sql: "DELETE FROM photo_refs WHERE entity_type = ? AND entity_id = ?",
+    params: ["note", 12],
+  });
+  assert.deepEqual(statements[1], {
+    sql: "DELETE FROM notes WHERE id = ?",
+    params: [12],
+  });
+  // Links first, so this stays correct if a real FK is ever added.
+  assert.match(statements[0].sql, /photo_refs/);
+  assert.match(statements[1].sql, /notes/);
+});
+
+test("deleteLinkedEntity: the ref type and the owning table cannot drift apart", () => {
+  // `entity_type` is CHECK-constrained to these three values and each has one
+  // fixed table, so the table is derived rather than passed in. A mismatch here
+  // would delete the links of one entity and the row of another.
+  const expected: [PhotoRefEntity, string][] = [
+    ["note", "notes"],
+    ["memory", "memories"],
+    ["job", "jobs"],
+  ];
+  for (const [type, table] of expected) {
+    const links = first(deleteLinkedEntity(type, 3), type);
+    const row = at(deleteLinkedEntity(type, 3), 1, type);
+    assert.deepEqual(links.params, [type, 3]);
+    assert.equal(row.sql, `DELETE FROM ${table} WHERE id = ?`);
+    assert.deepEqual(row.params, [3]);
+  }
+});
+
+test("deleteLinkedEntity: every value it interpolates is bound, not inlined", () => {
+  // The table name is the one interpolated fragment, and it can only come from
+  // the closed `PHOTO_REF_TABLES` map above.
+  for (const type of ["note", "memory", "job"] as PhotoRefEntity[]) {
+    for (const { sql, params } of deleteLinkedEntity(type, 1)) {
+      const placeholders = sql.match(/\?/g)?.length ?? 0;
+      assert.equal(
+        placeholders,
+        params?.length ?? -1,
+        `unbalanced SQL in ${sql}`,
+      );
+    }
+  }
+});
+
+test("deleteNote: one batch, links included, never a lone row delete", async () => {
+  const driver = createMockDriver();
+  const notes = createNotesRepo(driver);
+  await notes.deleteNote(42);
+  assert.deepEqual(driver.callsTo("execute"), [], "no unbatched delete");
+  const [links, row] = batchOf(driver, "deleteNote");
+  assert.match(links.sql, /DELETE FROM photo_refs/);
+  assert.deepEqual(links.params, ["note", 42]);
+  assert.match(row.sql, /DELETE FROM notes WHERE id = \?/);
+  assert.deepEqual(row.params, [42]);
+});
+
+test("deleteMemory: one batch, links included, never a lone row delete", async () => {
+  const driver = createMockDriver();
+  const memories = createMemoriesRepo(driver);
+  await memories.deleteMemory(7);
+  assert.deepEqual(driver.callsTo("execute"), [], "no unbatched delete");
+  const [links, row] = batchOf(driver, "deleteMemory");
+  assert.match(links.sql, /DELETE FROM photo_refs/);
+  assert.deepEqual(links.params, ["memory", 7]);
+  assert.match(row.sql, /DELETE FROM memories WHERE id = \?/);
+  assert.deepEqual(row.params, [7]);
 });

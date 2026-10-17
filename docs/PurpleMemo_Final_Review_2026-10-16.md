@@ -22,13 +22,14 @@
 | P2-3 | ✅ **fixed** | Thumbnails decode with `imageOrientation: "from-image"` (the audit's `"fromImage"` would have thrown) |
 | P2-4 | ✅ **fixed** | `createThumbUrlBook` owns every grid object URL; mutation-checked |
 | P2-8 | ✅ **fixed** | `reset-session-memory.mjs` + both npm entries deleted; `scripts/` is now exactly the 4 keepers |
+| P2-12 | ✅ **fixed** | `deleteNote`/`deleteMemory` delete their `photo_refs` in the same atomic batch; mutation-checked |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
 
-**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → (7) delete the 5 scratch docs; (8) public.
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → (8) delete the 5 scratch docs; (9) public.
 
-Step 7 is now unblocked and is the last mechanical item before publishing.
+Step 8 is the last mechanical item before publishing.
 
 ### What the P1-1 fix does
 
@@ -175,9 +176,21 @@ Fix: require a two-step inline confirmation (e.g. `Delete` → `Confirm delete` 
 **`src/pages/BusinessPage.tsx:370-411, 726-757` · `src/pages/LoansPage.tsx:66-97`**
 Unlike `BudgetPage.EntriesView` (which disables submit via `saving`), `BusinessPage` (`JobsView.pay`, `JobsView.addJob`, `PayablesView.pay`, `PayablesView.addPayable`) and `LoansPage` (`repay`, `addLoan`) do not set a `busy` state while awaiting IPC writes. Double-clicking **"Save payment"** on a partial job payment passes the `amountCents <= remaining` check twice and records two job payments plus two Budget income entries; double-clicking **"Save"** on a partial loan repayment records the repayment twice. Fix: gate each async submit handler with a `busy` state that disables the submit button until `finally`.
 
-### P2-12 — Deleting a Note or Memory leaves orphaned `photo_refs` ("Zombie" links in Gallery) (2026-10-17 audit)
+### P2-12 — Deleting a Note or Memory leaves orphaned `photo_refs` ("Zombie" links in Gallery) — ✅ FIXED
 **`src/lib/notes.ts:174-176` · `src/lib/memories.ts:67-69` · `src-tauri/src/schema.rs:343-356` · `src/pages/GalleryPage.tsx:293-300`**
 `photo_refs` has `ON DELETE CASCADE` on `photo_id`, but `(entity_type, entity_id)` is a polymorphic reference with no SQL foreign key. Neither `deleteNote(id)` nor `deleteMemory(id)` removes matching rows from `photo_refs`, so deleting a linked note or memory leaves dangling entries that display as `Note #12` or `Memory #5` under **"Linked to"** in the Gallery Inspector. Fix: wrap `deleteNote` and `deleteMemory` (and any future `deleteJob`) in `driver.batch(...)` to also delete from `photo_refs WHERE entity_type = ? AND entity_id = ?`.
+
+**Fixed.** `deleteLinkedEntity(entityType, id)` (`src/lib/gallery.ts:104`) produces both statements; `deleteNote` and `deleteMemory` now issue that single batch.
+
+- **Atomic.** `db::batch` is all-or-nothing, so the row and its links commit or fail together. A half-applied delete is worse than either outcome — the note gone with its links still listed, or the links gone with the note intact.
+- **Links first.** Order is a readability choice given the atomicity, and this is the one that stays correct if a real foreign key is ever added to the polymorphic pair.
+- **The table is derived, not passed.** `entity_type` is CHECK-constrained to exactly `note|memory|job` and each has one fixed table, so the helper takes only the kind and the id — a caller cannot pair a type with the wrong table, which is the failure a free string argument would invite. `job` is already wired for the day `business.ts` grows a `deleteJob` (it has no delete path today — P2-9).
+- **All `photo_refs` SQL stays in one file**, which was true before and would not have been had each feature lib grown its own `DELETE FROM photo_refs`.
+- **Pre-existing orphans are not repaired.** Nothing fixes `photo_refs` rows written before this change; they clear as the user deletes the *photos* they point at (that direction always cascaded), or on re-import of a backup.
+
+Tests: 5 new in `gallery.test.ts` — the exact statement pair and order, the type→table mapping for all three kinds, placeholder/param balance (the table name is the one interpolated fragment), and both call sites asserting `driver.batch` and *no* unbatched `execute`. **Mutation-checked**: restoring `deleteNote` to a lone `driver.execute("DELETE FROM notes WHERE id = ?")` fails the test.
+
+Gate: **303/303** TS tests (298 → 303), 92/92 `cargo test`, clippy, fmt, build.
 
 ### P2-13 — Notes full-text search ignores the active sidebar collection filter (2026-10-17 audit)
 **`src/pages/NotesPage.tsx:314-323` · `src/lib/notes.ts:178-185` · `src/lib/search.ts:22-39`**
@@ -228,7 +241,7 @@ When `search` is non-empty, `NotesPage` calls `notesRepo.search(search, { includ
 - **Crypto:** fresh 16-byte salt per PIN hash; 600k PBKDF2-SHA256; constant-time `verifyPin`; fresh 12-byte IV per vault item; non-extractable vault keys; single CSPRNG.
 - **Lock:** `classifyPin` distinguishes absent/corrupt/malformed/weak-iterations; fail-closed gates; retry throttle (5 free → 5s pause) never bricks; `lockSession` locks even if vault-drop/share-stop throws; Oct-16 lock-bypass fixes verified; **and (P2-2) a failed security reload can no longer be resolved into PIN verification** — `shellStage` checks `error` before `lockGate` and `enterWorkspace` refuses entry unless the reload succeeded.
 - **Share:** consent token 256-bit CSPRNG, single-use, 120s TTL, burn-on-mismatch; 30-bit pairing code + 10-*consecutive*-wrong shutdown; Host-header rebinding defense; snapshot cleared before listener teardown (race-safe); 512KB snapshot cap; audit log never carries the code. (Plain-HTTP transport is a standing accepted risk with UI warning.)
-- **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup; thumbnails decode with EXIF orientation applied (P2-3), matching what `<img>` shows.
+- **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup; thumbnails decode with EXIF orientation applied (P2-3), matching what `<img>` shows; `photo_refs` cleaned in both directions — photo deletes cascade on `photo_id`, and entity deletes remove their polymorphic links in the same batch (P2-12).
 - **DB core:** SQLCipher key verified via `sqlite_master` before schema work; mint-once keyring key; statement guard blocks txn-control/ATTACH/PRAGMA rekey and sees through SQL comments; all values parameter-bound.
 - **IPC:** 19 commands registered, none extra (18 + `backup_save_file`, which took the export write out of the webview); every command validates inputs; photo and backup bytes cross as raw bodies; opener scoped to http/https/mailto/tel.
 - **Drafts (M-01):** base-`updated_at` matching, stale-drop, in-flight keystroke guards, discard escape hatch, delete-clears-draft — all sound.

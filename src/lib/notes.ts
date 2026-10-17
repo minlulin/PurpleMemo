@@ -3,6 +3,7 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
+import { deleteLinkedEntity } from "./gallery.ts";
 import { searchNotes } from "./search.ts";
 import type { CollectionRow, NoteRow } from "./types.ts";
 
@@ -173,8 +174,17 @@ export function createNotesRepo(driver: DataDriver) {
       ]);
     },
 
+    /**
+     * Delete the note **and every photo link pointing at it** (review P2-12).
+     *
+     * `photo_refs` cascades on `photo_id` but not on its polymorphic
+     * `(entity_type, entity_id)`, so a bare `DELETE FROM notes` left rows the
+     * Gallery Inspector showed as `Note #<id>` under "Linked to" — a link to a
+     * note that no longer existed. Both statements go in one batch so they
+     * commit together.
+     */
     async deleteNote(id: number): Promise<void> {
-      await driver.execute("DELETE FROM notes WHERE id = ?", [id]);
+      await driver.batch(deleteLinkedEntity("note", id));
     },
 
     /** FTS over title/content/tags/folder (§2.4) — empty input returns []. */

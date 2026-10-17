@@ -4,7 +4,7 @@
 // links photos to notes/memories/jobs. Bytes are `Uint8Array` end to end
 // (review M-02) — the driver hands them over raw, never as a `number[]`.
 
-import type { DataDriver } from "../data/driver.ts";
+import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { sha256HexBytes } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
 import type { PhotoRefEntity, PhotoRefRow, PhotoRow } from "./types.ts";
@@ -98,6 +98,56 @@ export function createThumbUrlBook(io: {
       live = new Map();
     },
   };
+}
+
+/** The table each `photo_refs.entity_type` value points into. */
+const PHOTO_REF_TABLES: Record<PhotoRefEntity, string> = {
+  note: "notes",
+  memory: "memories",
+  job: "jobs",
+};
+
+/**
+ * The statements that delete an entity **and every photo link pointing at it**
+ * (review P2-12).
+ *
+ * `photo_refs.photo_id` is a real foreign key with `ON DELETE CASCADE`, so
+ * deleting a photo cleans up its own links. `(entity_type, entity_id)` is the
+ * other direction, and it is a *polymorphic* pair — the column can hold a note,
+ * a memory or a job id, so no SQL foreign key can enforce it. Nothing cascades
+ * it, which is why `deleteNote`/`deleteMemory` used to leave rows behind that
+ * the Gallery Inspector then rendered as `Note #12` under "Linked to": a link
+ * to something that no longer exists, on a photo the user still has.
+ *
+ * One batch, so the two deletes commit or fail together (`db::batch` is
+ * all-or-nothing). A half-applied delete would be worse than either outcome —
+ * the row gone with its links still listed, or the links gone with the row
+ * intact.
+ *
+ * The owning table is *derived* from the entity type rather than passed in:
+ * `entity_type` is CHECK-constrained to exactly these three values and each has
+ * one fixed table, so a caller supplies only the kind and the id and cannot
+ * pair a type with the wrong table — the failure a free string would invite.
+ * `job` is included for the day `business.ts` grows a `deleteJob`; it has no
+ * delete path at all today (P2-9).
+ *
+ * Links first: the batch is atomic, so order is a readability choice, and this
+ * is the one that stays correct if a real foreign key is ever added.
+ */
+export function deleteLinkedEntity(
+  entityType: PhotoRefEntity,
+  id: number,
+): BatchStatement[] {
+  return [
+    {
+      sql: "DELETE FROM photo_refs WHERE entity_type = ? AND entity_id = ?",
+      params: [entityType, id],
+    },
+    {
+      sql: `DELETE FROM ${PHOTO_REF_TABLES[entityType]} WHERE id = ?`,
+      params: [id],
+    },
+  ];
 }
 
 export function createGalleryRepo(driver: DataDriver) {
