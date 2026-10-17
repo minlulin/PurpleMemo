@@ -1,7 +1,7 @@
 // P3c Business page (§2.2): shops, jobs, receivable, payables, history.
 // Talks only to the business + budget repos (§4).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconBusiness, IconCalendar } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -381,6 +381,17 @@ function JobsView() {
   const [jobDate, setJobDate] = useState(todayLocal());
   const [warrantyDays, setWarrantyDays] = useState("");
   const [note, setNote] = useState("");
+  /**
+   * In-flight submit guards (review P2-11) — see the note on `LoansPage`. A
+   * double-click on "Save payment" sent the same payment twice:
+   * `recordJobPayment` serializes per job, so the second call re-reads a fresh
+   * balance, which skips a duplicate FULL payment (it clamps to zero) but
+   * books a second PARTIAL payment plus a second Budget income entry. Nothing
+   * below the UI can tell a retry from a second click.
+   */
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [payingId, setPayingId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -412,8 +423,11 @@ function JobsView() {
   const titleOk = title.trim().length > 0;
 
   const addJob = async () => {
+    if (savingRef.current) return;
     if (amountCents === null || amountCents <= 0 || !titleOk || !jobDate)
       return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       await businessRepo.createJob({
         title: title.trim(),
@@ -435,12 +449,17 @@ function JobsView() {
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
   const pay = async (jobId: number) => {
+    if (payingId === jobId) return;
     const cents = parseMMK(payAmount);
     if (cents === null || cents <= 0 || typeof payWallet !== "number") return;
+    setPayingId(jobId);
     try {
       await businessRepo.recordJobPayment({
         jobId,
@@ -453,6 +472,8 @@ function JobsView() {
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setPayingId(null);
     }
   };
 
@@ -539,13 +560,14 @@ function JobsView() {
                       type="button"
                       className="btn btn-primary"
                       disabled={
+                        payingId === j.id ||
                         parseMMK(payAmount) === null ||
                         (parseMMK(payAmount) ?? 0) <= 0 ||
                         payWallet === ""
                       }
                       onClick={() => void pay(j.id)}
                     >
-                      Save payment
+                      {payingId === j.id ? "Saving…" : "Save payment"}
                     </button>
                     <button
                       type="button"
@@ -660,10 +682,14 @@ function JobsView() {
             type="submit"
             className="btn btn-primary"
             disabled={
-              !titleOk || amountCents === null || amountCents <= 0 || !jobDate
+              saving ||
+              !titleOk ||
+              amountCents === null ||
+              amountCents <= 0 ||
+              !jobDate
             }
           >
-            Add job
+            {saving ? "Adding…" : "Add job"}
           </button>
         </div>
       </form>
@@ -875,6 +901,10 @@ function PayablesView() {
   const [shopId, setShopId] = useState<number | "">("");
   const [dueDate, setDueDate] = useState("");
   const [note, setNote] = useState("");
+  /** In-flight submit guards (review P2-11) — see `JobsView`. */
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [payingId, setPayingId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -907,7 +937,10 @@ function PayablesView() {
   const titleOk = title.trim().length > 0;
 
   const addPayable = async () => {
+    if (savingRef.current) return;
     if (amountCents === null || amountCents <= 0 || !titleOk) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       await businessRepo.createPayable({
         title: title.trim(),
@@ -923,12 +956,26 @@ function PayablesView() {
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
+  /**
+   * `markPayablePaid` is already idempotent — it re-reads under its keyed mutex
+   * and returns early when `paid = 1`, and `business.test.ts` pins that a
+   * double submit writes one expense entry. So unlike `JobsView.pay` this needs
+   * no correctness guard. `payingId` is kept anyway so the button cannot be
+   * pressed again while the write is in flight: the duplicate is free, but the
+   * second `reload()` racing the first is not, and the row would flicker back
+   * to its editable state under the user.
+   */
   const pay = async (payableId: number) => {
+    if (payingId === payableId) return;
     if (typeof payWallet !== "number" || typeof payCategory !== "number")
       return;
+    setPayingId(payableId);
     try {
       await businessRepo.markPayablePaid({
         payableId,
@@ -940,6 +987,8 @@ function PayablesView() {
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setPayingId(null);
     }
   };
 
@@ -1044,10 +1093,14 @@ function PayablesView() {
                           <button
                             type="button"
                             className="btn btn-primary"
-                            disabled={payCategory === "" || payWallet === ""}
+                            disabled={
+                              payingId === p.id ||
+                              payCategory === "" ||
+                              payWallet === ""
+                            }
                             onClick={() => void pay(p.id)}
                           >
-                            Confirm paid
+                            {payingId === p.id ? "Saving…" : "Confirm paid"}
                           </button>
                           <button
                             type="button"
@@ -1151,9 +1204,11 @@ function PayablesView() {
           <button
             type="submit"
             className="btn btn-primary"
-            disabled={!titleOk || amountCents === null || amountCents <= 0}
+            disabled={
+              saving || !titleOk || amountCents === null || amountCents <= 0
+            }
           >
-            Add payable
+            {saving ? "Adding…" : "Add payable"}
           </button>
         </div>
       </form>

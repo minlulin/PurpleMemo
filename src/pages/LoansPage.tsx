@@ -2,7 +2,7 @@
 // (open | partial | overdue | closed), never stored — the list recomputes
 // it against today's local date. Repayments never overpay (§4).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconCalendar, IconLoans } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -40,6 +40,22 @@ export default function LoansPage() {
   const [error, setError] = useState<string | null>(null);
   const [repayFor, setRepayFor] = useState<number | null>(null);
   const [repayAmount, setRepayAmount] = useState("");
+  /**
+   * In-flight submit guards (review P2-11). A double-click on a money button
+   * sent the same write twice: `recordRepayment` serializes per loan, so the
+   * second call re-reads a *fresh* balance — which stops a duplicate FULL
+   * repayment (it clamps to zero and is skipped) but happily applies a second
+   * PARTIAL one. The repo layer cannot tell a retry from a second click, so
+   * the button must not send it.
+   *
+   * `savingRef` is the authoritative guard and the state is what the button
+   * reads: React flushes a `useState` update from a discrete event before
+   * dispatching the next one, so by the time a second click is delivered the
+   * button is already disabled *and* this closure reads `true`.
+   */
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [payingId, setPayingId] = useState<number | null>(null);
 
   const [counterparty, setCounterparty] = useState("");
   const [direction, setDirection] = useState<LoanDirection>("lent");
@@ -66,7 +82,10 @@ export default function LoansPage() {
   const nameOk = counterparty.trim().length > 0;
 
   const addLoan = async () => {
+    if (savingRef.current) return;
     if (amountCents === null || amountCents <= 0 || !nameOk) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       await loansRepo.createLoan({
         counterparty: counterparty.trim(),
@@ -82,12 +101,17 @@ export default function LoansPage() {
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
   const repay = async (id: number) => {
+    if (payingId === id) return;
     const cents = parseMMK(repayAmount);
     if (cents === null || cents <= 0) return;
+    setPayingId(id);
     try {
       await loansRepo.recordRepayment(id, cents);
       setRepayFor(null);
@@ -95,6 +119,8 @@ export default function LoansPage() {
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setPayingId(null);
     }
   };
 
@@ -221,12 +247,13 @@ export default function LoansPage() {
                           type="button"
                           className="btn btn-primary"
                           disabled={
+                            payingId === l.id ||
                             parseMMK(repayAmount) === null ||
                             (parseMMK(repayAmount) ?? 0) <= 0
                           }
                           onClick={() => void repay(l.id)}
                         >
-                          Save
+                          {payingId === l.id ? "Saving…" : "Save"}
                         </button>
                         <button
                           type="button"
@@ -344,9 +371,11 @@ export default function LoansPage() {
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={!nameOk || amountCents === null || amountCents <= 0}
+              disabled={
+                saving || !nameOk || amountCents === null || amountCents <= 0
+              }
             >
-              Add loan
+              {saving ? "Adding…" : "Add loan"}
             </button>
           </div>
         </form>
