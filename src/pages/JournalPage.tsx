@@ -129,6 +129,14 @@ export default function JournalPage() {
 
   /** Explicit escape hatch for a restored draft: reload the stored entry. */
   function handleDiscardDraft(): void {
+    // Refused while a save is in flight (review P2-6) — the same
+    // interleaving NotesPage has: `handleSave` snapshots `content`, and on
+    // resume writes a draft if the CURRENT content differs from that snapshot.
+    // A discard in between puts the pre-save entry text back in `contentRef`,
+    // so the comparison reads as "the editor moved on" and the save
+    // re-persists the discarded draft — showing the user text they had just
+    // thrown away, labelled unsaved, restored again on the next visit.
+    if (saving) return;
     contentRef.current = savedContent;
     setContent(savedContent);
     void clearJournalDraft(settingsRepo, activeDate).catch(() => undefined);
@@ -322,6 +330,7 @@ export default function JournalPage() {
               type="button"
               className="btn"
               title="Discard the unsaved draft and reload the saved entry"
+              disabled={saving}
               onClick={handleDiscardDraft}
             >
               Discard draft

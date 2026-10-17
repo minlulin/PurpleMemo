@@ -27,6 +27,7 @@ import {
   loadNoteDraft,
   type NoteEditorFields,
   noteEditorDiffersFromRow,
+  noteRowToEditor,
   saveJournalDraft,
   saveNoteDraft,
   storedNoteForm,
@@ -194,6 +195,7 @@ function NoteEditor(p: EditorProps) {
             type="button"
             className="btn"
             title="Discard the unsaved draft and reload the saved note"
+            disabled={p.saving}
             onClick={p.onDiscard}
           >
             Discard draft
@@ -413,16 +415,21 @@ export default function NotesPage() {
 
   /** Explicit escape hatch for a restored draft: reload the saved note. */
   function handleDiscardDraft(): void {
-    if (selected === null) return;
+    // Refused while a save is in flight (review P2-6). The interleaving was a
+    // real bug, not a theoretical one: `handleSave` snapshots the editor, then
+    // on resume compares the CURRENT editor against that snapshot to decide
+    // whether to keep a draft. A discard in between puts the pre-save row text
+    // in the editor, so the comparison says "the editor moved on" and the save
+    // writes a draft — resurrecting, verbatim, the draft the user had just
+    // explicitly thrown away, and leaving the editor showing it as unsaved
+    // work. Refusing the two actions from overlapping is simpler than ordering
+    // them, and a save that is already landing makes "discard" meaningless
+    // anyway.
+    if (saving || selected === null) return;
     touchedRef.current = false;
     draftSeqRef.current += 1;
     baseRef.current = selected.updated_at;
-    const rowFields: NoteEditorFields = {
-      title: selected.title,
-      content: selected.content,
-      tags: selected.tags,
-      collection: selected.collection_id ?? "none",
-    };
+    const rowFields = noteRowToEditor(selected);
     editorRef.current = rowFields;
     setTitle(rowFields.title);
     setContent(rowFields.content);

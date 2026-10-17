@@ -29,12 +29,15 @@ function readPage(name: string): string {
 }
 
 /**
- * The source of one `const name = (...) => {...}` declaration, by brace
- * matching. Formatted differently it still resolves, which a regex over the
- * whole file would not.
+ * The source of one handler, by brace matching. Handles both
+ * `const name = (…) =>` and `function name(…)` forms, and does not care how the
+ * body is wrapped or formatted — which a regex over the whole file would.
  */
 function handlerSource(src: string, name: string): string {
-  const start = src.search(new RegExp(`const ${name} = (async )?\\(`));
+  const declaration = new RegExp(
+    `(const ${name} = (async )?\\(|function ${name}\\()`,
+  );
+  const start = src.search(declaration);
   assert.notEqual(start, -1, `${name} not found — renamed or removed?`);
   const open = src.indexOf("{", start);
   assert.notEqual(open, -1, `${name} has no body`);
@@ -197,4 +200,53 @@ test("an in-flight submit says so on the button, not just by going grey", () => 
     assert.match(src, /"Saving…"/);
     assert.match(src, /"Adding…"/);
   }
+});
+
+// -- The draft discard path (review P2-6) ------------------------------------------
+// Same source-reading approach, for the same reason: the discard handlers live
+// in page components. This one is a *real* interleaving, not a style rule.
+
+test("a draft can never be discarded while a save is in flight", () => {
+  // Both editors snapshot the editor, await, then decide whether to KEEP a
+  // draft by comparing the CURRENT editor against that snapshot. A discard in
+  // between puts the pre-save row text into the editor, so that comparison
+  // reads "the editor moved on" and the save re-persists the draft the user
+  // had just thrown away — and the editor sits there showing it as unsaved
+  // work, restored again on the next visit.
+  //
+  // Refusing the two actions from overlapping is the fix. It is asserted in two
+  // places on purpose: the guard is the invariant, the `disabled` is what stops
+  // the click, and a guard alone still lets a fast click through because the
+  // rejecting closure only exists after a re-render.
+  for (const page of ["NotesPage.tsx", "JournalPage.tsx"]) {
+    const src = readPage(page);
+    const body = handlerSource(src, "handleDiscardDraft");
+    assert.match(
+      body,
+      /if \(saving/,
+      `${page}: handleDiscardDraft must refuse while a save is in flight`,
+    );
+    // ...and the refusal must come before any state is touched or any write is
+    // issued, or the discard has already half-happened.
+    assert.ok(
+      body.indexOf("if (saving") < body.search(/\bset[A-Z]/),
+      `${page}: check saving before touching editor state`,
+    );
+    assert.match(
+      src,
+      /title="Discard the unsaved draft[^"]*"\s*\n\s*disabled=\{(p\.)?saving\}/,
+      `${page}: the Discard button must be disabled while saving`,
+    );
+  }
+});
+
+test("the discard reloads the stored row through the tested helper", () => {
+  // NotesPage used to rebuild the editor inline, which is why the destructive
+  // step had no reachable coverage at all.
+  const src = readPage("NotesPage.tsx");
+  assert.match(
+    handlerSource(src, "handleDiscardDraft"),
+    /const rowFields = noteRowToEditor\(selected\)/,
+    "the discard must go through noteRowToEditor",
+  );
 });

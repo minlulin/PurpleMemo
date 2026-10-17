@@ -16,6 +16,7 @@ import {
   loadNoteDraft,
   noteDraftKey,
   noteEditorDiffersFromRow,
+  noteRowToEditor,
   parseJournalDraft,
   parseNoteDraft,
   saveJournalDraft,
@@ -255,5 +256,83 @@ test("appendJournalBlock joins with a break, or stands alone when empty", () => 
   assert.equal(
     appendJournalBlock("prior reflection", "# Note\n\ntext"),
     "prior reflection\n\n---\n\n# Note\n\ntext",
+  );
+});
+
+// -- The discard path (review P2-6) ------------------------------------------------
+// Discard is the destructive half of a never-lose-text feature: it throws away
+// what the user typed. It had no coverage at all, and reading it for tests
+// turned up a real bug in both editors — see `submit-guards.test.ts`, which
+// pins the exclusion that fixes it.
+
+test("noteRowToEditor: a discard restores the row verbatim", () => {
+  const row = {
+    title: "Fix inverter",
+    content: "Replaced the board",
+    tags: "repair,urgent",
+    collection_id: 3,
+  };
+  assert.deepEqual(noteRowToEditor(row), {
+    title: "Fix inverter",
+    content: "Replaced the board",
+    tags: "repair,urgent",
+    collection: 3,
+  });
+});
+
+test("noteRowToEditor: a note in no collection comes back as `none`", () => {
+  // `collection_id` is nullable; the editor's own sentinel is the string
+  // "none", and mapping null to 0 would silently select the first collection.
+  assert.equal(
+    noteRowToEditor({
+      title: "t",
+      content: "c",
+      tags: "",
+      collection_id: null,
+    }).collection,
+    "none",
+  );
+});
+
+test("noteRowToEditor: the discard must not normalize anything", () => {
+  // A discard is "reload what is saved". If it came back subtly different the
+  // user would be shown text they never had, labelled as the saved note — and
+  // `noteEditorDiffersFromRow` would immediately call it unsaved work, so the
+  // badge would light up on a note that is not dirty at all.
+  const row = {
+    title: "",
+    content: "",
+    tags: "a, b",
+    collection_id: null,
+  };
+  const restored = noteRowToEditor(row);
+  assert.equal(restored.title, "", "a blank title is not 'Untitled' here");
+  assert.equal(restored.tags, "a, b", "tag spacing is not re-joined");
+  assert.equal(
+    noteEditorDiffersFromRow(restored, {
+      title: "",
+      content: "",
+      tags: "",
+      collection_id: null,
+    }),
+    true,
+    "…which is why the pages must gate discard, not diff after it",
+  );
+});
+
+test("noteRowToEditor round-trips a row the app itself wrote", () => {
+  // The saved row and the editor state agree for a note that was saved and not
+  // touched since, so a discard on it is a no-op — no spurious dirty badge.
+  const saved = {
+    title: "Untitled",
+    content: "body",
+    tags: "a,b",
+    collection_id: null,
+  };
+  const restored = noteRowToEditor(saved);
+  assert.equal(
+    noteEditorDiffersFromRow(restored, saved),
+    false,
+    "a discard on an untouched note changes nothing",
   );
 });

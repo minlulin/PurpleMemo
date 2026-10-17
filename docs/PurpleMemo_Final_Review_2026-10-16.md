@@ -25,6 +25,8 @@
 | P2-12 | ✅ **fixed** | `deleteNote`/`deleteMemory` delete their `photo_refs` in the same atomic batch; mutation-checked |
 | P2-13 | ✅ **fixed** | `searchNotes` takes `collectionId`; the page derives the filter once for both branches; mutation-checked |
 | P2-5 | ❌ **disproved** | Premise false — `rename` *does* replace on Windows (probed). The false comment and the `replace` flag it justified are fixed; the assumption is now a test. |
+| P2-11 | ✅ **fixed** | 5 of the 6 named handlers needed a guard (the 6th was already idempotent); `submit-guards.test.ts` pins the shape, mutation-checked |
+| P2-6 | ✅ **fixed** | Discard had no coverage and had a real bug under it: discarding during an in-flight save re-persisted the discarded draft |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
@@ -33,7 +35,7 @@
 
 Step 9 is the last mechanical item before publishing.
 
-**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed or disproved. What remains is: the P2 additions from the 2026-10-17 single-user audit, which are all *features the app never had* (P2-9 edit/delete paths across Business + Budget, P2-10 delete confirmations on 8 pages, P2-11 busy guards on 6 submit handlers), plus P2-6, P2-7 and the P3 tier. Those are release decisions, not blockers.
+**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review is closed or disproved. What remains is: the P2 additions from the 2026-10-17 single-user audit, which are all *features the app never had* (P2-9 edit/delete paths across Business + Budget, P2-10 delete confirmations on 8 pages), plus P2-7 and the P3 tier. Those are release decisions, not blockers.
 
 ### What the P1-1 fix does
 
@@ -157,8 +159,17 @@ Gate: **307/307** TS tests, **93/93** `cargo test** (92 → 93), clippy, fmt, bu
 
 **No user-visible behaviour changed** — re-saving a thumbnail already worked on every platform. What changed is that the code no longer carries a flag and a comment that describe a platform it was wrong about.
 
-### P2-6 — The user-facing discard path is untested
+### P2-6 — The user-facing discard path is untested — ✅ FIXED (and a real bug found while writing the tests)
 **`src/lib/drafts.test.ts` vs `src/pages/NotesPage.tsx:406`, `src/pages/JournalPage.tsx:131`** — store helpers are covered, but `handleDiscardDraft`, the `draftSeqRef` invalidation, the `touchedRef` race guard, and the "keystrokes during save" path have zero coverage. For a never-lose-text feature, the destructive path needs a test.
+
+**The coverage gap was real and so was a bug underneath it.** Both editors snapshot the editor, `await`, then decide whether to **keep** a draft by comparing the *current* editor against that snapshot. A **discard clicked while a save is in flight** puts the pre-save row text back into the editor — so that comparison reads "the editor moved on", and the save re-persists the exact draft the user had just thrown away. The editor is then left displaying it as unsaved work, restored again on the next visit. In `NotesPage` the revived draft also carries the *pre-save* base, so it reads stale on return and gets dropped anyway: the text is lost *and* shown.
+
+- **Fixed by refusing the overlap**, in both pages: `handleDiscardDraft` returns early when `saving`, and the Discard button is `disabled` while saving. Ordering the two actions correctly is possible but needs a save/discard token threaded through four branches; refusing them is simpler, and "discard" is meaningless while a save is already landing anyway. Both halves are asserted deliberately — the guard is the invariant, `disabled` is what stops the click, and a guard alone still admits a fast click because the rejecting closure only exists after a re-render.
+- **`noteRowToEditor` extracted and tested** (`src/lib/drafts.ts`). The reload-from-row step was inlined in `NotesPage`, which is precisely why the destructive step had nothing reachable to test. It restores the row **verbatim** — a blank title stays blank, `"a, b"` stays `"a, b"`, `null` maps to the `"none"` sentinel rather than `0` — because "reload what is saved" is the whole promise, and a discard that returned something subtly different would show the user text they never had *and* light the "Unsaved draft" badge on a note that is not dirty.
+
+Tests: 4 in `drafts.test.ts` (verbatim restore, the `null` → `"none"` mapping, the no-normalization rule with the dirty-badge consequence spelled out, and a no-op discard on an untouched note) + 2 in `submit-guards.test.ts` for the save/discard exclusion and the helper call. **Mutation-checked**: dropping the `if (saving)` guard and making `noteRowToEditor` normalize a blank title to "Untitled" each fail it.
+
+Gate: **317/317** TS tests (311 → 317), 92/92 `cargo test`, clippy, fmt, build.
 
 ### P2-7 — 170 `(§X)` plan-section refs in code comments across 37 files will dangle
 e.g. `(§2.9)`, `(§8)`, `(§5.4)` in `src/` and `src-tauri/src/`. Harmless at runtime; a public reader following "§2.9" finds nothing. Options: accept as historical, or strip in the cleanup pass.
@@ -271,7 +282,7 @@ Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build
 - **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup; thumbnails decode with EXIF orientation applied (P2-3), matching what `<img>` shows; `photo_refs` cleaned in both directions — photo deletes cascade on `photo_id`, and entity deletes remove their polymorphic links in the same batch (P2-12); the atomic write's platform assumption is a test, not a comment (P2-5 disproved).
 - **DB core:** SQLCipher key verified via `sqlite_master` before schema work; mint-once keyring key; statement guard blocks txn-control/ATTACH/PRAGMA rekey and sees through SQL comments; all values parameter-bound.
 - **IPC:** 19 commands registered, none extra (18 + `backup_save_file`, which took the export write out of the webview); every command validates inputs; photo and backup bytes cross as raw bodies; opener scoped to http/https/mailto/tel.
-- **Drafts (M-01):** base-`updated_at` matching, stale-drop, in-flight keystroke guards, discard escape hatch, delete-clears-draft — all sound.
+- **Drafts (M-01):** base-`updated_at` matching, stale-drop, in-flight keystroke guards, discard escape hatch, delete-clears-draft — all sound. The discard path itself had no coverage and turned out to have a bug under it: discarding during an in-flight save re-persisted the discarded draft (P2-6 ✅ — the two actions can no longer overlap).
 - **Links (L-01):** two layers — `MarkdownLink.tsx` + Rust `navigation.rs` origin allowlist; every `ReactMarkdown` instance covered.
 - **Docs-vs-code:** README verify chain matches `package.json` exactly; versions agree 0.1.0 × 3 (enforced by `check-versions.mjs` in the gate); `npm run dev` exists; no TODOs/console.logs; no secrets; `"private": true`.
 

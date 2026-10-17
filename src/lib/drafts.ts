@@ -56,6 +56,34 @@ export interface StoredNoteForm {
   collection_id: number | null;
 }
 
+/** The stored note's columns the discard path reloads the editor from. */
+export interface NoteRowForEditor {
+  title: string;
+  content: string;
+  tags: string;
+  collection_id: number | null;
+}
+
+/**
+ * The editor state a discard restores: the stored row, verbatim (review P2-6).
+ *
+ * This is the destructive half of the never-lose-text feature and it used to be
+ * inlined in `NotesPage`, where nothing could reach it. It is deliberately NOT
+ * `storedNoteForm` inverted — a discard must not normalize anything. It puts
+ * back exactly the bytes the row holds, including a blank title and
+ * `"a, b"` tag spacing, because "reload what is saved" is the whole promise; a
+ * discard that came back subtly different would show the user text they never
+ * had and call it the saved note.
+ */
+export function noteRowToEditor(row: NoteRowForEditor): NoteEditorFields {
+  return {
+    title: row.title,
+    content: row.content,
+    tags: row.tags,
+    collection: row.collection_id ?? "none",
+  };
+}
+
 export function noteDraftKey(id: number): string {
   return `draft:note:${id}`;
 }
