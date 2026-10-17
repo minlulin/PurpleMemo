@@ -32,16 +32,16 @@
 | P2-9 | ✅ **fixed** | All five sub-items plus three of the same class it did not list: HistoryView had nothing, paid payables had no row actions at all, and `updateLoan` existed but was unreachable *and* unguarded |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
-**No release blockers remain in code or docs.** The scratch docs are deleted; what is left is the P3 tier, and only two items in it are worth doing before release.
+**No release blockers remain in code or docs.** The scratch docs are deleted and the whole P3 tier is now closed - fixed, disproved, or accepted with written reasoning.
 
 **Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → ~~(9) P2-5 disproved~~ ✅ → ~~(10) P2-11 submit guards~~ ✅ → ~~(11) P2-6 discard path~~ ✅ → ~~(12) P2-7 accepted~~ 📌 → ~~(13) P2-10 delete confirmations~~ ✅ → ~~(14) delete the 5 scratch docs~~ ✅ → (15) public.
 
 Step 14 is done and step 15 is unblocked: nothing in the code depended on the deleted docs, and the only remaining cleanup decision is whether this review file itself ships (see the cleanup list below).
 
-**That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review, and every P2 from the 2026-10-17 single-user audit, is now closed, disproved, or explicitly accepted. **Nothing remains between the tree and a public release** except two decisions that are yours, not the code's:
+****That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review, and every P2 from the 2026-10-17 single-user audit, is now closed, disproved, or explicitly accepted. **Nothing remains between the tree and a public release** except the decisions below, which are yours rather than the code's:
 
 1. **Does this review file ship?** (see the cleanup list below)
-2. **The P3 tier** — 30 open. Nine were closed in the last pass; of the rest, **P3-19** (an unsalted SHA-256 of the vault password cached in renderer memory) is the one that weakens a deliberate design decision and should be done before release. The other seven medium items each need a decision rather than an edit, and the twelve cosmetic ones can be accepted.
+2. **The P3 tier** — ✅ **closed on 2026-10-17.** All 31 accounted for: 25 fixed, 6 accepted with written reasoning, P3-14 closed by the P1-1 fix. Four had been mis-tiered as nits (P3-2, P3-19, P3-30, P3-12) and were not; two (P3-11, P3-13) are unrecoverable and recorded as such.
 
 Of the P2 tier, three findings did not describe bugs in the shipped behaviour and were resolved as such rather than "fixed": **P2-5** was disproved on the platform it named (and the false comment that produced it is fixed), **P2-7** was accepted as historical provenance, and **P2-10**'s page list turned out to be incomplete in a way that made the rule worth more than the list.
 
@@ -485,4 +485,4 @@ None left. `reset-session-memory.mjs` was the only one, and P2-8 has already rem
 | `navigation.rs` (new) | Sound |
 | `93baf125` shell-rules extraction | Correct (also fixes share-ticker stacking) |
 
-Nothing was found fake-fixed or reverted. The remediation wave is in good shape; the single release blocker, P1-1, is fixed and the remaining release blockers are documentation only.
+Nothing was found fake-fixed or reverted. The remediation wave is in good shape: P1-1 is fixed, every P1/P2 finding is closed, disproved, or accepted, and the whole P3 tier is now accounted for. What is left is release work, not remediation.
