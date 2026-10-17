@@ -1,10 +1,11 @@
 //! The Rust IPC commands (§4): `db_query`, `db_execute`, `db_batch`,
 //! `db_begin`, `db_commit`, `db_rollback`, `db_reset_txn`, `photo_save`,
 //! `photo_read`, `photo_read_thumb`, `photo_save_thumb`, `photo_delete`,
-//! `db_key_save` (write the key to a file the user chose, §5.4), plus the
-//! P5 share controls — `share_arm`, `share_start`, `share_stop`, `share_status`,
-//! `share_publish` (§8). The share commands touch no SQL: they only control
-//! the listener and the snapshot bytes the desktop published.
+//! `db_key_save` (write the key to a file the user chose, §5.4),
+//! `backup_save_file` (write the backup archive to a file the user chose, §8),
+//! plus the P5 share controls — `share_arm`, `share_start`, `share_stop`,
+//! `share_status`, `share_publish` (§8). The share commands touch no SQL: they
+//! only control the listener and the snapshot bytes the desktop published.
 //!
 //! Every command serializes through the single mutex-protected connection
 //! (§4 — no pooling). UI pages never call these directly; they go through
@@ -27,6 +28,7 @@ use serde_json::Value as JsonValue;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::State;
 
+use crate::backup_file;
 use crate::db::{self, AppState, BatchStatement, ExecuteOutcome, JsonObj};
 use crate::photos;
 use crate::share::{ShareInfo, ShareState};
@@ -237,6 +239,28 @@ pub fn photo_delete(state: State<'_, AppState>, rel_path: String) -> CmdResult<(
 #[tauri::command]
 pub fn db_key_save(path: String) -> CmdResult<()> {
     db::save_db_key_file(std::path::Path::new(&path))
+}
+
+/// Write the backup archive to the file the user chose (§8, review P1-1).
+///
+/// The bytes arrive as the RAW request body (`invoke('backup_save_file',
+/// bytes, { headers: { 'x-backup-path': path } })`), so a multi-hundred-MB zip
+/// crosses IPC as bytes rather than a JSON array; the destination travels in
+/// the header, percent-encoded because header values must be ASCII and a path
+/// the user picked need not be ([`backup_file::decode_header_path`]).
+///
+/// The path came from the native save dialog, which is what constrains it —
+/// the same arrangement as [`db_key_save`], and deliberately *not* an fs-plugin
+/// write: `fs:write-files` grants every write command on every path with no
+/// accessible-path scope, which is both broader than this one operation needs
+/// and (with no `allow` entry in the capability) the reason `writeFile` always
+/// failed, so backup export never worked at all.
+#[tauri::command]
+pub fn backup_save_file(request: Request<'_>) -> CmdResult<()> {
+    let encoded = header_str(&request, backup_file::BACKUP_PATH_HEADER)?;
+    let path = backup_file::decode_header_path(encoded)?;
+    let bytes = raw_body(&request)?;
+    backup_file::save_backup_file(std::path::Path::new(&path), bytes)
 }
 
 /// Record that the user confirmed the LAN-share consent prompt, and return a

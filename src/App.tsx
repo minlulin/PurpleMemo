@@ -37,8 +37,11 @@ import {
   classifyPin,
   DEFAULT_AUTO_LOCK_MINUTES,
   isIdle,
-  lockGate,
   type PinState,
+  reloadOpensEntry,
+  type SecurityReload,
+  shellStage,
+  showReloadWarning,
 } from "./lib/appLock.ts";
 import type { PinHash } from "./lib/crypto.ts";
 import { localISODateTime } from "./lib/dates.ts";
@@ -235,7 +238,7 @@ function AppShell() {
   >([]);
   const lastActivity = useRef(Date.now());
 
-  const loadSecurity = useCallback(async () => {
+  const loadSecurity = useCallback(async (): Promise<SecurityReload> => {
     try {
       // The PIN is read RAW and classified (review C-3): `getJSON` returns
       // null for a row that does not exist AND for one whose JSON is
@@ -249,6 +252,9 @@ function AppShell() {
       ]);
       const t = theme ?? "dark";
       document.documentElement.dataset.theme = t;
+      // `error: null` here is the ONLY place that error is cleared, so a
+      // failed reload can never be forgotten by a later unrelated state
+      // update (review P2-2).
       setBoot({
         ready: true,
         error: null,
@@ -261,15 +267,14 @@ function AppShell() {
         theme: t,
         autoLockMinutes: minutes ?? DEFAULT_AUTO_LOCK_MINUTES,
       });
+      return { ok: true };
     } catch (e) {
       // A failed settings read is NOT "first run". Falling through to the
       // setup screen would invite a PIN overwrite — e.g. right after a
       // backup import reload. Surface the failure instead (§2.9).
-      setBoot((b) => ({
-        ...b,
-        ready: true,
-        error: `Could not read the encrypted database: ${errText(e)}`,
-      }));
+      const error = `Could not read the encrypted database: ${errText(e)}`;
+      setBoot((b) => ({ ...b, ready: true, error }));
+      return { ok: false, error };
     }
   }, []);
 
@@ -291,20 +296,21 @@ function AppShell() {
   }, []);
 
   /**
-   * Entering the shell always re-reads the security state first (review C-2).
+   * Entering the shell always re-reads the security state first (review C-2),
+   * and may only do so on a SUCCESSFUL read (review P2-2).
+   *
    * `LockScreen` writes a NEW pin hash on the forgot-PIN reset path before
    * calling this, so unlocking without reloading left `boot.pin` pointing at
    * the old hash: the very next lock rejected the user's new PIN and still
-   * accepted the old one.
+   * accepted the old one. This used to call `setUnlocked(true)` unconditionally
+   * — so when the reload itself failed the error was set but never shown, the
+   * shell stayed on the pre-reload trust root, and the failure was invisible.
+   * `reloadOpensEntry` is the gate; the message it leaves behind is what
+   * `shellStage` puts on screen.
    */
-  const handleUnlock = useCallback(async () => {
-    await loadSecurity();
-    lastActivity.current = Date.now();
-    setUnlocked(true);
-  }, [loadSecurity]);
-
-  const handleSetupDone = useCallback(async () => {
-    await loadSecurity();
+  const enterWorkspace = useCallback(async () => {
+    const reload = await loadSecurity();
+    if (!reloadOpensEntry(reload)) return;
     lastActivity.current = Date.now();
     setUnlocked(true);
   }, [loadSecurity]);
@@ -376,7 +382,19 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [unlocked, lockNow]);
 
-  if (!boot.ready) {
+  // Every branch below comes from `shellStage`, so the order in which the
+  // shell prefers screens — a failed security read ahead of every lock screen,
+  // an open session ahead of both — is stated once and tested, not implied by
+  // the order of these branches (review P2-2).
+  const stage = shellStage({
+    ready: boot.ready,
+    unlocked,
+    error: boot.error,
+    pin: boot.pin,
+    answerHash: boot.answerHash,
+  });
+
+  if (stage === "booting") {
     return (
       <div className="lock-wrap">
         <div className="entry-form vault-narrow">
@@ -387,9 +405,10 @@ function AppShell() {
     );
   }
 
-  // Locked + the settings read failed: show the error, never the setup
-  // screen — setup would overwrite an existing PIN.
-  if (!unlocked && boot.error !== null) {
+  // The settings read failed while locked: show the error, never the setup
+  // screen — setup would overwrite an existing PIN. This is also where a
+  // failure that happened mid-session lands the moment the app locks.
+  if (stage === "error") {
     return (
       <div className="lock-wrap">
         <p className="alert alert-error" role="alert">
@@ -399,15 +418,14 @@ function AppShell() {
     );
   }
 
-  if (!unlocked) {
+  if (stage !== "workspace") {
     // Fail closed (§2.9): the setup screen overwrites the PIN without
     // verifying the old one, so it is reachable ONLY when no PIN has ever
     // been stored. `classifyPin` is what makes that checkable — see C-3.
-    const gate = lockGate(boot.pin, boot.answerHash);
-    if (gate === "setup") {
-      return <SetupScreen onDone={() => void handleSetupDone()} />;
+    if (stage === "setup") {
+      return <SetupScreen onDone={() => void enterWorkspace()} />;
     }
-    if (gate === "locked" && boot.pin.kind === "unreadable") {
+    if (stage === "locked" && boot.pin.kind === "unreadable") {
       return <LockedScreen reason={boot.pin.reason} />;
     }
     return (
@@ -415,7 +433,7 @@ function AppShell() {
         pinHash={boot.pin.kind === "stored" ? boot.pin.hash : undefined}
         question={boot.question}
         answerHash={boot.answerHash}
-        onUnlock={() => void handleUnlock()}
+        onUnlock={() => void enterWorkspace()}
       />
     );
   }
@@ -485,6 +503,15 @@ function AppShell() {
         tabIndex={-1}
         key={page}
       >
+        {/* A reload that failed while this session is open: not fatal now, but
+            it must not be invisible, and the next lock lands on the error
+            screen until it succeeds (review P2-2). */}
+        {showReloadWarning({ stage, error: boot.error }) && (
+          <p className="alert alert-error" role="alert">
+            {boot.error} Purple Memo will ask you to restart before the next
+            lock.
+          </p>
+        )}
         {page === "dashboard" ? (
           <DashboardPage onNavigate={setPage} notifyNote={notifyNote} />
         ) : page === "notes" ? (

@@ -167,6 +167,94 @@ export function lockGate(pin: PinState, answerHash: unknown): LockGate {
   return answerHash === null || answerHash === undefined ? "pin-only" : "pin";
 }
 
+// ---------------------------------------------------------------------------
+// What the shell shows — and what it is allowed to do (review P2-2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which screen the app shell is on. Every branch of the shell's render comes
+ * from `shellStage`, so the ORDER of these checks is stated once, in a pure
+ * function, instead of being implied by the order of JSX branches — where a
+ * well-meaning reordering could silently reintroduce the bug this exists to
+ * prevent.
+ */
+export type ShellStage =
+  | "booting"
+  | "error"
+  | "setup"
+  | "locked"
+  | "lock"
+  | "workspace";
+
+/**
+ * The one rule, and the order it is applied in.
+ *
+ * `loadSecurity` used to catch its own failure into `boot.error` and return
+ * void, and `handleUnlock` then set `unlocked` unconditionally — so the
+ * `!unlocked && error !== null` branch was skipped, the message was never
+ * shown, and the shell carried on holding whatever `boot.pin` it had read
+ * earlier. Concretely: the forgot-PIN reset writes a NEW `pin_hash`, the
+ * reload fails transiently, and the next lock verifies against the OLD hash —
+ * rejecting the PIN the user just set and accepting the one they were trying
+ * to get rid of.
+ *
+ * Two properties make the fix hold, both pinned by the tests:
+ *
+ * 1. **A failed read outranks every lock screen.** `error` is checked before
+ *    `lockGate`, so a pending failure can never be resolved into "verify the
+ *    PIN against `boot.pin`". That is the whole security property: the stale
+ *    hash is never used as a trust root.
+ * 2. **An open session is not ejected.** The workspace outranks `error`
+ *    because a reload can also fail mid-session (a Settings write calls
+ *    `loadSecurity` too), and a hiccup while changing the theme must not cost
+ *    the user their place. The failure is not swallowed there — the shell
+ *    shows it as a banner — and it is still armed for the next lock, which
+ *    lands on `"error"`.
+ */
+export function shellStage(input: {
+  ready: boolean;
+  unlocked: boolean;
+  error: string | null;
+  pin: PinState;
+  answerHash: unknown;
+}): ShellStage {
+  if (!input.ready) return "booting";
+  if (input.unlocked) return "workspace";
+  // Ahead of `lockGate`: no failure may ever resolve into PIN verification.
+  if (input.error !== null) return "error";
+  const gate = lockGate(input.pin, input.answerHash);
+  if (gate === "setup") return "setup";
+  if (gate === "locked") return "locked";
+  return "lock";
+}
+
+/**
+ * True when a session is open AND a security reload is still outstanding, so
+ * the shell must say so instead of swallowing it.
+ *
+ * Separate from `shellStage` because it is the one thing the shell shows
+ * *alongside* a screen rather than choosing between screens.
+ */
+export function showReloadWarning(input: {
+  stage: ShellStage;
+  error: string | null;
+}): boolean {
+  return input.stage === "workspace" && input.error !== null;
+}
+
+/**
+ * The outcome of one `loadSecurity` pass. The entry decision rides WITH the
+ * result rather than beside it, so a caller cannot read the new security
+ * state and then set `unlocked` from some other notion of success — which is
+ * exactly how the stale-PIN-hash bug happened.
+ */
+export type SecurityReload = { ok: true } | { ok: false; error: string };
+
+/** True when the reload succeeded, so the workspace may be entered. */
+export function reloadOpensEntry(reload: SecurityReload): boolean {
+  return reload.ok;
+}
+
 /**
  * The settings keys the lock screen's trust root is built from. The shell
  * reads `pin_hash` once per `loadSecurity` and hands it to the lock screen, so

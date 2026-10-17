@@ -155,6 +155,14 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         throw e;
       }
     },
+    async saveBackupFile(path: string, bytes: Uint8Array): Promise<void> {
+      record("saveBackupFile", [path, bytes]);
+      if (script.error) {
+        const e = script.error;
+        script.error = undefined;
+        throw e;
+      }
+    },
     async shareStart(consentToken: string): Promise<ShareInfo> {
       record("shareStart", [consentToken]);
       // Mirrors Rust: a start without a fresh consent token binds nothing.

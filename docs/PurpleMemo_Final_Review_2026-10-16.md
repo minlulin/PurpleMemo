@@ -9,18 +9,42 @@
 
 ## Verdict
 
-**1 P1 code bug + 6 P1 doc fixes block the public release.** Everything else is P2/P3.
+**All P1 findings are closed.** Backup export works again (P1-1) and the webview no longer holds a filesystem-write permission (P2-1); the doc P1s (P1-2…P1-7) are still open. Everything else is P2/P3.
 
-- **P1-1 (code): backup export is broken at runtime** — the native save dialog opens, the user picks a location, and the write always fails. The app's backup story is dead on desktop. (Key export is NOT affected — it uses a Rust IPC command that writes via `std::fs` directly, bypassing the fs plugin.)
-- **P1-2…P1-7 (docs):** README and RELEASE.md contain links/references to `docs/PLAN.md`, which is slated for deletion in the public cleanup — they will 404 on day one.
+**Fix log**
 
-**Fix order:** (1) P1-1 export fix, re-verify on Windows; (2) doc P1 fixes; (3) dead-script drop; (4) delete the 5 scratch docs; (5) public.
+| # | Status | Commit-level summary |
+|---|---|---|
+| P1-1 | ✅ **fixed** | Backup export rewritten to a Rust IPC command; `fs:write-files` deleted |
+| P2-1 | ✅ **fixed** | Same change — the webview now holds **no** fs permission at all |
+| P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
+| P2-2 | ✅ **fixed** | `loadSecurity` returns its outcome; `shellStage` pins that a failed read never reaches PIN verification |
+| P2-3 | ✅ **fixed** | Thumbnails decode with `imageOrientation: "from-image"` (the audit's `"fromImage"` would have thrown) |
+
+**Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → (4) doc P1 fixes (P1-2…P1-7); (5) dead-script drop (P2-8); (6) delete the 5 scratch docs; (7) public.
+
+### What the P1-1 fix does
+
+`src-tauri/src/backup_file.rs` (new) · `commands::backup_save_file` · `driver.ts` `saveBackupFile` + `encodeHeaderPath` · `backupRepo.saveBackupFile` · `SettingsPage.doExport`
+
+- **The write moved to Rust.** `backup_save_file` takes the archive as a raw request body (`photo_save`'s shape, not a JSON byte array) and writes it with `std::fs` — no fs plugin in the path at all.
+- **Atomic.** Bytes go to a `<name>.purple-memo-tmp` sibling in the destination directory and are renamed into place, so a full disk or a crash mid-write cannot leave a truncated zip under a name the user trusts (closes P3-14). A failed rename leaves the temp file in place and says where it is, rather than deleting the only copy of the backup.
+- **The destination travels in a header, percent-encoded.** A raw body IS the whole request, so the path has no argument channel — and header values must be visible ASCII while a path the user picked need not be (`C:\Users\小明\backup.zip`). `encodeHeaderPath` (driver.ts) ⇄ `decode_header_path` (Rust) is unambiguous because `%` is itself escaped. Both halves are pinned in `ipc.test.ts` and by `backup_file::tests::header_paths_round_trip`, which round-trips Windows, POSIX, spaces, non-ASCII and literal `%` paths.
+- **Guards:** refuses an empty archive and a destination that is an existing directory.
+- **Privilege dropped, not narrowed.** `fs:write-files` is gone from `capabilities/default.json`, `tauri_plugin_fs::init()` is gone from `lib.rs`, and so are `@tauri-apps/plugin-fs` from `package.json`/`package-lock.json` and `tauri-plugin-fs` from `Cargo.toml`. Nothing else used the plugin (verified: `writeFile` had exactly one call site). The webview's filesystem authority is now nil, where before it was "every write command on every path" — a strictly *smaller* surface than a scoped allow-list, because no allow-list can express "wherever this one save dialog points".
+- **Regression-pinned.** `ipc.test.ts` fails if any `fs:` permission reappears in the capability, if the plugin is re-registered, re-declared in `Cargo.toml`, or re-imported in the driver.
+
+Gate: `npm run verify` green — **286/286** TS tests, **92/92** `cargo test` (74 → 92 over this wave), clippy `-D warnings`, `cargo fmt --check`, `vite build`.
+
+**Residual (accepted, not a finding):** the destination path still crosses from JS, so the command is reachable by a compromised webview as an arbitrary-path write — the same residual `db_key_save` has always had. Closing it entirely means opening the save dialog inside Rust and never returning the path to the renderer. Not done here: it is a larger change than the release blocker warrants, and it needs the `db_key_save` key export to move the same way to stay consistent.
 
 ---
 
 ## P1 — blocks public release
 
-### P1-1 — Backup export fails: `writeFile` is denied by the fs scope
+### P1-1 — Backup export fails: `writeFile` is denied by the fs scope — ✅ FIXED
+
+> **Fixed.** See "What the P1-1 fix does" above. The root cause and the original analysis below are kept for the record.
 
 **Files:** `src/pages/SettingsPage.tsx:189-195` (backup export) · `src-tauri/capabilities/default.json:10` · `src-tauri/tauri.conf.json`
 
@@ -54,16 +78,35 @@ After cleanup this 404s, and "The coding agent works one phase at a time" leaks 
 
 ## P2 — should fix
 
-### P2-1 — `fs:write-files` gives the webview unrestricted file write (SEC-01)
+### P2-1 — `fs:write-files` gives the webview unrestricted file write (SEC-01) — ✅ FIXED
 **`src-tauri/capabilities/default.json:10`**
-Same root cause as P1-1, viewed as privilege scope: the permission set covers write/create/copy/remove/rename/truncate on any path the process can write. Only one legitimate use exists (the backup `writeFile`). A webview JS-execution bug would escalate from DB-confined to arbitrary file write. **Fixed by the P1-1 fix** (move the write to Rust, drop the permission).
+Same root cause as P1-1, viewed as privilege scope: the permission set covers write/create/copy/remove/rename/truncate on any path the process can write. Only one legitimate use existed (the backup `writeFile`), and that use is now a Rust IPC command. The permission, the plugin registration, the JS package and the Rust crate are all deleted — the webview holds no filesystem permission of any kind. Pinned by `ipc.test.ts`.
 
-### P2-2 — Unlock swallows a failed security reload, resurrecting the stale-PIN-hash bug
-**`src/App.tsx:300-310`** (pre-existing, not from the reviewed commits)
+### P2-2 — Unlock swallows a failed security reload, resurrecting the stale-PIN-hash bug — ✅ FIXED
+**`src/App.tsx` (was `:300-310`) · `src/lib/appLock.ts`**
 `loadSecurity()` catches errors into `setBoot({ error })` and returns void; `handleUnlock`/`handleSetupDone` then call `setUnlocked(true)` unconditionally. Once unlocked, the `!unlocked && boot.error !== null` branch is skipped — the error is invisible AND the shell keeps the stale `boot.pin` trust root. Concrete case: forgot-PIN reset writes a new `pin_hash`, then `loadSecurity()` fails transiently → next lock verifies against the OLD hash (rejects new PIN, accepts old). Fix: gate `setUnlocked(true)` on reload success (return boolean from `loadSecurity`), or surface `boot.error` while unlocked.
 
-### P2-3 — Thumbnails ignore EXIF orientation (visual regression)
+**Both halves done.**
+
+- **`loadSecurity` now returns a `SecurityReload`** (`{ok: true} | {ok: false, error}`) instead of `void`. The entry decision travels *with* the result, so a caller cannot read the new state and then set `unlocked` from some other notion of success — the exact shape of the original bug. `reloadOpensEntry()` is the gate; `handleUnlock` and `handleSetupDone` are now one `enterWorkspace` that returns early on a failed reload.
+- **The screen order is a pure, tested function.** `shellStage({ready, unlocked, error, pin, answerHash})` replaces the implicit JSX branch order. The invariant it pins: **`error` is checked before `lockGate`,** so a pending failure can never resolve into "verify the PIN against `boot.pin`" — whatever hash the shell happens to be holding. That is the whole security property, and it can no longer be lost to a reordering of the JSX.
+- **The stale hash is also never *used***: `boot.error` is cleared in exactly one place (the success arm of `loadSecurity`), and with it set, `boot.pin` is unreachable.
+- **A mid-session failure is announced, not swallowed** (`showReloadWarning` + a `role="alert"` banner in the workspace). This was the second half of the finding: `SettingsPage.onChanged()` also calls `loadSecurity`, so a failed theme write was completely invisible before. The open session is deliberately *not* ejected — a hiccup while changing the theme must not cost the user their place — and the failure stays armed, so the next lock lands on the error screen.
+
+Tests: 5 new in `appLock.test.ts`, including the exact regression (a failed read is never resolved into a PIN check, for all three `PinState` shapes) and "a failed read stays armed for the next lock".
+
+Gate: **291/291** TS tests (286 → 291), 92/92 `cargo test`, clippy `-D warnings`, fmt, build.
+
+**Follow-on (not a new finding):** P3-7 — the error screen still has no Retry, so a transient settings-read failure now ends in "Restart Purple Memo". That was already true for a boot-time failure; P2-2 just made it reachable mid-session too. Fixing P3-7 is the natural pairing.
+
+### P2-3 — Thumbnails ignore EXIF orientation (visual regression) — ✅ FIXED
 **`src/lib/thumbs.ts:44`** — `createImageBitmap(blob)` defaults to `imageOrientation: "none"`; phone photos with EXIF orientation 6/8 render rotated 90°/270° vs the full image (`<img>` applies EXIF via `image-orientation: from-image`). The `Image`-fallback path already produces EXIF-oriented bitmaps — internally inconsistent. Fix: `createImageBitmap(blob, { imageOrientation: "fromImage" })`.
+
+**Fixed, with one correction to the suggested fix.** The review's `"fromImage"` is not a member of the WebIDL `ImageOrientation` enum — the value is **`"from-image"`** (hyphenated, like CSS `image-orientation`). Passing the camelCase spelling makes the browser throw a `TypeError` out of the decode, which would break *every* thumbnail rather than just the rotated ones. The constant is `THUMB_IMAGE_ORIENTATION = "from-image"`, typed against the DOM `ImageOrientation` union, and both the call shape and the spelling are pinned by tests that read the module source (the same trick `ipc.test.ts` uses) — `node --test` has no `createImageBitmap` to observe directly.
+
+Existing thumbnails keep their stored rotation until each photo is re-thumbnailed (thumbs are derived data, regenerated lazily per tile, so this is self-healing in practice).
+
+Tests: 2 new in `thumbs.test.ts`. Gate: **293/293** TS tests, 92/92 `cargo test`, clippy, fmt, build.
 
 ### P2-4 — Object-URL leak on every "Add photos" batch
 **`src/pages/GalleryPage.tsx:121`** — `loadThumbs` rebuilds the URL map; the cleanup loop only revokes old URLs whose id is *absent* from the new map, so pre-existing photos get new URLs while old ones leak (~30 kB each, unbounded over bulk imports). Fix: revoke the previous URL before overwriting the entry.
@@ -126,7 +169,7 @@ When `search` is non-empty, `NotesPage` calls `notesRepo.search(search, { includ
 - **P3-9** `NotesPage.tsx:477` — successful note save can report failure via draft bookkeeping (inconsistent with JournalPage's `.catch(() => undefined)`).
 - **P3-10** Notes/Journal — per-keystroke encrypted DB writes, no debounce (cosmetic churn).
 - **P3-12** `LockScreens.tsx:310` — double-submit within the verify window under-counts failures (negligible; PBKDF2 dominates).
-- **P3-14** — M-03 write non-atomic (moot until P1-1 fixed; the Rust replacement must be atomic).
+- **P3-14** — ✅ resolved by the P1-1 fix: `backup_file::save_backup_file` writes a temp sibling and renames it into place.
 - **P3-15** `thumbs.ts` — no size/dimension guard before full thumbnail decode.
 - **P3-16** `photos.rs:143` — thumb filename keeps source extension though content is always JPEG (doc says `.thumb.jpg`; harmless drift).
 - **P3-17** — backup export materializes the whole archive ~2× in renderer memory (pre-existing design limit).
@@ -154,11 +197,11 @@ When `search` is non-empty, `NotesPage` calls `notesRepo.search(search, { includ
 - **Money:** integer-cents invariant holds everywhere; `recordJobPayment` Oct-11 fix intact (keyed mutex, clamped `applyPayment`, zero-amount skip, single atomic batch) — no regression. No float arithmetic anywhere.
 - **Backup/restore:** `db::batch` genuinely all-or-nothing; FK toggled OFF only around the import batch and restored in `finally`; `BACKUP_TABLES` matches schema exactly (28 + `notes_fts` = 29); identifiers validated against `^[A-Za-z_][A-Za-z0-9_]*$`; **no zip-slip** (entry names never touch the FS); tampered photos re-hashed and re-pointed; failed imports clean up created files; **the DB key is never in the zip**.
 - **Crypto:** fresh 16-byte salt per PIN hash; 600k PBKDF2-SHA256; constant-time `verifyPin`; fresh 12-byte IV per vault item; non-extractable vault keys; single CSPRNG.
-- **Lock:** `classifyPin` distinguishes absent/corrupt/malformed/weak-iterations; fail-closed gates; retry throttle (5 free → 5s pause) never bricks; `lockSession` locks even if vault-drop/share-stop throws; Oct-16 lock-bypass fixes verified.
+- **Lock:** `classifyPin` distinguishes absent/corrupt/malformed/weak-iterations; fail-closed gates; retry throttle (5 free → 5s pause) never bricks; `lockSession` locks even if vault-drop/share-stop throws; Oct-16 lock-bypass fixes verified; **and (P2-2) a failed security reload can no longer be resolved into PIN verification** — `shellStage` checks `error` before `lockGate` and `enterWorkspace` refuses entry unless the reload succeeded.
 - **Share:** consent token 256-bit CSPRNG, single-use, 120s TTL, burn-on-mismatch; 30-bit pairing code + 10-*consecutive*-wrong shutdown; Host-header rebinding defense; snapshot cleared before listener teardown (race-safe); 512KB snapshot cap; audit log never carries the code. (Plain-HTTP transport is a standing accepted risk with UI warning.)
-- **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup.
+- **Photos:** atomic content-addressed writes; strict `photos/<yyyy>/<mm>/<64hex>.<ext>` traversal grammar (regression-tested); save/delete serialized under `PHOTO_WRITE_LOCK`; hash-verified dedup; thumbnails decode with EXIF orientation applied (P2-3), matching what `<img>` shows.
 - **DB core:** SQLCipher key verified via `sqlite_master` before schema work; mint-once keyring key; statement guard blocks txn-control/ATTACH/PRAGMA rekey and sees through SQL comments; all values parameter-bound.
-- **IPC:** 18 commands registered, none extra; every command validates inputs; photo bytes cross as raw bodies; opener scoped to http/https/mailto/tel.
+- **IPC:** 19 commands registered, none extra (18 + `backup_save_file`, which took the export write out of the webview); every command validates inputs; photo and backup bytes cross as raw bodies; opener scoped to http/https/mailto/tel.
 - **Drafts (M-01):** base-`updated_at` matching, stale-drop, in-flight keystroke guards, discard escape hatch, delete-clears-draft — all sound.
 - **Links (L-01):** two layers — `MarkdownLink.tsx` + Rust `navigation.rs` origin allowlist; every `ReactMarkdown` instance covered.
 - **Docs-vs-code:** README verify chain matches `package.json` exactly; versions agree 0.1.0 × 3 (enforced by `check-versions.mjs` in the gate); `npm run dev` exists; no TODOs/console.logs; no secrets; `"private": true`.
@@ -214,8 +257,8 @@ The hardened push method (tree built on the remote `base_tree` with an explicit 
 | Fix | Verdict |
 |---|---|
 | M-01 drafts (`2f9d67e1`) | Correct, with nits (P2-6, P3-9, P3-10) |
-| M-02 photo pipeline (`808b4283`) | Core sound; 3 new P2s (P2-3, P2-4, P2-5) |
-| M-03 native save dialog (`278b4623`) | **Incomplete — backup export broken (P1-1); key export unaffected** |
+| M-02 photo pipeline (`808b4283`) | Core sound; 3 new P2s (P2-3 ✅ fixed, P2-4, P2-5) |
+| M-03 native save dialog (`278b4623`) | Export path **incomplete** — backup export broken (P1-1); key export unaffected. **P1-1 + P2-1 now fixed**: Rust `backup_save_file`, fs permission deleted. |
 | L-02 lock retry delay (`6897b553`) | Correct |
 | L-04 boot failure (`6a3f1fdc`) | Correct on Rust side; frontend gaps P3 |
 | L-05/L-07 versions (`2df4a18d`, `278a7da0`) | Correct |
@@ -231,4 +274,4 @@ The hardened push method (tree built on the remote `base_tree` with an explicit 
 | `navigation.rs` (new) | Sound |
 | `93baf125` shell-rules extraction | Correct (also fixes share-ticker stacking) |
 
-Nothing was found fake-fixed or reverted. The remediation wave is in good shape; the single release blocker is P1-1.
+Nothing was found fake-fixed or reverted. The remediation wave is in good shape; the single release blocker, P1-1, is fixed and the remaining release blockers are documentation only.

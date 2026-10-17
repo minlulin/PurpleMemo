@@ -7,7 +7,12 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { PHOTO_EXT_HEADER, PHOTO_SOURCE_HEADER } from "./driver.ts";
+import {
+  BACKUP_PATH_HEADER,
+  encodeHeaderPath,
+  PHOTO_EXT_HEADER,
+  PHOTO_SOURCE_HEADER,
+} from "./driver.ts";
 
 const driverSrc = readFileSync(new URL("./driver.ts", import.meta.url), "utf8");
 const commandsSrc = readFileSync(
@@ -16,6 +21,14 @@ const commandsSrc = readFileSync(
 );
 const libSrc = readFileSync(
   new URL("../../src-tauri/src/lib.rs", import.meta.url),
+  "utf8",
+);
+const backupFileSrc = readFileSync(
+  new URL("../../src-tauri/src/backup_file.rs", import.meta.url),
+  "utf8",
+);
+const capabilitySrc = readFileSync(
+  new URL("../../src-tauri/capabilities/default.json", import.meta.url),
   "utf8",
 );
 
@@ -83,7 +96,11 @@ test("photo reads answer with raw bytes rather than a JSON byte array", () => {
 test("raw-payload commands take the bytes as the request body", () => {
   // A raw payload IS the whole request, so these commands must accept a
   // `tauri::ipc::Request` and read the metadata from headers instead.
-  for (const command of ["photo_save", "photo_save_thumb"]) {
+  for (const command of [
+    "photo_save",
+    "photo_save_thumb",
+    "backup_save_file",
+  ]) {
     assert.match(
       commandsSrc,
       new RegExp(`pub fn ${command}\\([\\s\\S]{0,240}request: Request`),
@@ -91,6 +108,121 @@ test("raw-payload commands take the bytes as the request body", () => {
     );
   }
 });
+
+test("the webview is granted no filesystem permission", () => {
+  // Review P1-1 / SEC-01. The backup export used `writeFile` from
+  // `@tauri-apps/plugin-fs`, which needed `fs:write-files` — a permission set
+  // covering every write command on every path, with no accessible-path scope
+  // configured anywhere, so every call failed AND the webview could have
+  // written anywhere the process could. Rust does the write now; nothing needs
+  // the permission, so it must not be re-granted.
+  const permissions: unknown = JSON.parse(capabilitySrc).permissions;
+  assert.ok(
+    Array.isArray(permissions),
+    "capability permissions must be a list",
+  );
+  for (const permission of permissions) {
+    assert.ok(
+      typeof permission !== "string" || !permission.startsWith("fs:"),
+      `the webview must not hold ${permission} — Rust performs the backup write`,
+    );
+  }
+  assert.ok(
+    !libSrc.includes("tauri_plugin_fs::init"),
+    "the fs plugin must not be registered",
+  );
+  assert.ok(
+    !driverSrc.includes("@tauri-apps/plugin-fs"),
+    "the driver must not use the fs plugin",
+  );
+  assert.ok(
+    !/tauri-plugin-fs/.test(
+      readFileSync(
+        new URL("../../src-tauri/Cargo.toml", import.meta.url),
+        "utf8",
+      ),
+    ),
+    "the fs plugin crate must not be a dependency",
+  );
+});
+
+test("the backup destination travels as one ASCII header on both sides", () => {
+  // The backup body is raw, so the path has no argument channel and rides in a
+  // header — which must be ASCII, while a user-chosen path need not be. The
+  // encoder lives here and the decoder in Rust, so both halves are pinned:
+  // Rust's test module carries the same encoder as a reference for the paths
+  // that occur, and `header_paths_round_trip` decodes what this produces.
+  assert.match(
+    commandsSrc,
+    /header_str\(&request, backup_file::BACKUP_PATH_HEADER\)/,
+    "backup_save_file must read the destination from the shared header name",
+  );
+  assert.ok(
+    backupFileSrc.includes(
+      `pub const BACKUP_PATH_HEADER: &str = "${BACKUP_PATH_HEADER}"`,
+    ),
+    "BACKUP_PATH_HEADER must match driver.ts",
+  );
+  assert.match(
+    backupFileSrc,
+    /pub fn decode_header_path\(encoded: &str\) -> Result<String, String>/,
+    "the percent decoder must exist",
+  );
+  assert.match(
+    driverSrc,
+    /saveBackupFile: \(path, bytes\) =>\s*invoke\("backup_save_file", bytes, \{\s*headers: \{ \[BACKUP_PATH_HEADER\]: encodeHeaderPath\(path\) \}/,
+    "the driver must send the encoded path with the raw bytes",
+  );
+});
+
+test("encoded header paths are ASCII and reversible", () => {
+  // The property Rust's `header_paths_round_trip` depends on: anything the
+  // encoder emits survives a header, and nothing but an escape changes.
+  for (const path of [
+    "C:\\Users\\purple\\backups\\backup.zip",
+    "C:\\Program Files\\Purple Memo\\a b.zip",
+    "/home/purple/backups/backup.zip",
+    "C:\\Users\\小明\\备份\\purple-memo-backup.zip",
+    "C:\\Users\\p\\100%-done.zip",
+    "C:\\emoji-🙂\\backup.zip",
+  ]) {
+    const encoded = encodeHeaderPath(path);
+    // The `Headers` check below already rejects anything a header could not
+    // carry; assert the ASCII property explicitly too, since Rust's decoder
+    // relies on every input being byte-per-character.
+    assert.equal(
+      encoded.length,
+      new TextEncoder().encode(encoded).length,
+      `must be ASCII: ${encoded}`,
+    );
+    assert.doesNotThrow(
+      () => new Headers({ [BACKUP_PATH_HEADER]: encoded }),
+      `must be a legal header value: ${encoded}`,
+    );
+    assert.doesNotMatch(encoded, /%(?![0-9A-F]{2})/, `bad escape: ${encoded}`);
+    assert.equal(
+      decodeHeaderPath(encoded),
+      path,
+      "the path must survive the round trip",
+    );
+  }
+});
+
+/** The Rust decoder, re-implemented here from the same rules. */
+function decodeHeaderPath(encoded: string): string {
+  const bytes: number[] = [];
+  for (let i = 0; i < encoded.length; i += 1) {
+    if (encoded[i] === "%") {
+      bytes.push(Number.parseInt(encoded.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(encoded.charCodeAt(i));
+    }
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(
+    new Uint8Array(bytes),
+  );
+}
 
 test("the single-instance plugin is registered first", () => {
   // The plugin claims the instance lock while the builder is assembled, so a

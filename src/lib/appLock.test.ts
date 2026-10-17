@@ -14,7 +14,11 @@ import {
   type PinResetBlock,
   type PinState,
   pinResetBlocked,
+  reloadOpensEntry,
+  type SecurityReload,
   securityReloadNeeded,
+  shellStage,
+  showReloadWarning,
 } from "./appLock.ts";
 
 // The lock gate must fail CLOSED (§2.9: the PIN is required and cannot be
@@ -152,6 +156,170 @@ test("securityReloadNeeded: a PIN write must refresh the lock shell's hash", () 
   assert.equal(securityReloadNeeded(["theme"]), false);
   assert.equal(securityReloadNeeded(["auto_lock_minutes"]), false);
   assert.equal(securityReloadNeeded([]), false);
+});
+
+test("shellStage: a failed security read is never resolved into a PIN check", () => {
+  // Review P2-2, and the regression the whole fix exists for. The scenario:
+  // the forgot-PIN reset writes a NEW pin_hash, `loadSecurity` then fails
+  // transiently, and the shell used to unlock anyway — so the next lock
+  // verified against the OLD hash (rejecting the PIN just set, accepting the
+  // one being replaced). With `error` set, no screen that can verify a PIN is
+  // reachable, whatever `boot.pin` happens to hold.
+  const error = "Could not read the encrypted database: boom";
+  const pins: PinState[] = [
+    ABSENT,
+    STORED,
+    { kind: "unreadable", reason: "corrupt" },
+  ];
+  for (const pin of pins) {
+    assert.equal(
+      shellStage({
+        ready: true,
+        unlocked: false,
+        error,
+        pin,
+        answerHash: HASH,
+      }),
+      "error",
+      `a failed read must fail closed for ${JSON.stringify(pin)}`,
+    );
+  }
+  // Including while booting into it — the boot-time read that failed first.
+  assert.equal(
+    shellStage({
+      ready: false,
+      unlocked: false,
+      error,
+      pin: ABSENT,
+      answerHash: null,
+    }),
+    "booting",
+    "the skeleton shows until the first read resolves",
+  );
+});
+
+test("shellStage: a failed read stays armed for the next lock", () => {
+  // Mid-session the workspace outranks the error (a theme write must not cost
+  // the user their place), so the failure has to survive the transition to
+  // locked — otherwise it is swallowed and the stale hash is used again.
+  const error = "Could not read the encrypted database: boom";
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: true,
+      error,
+      pin: STORED,
+      answerHash: HASH,
+    }),
+    "workspace",
+    "an open session is not ejected by a failed reload",
+  );
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: false,
+      error,
+      pin: STORED,
+      answerHash: HASH,
+    }),
+    "error",
+    "the very next lock lands on the error screen, not the lock screen",
+  );
+});
+
+test("shellStage: the ordinary screens are unchanged", () => {
+  assert.equal(
+    shellStage({
+      ready: false,
+      unlocked: false,
+      error: null,
+      pin: ABSENT,
+      answerHash: null,
+    }),
+    "booting",
+  );
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: false,
+      error: null,
+      pin: ABSENT,
+      answerHash: null,
+    }),
+    "setup",
+  );
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: false,
+      error: null,
+      pin: STORED,
+      answerHash: HASH,
+    }),
+    "lock",
+  );
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: false,
+      error: null,
+      pin: STORED,
+      answerHash: null,
+    }),
+    "lock",
+    "a missing answer hash still gets the lock screen",
+  );
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: false,
+      error: null,
+      pin: { kind: "unreadable", reason: "weak-iterations" },
+      answerHash: HASH,
+    }),
+    "locked",
+  );
+  assert.equal(
+    shellStage({
+      ready: true,
+      unlocked: true,
+      error: null,
+      pin: STORED,
+      answerHash: HASH,
+    }),
+    "workspace",
+  );
+});
+
+test("reloadOpensEntry: only a successful reload opens the shell", () => {
+  // The gate `handleUnlock` / `handleSetupDone` route through. Before the fix
+  // both awaited `loadSecurity()` and set `unlocked` regardless of the answer,
+  // which is how a swallowed failure became a stale trust root.
+  assert.equal(reloadOpensEntry({ ok: true }), true);
+  assert.equal(
+    reloadOpensEntry({ ok: false, error: "boom" }),
+    false,
+    "a failed reload must not grant entry",
+  );
+  // A caller cannot get at the state without also getting the decision.
+  const reload: SecurityReload = { ok: false, error: "boom" };
+  if (reload.ok) assert.fail("the failed arm must not be reachable as ok");
+});
+
+test("showReloadWarning: a mid-session failure is announced, not swallowed", () => {
+  assert.equal(
+    showReloadWarning({ stage: "workspace", error: "boom" }),
+    true,
+    "an open session must show the failure",
+  );
+  assert.equal(
+    showReloadWarning({ stage: "workspace", error: null }),
+    false,
+    "nothing to say on a clean reload",
+  );
+  // The dedicated screens already carry the message; no second copy.
+  assert.equal(showReloadWarning({ stage: "error", error: "boom" }), false);
+  assert.equal(showReloadWarning({ stage: "lock", error: null }), false);
 });
 
 test("isIdle: locks once the quiet window passes the configured minutes", () => {

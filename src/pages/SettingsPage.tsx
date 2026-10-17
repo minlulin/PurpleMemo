@@ -8,7 +8,6 @@
 // confirms before applying and reloads afterwards.
 
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
 import {
   IconArrowRight,
@@ -192,7 +191,7 @@ export default function SettingsPage(p: SettingsPageProps) {
         filters: [{ name: "Purple Memo backup", extensions: ["zip"] }],
       });
       if (path === null) return;
-      await writeFile(path, bytes);
+      await backupRepo.saveBackupFile(path, bytes);
       toast.success(
         `Backup saved to ${path} — ${summary.rowCount} rows, ${summary.photoCount} photos`,
       );

@@ -1,3 +1,4 @@
+mod backup_file;
 mod commands;
 mod db;
 mod navigation;
@@ -71,7 +72,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             // A failed boot is *reported*, not propagated: returning `Err` here
             // tears the app down before anything could be shown, or retried
@@ -95,6 +95,7 @@ pub fn run() {
             commands::photo_save_thumb,
             commands::photo_delete,
             commands::db_key_save,
+            commands::backup_save_file,
             commands::share_arm,
             commands::share_start,
             commands::share_stop,

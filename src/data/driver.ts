@@ -14,6 +14,30 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export const PHOTO_EXT_HEADER = "x-photo-ext";
 export const PHOTO_SOURCE_HEADER = "x-photo-source";
+export const BACKUP_PATH_HEADER = "x-backup-path";
+
+/**
+ * Percent-encode a path so it can travel as a header value (review P1-1).
+ *
+ * A raw request body IS the whole request, so the backup destination has no
+ * argument channel and must ride in a header — but header values must be
+ * visible ASCII, and a path the user picked in the native save dialog need not
+ * be (`C:\Users\小明\backup.zip`). Every byte outside printable ASCII, plus
+ * `%` itself, becomes `%XX`, which is unambiguous because a literal `%` in the
+ * name is escaped too. `backup_file::decode_header_path` in Rust is the only
+ * decoder; `ipc.test.ts` pins the header name and this function against it.
+ */
+export function encodeHeaderPath(path: string): string {
+  let out = "";
+  for (const byte of new TextEncoder().encode(path)) {
+    if (byte >= 0x20 && byte <= 0x7e && byte !== 0x25) {
+      out += String.fromCharCode(byte);
+    } else {
+      out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return out;
+}
 
 /** One result row: column name -> JSON value (blob -> array of byte numbers). */
 export type Row = Record<string, unknown>;
@@ -91,6 +115,17 @@ export interface DataDriver {
    * other program on the machine (review H-7).
    */
   saveDbKeyFile(path: string): Promise<void>;
+  /**
+   * Write the backup archive to a file the user chose (§8, review P1-1).
+   *
+   * Deliberately *not* a plugin-fs write. `fs:write-files` grants every write
+   * command on every path with no accessible-path scope configured, which made
+   * the webview's file-write privilege far wider than this one operation needs
+   * — and, with no `allow` entry in the capability, actually made every call
+   * fail, so backup export never worked. Rust does the write here instead; the
+   * bytes go as a raw body and the (ASCII-encoded) destination in a header.
+   */
+  saveBackupFile(path: string, bytes: Uint8Array): Promise<void>;
   /** Start the LAN snapshot server (§8). Idempotent while running. */
   shareStart(consentToken: string): Promise<ShareInfo>;
   shareStop(): Promise<ShareInfo>;
@@ -129,7 +164,11 @@ export function createTauriDriver(): DataDriver {
       }),
     deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
     saveDbKeyFile: (path) => invoke("db_key_save", { path }),
-    // P5 share controls (§8) — 18 commands total now, still one driver.
+    saveBackupFile: (path, bytes) =>
+      invoke("backup_save_file", bytes, {
+        headers: { [BACKUP_PATH_HEADER]: encodeHeaderPath(path) },
+      }),
+    // P5 share controls (§8) — 19 commands total now, still one driver.
     shareStart: (consentToken) => invoke("share_start", { consentToken }),
     shareArm: () => invoke("share_arm"),
     shareStop: () => invoke("share_stop"),

@@ -14,6 +14,24 @@ export const THUMB_QUALITY = 0.72;
 export const THUMB_MIME = "image/jpeg";
 
 /**
+ * EXIF orientation for the thumbnail decode (review P2-3).
+ *
+ * `createImageBitmap` defaults to `"none"`, which ignores the EXIF orientation
+ * tag — so a phone photo taken in portrait (orientation 6 or 8) produced a
+ * thumbnail rotated 90°, sitting in a grid next to the same photo rendered
+ * upright in the inspector, which honours it via `<img>`
+ * (`image-orientation: from-image`). The `<img>` fallback in `decode` below
+ * produced oriented pixels all along, so the module was internally
+ * inconsistent as well as wrong.
+ *
+ * **The hyphen is not a typo.** WebIDL spells this enum value `"from-image"`;
+ * the camelCase `"fromImage"` that TypeScript's own `ImageOrientation` type
+ * might suggest is not a member of the enum and throws a `TypeError` from the
+ * browser rather than degrading. `thumbs.test.ts` pins the spelling.
+ */
+export const THUMB_IMAGE_ORIENTATION = "from-image";
+
+/**
  * The largest `width x height` box that fits inside `maxEdge` while keeping
  * the aspect ratio — the size the photo is drawn at. Never upscales (a photo
  * smaller than the box keeps its own size) and `null` when there is nothing
@@ -41,7 +59,9 @@ async function decode(blob: Blob): Promise<{
   release: () => void;
 }> {
   if (typeof createImageBitmap === "function") {
-    const bitmap = await createImageBitmap(blob);
+    const bitmap = await createImageBitmap(blob, {
+      imageOrientation: THUMB_IMAGE_ORIENTATION,
+    });
     return {
       source: bitmap,
       width: bitmap.width,

@@ -25,7 +25,6 @@ sha2 = "0.11.0"
 getrandom = "0.4.3"
 tiny_http = "0.12.0"
 tauri-plugin-dialog = "2.8.2"
-tauri-plugin-fs = "2.7.0"
 tauri-plugin-opener = "2.7.2"
 # One running copy per user (§5.1). Registered FIRST in `run` - a second
 # launch must be turned away before anything touches the database.

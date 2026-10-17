@@ -533,6 +533,20 @@ export function createBackupRepo(driver: DataDriver) {
       };
     },
 
+    /**
+     * Write the exported archive to the file the user picked (§8, review P1-1).
+     *
+     * The write goes through Rust rather than `@tauri-apps/plugin-fs`: the fs
+     * capability granted no accessible paths, so `writeFile` threw
+     * `PathForbidden` for every destination and backup export was dead on
+     * every platform. The path comes from the native save dialog, which is what
+     * constrains it — same arrangement as the key export, and no filesystem
+     * permission is granted to the webview at all.
+     */
+    async saveBackupFile(path: string, bytes: Uint8Array): Promise<void> {
+      await driver.saveBackupFile(path, bytes);
+    },
+
     /** Parse + validate without touching the DB (for the confirm step). */
     async inspectBackup(bytes: Uint8Array): Promise<{
       parsed: ParsedBackup;
