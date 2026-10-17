@@ -492,6 +492,11 @@ export async function applyBackup(
   const oldPaths = (
     await driver.query<{ rel_path: string }>("SELECT rel_path FROM photos")
   ).map((row) => row.rel_path);
+  // Membership, not a scan (review P3-28). oldPaths.includes inside the per-photo
+  // loop was O(photos * paths): a 5000-photo library spent 25M string
+  // comparisons on an import that then did nothing with the answer. Both loops
+  // below only ever ask whether a path was already there.
+  const oldPathSet = new Set(oldPaths);
 
   const byPath = new Map(parsed.photos.map((p) => [p.path, p]));
   let rows = 0;
@@ -515,7 +520,7 @@ export async function applyBackup(
         );
       }
       const saved = await driver.savePhoto(entry.bytes, ext);
-      if (!oldPaths.includes(saved)) created.add(saved);
+      if (!oldPathSet.has(saved)) created.add(saved);
       if (saved !== relPath) {
         // The bytes in the zip disagree with the manifest (tampered or
         // corrupted entry), so the content-addressed path moved. Re-point the

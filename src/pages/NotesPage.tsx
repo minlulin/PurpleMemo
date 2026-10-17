@@ -808,8 +808,12 @@ export default function NotesPage() {
                   writing in Markdown.
                 </EmptyState>
               ) : (
+                // No `key` here (review P3-22): the wrapping section is already
+                // keyed by note id, so it remounts this subtree on every note
+                // change. A second key on the child was a duplicate source of
+                // truth for "which note is shown", and one that could only ever
+                // agree with the outer one.
                 <NoteEditor
-                  key={selected.id}
                   title={title}
                   content={content}
                   tags={tags}

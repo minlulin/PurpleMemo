@@ -114,20 +114,29 @@ fn write_atomic(abs_path: &Path, bytes: &[u8]) -> Result<(), String> {
     })
 }
 
-/// The thumbnail that belongs to a stored photo: same directory and hash,
-/// with a `.thumb` marker before the extension.
+/// The thumbnail that belongs to a stored photo: same directory and hash, with a
+/// `.thumb` marker before the extension.
 ///
 /// Derived rather than stored (see the module docs). The source path is
 /// validated first, which is what keeps the derived path out of reach of the
 /// frontend: `photos/2026/10/<hash>.thumb.jpg` is not a valid SOURCE path, so
 /// a caller cannot address a thumbnail file directly.
+///
+/// The extension is always `.jpg` and no longer copied from the source
+/// (review P3-16). The encoder in `thumbs.ts` only ever writes JPEG, so a
+/// `.thumb.png` name sat on JPEG bytes — a name that lied about its content and
+/// drifted from the documented `.thumb.jpg`. Libraries with thumbs under the old
+/// names regenerate them on first view, which is the correct outcome for a
+/// derived cache.
 pub fn thumb_rel_path(rel_path: &str) -> Result<String, String> {
     validate_rel_path(rel_path)?;
     let (dir, file) = rel_path
         .rsplit_once('/')
         .ok_or_else(|| invalid_rel(rel_path))?;
-    let (hash, ext) = file.split_once('.').ok_or_else(|| invalid_rel(rel_path))?;
-    Ok(format!("{dir}/{hash}.thumb.{ext}"))
+    // The source extension is parsed (it is part of what makes this a valid
+    // source path) but deliberately not used for the thumb name.
+    let (hash, _source_ext) = file.split_once('.').ok_or_else(|| invalid_rel(rel_path))?;
+    Ok(format!("{dir}/{hash}.thumb.jpg"))
 }
 
 /// Read photo bytes by relative path (traversal-guarded).
@@ -412,6 +421,21 @@ mod tests {
             .expect("delete");
         deleter.join().expect("deleter thread");
         assert!(!dir.0.join(&rel).exists(), "file deleted after the wait");
+    }
+
+    #[test]
+    fn a_thumb_is_always_named_jpg_whatever_the_source_extension() {
+        // P3-16: the encoder only ever writes JPEG, so copying the source
+        // extension produced a name that lied about its own content and drifted
+        // from the documented `.thumb.jpg`.
+        let hash = "b".repeat(64);
+        for ext in ["jpg", "png", "heic", "webp", "gif"] {
+            assert_eq!(
+                thumb_rel_path(&format!("photos/2026/10/{hash}.{ext}")).expect("derive"),
+                format!("photos/2026/10/{hash}.thumb.jpg"),
+                "a .{ext} source must still yield a .thumb.jpg name"
+            );
+        }
     }
 
     #[test]

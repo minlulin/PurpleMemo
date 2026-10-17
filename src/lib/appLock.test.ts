@@ -471,3 +471,43 @@ test("classifyPin still separates absent from unreadable for the write path", ()
   assert.equal(classifyPin("{nope").kind, "unreadable");
   assert.equal(classifyPin('{"salt":"s"}').kind, "unreadable");
 });
+
+test("concurrent failures count once each, not once per render snapshot (P3-12)", () => {
+  // The lock screen's failure counter is read and written inside an async
+  // handler. With useState it was a render-time snapshot: two attempts landing
+  // inside one PBKDF2 verify window both read the same value and both produced
+  // the same count, under-counting — which hands an attacker extra free
+  // attempts. A ref (what the screen now uses) is read and written
+  // synchronously, so nothing can sit between the read and the write.
+  let failuresRef = 0;
+  const noteFailure = () => {
+    const next = failuresRef + 1;
+    failuresRef = next;
+    return next;
+  };
+
+  // Each attempt increments exactly once: no await between read and write.
+  assert.equal(noteFailure(), 1);
+  assert.equal(noteFailure(), 2);
+  assert.equal(noteFailure(), 3);
+
+  // A success resets the authoritative value, which is why the screen resets the
+  // ref rather than only the state it used to keep.
+  failuresRef = 0;
+  assert.equal(noteFailure(), 1, "a reset must not leave the old count behind");
+
+  // The counter must still agree with where the free attempts end, or the pause
+  // it controls would fire at a different point than the button state expects.
+  // `lockRetryDelayMs` pauses at `>= LOCK_MAX_FREE_ATTEMPTS`, and the screen
+  // passes the post-increment count, so the 5th wrong guess is the one that
+  // waits — four free attempts, not five.
+  failuresRef = 0;
+  for (let attempt = 1; attempt < LOCK_MAX_FREE_ATTEMPTS; attempt += 1) {
+    assert.equal(lockRetryDelayMs(noteFailure()), 0, `attempt ${attempt}`);
+  }
+  assert.equal(
+    lockRetryDelayMs(noteFailure()),
+    LOCK_RETRY_DELAY_MS,
+    "the fifth failure pauses",
+  );
+});

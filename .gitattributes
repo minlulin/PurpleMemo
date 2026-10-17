@@ -4,6 +4,12 @@
 * text=auto
 .githooks/* text eol=lf
 *.sh text eol=lf
+# The comment above says "pin every executable script to LF" but `*.mjs` was not
+# pinned, so the repo's own statement was only half true (review P3-21). `* text=auto`
+# does normalize it, but it normalizes to the *platform* default: a Windows clone
+# gets CRLF and a POSIX sh run of a .mjs gets the same broken shebang the rule
+# exists to prevent. Pinned explicitly rather than left to the blanket rule.
+*.mjs text eol=lf
 # Biome's formatter requires LF; a CRLF checkout of a JSON config fails
 # the gate (plan §7). Pin the configs it checks so fresh clones stay LF.
 *.json text eol=lf

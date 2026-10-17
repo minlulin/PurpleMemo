@@ -144,3 +144,12 @@ npm run tauri -- signer generate -w .keys/updater.key
   a user's machine — publish a new version instead.
 - The `pubkey` in `tauri.conf.json` is the public half only; there is no
   signing secret in this repository and no hosted secret store.
+- **One instance per machine, and that guarantee is the plugin's.** The
+  second-launch refusal in `lib.rs` is delegated wholly to
+  `tauri-plugin-single-instance`, registered first so a second launch is turned
+  away before `setup` and before `boot`. This is stated in the release notes on
+  purpose (review P3-4): it is the only thing preventing two copies from racing
+  for the database key and the keyring. If the plugin is ever removed or moved
+  after `.setup(`, that guarantee is silently gone — nothing in the code would
+  fail, and two copies would contend for the same encrypted database. If you
+  reorder plugin registration, verify the ordering still holds.

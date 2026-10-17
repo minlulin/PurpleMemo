@@ -4,7 +4,7 @@
 // in the settings table; the fallback stores the same kind of hash for the
 // answer. There is NO online recovery and the UI says so plainly (§2.9).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { settingsRepo } from "../data/app.ts";
 import {
   LOCK_RETRY_DELAY_MS,
@@ -303,13 +303,24 @@ export function LockScreen(p: LockScreenProps) {
   const [ack, setAck] = useState(false);
   /** Consecutive failed attempts across both paths (PIN + answer). Resets on
    *  the first success; past the free attempts the screen pauses
-   *  `LOCK_RETRY_DELAY_MS` before another try (review L-02). */
-  const [failures, setFailures] = useState(0);
+   *  `LOCK_RETRY_DELAY_MS` before another try (review L-02).
+   *
+   *  A ref, not state (review P3-12). It used to be `useState` read inside
+   *  `noteFailure`, but state is a render-time snapshot: two attempts landing
+   *  inside the same PBKDF2 verify window both read the same value and both
+   *  computed the same "next", counting N wrong guesses as 1. Under-counting is
+   *  the direction that matters — it hands an attacker extra free attempts
+   *  against a security control. (The review called it negligible because
+   *  PBKDF2 dominates; the real reason is the miscount, not the cost.) A ref
+   *  is read and written synchronously, so each attempt increments exactly
+   *  once. No companion state: nothing renders the count, and keeping one would
+   *  only ever be a second copy to fall out of step. */
+  const failuresRef = useRef(0);
   const [cooling, setCooling] = useState(false);
 
   const noteFailure = async () => {
-    const next = failures + 1;
-    setFailures(next);
+    const next = failuresRef.current + 1;
+    failuresRef.current = next;
     setShaking(true);
     const waitMs = lockRetryDelayMs(next);
     if (waitMs > 0) {
@@ -337,7 +348,7 @@ export function LockScreen(p: LockScreenProps) {
     setBusy(true);
     try {
       if (await verifyPin(pin, p.pinHash)) {
-        setFailures(0);
+        failuresRef.current = 0;
         p.onUnlock();
       } else {
         setError("Wrong PIN.");
@@ -385,7 +396,7 @@ export function LockScreen(p: LockScreenProps) {
       await settingsRepo.setManyJSON([
         { key: SETTING_KEYS.pinHash, value: await hashPin(draft.pin) },
       ]);
-      setFailures(0);
+      failuresRef.current = 0;
       p.onUnlock();
     } catch (e) {
       setError(errText(e));
