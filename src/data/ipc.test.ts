@@ -309,3 +309,24 @@ test("the window label Rust focuses is the window Tauri actually creates", () =>
     `MAIN_WINDOW_LABEL must match tauri.conf.json ("${label}")`,
   );
 });
+
+test("tauri.conf.json CSP connect-src allows Tauri custom protocol IPC", () => {
+  // `backup_save_file` and `photo_save` rely on raw body + custom header IPC,
+  // which uses fetch() to Tauri's custom IPC protocol (http://ipc.localhost on
+  // Windows, ipc:// on Linux/macOS). If connect-src blocks them, Tauri falls
+  // back to window.ipc.postMessage which strips HTTP headers and breaks saves.
+  const confSrc = readFileSync(
+    new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    confSrc,
+    /connect-src[^;]*\bipc:/,
+    "connect-src must allow ipc: scheme for macOS/Linux custom protocol IPC",
+  );
+  assert.match(
+    confSrc,
+    /connect-src[^;]*\bhttp:\/\/ipc\.localhost/,
+    "connect-src must allow http://ipc.localhost for Windows custom protocol IPC",
+  );
+});
