@@ -904,9 +904,14 @@ function HistoryView() {
   const [shops, setShops] = useState<ShopRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  /** The job whose title/note inputs are open (review P2-9). */
+  /** The job whose description fields are open (review P2-9). */
   const [editing, setEditing] = useState<number | null>(null);
-  const [draft, setDraft] = useState({ title: "", note: "" });
+  const [draft, setDraft] = useState({
+    title: "",
+    shopId: null as number | null,
+    jobDate: "",
+    note: "",
+  });
 
   // A `reload` the edit and delete paths can call, rather than each repeating
   // the fetch — and so an out-of-order load cannot land over a fresh one.
@@ -944,15 +949,28 @@ function HistoryView() {
   };
 
   /**
-   * Rename a completed job in place (review P2-9). Title and note only: a paid
-   * job's total is money that has been received and already recorded in the
-   * Budget, so `updateJob` refuses to move it — changing what was charged after
-   * the payment is a different decision from correcting a typo, and the Budget
-   * entry is where that belongs.
+   * Edit a completed job in place (review P2-9).
+   *
+   * Title, shop, date and note — everything that is a *description* of work
+   * done. The total is deliberately absent: a paid job's amount is money that
+   * has been received and already recorded in the Budget as income, so
+   * `updateJob` refuses to move it. Correcting a charge after the payment is a
+   * different decision from correcting a typo, and it belongs in the Budget.
+   *
+   * **Shop is here because it is what the money is grouped by.** The Receivable
+   * view and every customer voucher are built per shop, so a completed job
+   * filed under the wrong shop misstates a customer's balance with no way to
+   * fix it — the same permanent-entry trap the finding describes, one field
+   * narrower than the form above it.
    */
-  const saveTitle = async (
+  const saveEditJob = async (
     id: number,
-    fields: { title: string; note: string },
+    fields: {
+      title: string;
+      shopId: number | null;
+      jobDate: string;
+      note: string;
+    },
   ) => {
     try {
       await businessRepo.updateJob(id, fields);
@@ -999,6 +1017,35 @@ function HistoryView() {
                         setDraft({ ...draft, title: e.target.value })
                       }
                     />
+                    <select
+                      className="select"
+                      aria-label={`Customer shop for job ${j.id}`}
+                      value={draft.shopId === null ? "" : String(draft.shopId)}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          shopId:
+                            e.target.value === ""
+                              ? null
+                              : Number(e.target.value),
+                        })
+                      }
+                    >
+                      <option value="">No shop</option>
+                      {shops.map((s) => (
+                        <option key={s.id} value={String(s.id)}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      aria-label={`Job date for job ${j.id}`}
+                      value={draft.jobDate}
+                      onChange={(e) =>
+                        setDraft({ ...draft, jobDate: e.target.value })
+                      }
+                    />
                     <input
                       aria-label={`Note for job ${j.id}`}
                       value={draft.note}
@@ -1009,7 +1056,7 @@ function HistoryView() {
                     <button
                       type="button"
                       className="btn btn-primary"
-                      onClick={() => void saveTitle(j.id, draft)}
+                      onClick={() => void saveEditJob(j.id, draft)}
                     >
                       Save
                     </button>
@@ -1027,8 +1074,9 @@ function HistoryView() {
                 {formatMMK(j.total_cents)}
               </span>
               {/* The finding named HistoryView as well as JobsView: a completed
-                  job had no escape hatch either, so a mistyped title was
-                  permanent. Edit here is title+note only — see saveTitle. */}
+                  job had no escape hatch either, so a mistyped title — or a job
+                  filed under the wrong shop, which misstates that customer's
+                  voucher — was permanent. */}
               <span className="row-actions">
                 {editing === j.id ? null : (
                   <button
@@ -1036,7 +1084,12 @@ function HistoryView() {
                     className="btn btn-ghost"
                     onClick={() => {
                       setEditing(j.id);
-                      setDraft({ title: j.title, note: j.note });
+                      setDraft({
+                        title: j.title,
+                        shopId: j.shop_id,
+                        jobDate: j.job_date,
+                        note: j.note,
+                      });
                     }}
                   >
                     Edit

@@ -4,7 +4,7 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
-import { applyPayment } from "./money.ts";
+import { applyPayment, formatMMK } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import type { LoanDirection, LoanRow, LoanState } from "./types.ts";
 
@@ -63,6 +63,18 @@ export function createLoansRepo(driver: DataDriver) {
       return r.lastInsertRowid;
     },
 
+    /**
+     * Partial update. `undefined` leaves a column alone; an explicit `null`
+     * clears a nullable one.
+     *
+     * **The amount may not drop below what has already been repaid** — the same
+     * rule `updateJob` carries, and for the same reason. The schema only checks
+     * `amount_cents > 0` and `repaid_cents >= 0` independently, so lowering the
+     * amount under the repayments leaves `remaining_cents` — on the Lent /
+     * Borrowed figures and in `deriveLoanState` — negative. Refused rather than
+     * clamped: a clamp would make the books agree with themselves and lie about
+     * the loan.
+     */
     async updateLoan(id: number, fields: Partial<LoanInput>): Promise<void> {
       const sets: string[] = [];
       const params: unknown[] = [];
@@ -75,6 +87,16 @@ export function createLoansRepo(driver: DataDriver) {
         params.push(fields.direction);
       }
       if (fields.amountCents !== undefined) {
+        if (fields.amountCents <= 0) {
+          throw new Error("A loan amount must be greater than zero.");
+        }
+        const loan = await this.getLoan(id);
+        if (!loan) throw new Error(`loan ${id} not found`);
+        if (fields.amountCents < loan.repaid_cents) {
+          throw new Error(
+            `This loan has already been repaid ${formatMMK(loan.repaid_cents)}, so its amount cannot be lowered below that.`,
+          );
+        }
         sets.push("amount_cents = ?");
         params.push(fields.amountCents);
       }

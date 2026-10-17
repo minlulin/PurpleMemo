@@ -82,3 +82,60 @@ test("updateLoan with no fields writes nothing", async () => {
   await loans.updateLoan(5, {});
   assert.equal(driver.callsTo("execute").length, 0);
 });
+
+test("updateLoan: the amount may not drop below what is already repaid", async () => {
+  // The schema checks `amount_cents > 0` and `repaid_cents >= 0`
+  // independently, so lowering the amount under the repayments would leave
+  // remaining_cents negative on the Lent/Borrowed figures and in
+  // deriveLoanState. Refused, not clamped — the same rule updateJob carries.
+  const row = {
+    id: 5,
+    counterparty: "U Kyaw",
+    direction: "lent",
+    amount_cents: 100_000,
+    repaid_cents: 60_000,
+    due_date: null,
+    note: "",
+    created_at: "2026-10-01",
+  };
+  const driver = createMockDriver({ results: [[row]] });
+  await assert.rejects(
+    () => createLoansRepo(driver).updateLoan(5, { amountCents: 50_000 }),
+    /already been repaid/,
+  );
+  assert.deepEqual(driver.callsTo("execute"), [], "nothing written on refusal");
+});
+
+test("updateLoan: a non-positive amount is refused, and an unknown loan too", async () => {
+  const zero = createMockDriver();
+  await assert.rejects(
+    () => createLoansRepo(zero).updateLoan(5, { amountCents: 0 }),
+    /greater than zero/,
+  );
+  assert.deepEqual(zero.callsTo("execute"), []);
+
+  const missing = createMockDriver({ results: [[]] });
+  await assert.rejects(
+    () => createLoansRepo(missing).updateLoan(99, { amountCents: 100 }),
+    /not found/,
+  );
+});
+
+test("updateLoan: raising the amount above what is repaid is fine", async () => {
+  const row = {
+    id: 5,
+    counterparty: "U Kyaw",
+    direction: "lent",
+    amount_cents: 100_000,
+    repaid_cents: 60_000,
+    due_date: null,
+    note: "",
+    created_at: "2026-10-01",
+  };
+  const driver = createMockDriver({ results: [[row]] });
+  await createLoansRepo(driver).updateLoan(5, { amountCents: 200_000 });
+  const call = driver.callsTo("execute")[0];
+  assert.ok(call);
+  assert.match(call.args[0] as string, /UPDATE loans SET amount_cents = \?/);
+  assert.deepEqual(call.args[1], [200_000, 5]);
+});

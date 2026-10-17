@@ -29,7 +29,7 @@
 | P2-6 | ✅ **fixed** | Discard had no coverage and had a real bug under it: discarding during an in-flight save re-persisted the discarded draft |
 | P2-7 | 📌 **accepted** | 170 `(§X)` comment refs kept as historical provenance — rationale and revisit conditions recorded below |
 | P2-10 | ✅ **fixed** | `ConfirmButton` + pure `confirmTransition` guard all destructive deletes (the finding listed 8 pages); the rule itself is regression-tested |
-| P2-9 | ✅ **fixed** | All five sub-items: job/payable/recurring edit+delete, wallet/category rename+delete, and the kind toggle now converts in one atomic batch |
+| P2-9 | ✅ **fixed** | All five sub-items plus three of the same class it did not list: HistoryView had nothing, paid payables had no row actions at all, and `updateLoan` existed but was unreachable *and* unguarded |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
 **No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
@@ -225,9 +225,15 @@ In single-person day-to-day use, a typo on an entry becomes permanent when a mod
 - Every new delete goes through `ConfirmButton` and states its consequence: "Delete job *Roof repair* — payments already received stay in the Budget".
 - `delete-guards.test.ts`'s floors raised from 17 to 22 confirm controls and 23 destructive handlers, so the P2-10 rule keeps covering what P2-9 added.
 
+**Two things the finding did not list** — both found while wiring, both now closed:
+
+- **`HistoryView` was named in the finding and had nothing at all.** A completed job's title was permanent. It now gets Edit and Delete. The first version of that edit exposed *title and note only* — which was still a residue of the same trap, because **`shop_id` is what the money is grouped by**: the Receivable view and every customer voucher are built per shop, so a completed job filed under the wrong shop misstates a customer's balance with no way to fix it. The form now edits title, shop, date and note. The **total** stays out deliberately — a paid job's amount is money already received and recorded in the Budget, so `updateJob` refuses to move it.
+- **Paid payables sat inside a `p.paid === 0 ? … : null` block**, so a paid payable had **no row actions at all** — permanently uncorrectable, and invisible because the default list hides paid rows. Edit and Delete moved outside that block.
+- **`LoansPage` was not in the finding and had no update path at all.** `updateLoan` existed in `lib/loans.ts` and *nothing called it* — dead code, so a mistyped counterparty (a hand-typed name, the most typo-prone field on the page) was permanent. Worse, `updateLoan` was **missing the `amount >= repaid` guard** that `updateJob` now carries: the schema checks `amount_cents > 0` and `repaid_cents >= 0` independently, so lowering the amount under the repayments left `remaining_cents` negative on the Lent/Borrowed figures. Guard added, Edit wired, one form for create and edit.
+
 **Not added, deliberately:** no bulk edit, and no way to delete a wallet or category that still has entries against it — that data is history, and the message says so rather than cascading.
 
-Gate: **357/357** TS tests (332 → 357), 93/93 `cargo test`, clippy, fmt, build.
+Gate: **360/360** TS tests (357 → 360), 93/93 `cargo test`, clippy, fmt, build.
 
 ### P2-10 — Destructive deletes execute in one click with no confirmation — ✅ FIXED
 **`src/pages/VaultPage.tsx:221-232`, `src/pages/ShoppingPage.tsx:236-242`, `src/pages/HabitsPage.tsx:101-108`, `src/pages/LoansPage.tsx:99-107`, `src/pages/NotesPage.tsx:512-522`, `src/pages/JournalPage.tsx:177-191`, `src/pages/ContactsPage.tsx:163-172`, `src/pages/GalleryPage.tsx:275-291`**

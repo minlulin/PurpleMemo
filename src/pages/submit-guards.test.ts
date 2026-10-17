@@ -93,7 +93,7 @@ const GUARDS: {
     handler: "addLoan",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
-    label: "Adding…",
+    label: "Saving…",
   },
   {
     page: "LoansPage.tsx",

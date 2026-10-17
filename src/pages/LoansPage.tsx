@@ -57,6 +57,15 @@ export default function LoansPage() {
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [payingId, setPayingId] = useState<number | null>(null);
+  /**
+   * The loan the form is editing, or null when it creates (review P2-9).
+   *
+   * `updateLoan` existed in the repository the whole time and nothing called it,
+   * so a mistyped counterparty — a name typed by hand, the most typo-prone field
+   * on the page — was permanent. That is the finding's own complaint about
+   * Business and Budget, in a module it did not name.
+   */
+  const [editing, setEditing] = useState<LoanListItem | null>(null);
 
   const [counterparty, setCounterparty] = useState("");
   const [direction, setDirection] = useState<LoanDirection>("lent");
@@ -88,17 +97,28 @@ export default function LoansPage() {
     savingRef.current = true;
     setSaving(true);
     try {
-      await loansRepo.createLoan({
-        counterparty: counterparty.trim(),
-        direction,
-        amountCents,
-        dueDate: dueDate === "" ? null : dueDate,
-        note: note.trim(),
-      });
+      if (editing !== null) {
+        await loansRepo.updateLoan(editing.id, {
+          counterparty: counterparty.trim(),
+          direction,
+          amountCents,
+          dueDate: dueDate === "" ? null : dueDate,
+          note: note.trim(),
+        });
+      } else {
+        await loansRepo.createLoan({
+          counterparty: counterparty.trim(),
+          direction,
+          amountCents,
+          dueDate: dueDate === "" ? null : dueDate,
+          note: note.trim(),
+        });
+      }
       setCounterparty("");
       setAmountRaw("");
       setDueDate("");
       setNote("");
+      setEditing(null);
       await reload();
     } catch (e) {
       setError(errText(e));
@@ -106,6 +126,25 @@ export default function LoansPage() {
       savingRef.current = false;
       setSaving(false);
     }
+  };
+
+  const startEditLoan = (l: LoanListItem) => {
+    setEditing(l);
+    setCounterparty(l.counterparty);
+    setDirection(l.direction);
+    setAmountRaw(fromCents(l.amount_cents).toFixed(2));
+    setDueDate(l.due_date ?? "");
+    setNote(l.note);
+    setRepayFor(null);
+    setError(null);
+  };
+
+  const cancelEditLoan = () => {
+    setEditing(null);
+    setCounterparty("");
+    setAmountRaw("");
+    setDueDate("");
+    setNote("");
   };
 
   const repay = async (id: number) => {
@@ -129,6 +168,7 @@ export default function LoansPage() {
     try {
       await loansRepo.deleteLoan(id);
       if (repayFor === id) setRepayFor(null);
+      if (editing?.id === id) cancelEditLoan();
       await reload();
     } catch (e) {
       setError(errText(e));
@@ -279,9 +319,20 @@ export default function LoansPage() {
                       </button>
                     )
                   ) : null}
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => startEditLoan(l)}
+                  >
+                    Edit
+                  </button>
                   <ConfirmButton
                     className="btn btn-ghost"
-                    what="loan"
+                    what={
+                      l.repaid_cents > 0
+                        ? `loan for ${l.counterparty} — repayments already recorded stay`
+                        : `loan for ${l.counterparty}`
+                    }
                     onConfirm={() => remove(l.id)}
                   >
                     Delete
@@ -300,7 +351,11 @@ export default function LoansPage() {
           }}
         >
           <div className="dash-card-head">
-            <h2 className="side-heading">New loan</h2>
+            <h2 className="side-heading">
+              {editing === null
+                ? "New loan"
+                : `Edit loan — ${editing.counterparty}`}
+            </h2>
             <fieldset className="kind-toggle">
               <legend className="visually-hidden">Loan direction</legend>
               <button
@@ -376,8 +431,21 @@ export default function LoansPage() {
                 saving || !nameOk || amountCents === null || amountCents <= 0
               }
             >
-              {saving ? "Adding…" : "Add loan"}
+              {saving
+                ? "Saving…"
+                : editing === null
+                  ? "Add loan"
+                  : "Save changes"}
             </button>
+            {editing !== null ? (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={cancelEditLoan}
+              >
+                Cancel edit
+              </button>
+            ) : null}
           </div>
         </form>
       </section>
