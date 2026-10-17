@@ -19,7 +19,8 @@
 //! same directory and are renamed into place, so a full disk or a crash
 //! mid-write can never leave a truncated zip where a valid backup used to be.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
 /// Request header carrying the destination path on a raw `backup_save_file`
@@ -29,10 +30,7 @@ use std::path::Path;
 /// percent-encoded; [`decode_header_path`] is the only decoder.
 pub const BACKUP_PATH_HEADER: &str = "x-backup-path";
 
-/// Suffix for the temp sibling. It cannot collide with a backup file the user
-/// would name (`<chosen>.zip.purple-memo-tmp` is not a shape the save dialog
-/// offers), and it lives in the destination's own directory so the rename
-/// stays on one filesystem.
+/// Suffix for the randomized temp sibling.
 const TEMP_SUFFIX: &str = ".purple-memo-tmp";
 
 /// Write `bytes` to the user-chosen `path`.
@@ -59,36 +57,32 @@ pub fn save_backup_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return Err(format!("invalid destination {}", path.display()));
     };
-    let tmp_path = parent.join(format!("{file_name}{TEMP_SUFFIX}"));
-    fs::write(&tmp_path, bytes).map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
-    if let Err(first) = fs::rename(&tmp_path, path) {
-        // `rename` replaces an existing file on every platform this app ships
-        // to — Windows uses `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`,
-        // which `photos::tests::rename_replaces_an_existing_file` checks rather
-        // than assumes. So reaching this arm means something unusual refused: an
-        // exFAT/network volume, or an antivirus holding the destination open.
-        // Overwriting an existing backup is the normal case here, so try once
-        // more without the destination in the way.
-        if !path.exists() {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!(
-                "rename {} -> {}: {first}",
-                tmp_path.display(),
-                path.display()
-            ));
-        }
-        fs::remove_file(path).map_err(|e| format!("replace {}: {e}", path.display()))?;
-        if let Err(second) = fs::rename(&tmp_path, path) {
-            // The temp file is deliberately left behind: it holds the bytes
-            // that could not be renamed, and deleting it would destroy a backup
-            // the user asked to keep.
-            return Err(format!(
-                "could not write {} ({}); the archive is still at {}",
-                path.display(),
-                second,
-                tmp_path.display()
-            ));
-        }
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|e| format!("OS random source unavailable: {e}"))?;
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let tmp_path = parent.join(format!(".{file_name}.{suffix}{TEMP_SUFFIX}"));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut temp = options
+        .open(&tmp_path)
+        .map_err(|e| format!("create {}: {e}", tmp_path.display()))?;
+    if let Err(e) = temp.write_all(bytes).and_then(|()| temp.sync_all()) {
+        drop(temp);
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("write {}: {e}", tmp_path.display()));
+    }
+    drop(temp);
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        return Err(format!(
+            "could not replace {} ({e}); the archive is still at {}",
+            path.display(),
+            tmp_path.display()
+        ));
     }
     Ok(())
 }
@@ -234,11 +228,17 @@ mod tests {
             fs::read(&out).expect("read back"),
             b"PK\x03\x04 archive bytes"
         );
-        assert!(
-            !dir.path(&format!("purple-memo-backup.zip{TEMP_SUFFIX}"))
-                .exists(),
-            "the temp sibling must not survive a successful write"
-        );
+        let files: Vec<String> = fs::read_dir(&dir.0)
+            .expect("read directory")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(files, ["purple-memo-backup.zip"]);
     }
 
     #[test]
@@ -260,6 +260,11 @@ mod tests {
         fs::create_dir_all(dir.path("backup.zip")).expect("make dir");
         assert!(save_backup_file(&out, b"archive").is_err());
         assert!(out.is_dir(), "the destination is untouched");
+        assert_eq!(
+            fs::read_dir(&dir.0).expect("read directory").count(),
+            1,
+            "early refusal creates no temporary archive"
+        );
     }
 
     #[test]

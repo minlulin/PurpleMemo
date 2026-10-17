@@ -189,7 +189,7 @@ function useReminderPoll(
  * pauses while locked (§2.9) exactly like the reminder poll. The desktop stays
  * the only writer: this only re-reads rows and re-publishes them.
  *
- * A server that stopped itself (too many wrong pairing codes) is surfaced
+ * A server that stopped unexpectedly is surfaced
  * through the same in-app note channel as notifications. That edge, and the
  * best-effort rules, are in `createShareTicker` (`lib/session.ts`).
  */

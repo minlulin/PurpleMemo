@@ -335,7 +335,7 @@ export default function SettingsPage(p: SettingsPageProps) {
   const [shareAck, setShareAck] = useState(false);
 
   // The app shell keeps re-publishing while sharing; this mirrors the state
-  // here (including a server that stopped itself after wrong pairing codes).
+  // here (including a server that stopped unexpectedly).
   useEffect(() => {
     let cancelled = false;
     const sync = async () => {
@@ -368,7 +368,7 @@ export default function SettingsPage(p: SettingsPageProps) {
     setShareCopied(false);
     if (!shareAck) {
       setError(
-        "Tick the acknowledgement first — anyone on this network who has the code can read your snapshot.",
+        "Tick the acknowledgement first — anyone with the share link can decrypt the snapshot.",
       );
       return;
     }
@@ -774,9 +774,10 @@ export default function SettingsPage(p: SettingsPageProps) {
           sharing never survives a restart and stops when the app is locked.
         </p>
         <p className="alert alert-note" role="note">
-          LAN sharing uses unencrypted HTTP. Use it only on a trusted private
-          network: anyone who can observe the Wi-Fi traffic may capture the
-          pairing link and snapshot.
+          The snapshot is AES-256-GCM encrypted. Its key is carried in the link
+          fragment, which is not sent in HTTP requests. HTTP cannot authenticate
+          the desktop, so an active network attacker could replace this page and
+          capture the key. Use only on a trusted private network.
         </p>
         {shareState?.running && (
           <p className="alert alert-note" role="status">
@@ -787,7 +788,7 @@ export default function SettingsPage(p: SettingsPageProps) {
         {shareState?.running ? (
           <div className="side-form">
             <label>
-              Open this on the phone (it carries the pairing code)
+              Open this encrypted link on the phone
               <input
                 className="input"
                 readOnly
@@ -796,8 +797,7 @@ export default function SettingsPage(p: SettingsPageProps) {
               />
             </label>
             <p className="muted">
-              Pairing code <b>{shareState.code}</b> · port{" "}
-              {shareState.port ?? "?"}
+              Key stays in the link fragment · port {shareState.port ?? "?"}
               {shareState.publishedAt !== null
                 ? ` · last snapshot ${shareState.publishedAt.replace("T", " ")}`
                 : " · waiting for the first snapshot…"}
@@ -828,8 +828,8 @@ export default function SettingsPage(p: SettingsPageProps) {
                 checked={shareAck}
                 onChange={(e) => setShareAck(e.target.checked)}
               />
-              I understand — anything on this network with the pairing code can
-              read my dashboard snapshot.
+              I understand — anyone with this link can decrypt my snapshot, and
+              HTTP does not authenticate the desktop.
             </label>
             <div className="editor-row">
               <button

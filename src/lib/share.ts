@@ -3,17 +3,19 @@
 // The desktop is the single writer — this module does not sync anything. It
 // loads the same rows the Dashboard shows, turns them into a small,
 // display-ready, bounded JSON payload, and hands it to Rust, which serves it
-// over the LAN behind a pairing code. The network path never touches the DB
-// or the encryption key: it only ever serves bytes this module produced.
+// over the LAN as AES-GCM ciphertext. The URL-fragment key is never sent in an
+// HTTP request; the network path never touches the DB.
 //
 // Everything user-facing (labels, money, excerpts) is formatted HERE, so the
 // phone page is a dumb painter and the Vault is structurally absent — the
 // snapshot builder takes no vault/settings/photo input at all (§5.3).
 
+import { gcm } from "@noble/ciphers/aes.js";
 import type { DataDriver, ShareInfo } from "../data/driver.ts";
 import { createBudgetRepo, type DayEntry } from "./budget.ts";
 import { createBusinessRepo } from "./business.ts";
 import { birthdayLabel, createContactsRepo } from "./contacts.ts";
+import { bytesToB64, randomBytes } from "./crypto.ts";
 import { dayMoneyTotals, expiringWarranties } from "./dashboard.ts";
 import { localISODateTime, todayLocal } from "./dates.ts";
 import { createHabitsRepo } from "./habits.ts";
@@ -31,6 +33,33 @@ import type {
 
 /** Bumped when the payload shape changes (the phone page reads it). */
 export const SHARE_SNAPSHOT_VERSION = 1;
+const SHARE_NONCE_BYTES = 12;
+
+function shareKeyBytes(hex: string): Uint8Array {
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new Error("share encryption key is malformed");
+  }
+  return Uint8Array.from({ length: 32 }, (_, index) =>
+    Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16),
+  );
+}
+
+function encryptSnapshot(snapshot: ShareSnapshot, keyHex: string): string {
+  const nonce = randomBytes(SHARE_NONCE_BYTES);
+  const generatedAt = snapshot.generatedAt;
+  const aad = new TextEncoder().encode(
+    `purple-memo/share/v${SHARE_SNAPSHOT_VERSION}\0${generatedAt}`,
+  );
+  const ciphertext = gcm(shareKeyBytes(keyHex), nonce, aad).encrypt(
+    new TextEncoder().encode(JSON.stringify(snapshot)),
+  );
+  return JSON.stringify({
+    version: SHARE_SNAPSHOT_VERSION,
+    generatedAt,
+    nonce: bytesToB64(nonce),
+    ciphertext: bytesToB64(ciphertext),
+  });
+}
 
 /**
  * Row caps per section. The snapshot is a glance, not a database dump: a
@@ -157,6 +186,7 @@ export function buildShareSnapshot(input: ShareSnapshotInput): ShareSnapshot {
  * last published, and nothing else.
  */
 export function createShareRepo(driver: DataDriver) {
+  let shareKey: string | null = null;
   const budget = createBudgetRepo(driver);
   const business = createBusinessRepo(driver);
   const tasks = createTasksRepo(driver);
@@ -176,12 +206,27 @@ export function createShareRepo(driver: DataDriver) {
      * call away. The token is good for exactly one attempt.
      */
     async start(): Promise<ShareInfo> {
-      return driver.shareStart(await driver.shareArm());
+      const info = await driver.shareStart(await driver.shareArm());
+      shareKey = info.key;
+      return info;
     },
-    stop: () => driver.shareStop(),
-    status: () => driver.shareStatus(),
+    async stop() {
+      const info = await driver.shareStop();
+      shareKey = null;
+      return info;
+    },
+    async status() {
+      const info = await driver.shareStatus();
+      shareKey = info.running ? info.key : null;
+      return info;
+    },
 
     async publishSnapshot() {
+      if (shareKey === null) {
+        const info = await driver.shareStatus();
+        shareKey = info.running ? info.key : null;
+        if (shareKey === null) return info;
+      }
       const today = todayLocal();
       const [
         dayEntries,
@@ -242,7 +287,7 @@ export function createShareRepo(driver: DataDriver) {
         warranties: expiringWarranties(jobs, today, 14),
         notes: noteRows,
       });
-      return driver.sharePublish(JSON.stringify(snapshot));
+      return driver.sharePublish(encryptSnapshot(snapshot, shareKey));
     },
   };
 }

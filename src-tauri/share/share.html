@@ -145,7 +145,33 @@
       // formatted by the desktop (§6), so nothing here needs the design system,
       // a framework or the database. It renders with textContent only — no
       // innerHTML, so a title or note can never inject markup.
-      const code = new URLSearchParams(location.search).get("k") || "";
+      const keyHex = new URLSearchParams(location.hash.slice(1)).get("key") || "";
+      history.replaceState(null, "", location.pathname + location.search);
+
+      function hexBytes(hex) {
+        if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error("Missing share key.");
+        return Uint8Array.from({ length: 32 }, (_, i) =>
+          Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16),
+        );
+      }
+
+      function base64Bytes(value) {
+        const binary = atob(value);
+        return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      }
+
+      async function decryptSnapshot(envelope) {
+        const { gcm } = await import("/_crypto/aes.js");
+        const aad = new TextEncoder().encode(
+          `purple-memo/share/v${envelope.version}\0${envelope.generatedAt}`,
+        );
+        const plaintext = gcm(
+          hexBytes(keyHex),
+          base64Bytes(envelope.nonce),
+          aad,
+        ).decrypt(base64Bytes(envelope.ciphertext));
+        return JSON.parse(new TextDecoder().decode(plaintext));
+      }
 
       function el(tag, className, text) {
         const node = document.createElement(tag);
@@ -234,13 +260,8 @@
 
       async function load() {
         try {
-          const res = await fetch(`/api/snapshot?k=${encodeURIComponent(code)}`, {
-            cache: "no-store",
-          });
-          if (res.status === 403) {
-            setStatus("Pairing code rejected. Ask the desktop for a fresh link.", true);
-            return;
-          }
+          if (!keyHex) throw new Error("This link has no decryption key.");
+          const res = await fetch("/api/snapshot", { cache: "no-store" });
           if (res.status === 503) {
             setStatus("Waiting for the desktop to publish a snapshot…", false);
             return;
@@ -250,9 +271,9 @@
             return;
           }
           setStatus("Read-only view — changes are made on the desktop only.", false);
-          render(await res.json());
+          render(await decryptSnapshot(await res.json()));
         } catch {
-          setStatus("Cannot reach the desktop. Is it still sharing on this network?", true);
+          setStatus("Cannot decrypt the snapshot. Open the current link from Purple Memo.", true);
         }
       }
 

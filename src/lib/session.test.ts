@@ -117,12 +117,12 @@ test("the share ticker raises the stop notice once, on the running → stopped e
   // The server stopped itself: note it, and only once.
   status = {
     running: false,
-    note: "Stopped sharing after 10 wrong pairing codes.",
+    note: "Sharing server stopped unexpectedly.",
   };
   await tick();
   await tick();
   await tick();
-  assert.deepEqual(notes, ["Stopped sharing after 10 wrong pairing codes."]);
+  assert.deepEqual(notes, ["Sharing server stopped unexpectedly."]);
 });
 
 test("the share ticker raises nothing for an app that was never sharing", async () => {

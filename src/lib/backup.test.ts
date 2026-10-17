@@ -660,6 +660,52 @@ test("applyBackup corrects sha256 + size_bytes when a zip entry does not match t
   assert.equal(get("size_bytes"), 3);
 });
 
+test("applyBackup repairs forged photo metadata when the content path already matches", async () => {
+  const path =
+    "photos/2026/10/e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584.jpg";
+  const base = createMockDriver();
+  const driver: MockDriver = {
+    ...base,
+    async savePhoto(bytes, ext) {
+      base.calls.push({ method: "savePhoto", args: [bytes, ext] });
+      return path;
+    },
+  };
+  const payload = samplePayload();
+  payload.data.photos = [
+    { ...PHOTO_ROW, rel_path: path, sha256: "forged", size_bytes: 1 },
+  ];
+
+  await applyBackup(driver, {
+    payload,
+    photos: [{ path, bytes: Uint8Array.from([9, 9, 9]) }],
+  });
+
+  const statements = first(driver.callsTo("batch"), "batch").args[0] as {
+    sql: string;
+    params?: unknown[];
+  }[];
+  const photoInsert = statements.find((statement) =>
+    statement.sql.startsWith("INSERT INTO photos"),
+  );
+  assert.ok(photoInsert);
+  const columns = photoInsert.sql
+    .slice(
+      photoInsert.sql.indexOf("(") + 1,
+      photoInsert.sql.indexOf(") VALUES"),
+    )
+    .split(",")
+    .map((column) => column.trim());
+  const get = (name: string) => photoInsert.params?.[columns.indexOf(name)];
+
+  assert.equal(get("rel_path"), path);
+  assert.equal(
+    get("sha256"),
+    "e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584",
+  );
+  assert.equal(get("size_bytes"), 3);
+});
+
 test("summarizeBackup counts rows and photos for the import summary", () => {
   const summary = summarizeBackup({
     payload: samplePayload(),

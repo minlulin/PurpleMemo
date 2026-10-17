@@ -6,17 +6,16 @@
 //! touches the SQLCipher connection, the keyring key or the filesystem, so a
 //! reachable listener can never become a database or key-read oracle.
 //!
-//! Access control: a random pairing code minted at start, required on every
-//! request (`?k=`). Sharing is off until the user turns it on and never
-//! survives a restart (fail closed — §8 is opt-in). Ten *consecutive* wrong
-//! codes shut the server down instead of allowing an unbounded brute-force;
-//! a request that presents the right code resets the count, so stray bad
-//! requests spread over a session (a mistyped link, a browser's automatic
-//! `/favicon.ico` fetch without the code) can never add up to a shutdown.
+//! A random 256-bit AES-GCM key is carried in the URL fragment, which browsers
+//! never send in HTTP requests. The server publishes only authenticated
+//! ciphertext; sharing is off until the user turns it on and never survives a
+//! restart (fail closed — §8 is opt-in). HTTP still cannot authenticate the
+//! server, so active network attackers can replace the page and capture its
+//! fragment key.
 
 use std::io::Cursor;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -25,20 +24,13 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
-/// Pairing-code length (alphabet below is 32 chars, so each character carries
-/// exactly 5 bits — 6 characters ≈ 30 bits).
-const CODE_LEN: usize = 6;
-
-/// Unambiguous alphabet: no O/0, I/1/L look-alikes. Length is exactly 32 so
-/// `byte % 32` is uniform (256 / 32 = 8).
-const CODE_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-
-/// Consecutive wrong-code attempts tolerated before the server shuts itself
-/// down. A request presenting the right code resets the count (see [`Shared`]).
-pub const MAX_BAD_CODES: u32 = 10;
-
 /// The page inlined into the binary — the phone never loads a file from disk.
 const SHARE_PAGE: &str = include_str!("../share/share.html");
+
+/// Noble's audited AES-GCM modules, served same-origin to the phone page.
+const AES_MODULE: &str = include_str!("../../node_modules/@noble/ciphers/aes.js");
+const POLYVAL_MODULE: &str = include_str!("../../node_modules/@noble/ciphers/_polyval.js");
+const UTILS_MODULE: &str = include_str!("../../node_modules/@noble/ciphers/utils.js");
 
 /// The design tokens, inlined so the phone page uses the same values as the
 /// app (§6) without shipping a separate stylesheet.
@@ -51,10 +43,8 @@ const TOKENS_MARKER: &str = "/*__TOKENS__*/";
 /// cap only stops a runaway caller from ballooning memory).
 pub const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
 
-/// A disclosure of the user's data to the local network, for the audit log
-/// (review H-8). Carries the port but never the pairing code: the code is the
-/// access control, and writing it beside the database would put the LAN's only
-/// real secret on disk for the rest of the install's life.
+/// A disclosure of the user's data to the local network, for the audit log.
+/// Carries the port but never the encryption key.
 #[derive(Debug, Clone)]
 pub enum ShareEvent {
     /// A listener was opened on this port, with consent.
@@ -65,7 +55,7 @@ pub enum ShareEvent {
 
 impl ShareEvent {
     /// The audit line for this event. Pure, and — like the key-export line —
-    /// has no parameter through which the pairing code could be threaded.
+    /// has no parameter through which the encryption key could be threaded.
     pub fn audit_line(&self) -> String {
         match self {
             ShareEvent::Started(port) => {
@@ -90,10 +80,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[serde(rename_all = "camelCase")]
 pub struct ShareInfo {
     pub running: bool,
-    /// The link the phone opens — carries the pairing code.
+    /// The link carries the encryption key in its fragment, never in a request.
     pub url: Option<String>,
-    /// The pairing code shown in the app (also embedded in `url`).
-    pub code: Option<String>,
+    /// AES-256-GCM key, carried only in the URL fragment.
+    pub key: Option<String>,
     /// The bound TCP port (useful for firewall rules).
     pub port: Option<u16>,
     /// `generatedAt` of the last published snapshot.
@@ -107,7 +97,7 @@ impl ShareInfo {
         Self {
             running: false,
             url: None,
-            code: None,
+            key: None,
             port: None,
             published_at: None,
             note,
@@ -126,19 +116,11 @@ pub struct StoredSnapshot {
 #[derive(Default)]
 struct Shared {
     stop: AtomicBool,
-    /// Wrong pairing codes since the last request that presented the right
-    /// one. Consecutive, not cumulative: only a caller who does not know the
-    /// code can run this up, because knowing the code resets it — so ten in
-    /// a row still means "someone is guessing", while ten spread across a
-    /// session of legitimate use (the owner's typos, a phone's code-less
-    /// `/favicon.ico` fetch) no longer shut sharing down.
-    consecutive_bad_codes: AtomicU32,
-    stopped_for_abuse: AtomicBool,
 }
 
 struct Running {
     port: u16,
-    code: String,
+    key: String,
     url: Option<String>,
     snapshot: Arc<Mutex<Option<StoredSnapshot>>>,
     shared: Arc<Shared>,
@@ -257,22 +239,21 @@ impl ShareState {
             .to_ip()
             .map(|a: SocketAddr| a.port())
             .ok_or_else(|| "could not read the share server port".to_string())?;
-        let code = generate_code()?;
-        let url = lan_ip().map(|ip| format!("http://{ip}:{port}/?k={code}"));
+        let key = generate_share_key()?;
+        let url = lan_ip().map(|ip| format!("http://{ip}:{port}/#key={key}"));
         let snapshot: Arc<Mutex<Option<StoredSnapshot>>> = Arc::new(Mutex::new(None));
         let shared = Arc::new(Shared::default());
 
         let thread_snapshot = Arc::clone(&snapshot);
         let thread_shared = Arc::clone(&shared);
-        let thread_code = code.clone();
         let join = thread::Builder::new()
             .name("purple-memo-share".to_string())
-            .spawn(move || serve(server, thread_code, thread_snapshot, thread_shared))
+            .spawn(move || serve(server, thread_snapshot, thread_shared))
             .map_err(|e| format!("could not start the share thread: {e}"))?;
 
         let running = Running {
             port,
-            code,
+            key,
             url,
             snapshot,
             shared,
@@ -280,11 +261,8 @@ impl ShareState {
         };
         let info = running.info(None);
         *guard = Some(running);
-        // The pairing code is deliberately NOT logged: it lives in a URL query
-        // string over plain HTTP, so writing it to disk would put the one thing
-        // standing between the LAN and the user's data into a file that outlives
-        // the session. The port and the fact of the disclosure are what a user
-        // needs afterwards.
+        // The encryption key is deliberately NOT logged. It stays in the URL
+        // fragment and is never sent in an HTTP request.
         crate::note_share_event(ShareEvent::Started(info.port.unwrap_or(0)));
         Ok(info)
     }
@@ -294,10 +272,9 @@ impl ShareState {
         let mut guard = self.lock()?;
         match guard.take() {
             Some(running) => {
-                let note = running.abuse_note();
                 reap(running);
-                crate::note_share_event(ShareEvent::Stopped(note.clone()));
-                Ok(ShareInfo::stopped(note))
+                crate::note_share_event(ShareEvent::Stopped(None));
+                Ok(ShareInfo::stopped(None))
             }
             None => Ok(ShareInfo::stopped(None)),
         }
@@ -310,9 +287,8 @@ impl ShareState {
             Some(r) if !r.server_is_gone() => Ok(r.info(None)),
             Some(_) => {
                 let running = guard.take().expect("checked above");
-                let note = running.abuse_note();
                 reap(running);
-                Ok(ShareInfo::stopped(note))
+                Ok(ShareInfo::stopped(None))
             }
             None => Ok(ShareInfo::stopped(None)),
         }
@@ -343,17 +319,7 @@ impl ShareState {
 
 impl Running {
     fn server_is_gone(&self) -> bool {
-        self.shared.stopped_for_abuse.load(Ordering::SeqCst)
-            || self.join.as_ref().is_some_and(|j| j.is_finished())
-    }
-
-    fn abuse_note(&self) -> Option<String> {
-        self.shared
-            .stopped_for_abuse
-            .load(Ordering::SeqCst)
-            .then(|| {
-                format!("Stopped sharing after {MAX_BAD_CODES} consecutive wrong pairing codes.")
-            })
+        self.join.as_ref().is_some_and(|j| j.is_finished())
     }
 
     fn info(&self, note: Option<String>) -> ShareInfo {
@@ -365,7 +331,7 @@ impl Running {
         ShareInfo {
             running: true,
             url: self.url.clone(),
-            code: Some(self.code.clone()),
+            key: Some(self.key.clone()),
             port: Some(self.port),
             published_at,
             note,
@@ -386,14 +352,9 @@ fn reap(mut running: Running) {
     }
 }
 
-/// A fresh pairing code from the OS random source.
-pub fn generate_code() -> Result<String, String> {
-    let mut buf = [0u8; CODE_LEN];
-    getrandom::fill(&mut buf).map_err(|e| format!("OS random source unavailable: {e}"))?;
-    Ok(buf
-        .iter()
-        .map(|b| CODE_ALPHABET[usize::from(*b % 32)] as char)
-        .collect())
+/// A fresh 256-bit AES key from the OS random source, encoded as lowercase hex.
+pub fn generate_share_key() -> Result<String, String> {
+    random_hex(32)
 }
 
 /// Entropy in the consent token. 32 bytes = 256 bits, so guessing one is not
@@ -431,16 +392,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-/// Value of `name` in a raw query string (`a=1&k=CODE`).
-fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == name).then_some(value)
-    })
-}
-
-/// Validate an incoming publish: the served payload must be a snapshot object
-/// with a numeric `version` and a string `generatedAt`.
+/// Validate an encrypted snapshot envelope before it is exposed on the LAN.
 fn parse_snapshot(json: &str) -> Result<StoredSnapshot, String> {
     if json.len() > MAX_SNAPSHOT_BYTES {
         return Err(format!(
@@ -452,19 +404,28 @@ fn parse_snapshot(json: &str) -> Result<StoredSnapshot, String> {
     let object = parsed
         .as_object()
         .ok_or_else(|| "snapshot must be a JSON object".to_string())?;
-    // The shape check is the contract: only payloads this app produced are
-    // ever served, so the listener cannot be coaxed into serving anything else.
+    // Only the versioned AES-GCM envelope is served; plaintext snapshots are
+    // rejected at the native boundary.
     let version = object
         .get("version")
         .and_then(JsonValue::as_i64)
         .ok_or_else(|| "snapshot is missing its numeric version".to_string())?;
-    if version <= 0 {
-        return Err("snapshot version must be positive".to_string());
+    if version != 1 {
+        return Err("unsupported encrypted snapshot version".to_string());
     }
     let generated_at = object
         .get("generatedAt")
         .and_then(JsonValue::as_str)
         .ok_or_else(|| "snapshot is missing its generatedAt string".to_string())?;
+    for field in ["nonce", "ciphertext"] {
+        if !object
+            .get(field)
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(format!("encrypted snapshot is missing {field}"));
+        }
+    }
     Ok(StoredSnapshot {
         json: json.to_string(),
         generated_at: generated_at.to_string(),
@@ -504,7 +465,7 @@ fn page(body: String) -> Response<Cursor<Vec<u8>>> {
     add_header(
         &mut response,
         "Content-Security-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; \
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; \
          connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     );
     response
@@ -522,21 +483,27 @@ fn json(body: String) -> Response<Cursor<Vec<u8>>> {
     response
 }
 
+fn javascript(body: &str) -> Response<Cursor<Vec<u8>>> {
+    let mut response = Response::from_string(body.to_string()).with_status_code(StatusCode(200));
+    add_header(
+        &mut response,
+        "Content-Type",
+        "text/javascript; charset=utf-8",
+    );
+    add_header(&mut response, "Cache-Control", "no-store");
+    add_header(&mut response, "X-Content-Type-Options", "nosniff");
+    add_header(&mut response, "Referrer-Policy", "no-referrer");
+    response
+}
+
 /// The accept loop: poll, serve one request, stop on shutdown or abuse.
-fn serve(
-    server: Server,
-    code: String,
-    snapshot: Arc<Mutex<Option<StoredSnapshot>>>,
-    shared: Arc<Shared>,
-) {
+fn serve(server: Server, snapshot: Arc<Mutex<Option<StoredSnapshot>>>, shared: Arc<Shared>) {
     let mut consecutive_errors = 0u32;
     while !shared.stop.load(Ordering::SeqCst) {
         match server.recv_timeout(POLL_INTERVAL) {
             Ok(Some(request)) => {
                 consecutive_errors = 0;
-                if !handle(request, &code, &snapshot, &shared) {
-                    return;
-                }
+                handle(request, &snapshot);
             }
             Ok(None) => consecutive_errors = 0,
             // Transient accept errors (a client hanging up mid-handshake) must
@@ -585,15 +552,10 @@ fn single_host_is_allowed(hosts: &[&str]) -> bool {
 }
 
 /// Serve one request. Returns false when the loop must end.
-fn handle(
-    request: Request,
-    code: &str,
-    snapshot: &Mutex<Option<StoredSnapshot>>,
-    shared: &Shared,
-) -> bool {
+fn handle(request: Request, snapshot: &Mutex<Option<StoredSnapshot>>) {
     if request.method() != &Method::Get {
         let _ = request.respond(plain(405, "only GET is served here\n"));
-        return true;
+        return;
     }
     let hosts: Vec<&str> = request
         .headers()
@@ -602,42 +564,24 @@ fn handle(
         .map(|h| h.value.as_str())
         .collect();
     if !single_host_is_allowed(&hosts) {
-        // Reject BEFORE the pairing-code check so a rebound host cannot even
-        // burn one of the ten attempts.
         let _ = request.respond(plain(421, "unexpected host\n"));
-        return true;
+        return;
     }
     let url = request.url().to_string();
-    let (path, query) = match url.split_once('?') {
-        Some((path, query)) => (path, query),
-        None => (url.as_str(), ""),
-    };
-    let presented = query_param(query, "k");
-    if !presented.is_some_and(|k| constant_time_eq(k, code)) {
-        let _ = request.respond(plain(
-            403,
-            "wrong or missing pairing code — open the link shown in Purple Memo\n",
-        ));
-        let attempts = shared.consecutive_bad_codes.fetch_add(1, Ordering::SeqCst) + 1;
-        if attempts >= MAX_BAD_CODES {
-            shared.stopped_for_abuse.store(true, Ordering::SeqCst);
-            shared.stop.store(true, Ordering::SeqCst);
-            return false;
-        }
-        return true;
-    }
-    // The right code was presented: whoever sent this request already knows
-    // the secret, so the failures before it cannot have been their guessing.
-    // Resetting here is what makes the limit *consecutive* — brute force is
-    // still bounded (an attacker cannot produce this reset, and ten of their
-    // own attempts in a row still shut the server down), while bad requests
-    // that merely happen over a long session stop accumulating towards a
-    // shutdown the owner never caused.
-    shared.consecutive_bad_codes.store(0, Ordering::SeqCst);
+    let path = url.split('?').next().unwrap_or(&url);
 
     match path {
         "/" | "/index.html" => {
             let _ = request.respond(page(render_page()));
+        }
+        "/_crypto/aes.js" => {
+            let _ = request.respond(javascript(AES_MODULE));
+        }
+        "/_crypto/_polyval.js" => {
+            let _ = request.respond(javascript(POLYVAL_MODULE));
+        }
+        "/_crypto/utils.js" => {
+            let _ = request.respond(javascript(UTILS_MODULE));
         }
         "/api/snapshot" => {
             let stored = snapshot.lock().ok().and_then(|s| s.clone());
@@ -657,7 +601,6 @@ fn handle(
             let _ = request.respond(plain(404, "not found\n"));
         }
     }
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -703,60 +646,38 @@ mod tests {
     }
 
     fn payload(generated_at: &str) -> String {
-        format!("{{\"version\":1,\"generatedAt\":\"{generated_at}\",\"today\":\"2026-10-12\"}}")
+        format!(
+            "{{\"version\":1,\"generatedAt\":\"{generated_at}\",\
+             \"nonce\":\"bm9uY2U=\",\"ciphertext\":\"c2VhbGVk\"}}"
+        )
     }
 
-    /// A listener on loopback with a known code; always stopped by the test.
+    /// A listener on loopback with a known encryption key; always stopped.
     fn started() -> (ShareState, u16, String) {
         let state = ShareState::new();
         let info = state.start_on("127.0.0.1").expect("start share");
         let port = info.port.expect("port");
-        let code = info.code.expect("code");
-        (state, port, code)
-    }
-
-    /// `status()` until the server reports itself stopped, or the deadline
-    /// passes and the caller's assertion fails as it always would.
-    ///
-    /// The 403 that trips the abuse counter is written to the socket *before*
-    /// the accept loop sets its shutdown flag, so the flag lags the response the
-    /// client has already read. Reading `status()` straight after the last
-    /// response is therefore a race (observed: about one run in twenty), not a
-    /// shorter test — wait for the effect instead of asserting into that window.
-    fn status_once_stopped(state: &ShareState) -> ShareInfo {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let info = state.status().expect("status");
-            if !info.running || std::time::Instant::now() >= deadline {
-                return info;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        let key = info.key.expect("encryption key");
+        (state, port, key)
     }
 
     #[test]
-    fn generated_codes_are_six_alphabet_chars_and_random() {
-        let a = generate_code().expect("code");
-        let b = generate_code().expect("code");
-        assert_eq!(a.len(), CODE_LEN);
-        assert!(a.bytes().all(|c| CODE_ALPHABET.contains(&c)), "{a}");
-        assert_ne!(a, b, "two codes must not collide");
+    fn generated_share_keys_are_256_bit_hex_and_random() {
+        let a = generate_share_key().expect("key");
+        let b = generate_share_key().expect("key");
+        assert_eq!(a.len(), 64);
+        assert!(a
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(a, b, "two keys must not collide");
     }
 
     #[test]
-    fn constant_time_comparison_matches_only_equal_codes() {
+    fn constant_time_comparison_matches_only_equal_secrets() {
         assert!(constant_time_eq("ABC234", "ABC234"));
         assert!(!constant_time_eq("ABC234", "ABC235"));
         assert!(!constant_time_eq("ABC234", "ABC23"));
         assert!(!constant_time_eq("", "ABC234"));
-    }
-
-    #[test]
-    fn query_param_reads_k_and_ignores_the_rest() {
-        assert_eq!(query_param("k=ABC123", "k"), Some("ABC123"));
-        assert_eq!(query_param("a=1&k=ABC123&b=2", "k"), Some("ABC123"));
-        assert_eq!(query_param("a=1", "k"), None);
-        assert_eq!(query_param("", "k"), None);
     }
 
     #[test]
@@ -797,7 +718,7 @@ mod tests {
             .start(&state.arm().expect("arm"))
             .expect("second start");
         assert_eq!(again.port, Some(port), "the live listener is reused");
-        assert_eq!(again.code, Some(code));
+        assert_eq!(again.key, Some(code));
         assert!(!state.stop().expect("stop").running);
     }
 
@@ -907,7 +828,7 @@ mod tests {
     // -- The audit trail (review H-8) ------------------------------------------
 
     #[test]
-    fn the_share_audit_line_names_the_port_and_never_the_pairing_code() {
+    fn the_share_audit_line_names_the_port_and_never_the_encryption_key() {
         let line = ShareEvent::Started(8765).audit_line();
         assert!(line.contains("8765"), "the port is what the user needs");
         assert!(line.to_lowercase().contains("started"));
@@ -915,10 +836,10 @@ mod tests {
             line.to_lowercase().contains("consent"),
             "a disclosure records that it was confirmed: {line}"
         );
-        // The pairing code has no path into this string at all: the variant
-        // carries a port, not a code.
-        let code = generate_code().expect("code");
-        assert!(!line.contains(&code));
+        // The encryption key has no path into this string: the event carries
+        // only the port.
+        let key = generate_share_key().expect("key");
+        assert!(!line.contains(&key));
     }
 
     #[test]
@@ -928,9 +849,9 @@ mod tests {
             "LAN share STOPPED by the user"
         );
         assert!(
-            ShareEvent::Stopped(Some("too many wrong pairing codes".to_string()))
+            ShareEvent::Stopped(Some("server stopped unexpectedly".to_string()))
                 .audit_line()
-                .contains("too many wrong pairing codes"),
+                .contains("server stopped unexpectedly"),
             "the reason is kept - that is the line worth having"
         );
     }
@@ -971,27 +892,35 @@ mod tests {
     }
 
     #[test]
-    fn requests_need_the_pairing_code() {
+    fn phone_page_uses_a_fragment_key_and_same_origin_crypto_modules() {
         let (state, port, code) = started();
-        assert_eq!(get(port, "/").0, 403, "no code -> rejected");
-        assert_eq!(get(port, "/?k=WRONG1").0, 403, "wrong code -> rejected");
-        assert_eq!(
-            get(port, &format!("/?k={code}")).0,
-            200,
-            "right code -> page"
+        let (status, body) = get(port, "/");
+        assert_eq!(status, 200);
+        assert!(body.contains("location.hash"));
+        assert!(body.contains("/_crypto/aes.js"));
+        assert!(
+            !body.contains(&code),
+            "the page response never contains its key"
         );
-        assert_eq!(
-            get(port, "/api/snapshot").0,
-            403,
-            "the JSON endpoint needs the code too"
+        assert!(
+            state
+                .status()
+                .expect("status")
+                .url
+                .is_some_and(|url| url.ends_with(&format!("#key={code}"))),
+            "the key is carried only in the URL fragment"
         );
+        assert_eq!(get(port, "/_crypto/aes.js").0, 200);
+        assert_eq!(get(port, "/_crypto/_polyval.js").0, 200);
+        assert_eq!(get(port, "/_crypto/utils.js").0, 200);
+        assert_eq!(get(port, "/api/snapshot").0, 503);
         state.stop().expect("stop");
     }
 
     #[test]
-    fn snapshot_is_served_only_with_the_code_and_only_once_published() {
-        let (state, port, code) = started();
-        let (status, _) = get(port, &format!("/api/snapshot?k={code}"));
+    fn snapshot_endpoint_serves_only_the_encrypted_envelope() {
+        let (state, port, _key) = started();
+        let (status, _) = get(port, "/api/snapshot");
         assert_eq!(status, 503, "nothing published yet");
 
         let info = state
@@ -999,13 +928,10 @@ mod tests {
             .expect("publish");
         assert_eq!(info.published_at.as_deref(), Some("2026-10-12T09:30"));
 
-        let (status, body) = get(port, &format!("/api/snapshot?k={code}"));
+        let (status, body) = get(port, "/api/snapshot");
         assert_eq!(status, 200);
-        assert!(
-            body.contains("\"generatedAt\":\"2026-10-12T09:30\""),
-            "{body}"
-        );
-        assert_eq!(get(port, "/api/snapshot?k=WRONG1").0, 403);
+        assert!(body.contains("\"ciphertext\":\"c2VhbGVk\""), "{body}");
+        assert!(!body.contains("today"), "plaintext data must not be served");
         state.stop().expect("stop");
     }
 
@@ -1023,89 +949,50 @@ mod tests {
 
     #[test]
     fn only_get_is_served_and_unknown_paths_are_404() {
-        let (state, port, code) = started();
-        assert_eq!(get(port, &format!("/nope?k={code}")).0, 404);
-        assert_eq!(get(port, &format!("/favicon.ico?k={code}")).0, 404);
+        let (state, port, _key) = started();
+        assert_eq!(get(port, "/nope").0, 404);
+        assert_eq!(get(port, "/favicon.ico").0, 404);
         state.stop().expect("stop");
     }
 
     #[test]
-    fn duplicate_host_headers_are_rejected_and_burn_no_attempts() {
-        let (state, port, code) = started();
-        // More rejections than the whole wrong-code budget: if a duplicate
-        // Host were let through to the pairing-code check, the wrong code
-        // below would shut the server down before this loop finished.
-        for _ in 0..=MAX_BAD_CODES {
-            for hosts in [
-                ["evil.example.com", "127.0.0.1"],
-                ["127.0.0.1", "evil.example.com"],
-            ] {
-                assert_eq!(
-                    get_with_hosts(port, "/?k=WRONG1", &hosts).0,
-                    421,
-                    "two Host headers ({hosts:?}) must be rejected outright"
-                );
-            }
-        }
-        assert_eq!(
-            get(port, &format!("/?k={code}")).0,
-            200,
-            "sharing must still be up, with its code budget untouched"
-        );
-        state.stop().expect("stop");
-    }
-
-    #[test]
-    fn a_correct_code_resets_the_wrong_code_count() {
-        let (state, port, code) = started();
-        // One short of the limit, then proof of possession, then one short
-        // again: cumulatively that is nearly twice the budget, so a counter
-        // that never reset would have shut the server down mid-test.
-        for round in 0..2 {
-            for _ in 0..MAX_BAD_CODES - 1 {
-                assert_eq!(get(port, "/?k=WRONG1").0, 403, "round {round}");
-            }
+    fn duplicate_host_headers_are_rejected_without_exposing_the_snapshot() {
+        let (state, port, _key) = started();
+        for hosts in [
+            ["evil.example.com", "127.0.0.1"],
+            ["127.0.0.1", "evil.example.com"],
+        ] {
             assert_eq!(
-                get(port, &format!("/?k={code}")).0,
-                200,
-                "the right code must reset the count (round {round})"
+                get_with_hosts(port, "/api/snapshot", &hosts).0,
+                421,
+                "two Host headers ({hosts:?}) must be rejected outright"
             );
         }
-        assert!(
-            state.status().expect("status").running,
-            "bad codes spread across successful requests must never add up to a shutdown"
-        );
+        assert_eq!(get(port, "/").0, 200);
         state.stop().expect("stop");
     }
 
     #[test]
-    fn repeated_wrong_codes_shut_the_server_down() {
-        let (state, port, _code) = started();
-        for _ in 0..MAX_BAD_CODES {
-            let (status, _) = get(port, "/?k=WRONG1");
-            assert_eq!(status, 403);
-        }
-        let info = status_once_stopped(&state);
-        assert!(!info.running, "the server must stop itself");
-        let note = info.note.unwrap_or_default();
-        assert!(
-            note.contains("wrong pairing codes"),
-            "the user must be told why: {note:?}"
-        );
-    }
-
-    #[test]
-    fn publish_rejects_a_payload_that_is_not_a_snapshot() {
+    fn publish_rejects_plaintext_and_malformed_envelopes() {
         let (state, _port, _code) = started();
         assert!(state.publish("{").is_err(), "invalid JSON");
         assert!(state.publish("[]").is_err(), "not an object");
-        assert!(state.publish("{\"version\":1}").is_err(), "no generatedAt");
         assert!(
-            state.publish("{\"generatedAt\":\"x\"}").is_err(),
-            "no version"
+            state
+                .publish("{\"version\":1,\"generatedAt\":\"x\"}")
+                .is_err(),
+            "missing nonce and ciphertext"
+        );
+        assert!(
+            state
+                .publish(
+                    "{\"version\":2,\"generatedAt\":\"x\",\"nonce\":\"n\",\"ciphertext\":\"c\"}"
+                )
+                .is_err(),
+            "unsupported version"
         );
         let huge = format!(
-            "{{\"version\":1,\"generatedAt\":\"x\",\"pad\":\"{}\"}}",
+            "{{\"version\":1,\"generatedAt\":\"x\",\"nonce\":\"n\",\"ciphertext\":\"{}\"}}",
             "a".repeat(MAX_SNAPSHOT_BYTES)
         );
         assert!(state.publish(&huge).is_err(), "oversized payloads rejected");
@@ -1126,8 +1013,8 @@ mod tests {
     fn share_info_serializes_camel_case_for_the_js_driver() {
         let info = ShareInfo {
             running: true,
-            url: Some("http://10.0.0.4:8765/?k=ABC234".to_string()),
-            code: Some("ABC234".to_string()),
+            url: Some(format!("http://10.0.0.4:8765/#key={}", "ab".repeat(32))),
+            key: Some("ab".repeat(32)),
             port: Some(8765),
             published_at: Some("2026-10-12T09:30".to_string()),
             note: None,

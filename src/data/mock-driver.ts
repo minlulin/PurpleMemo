@@ -52,7 +52,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
   let share: ShareInfo = {
     running: false,
     url: null,
-    code: null,
+    key: null,
     port: null,
     publishedAt: null,
     note: null,
@@ -173,8 +173,8 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       }
       share = {
         running: true,
-        url: "http://192.168.1.5:8765/?k=TESTCODE",
-        code: "TESTCODE",
+        url: `http://192.168.1.5:8765/#key=${"ab".repeat(32)}`,
+        key: "ab".repeat(32),
         port: 8765,
         publishedAt: share.publishedAt,
         note: null,
@@ -191,7 +191,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       share = {
         running: false,
         url: null,
-        code: null,
+        key: null,
         port: null,
         publishedAt: null,
         note: null,

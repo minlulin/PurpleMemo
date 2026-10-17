@@ -311,8 +311,7 @@ pub fn share_stop(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
     state.stop()
 }
 
-/// Current share state — also reports a server that stopped itself after
-/// repeated wrong pairing codes.
+/// Current share state — also reports a server that stopped unexpectedly.
 #[tauri::command]
 pub fn share_status(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
     state.status()

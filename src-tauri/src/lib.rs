@@ -439,7 +439,7 @@ pub(crate) fn note_key_export(destination: &str) {
 /// Starting the share server puts a read-only view of the user's money and
 /// notes on the local network. The user finds out by looking in Settings; this
 /// is how they find out *afterwards*, including if the machine was not theirs
-/// at the time. The pairing code is never recorded — see [`share::ShareEvent`].
+/// at the time. The encryption key is never recorded — see [`share::ShareEvent`].
 pub(crate) fn note_share_event(event: share::ShareEvent) {
     append_audit_line(SHARE_LOG, &event.audit_line());
 }

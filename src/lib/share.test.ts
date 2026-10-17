@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { gcm } from "@noble/ciphers/aes.js";
 import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
@@ -217,14 +218,38 @@ test("buildShareSnapshot: a task without a due date and a birthday without a dat
   assert.equal(at(snap.birthdays, 1, "birthdays").label, "");
 });
 
-test("createShareRepo: publishSnapshot sends the built snapshot to the driver as JSON", async () => {
+test("createShareRepo: publishSnapshot sends an encrypted snapshot envelope", async () => {
   const driver = createMockDriver();
   const repo = createShareRepo(driver);
+  await repo.start();
   const info = await repo.publishSnapshot();
   const published = argsOf(driver, "sharePublish")[0];
   assert.equal(typeof published, "string");
-  const parsed = JSON.parse(published as string) as { version: number };
+  const parsed = JSON.parse(published as string) as {
+    version: number;
+    generatedAt: string;
+    nonce: string;
+    ciphertext: string;
+  };
   assert.equal(parsed.version, SHARE_SNAPSHOT_VERSION);
+  assert.equal(typeof parsed.generatedAt, "string");
+  assert.equal(parsed.nonce.length > 0, true);
+  assert.equal(parsed.ciphertext.length > 0, true);
+  const key = Uint8Array.from({ length: 32 }, () => 0xab);
+  const nonceBytes = Uint8Array.from(atob(parsed.nonce), (c) =>
+    c.charCodeAt(0),
+  );
+  const ciphertextBytes = Uint8Array.from(atob(parsed.ciphertext), (c) =>
+    c.charCodeAt(0),
+  );
+  const aad = new TextEncoder().encode(
+    `purple-memo/share/v${parsed.version}\0${parsed.generatedAt}`,
+  );
+  const plaintext = gcm(key, nonceBytes, aad).decrypt(ciphertextBytes);
+  const snapshot = JSON.parse(new TextDecoder().decode(plaintext)) as {
+    money: { income: string; expense: string };
+  };
+  assert.deepEqual(snapshot.money, { income: "0.00", expense: "0.00" });
   assert.equal(typeof info.publishedAt, "string");
 });
 

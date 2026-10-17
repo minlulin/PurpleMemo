@@ -74,8 +74,8 @@ export interface ShareTickPorts {
 
 /**
  * One tick of the LAN publisher (§8, P5): re-read the rows the phone sees and
- * publish them, and surface a server that stopped itself (too many wrong
- * pairing codes) through the note channel.
+ * publish them, and surface a server that stopped unexpectedly through the
+ * note channel.
  *
  * The note is raised on the running → stopped edge only. `running: false` is
  * the normal state of an app nobody is sharing from, so surfacing it on every

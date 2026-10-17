@@ -57,17 +57,18 @@ export interface BatchStatement {
 
 /**
  * State of the read-only LAN share (§8, P5). `url` is the full link the
- * phone opens — it carries the pairing code, and is null whenever sharing
+ * phone opens — it carries the encryption key in its fragment, and is null whenever sharing
  * is off. `publishedAt` is the `generatedAt` of the last published snapshot.
  */
 export interface ShareInfo {
   running: boolean;
   url: string | null;
-  code: string | null;
+  /** AES-256-GCM key, also carried only in the URL fragment. */
+  key: string | null;
   /** Bound TCP port (shown so the user can allow it through a firewall). */
   port: number | null;
   publishedAt: string | null;
-  /** Set only when sharing stopped on its own, e.g. repeated wrong codes. */
+  /** Set only when sharing stopped on its own. */
   note: string | null;
 }
 

@@ -521,16 +521,11 @@ export async function applyBackup(
       }
       const saved = await driver.savePhoto(entry.bytes, ext);
       if (!oldPathSet.has(saved)) created.add(saved);
-      if (saved !== relPath) {
-        // The bytes in the zip disagree with the manifest (tampered or
-        // corrupted entry), so the content-addressed path moved. Re-point the
-        // row AND correct the columns that describe those bytes — a row whose
-        // sha256/size_bytes still describe the old content is internally
-        // inconsistent, and the schema does not catch it.
-        row.rel_path = saved;
-        row.sha256 = await sha256HexBytes(entry.bytes);
-        row.size_bytes = entry.bytes.length;
-      }
+      // Backup metadata is untrusted; derive every content field from the
+      // bytes even when the stored path already matches.
+      row.rel_path = saved;
+      row.sha256 = await sha256HexBytes(entry.bytes);
+      row.size_bytes = entry.bytes.length;
       kept.add(saved);
       photoCount++;
     }
