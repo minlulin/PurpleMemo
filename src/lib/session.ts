@@ -126,6 +126,14 @@ export interface ReminderTickPorts {
   requestPermission: () => Promise<boolean>;
   notify: (input: { title: string; body: string }) => void;
   onPermissionDenied: () => void;
+  /**
+   * Called once per tick that actually fired at least one reminder (review
+   * P3-32). The poll lives in the app shell, so a `RemindersSection` already on
+   * screen had no way to learn that a reminder had just fired and been marked —
+   * its list kept showing the reminder as pending until the user navigated away
+   * and back. This is the signal that lets an open page re-read.
+   */
+  onFired?: () => void;
   isCancelled: () => boolean;
 }
 
@@ -178,6 +186,8 @@ export function createReminderTicker(
           );
         }
       }
+      // After the writes, so a listener that re-reads sees the marked rows.
+      ports.onFired?.();
     } catch {
       // See above — a broken reminder row must not take the app down.
     } finally {

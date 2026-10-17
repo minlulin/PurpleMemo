@@ -29,8 +29,11 @@ function overdue(dueDate: string | null, today: string): boolean {
 
 export default function TasksPage({
   notifyNote,
+  remindersFired,
 }: {
   notifyNote: string | null;
+  /** Bumped by the shell's poll when a reminder fires (review P3-32). */
+  remindersFired: number;
 }) {
   const today = todayLocal();
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -289,12 +292,12 @@ export default function TasksPage({
         </form>
       </div>
 
-      <RemindersSection />
+      <RemindersSection refreshKey={remindersFired} />
     </div>
   );
 }
 
-function RemindersSection() {
+function RemindersSection({ refreshKey }: { refreshKey: number }) {
   const [reminders, setReminders] = useState<ReminderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -312,9 +315,19 @@ function RemindersSection() {
     }
   }, []);
 
+  // Re-reads on mount and whenever the shell reports a fired reminder
+  // (review P3-32) — otherwise a reminder marked fired by the background poll
+  // stayed on this list as pending until the user navigated away and back.
+  //
+  // `refreshKey` is deliberately not read in the body: it is a signal, not
+  // data, and its whole job is to change this effect's identity. Keying the
+  // component on it instead would be tidier but would remount the section and
+  // discard a half-typed new-reminder form if one happened to be open when a
+  // reminder fired — trading a stale row for lost typing.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: signal, not data
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, refreshKey]);
 
   const add = async () => {
     const trimmed = title.trim();

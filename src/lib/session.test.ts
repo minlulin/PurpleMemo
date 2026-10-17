@@ -221,11 +221,46 @@ function reminderTick(over: Partial<ReminderTickPorts> = {}) {
     onPermissionDenied: () => {
       events.push("denied");
     },
+    // `onFired` is deliberately absent from the shared fixture: it is optional,
+    // and leaving it out means the pre-P3-32 tests below keep exercising the
+    // exact port set that shipped before it existed.
     isCancelled: () => false,
     ...over,
   };
   return { tick: createReminderTicker(ports), events };
 }
+
+test("the ticker reports that it fired, after the rows are written (P3-32)", async () => {
+  // The signal an already-open `RemindersSection` uses to re-read. Without it a
+  // reminder marked fired by the background poll stayed on the list as pending
+  // until the user navigated away and back.
+  const { tick, events } = reminderTick({
+    due: async () => [reminderRow({ id: 7, title: "Pay rent" })],
+    onFired: () => {
+      events.push("onFired");
+    },
+  });
+  await tick();
+  assert.deepEqual(events, ["notify:Reminder: Pay rent", "fired:7", "onFired"]);
+  // Ordering is the point: a listener that re-reads on this signal must see the
+  // marked row, so `onFired` has to come after the writes.
+  assert.ok(
+    events.indexOf("onFired") > events.indexOf("fired:7"),
+    "onFired must follow the write, not precede it",
+  );
+});
+
+test("the ticker stays silent when nothing was due (P3-32)", async () => {
+  // No signal, no re-read: a listener that reloads on every tick would hammer
+  // the database 30 times a minute for no reason.
+  const { tick, events } = reminderTick({
+    onFired: () => {
+      events.push("onFired");
+    },
+  });
+  await tick();
+  assert.deepEqual(events, []);
+});
 
 test("the reminder ticker notifies and marks a one-off reminder fired", async () => {
   const { tick, events } = reminderTick({

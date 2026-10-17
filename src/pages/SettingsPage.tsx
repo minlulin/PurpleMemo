@@ -62,6 +62,29 @@ const SETTINGS_SECTIONS = [
   { id: "about", label: "About" },
 ] as const;
 
+/**
+ * Extra search terms per section (review P3-31).
+ *
+ * The filter matched only the eight nav titles, so the words people actually
+ * type — "theme", "dark", "idle", "restore", "zip", "lan" — all returned
+ * `No settings match`. A search box that cannot find the thing you can see on
+ * screen reads as broken, and it is the one control on this page with no
+ * affordance for discovering its vocabulary.
+ *
+ * Derived from each section's own copy rather than invented separately, so
+ * these cannot drift from the text they are supposed to match.
+ */
+const SETTINGS_ALIASES: Record<string, string[]> = {
+  appearance: ["theme", "dark", "light", "colour", "color", "palette"],
+  lock: ["pin", "idle", "auto", "lock", "timeout", "security"],
+  vault: ["secret", "password", "encrypt", "aes"],
+  "key-export": ["key", "backup key", "encryption", "master"],
+  backup: ["restore", "import", "export", "zip", "archive", "recovery"],
+  share: ["lan", "network", "phone", "pairing", "code", "link"],
+  updates: ["update", "version", "release", "download", "upgrade"],
+  about: ["version", "info", "offline", "open source"],
+};
+
 export default function SettingsPage(p: SettingsPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -78,12 +101,17 @@ export default function SettingsPage(p: SettingsPageProps) {
   });
 
   /** Section filter — matches the nav labels, so search and nav agree. An id
-   * missing from the table stays visible rather than vanishing. */
+   * missing from the table stays visible rather than vanishing. Aliases widen
+   * the vocabulary to the words people type (review P3-31). */
   const needle = query.trim().toLowerCase();
   const shows = (id: string) => {
     if (needle === "") return true;
     const section = SETTINGS_SECTIONS.find((s) => s.id === id);
-    return section ? section.label.toLowerCase().includes(needle) : true;
+    if (!section) return true;
+    const terms = [section.label, ...(SETTINGS_ALIASES[id] ?? [])].map((t) =>
+      t.toLowerCase(),
+    );
+    return terms.some((t) => t.includes(needle));
   };
 
   const setTheme = async (theme: Theme) => {

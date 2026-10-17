@@ -153,6 +153,7 @@ function rejectAfter(ms: number): Promise<never> {
 function useReminderPoll(
   setNotifyNote: (note: string | null) => void,
   enabled: boolean,
+  onFired: () => void,
 ): void {
   useEffect(() => {
     if (!enabled) return;
@@ -168,6 +169,9 @@ function useReminderPoll(
         setNotifyNote(
           "Notifications are blocked — due reminders stay listed in Tasks.",
         ),
+      // The poll lives here so it survives navigation; an open Tasks page does
+      // not, so it is told when a reminder changed (review P3-32).
+      onFired,
       isCancelled: () => cancelled,
     });
     void tick();
@@ -176,7 +180,7 @@ function useReminderPoll(
       cancelled = true;
       clearInterval(timer);
     };
-  }, [setNotifyNote, enabled]);
+  }, [setNotifyNote, enabled, onFired]);
 }
 
 /**
@@ -255,6 +259,19 @@ function AppShell() {
     { keys: string; label: string }[]
   >([]);
   const lastActivity = useRef(Date.now());
+
+  /**
+   * Bumped whenever the shell's reminder poll fires one. `TasksPage` keys its
+   * reminders list off this (review P3-32): the poll lives in the shell so it
+   * survives navigation, which means a `RemindersSection` already on screen had
+   * no way to learn a reminder had been marked fired — so it kept showing a
+   * fired reminder as pending until the user navigated away and back.
+   */
+  const [remindersFired, setRemindersFired] = useState(0);
+  const onReminderFired = useCallback(
+    () => setRemindersFired((n) => n + 1),
+    [],
+  );
 
   const loadSecurity = useCallback(async (): Promise<SecurityReload> => {
     try {
@@ -366,7 +383,7 @@ function AppShell() {
     };
   }, [unlocked, boot.autoLockMinutes, lockNow]);
 
-  useReminderPoll(setNotifyNote, unlocked);
+  useReminderPoll(setNotifyNote, unlocked, onReminderFired);
   useSharePublisher(setNotifyNote, unlocked);
 
   // The overlay lists shortcuts by reading `data-shortcut` off the controls
@@ -589,7 +606,7 @@ function AppShell() {
         ) : page === "habits" ? (
           <HabitsPage />
         ) : page === "tasks" ? (
-          <TasksPage notifyNote={notifyNote} />
+          <TasksPage notifyNote={notifyNote} remindersFired={remindersFired} />
         ) : page === "shopping" ? (
           <ShoppingPage />
         ) : page === "contacts" ? (

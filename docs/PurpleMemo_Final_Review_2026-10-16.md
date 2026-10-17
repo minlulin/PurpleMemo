@@ -32,7 +32,7 @@
 | P2-9 | ✅ **fixed** | All five sub-items plus three of the same class it did not list: HistoryView had nothing, paid payables had no row actions at all, and `updateLoan` existed but was unreachable *and* unguarded |
 | P3-14 | ✅ **fixed** | The replacement write is atomic (temp sibling + rename), as required |
 
-**No release blockers remain in code or docs.** Open before publishing: deleting the five scratch docs, and the rest of the P2/P3 tier.
+**No release blockers remain in code or docs.** The scratch docs are deleted; what is left is the P3 tier, and only two items in it are worth doing before release.
 
 **Fix order:** ~~(1) P1-1 export fix~~ ✅ → ~~(2) P2-2 security-reload gate~~ ✅ → ~~(3) P2-3 EXIF orientation~~ ✅ → ~~(4) doc P1s (P1-2…P1-7)~~ ✅ → ~~(5) P2-4 object-URL leak~~ ✅ → ~~(6) dead-script drop (P2-8)~~ ✅ → ~~(7) P2-12 orphaned photo_refs~~ ✅ → ~~(8) P2-13 search ignores collection~~ ✅ → ~~(9) P2-5 disproved~~ ✅ → ~~(10) P2-11 submit guards~~ ✅ → ~~(11) P2-6 discard path~~ ✅ → ~~(12) P2-7 accepted~~ 📌 → ~~(13) P2-10 delete confirmations~~ ✅ → ~~(14) delete the 5 scratch docs~~ ✅ → (15) public.
 
@@ -41,7 +41,7 @@ Step 14 is done and step 15 is unblocked: nothing in the code depended on the de
 **That is the whole P1 tier and every P2 that is a bug rather than a missing feature.** Every finding from the original 2026-10-16 review, and every P2 from the 2026-10-17 single-user audit, is now closed, disproved, or explicitly accepted. **Nothing remains between the tree and a public release** except two decisions that are yours, not the code's:
 
 1. **Does this review file ship?** (see the cleanup list below)
-2. **The P3 tier** — 33 hardening and polish notes, all optional.
+2. **The P3 tier** — 30 open. Nine were closed in the last pass; of the rest, **P3-19** (an unsalted SHA-256 of the vault password cached in renderer memory) is the one that weakens a deliberate design decision and should be done before release. The other seven medium items each need a decision rather than an edit, and the twelve cosmetic ones can be accepted.
 
 Of the P2 tier, three findings did not describe bugs in the shipped behaviour and were resolved as such rather than "fixed": **P2-5** was disproved on the platform it named (and the false comment that produced it is fixed), **P2-7** was accepted as historical provenance, and **P2-10**'s page list turned out to be incomplete in a way that made the rule worth more than the list.
 
@@ -308,23 +308,54 @@ Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build
 
 ## P3 — nits and robustness notes (abridged)
 
+**31 listed, 30 open.** P3-14 is closed by the P1-1 fix. P3-11 and P3-13 were dropped when this list was abridged — worth re-deriving before the release rather than assuming they were empty.
+
+**Re-tiered on 2026-10-17 after checking each against the code:** two of these were mis-tiered and one was better than described. The "small, real" bucket has been cleared; see the commit `fix: stop the boot screen hanging, make recurring fallbacks honest, and three more`.
+
+| # | Verdict |
+|---|---|
+| **P3-2** | ⬆️ **was P3, was the most serious item on this list** — fixed, and the reason is worth reading |
+| **P3-19** | ⬆️ **was P3, is a genuine weakening** — still open, and worth doing before release |
+| **P3-30** | ⬆️ **was P3, was a silent-data bug** — fixed |
+| **P3-7, P3-8, P3-9, P3-29, P3-31, P3-32, P3-33** | ✅ fixed — all real, none as trivial as labelled |
+| **P3-1, P3-3, P3-5, P3-15, P3-18, P3-20, P3-25, P3-26** | Medium: each needs a decision, not just an edit |
+| **P3-4, P3-6, P3-10, P3-12, P3-16, P3-17, P3-21, P3-22, P3-23, P3-24, P3-27, P3-28** | Accept as-is; each is either cosmetic or already covered |
+
+### P3-2 — ✅ FIXED, and it was not a nit (the one to read)
+
+**`db.rs:pragma_name_of` could be walked past.** SQLite accepts **three** identifier-quoting forms; the scanner handled one (`"…"`). `PRAGMA [rekey]` therefore scanned as an *empty* name, `unwrap_or_default()` made it `""`, which matched neither `KEY` nor `REKEY`, and the statement reached SQLite — which then **re-encrypted the entire database** under a key that never reaches the credential store. That is the exact total data loss the guard exists to prevent, reachable by the one spelling the guard did not recognise.
+
+Fixed on both levels, because the quoting forms were only half of it:
+
+- All three forms are parsed, with the trim repeated so a nested spelling (`["rekey"]`) collapses rather than being mangled into `"rekey"` with the quotes still attached.
+- **An unidentifiable `PRAGMA` is now refused rather than allowed.** The old `unwrap_or_default()` was a *fail-open* default on the one guard whose failure destroys data. A spelling this scanner has never seen must not be the spelling that gets through.
+
+The test now covers all three quoting forms, dotted and nested variants, and the comment-prefixed spelling. Reachability is still the renderer's, which §5 scopes out — but the guard should not have been one `trim_matches` away from useless.
+
+### P3-19 — ⬆️ re-tiered, still open
+
+**`vault.ts:157`** — the item-key cache is keyed on `sha256HexText(password)`: an **unsalted** SHA-256 of the master vault password, held in renderer memory until `lockVault`. The whole point of PBKDF2 here is that the password is *slow* to attack; a cached unsalted hash discards that, since SHA-256 is dictionary-crackable at billions of hashes per second. It sits next to a deliberately non-extractable `CryptoKey`, which makes it the weakest link rather than a neutral detail. The secondary "failed unlocks pollute the cache" half is minor; the unsalted hash is the real part.
+
+Not a one-liner: the fix is to tag entries with a per-session nonce minted on successful verification, instead of hashing the password at all. **The only item on this list that weakens a deliberate design decision**, so it is worth doing before release.
+
+### Remaining, verbatim
+
 - **P3-1** `db.rs:537` — poison recovery can hand back a mid-transaction `Connection`; consider a defensive `ROLLBACK` probe after recovery.
-- **P3-2** `db.rs:448` — statement guard misses bracket/backtick-quoted pragma names (`PRAGMA [rekey]`).
 - **P3-3** `photos.rs:144,161` — `PHOTO_WRITE_LOCK` poison is caught (returns `Err`, no panic) but wedges photo ops until restart; inconsistent with DB mutex recovery.
 - **P3-4** `lib.rs:55` — second-instance guarantee fully delegated to `tauri-plugin-single-instance`; worth one line in release notes.
 - **P3-5** `db.rs:179` — key file follows symlinks; Windows gets no `0o600` (inherits parent ACLs).
 - **P3-6** `navigation.rs` — `on_navigation` hook doesn't cover iframes (CSP `frame-ancestors 'none'` covers it).
-- **P3-7** `App.tsx:392` — boot-error screen has no Retry button (manual restart only).
-- **P3-8** `App.tsx:285` — `loadSecurity()` has no timeout; a hung invoke sits on the skeleton forever.
-- **P3-9** `NotesPage.tsx:477` — successful note save can report failure via draft bookkeeping (inconsistent with JournalPage's `.catch(() => undefined)`).
+- **P3-7** ✅ `App.tsx` — boot-error screen had no Retry button; it said "restart and hope" for a failure that is the *frontend's* own settings read, where the database is open and Rust never refused to boot. Added a Try again that re-runs the load, laid out in the same `entry-form` container as every other lock screen.
+- **P3-8** ✅ `App.tsx` — `loadSecurity()` had no timeout, so a hung invoke sat on the skeleton for the life of the process with no error and no way forward. Now raced against `SECURITY_LOAD_TIMEOUT_MS` (10s, generous on purpose: the cost of waiting is a longer skeleton, the cost of cutting a live read short is a false error), which turns a hang into the error screen P3-7's retry can act on.
+- **P3-9** ✅ `NotesPage.tsx` — a successful save could report failure: the note was written, then the draft write was awaited inside the same `try`, so a failed draft surfaced as "could not save" over a note that saved perfectly well. Now best-effort with `.catch(() => undefined)`, matching `JournalPage`.
 - **P3-10** Notes/Journal — per-keystroke encrypted DB writes, no debounce (cosmetic churn).
 - **P3-12** `LockScreens.tsx:310` — double-submit within the verify window under-counts failures (negligible; PBKDF2 dominates).
-- **P3-14** — ✅ resolved by the P1-1 fix: `backup_file::save_backup_file` writes a temp sibling and renames it into place.
+- **P3-14** ✅ resolved by the P1-1 fix: `backup_file::save_backup_file` writes a temp sibling and renames it into place.
 - **P3-15** `thumbs.ts` — no size/dimension guard before full thumbnail decode.
 - **P3-16** `photos.rs:143` — thumb filename keeps source extension though content is always JPEG (doc says `.thumb.jpg`; harmless drift).
 - **P3-17** — backup export materializes the whole archive ~2× in renderer memory (pre-existing design limit).
 - **P3-18** Change-PIN path (`SettingsPage.tsx:113`) bypasses `classifyPin`'s 100k-iteration floor — unreachable today (boot fail-closes first); route through `classifyPin` anyway (second trust root).
-- **P3-19** `vault.ts` — key cache holds unsalted SHA-256(password); failed unlocks pollute the cache.
+- **P3-19** ⬆️ see above — vault key cache keyed on an unsalted SHA-256 of the password.
 - **P3-20** `db.rs` `save_db_key_file` — truncates whatever path given (only the native dialog constrains it in practice).
 - **P3-21** `.gitattributes` — "scripts must be LF" comment but `*.mjs` not pinned (covered by `* text=auto` in practice).
 - **P3-22** `NotesPage.tsx` — redundant double `key` on editor section vs `NoteEditor` (harmless).
@@ -334,14 +365,11 @@ Gate: **307/307** TS tests (303 → 307), 92/92 `cargo test`, clippy, fmt, build
 - **P3-26** `backup.ts:230` — expanded-bytes filter trusts declared ZIP header sizes; fflate's `unzipSync` enforces actual sizes on decompression, so this is a first-pass heuristic bypassable by a lying header, not a hard boundary (defense-in-depth gap; import is local user-initiated).
 - **P3-27** `backup.ts:181` — export aborts entirely if any photo file is missing (fail-closed, correct, no skip/repair path).
 - **P3-28** `backup.ts:461` — orphan-file scan is O(n²) (perf nit for very large libraries).
-- **P3-29** `NotesPage.tsx:547-579` — "Send to journal" gives no toast confirmation and has no `busy` guard while awaiting the append, inviting accidental duplicate appends to today's journal entry.
-- **P3-30** `BudgetPage.tsx:894-929` — `RecurringView.markPaid` requires `fallbackCategoryId` and `fallbackWalletId` to be selected even when the recurring rule already carries its own `category_id` and `wallet_id`; meanwhile on mount both fallbacks auto-default to the first category (`Food`) and wallet (`Cash`), silently booking uncategorized recurring rules there.
-- **P3-31** `SettingsPage.tsx:82-89` — `Filter settings…` only matches the 8 `SETTINGS_SECTIONS` titles (`Appearance`, `App lock & PIN`, etc.), so searching for `"theme"`, `"dark"`, `"idle"`, `"restore"`, `"zip"`, or `"lan"` returns `No settings match`.
-- **P3-32** `App.tsx:135-160` vs `TasksPage.tsx:287-320` — when `useReminderPoll` fires a due reminder in the background, `RemindersSection` on an already-open `TasksPage` does not refresh its list until navigation.
-- **P3-33** `Dialog.tsx:41-60` — `Tab` focus trap only wraps when `document.activeElement` is strictly `first` or `last`; clicking non-focusable modal text and pressing `Tab` can move focus outside the dialog unless `!dialog.contains(document.activeElement)` is also guarded.
-
----
-
+- **P3-29** ✅ `NotesPage.tsx` — "Send to journal" had no toast and no in-flight guard, and it appends to a day that is *shared*: a second click before the first lands re-reads the pre-append entry and appends the same block again, so today's reflection ends up carrying the note twice with nothing on screen to say so. Guarded (a ref, as in the money forms), labelled "Adding…", and confirmed by a toast naming what was appended.
+- **P3-30** ✅ `BudgetPage.tsx` — **was a silent-data bug, not a nit.** `markPaid` demanded both fallback pickers even for a rule carrying its own category and wallet, *and* `refresh` auto-defaulted those pickers to the first category (`Food`) and first wallet (`Cash`) — so an uncategorised rule was booked to `Food` with no click from anyone. A fallback that is filled in by default is not a fallback; it is a guess that lands in the ledger. The pickers are no longer auto-defaulted, the rule's own values win, the error names which one is missing, and both labels say "(rules with none)".
+- **P3-31** ✅ `SettingsPage.tsx` — the filter matched only the 8 nav titles, so `theme`, `dark`, `idle`, `restore`, `zip` and `lan` all returned `No settings match`. A search box that cannot find what you can see on screen reads as broken, and it is the one control here with no affordance for discovering its vocabulary. Per-section alias lists added.
+- **P3-32** ✅ `App.tsx` / `TasksPage.tsx` — a reminder fired by the background poll did not refresh an already-open `RemindersSection`, so it kept showing the reminder as pending until the user navigated away and back. The ticker gained an optional `onFired` port, called *after* the writes (so a listener that re-reads sees the marked rows), which the shell turns into a counter the page re-reads on. Optional on purpose: a caller that does not care must not break.
+- **P3-33** ✅ `Dialog.tsx` — the `Tab` trap only wrapped when focus was strictly on the first or last stop, so clicking non-focusable modal text and pressing `Tab` walked focus out behind the modal — the one thing `aria-modal` promises cannot happen. Containment is now checked *first*, not only by comparing against the two ends.
 ## Verified clean (no findings)
 
 - **Money:** integer-cents invariant holds everywhere; `recordJobPayment` Oct-11 fix intact (keyed mutex, clamped `applyPayment`, zero-amount skip, single atomic batch) — no regression. No float arithmetic anywhere.
@@ -392,7 +420,7 @@ Verified before deleting: **no reference to any of the five existed** in `src/`,
 
 | File | Question |
 |---|---|
-| `docs/PurpleMemo_Final_Review_2026-10-16.md` | **This file.** It is internal process by exactly the standard the five deletions apply to, and it did not exist when this cleanup list was written, so it appears on neither list. It is also the fix ledger for every finding above. Recommend: **keep it until P2-9 and the P3 tier are triaged, then delete it as part of the Final Init Commit** — at which point its contents belong in the commit history, which is where provenance like this belongs anyway. Nothing references it. |
+| `docs/PurpleMemo_Final_Review_2026-10-16.md` | **This file.** It is internal process by exactly the standard the five deletions apply to, and it did not exist when this cleanup list was written, so it appears on neither list. It is also the fix ledger for every finding above. Recommend: **keep it until P3-19 is closed, then delete it as part of the Final Init Commit** — at which point its contents belong in the commit history, which is where provenance like this belongs anyway. Nothing references it. |
 
 ### Deletion mechanics — note
 

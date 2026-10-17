@@ -1483,8 +1483,12 @@ function RecurringView() {
       setRules(rs);
       setExpenseCats(ec);
       setWallets(ws);
-      setFallbackCategoryId((prev) => (prev === "" ? (ec[0]?.id ?? "") : prev));
-      setFallbackWalletId((prev) => (prev === "" ? (ws[0]?.id ?? "") : prev));
+      // Deliberately NOT defaulted to the first category / first wallet
+      // (review P3-30). It used to be, which made "I have not chosen a fallback"
+      // and "I chose Food" indistinguishable — so a rule carrying no category
+      // of its own was booked to `Food` from the first row of the table, with
+      // no click from anyone. A fallback that is filled in by default is not a
+      // fallback; it is a guess that lands in the ledger.
       setError(null);
     } catch (e) {
       setError(errText(e));
@@ -1497,20 +1501,44 @@ function RecurringView() {
     void refresh(showInactive);
   }, [showInactive, refresh]);
 
-  const markPaid = async (rule: RecurringPaymentRow) => {
-    if (
-      typeof fallbackCategoryId !== "number" ||
-      typeof fallbackWalletId !== "number"
-    ) {
-      setError("Pick a fallback category and wallet first.");
-      return;
+  /**
+   * Resolve where a rule's expense should be booked, and say so plainly when it
+   * cannot be worked out (review P3-30).
+   *
+   * The rule's OWN category and wallet win; the fallback pickers are only for
+   * the rules that carry neither. The old guard required both fallbacks to be
+   * selected unconditionally, so a fully-specified rule could not be marked
+   * paid until the user touched two dropdowns that had no bearing on it — and
+   * because those dropdowns auto-defaulted, the "pick one" step usually
+   * resolved to the first row in the table without anyone deciding anything.
+   *
+   * Returns the ids, or null after setting the error itself.
+   */
+  const resolveBookingFor = (
+    rule: RecurringPaymentRow,
+  ): { categoryId: number; walletId: number } | null => {
+    const categoryId = rule.category_id ?? fallbackCategoryId;
+    const walletId = rule.wallet_id ?? fallbackWalletId;
+    if (typeof categoryId !== "number" || typeof walletId !== "number") {
+      const missing = [
+        ...(typeof categoryId !== "number" ? ["category"] : []),
+        ...(typeof walletId !== "number" ? ["wallet"] : []),
+      ];
+      setError(
+        `“${rule.title}” has no ${missing.join(" or ")} of its own — choose a fallback ${missing.join(" and ")} above, or edit the rule.`,
+      );
+      return null;
     }
+    return { categoryId, walletId };
+  };
+
+  const markPaid = async (rule: RecurringPaymentRow) => {
+    if (busyId !== null) return;
+    const booking = resolveBookingFor(rule);
+    if (booking === null) return;
     setBusyId(rule.id);
     try {
-      await budgetRepo.markRecurringPaid(rule.id, today, {
-        categoryId: fallbackCategoryId,
-        walletId: fallbackWalletId,
-      });
+      await budgetRepo.markRecurringPaid(rule.id, today, booking);
       await refresh(showInactive);
     } catch (e) {
       setError(errText(e));
@@ -1612,8 +1640,13 @@ function RecurringView() {
           Show paused
         </label>
         <span className="toolbar-spacer" />
+        {/* Both fallback pickers are now unselected by default and only apply to
+            rules that carry no category/wallet of their own (review P3-30), so
+            the labels say so — a picker that looks like a setting but is
+            consulted only for some rules is how the silent Food/Cash booking
+            went unnoticed. */}
         <label className="muted">
-          Fallback category{" "}
+          Fallback category (rules with none){" "}
           <select
             className="select"
             aria-label="Fallback expense category"
@@ -1633,7 +1666,7 @@ function RecurringView() {
           </select>
         </label>
         <label className="muted">
-          Fallback wallet{" "}
+          Fallback wallet (rules with none){" "}
           <select
             className="select"
             aria-label="Fallback wallet"

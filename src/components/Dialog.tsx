@@ -54,6 +54,17 @@ export function Dialog({
       const first = stops[0];
       const last = stops[stops.length - 1];
       if (!first || !last) return;
+      // Focus that has left the dialog entirely comes back before anything is
+      // allowed to wrap (review P3-33). Clicking non-focusable text inside the
+      // modal moves `activeElement` to `body`, so neither of the wraps below
+      // matched and Tab walked straight out into the page behind — which is
+      // the one thing `aria-modal` promises cannot happen. Check containment
+      // FIRST rather than only comparing against the two ends.
+      if (!dialog.contains(document.activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
       if (!e.shiftKey && document.activeElement === last) {
         e.preventDefault();
         first.focus();
