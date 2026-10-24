@@ -20,3 +20,6 @@ Thumbs.db
 # agent scratch (ledger, briefs, review packages)
 .superpowers/
 /.freebuff
+
+# MSVC build artifacts
+ossl_static.pdb
