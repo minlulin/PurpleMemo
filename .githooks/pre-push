@@ -1,0 +1,6 @@
+#!/bin/sh
+# Local gate — no push unless `npm run verify` is green.
+# No hosted CI is used; this hook is the enforcement.
+# One-time setup per clone:  git config core.hooksPath .githooks
+echo "Local gate: npm run verify"
+npm run verify

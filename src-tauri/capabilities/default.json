@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "notification:default",
+    "dialog:default",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
+  ]
+}

@@ -1,0 +1,21 @@
+# Normalize line endings; scripts must be LF.
+# POSIX sh chokes on CRLF shebangs (`#!/bin/sh\r`) even though
+# Git-for-Windows tolerates them — pin every executable script to LF.
+* text=auto
+.githooks/* text eol=lf
+*.sh text eol=lf
+# The comment above says "pin every executable script to LF" but `*.mjs` was not
+# pinned, so the repo's own statement was only half true. `* text=auto`
+# does normalize it, but it normalizes to the *platform* default: a Windows clone
+# gets CRLF and a POSIX sh run of a .mjs gets the same broken shebang the rule
+# exists to prevent. Pinned explicitly rather than left to the blanket rule.
+*.mjs text eol=lf
+# Biome's formatter requires LF; a CRLF checkout of a JSON config fails
+# the gate. Pin the configs it checks so fresh clones stay LF.
+*.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+# Same reason: biome formats CSS and rejects a CRLF stylesheet.
+*.css text eol=lf
+# rustfmt: keep Rust sources LF so a checkout on any OS formats identically.
+*.rs text eol=lf

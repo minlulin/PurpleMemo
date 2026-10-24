@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Purple Memo — read-only</title>
+    <style>
+      /*__TOKENS__*/
+
+      body {
+        padding: var(--space-4);
+        font-size: var(--text-md);
+        line-height: 1.45;
+      }
+
+      .share-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--space-3);
+        margin-bottom: var(--space-4);
+      }
+
+      .share-title {
+        font-size: var(--text-xl);
+        font-weight: 600;
+      }
+
+      .share-badge {
+        font-size: var(--text-sm);
+        color: var(--color-text-muted);
+        border: var(--border-width) solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0 var(--space-2);
+      }
+
+      .share-note {
+        color: var(--color-text-muted);
+        font-size: var(--text-sm);
+        margin: var(--space-2) 0 var(--space-4);
+      }
+
+      .share-note.is-error {
+        color: var(--color-danger);
+      }
+
+      section {
+        background-color: var(--color-surface);
+        border: var(--border-width) solid var(--color-border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-4);
+        margin-bottom: var(--space-4);
+      }
+
+      h2 {
+        font-size: var(--text-sm);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--color-text-muted);
+        margin: 0 0 var(--space-3);
+      }
+
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      li {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--space-3);
+        padding: var(--space-2) 0;
+        border-bottom: var(--border-width) solid var(--color-border);
+      }
+
+      li:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+
+      .share-label {
+        overflow-wrap: anywhere;
+      }
+
+      .share-value {
+        color: var(--color-text-muted);
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .share-excerpt {
+        color: var(--color-text-muted);
+        font-size: var(--text-sm);
+        margin: var(--space-1) 0 0;
+        overflow-wrap: anywhere;
+      }
+
+      .share-empty {
+        color: var(--color-text-muted);
+        font-size: var(--text-sm);
+        margin: 0;
+      }
+
+      .figure {
+        font-variant-numeric: tabular-nums;
+      }
+
+      footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-3);
+        color: var(--color-text-muted);
+        font-size: var(--text-sm);
+        padding-bottom: var(--space-8);
+      }
+
+      button {
+        font: inherit;
+        color: var(--color-text-inverse);
+        background-color: var(--color-accent);
+        border: none;
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-4);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="share-head">
+      <span class="share-title">Purple Memo</span>
+      <span class="share-badge">read-only</span>
+    </div>
+    <p id="status" class="share-note">Loading…</p>
+    <main id="sections"></main>
+    <footer>
+      <span id="stamp"></span>
+      <button type="button" id="refresh">Refresh</button>
+    </footer>
+
+    <script type="module">
+      // The phone page is deliberately dumb: every value it shows was already
+      // formatted by the desktop, so nothing here needs the design system,
+      // a framework or the database. It renders with textContent only — no
+      // innerHTML, so a title or note can never inject markup.
+      //
+      // Decryption lives in `/_snapshot.js` rather than inline, so
+      // the code that runs on the phone is the same module the Node test
+      // executes against a real desktop-produced envelope.
+      import { decryptSnapshot } from "/_snapshot.js";
+
+      const keyHex = new URLSearchParams(location.hash.slice(1)).get("key") || "";
+      history.replaceState(null, "", location.pathname + location.search);
+
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function row(label, value) {
+        const li = el("li");
+        li.append(el("span", "share-label", label));
+        li.append(el("span", "share-value figure", value));
+        return li;
+      }
+
+      function section(title, rows) {
+        const s = el("section");
+        s.append(el("h2", null, title));
+        if (rows.length === 0) {
+          s.append(el("p", "share-empty", "Nothing here."));
+          return s;
+        }
+        const ul = el("ul");
+        for (const r of rows) ul.append(r);
+        s.append(ul);
+        return s;
+      }
+
+      function notes(snapshot) {
+        const s = el("section");
+        s.append(el("h2", null, "Recent notes"));
+        if (snapshot.notes.length === 0) {
+          s.append(el("p", "share-empty", "No notes yet."));
+          return s;
+        }
+        const ul = el("ul");
+        for (const n of snapshot.notes) {
+          const li = el("li");
+          const wrap = el("span", "share-label", n.title);
+          wrap.append(el("p", "share-excerpt", n.excerpt));
+          li.append(wrap);
+          ul.append(li);
+        }
+        s.append(ul);
+        return s;
+      }
+
+      function render(snapshot) {
+        const money = [
+          row("Money in", snapshot.money.income),
+          row("Money out", snapshot.money.expense),
+          row("Total receivable", snapshot.receivableTotal),
+        ];
+        const wallets = snapshot.wallets.map((w) => row(w.name, w.balance));
+        const due = [
+          ...snapshot.tasks.map((t) => row(t.title, t.due ? `due ${t.due}` : "task")),
+          ...snapshot.reminders.map((r) => row(r.title, `at ${r.at.replace("T", " ")}`)),
+        ];
+        const habits = snapshot.habits.map((h) =>
+          row(h.name, `${h.doneThisWeek}/7 this week · streak ${h.current}`),
+        );
+        const upcoming = [
+          ...snapshot.upcoming.map((m) => row(m.title, m.date)),
+          ...snapshot.birthdays.map((b) => row(b.name, b.label ? `birthday ${b.label}` : "birthday")),
+        ];
+        const warranties = snapshot.warranties.map((w) => row(w.title, `until ${w.endDate}`));
+
+        const main = document.getElementById("sections");
+        main.replaceChildren(
+          section("Money", money),
+          section("Wallets", wallets),
+          section("Due tasks & reminders", due),
+          section("Habits", habits),
+          section("Upcoming & birthdays", upcoming),
+          section("Expiring warranties", warranties),
+          notes(snapshot),
+        );
+        document.getElementById("stamp").textContent = `Snapshot ${snapshot.generatedAt.replace("T", " ")}`;
+      }
+
+      function setStatus(text, isError) {
+        const node = document.getElementById("status");
+        node.textContent = text;
+        node.className = isError ? "share-note is-error" : "share-note";
+      }
+
+      async function load() {
+        try {
+          if (!keyHex) throw new Error("This link has no decryption key.");
+          const res = await fetch("/api/snapshot", { cache: "no-store" });
+          if (res.status === 503) {
+            setStatus("Waiting for the desktop to publish a snapshot…", false);
+            return;
+          }
+          if (!res.ok) {
+            setStatus(`The desktop answered ${res.status}.`, true);
+            return;
+          }
+          setStatus("Read-only view — changes are made on the desktop only.", false);
+          render(decryptSnapshot(await res.json(), keyHex));
+        } catch {
+          setStatus("Cannot decrypt the snapshot. Open the current link from Purple Memo.", true);
+        }
+      }
+
+      document.getElementById("refresh").addEventListener("click", () => void load());
+      void load();
+      setInterval(() => void load(), 60000);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,370 @@
+@import "tailwindcss";
+
+/*
+ * PurpleShade design tokens — the single source of design values.
+ * The token-lint gate allows hex colors and px values ONLY in this file.
+ * Brand anchor: #310096 (hue 255°, sampled from public/brand/*.png).
+ * Every name here is a contract: the phone share page (src-tauri/share.rs
+ * inlines this file) and tokens.test.ts both depend on them.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces (dark-first, rich layered depth) */
+  --color-base: #110d1b;
+  --color-surface: #191329;
+  --color-surface-subtle: #151023;
+  --color-surface-raised: #221a38;
+  --color-surface-hover: #2b2147;
+  /* Form fields sit a step above cards so they read as editable. */
+  --color-surface-input: #1e1730;
+  --color-border: #2f244f;
+  --color-border-subtle: #251c3f;
+  --color-border-strong: #493878;
+  --color-card-border: rgba(255, 255, 255, 0.1);
+
+  /* Brand & accent (hue 255° anchored to the logo) */
+  --color-brand: #310096;
+  /* Lightened from #794dff: the accent doubles as *text* colour (21 rules),
+     and #794dff only reached 3.4:1 on the raised surface (2.9:1 on the soft
+     tint). #a182ff clears 4.5:1 on every surface it can land on. */
+  --color-accent: #a182ff;
+  --color-accent-hover: #bb9dff;
+  --color-accent-soft: rgba(121, 77, 255, 0.15);
+  --color-accent-ring: rgba(121, 77, 255, 0.34);
+  /* Gradient stops stay saturated: they carry inverse text, so the light end
+     needs ≥4.5:1 against white (15.13). */
+  --color-accent-gradient-start: #7a4cf7;
+  --color-accent-gradient-end: #5c2be2;
+  --gradient-accent: linear-gradient(
+    135deg,
+    var(--color-accent-gradient-start) 0%,
+    var(--color-accent-gradient-end) 100%
+  );
+  /* Soft halo for icon wells and brand marks (never a hard edge). */
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(121, 77, 255, 0.2),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(121, 77, 255, 0.18) 0%,
+    rgba(49, 0, 150, 0.08) 55%,
+    rgba(25, 19, 41, 0.4) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+
+  /* Status */
+  --color-success: #22c55e;
+  --color-warn: #f59e0b;
+  /* Lightened from #ef4444 for the same reason as the accent: it is button and
+     alert *text* on `--color-danger-soft`, which was 3.8:1 (15.13). */
+  --color-danger: #f46868;
+  --color-success-soft: rgba(34, 197, 94, 0.14);
+  --color-warn-soft: rgba(245, 158, 11, 0.15);
+  --color-danger-soft: rgba(239, 68, 68, 0.14);
+  --color-success-border: rgba(34, 197, 94, 0.32);
+  --color-warn-border: rgba(245, 158, 11, 0.34);
+  --color-danger-border: rgba(239, 68, 68, 0.34);
+
+  /* Status gradients for progress fills and other fills-from-left marks. */
+  --gradient-success: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
+  --gradient-warn: linear-gradient(90deg, #d97706 0%, #f59e0b 100%);
+  --gradient-danger: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
+  --gradient-neutral: linear-gradient(
+    90deg,
+    var(--color-accent-gradient-start) 0%,
+    var(--color-accent-gradient-end) 100%
+  );
+
+  /* Text */
+  --color-text: #f1eefb;
+  --color-text-muted: #b8b8d0;
+  /* Placeholders and metadata. #786d99 was 3.6:1 on the input surface —
+     placeholder text is still text, so it has to clear 4.5:1 (15.9/15.13). */
+  --color-text-subtle: #8f86aa;
+  --color-text-inverse: #ffffff;
+
+  /* Spacing scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 1.75rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* Borders & radii */
+  --border-width: 1px;
+  --border-width-accent: 3px;
+  --radius-sm: 0.375rem;
+  --radius-input: 0.4375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 999px;
+
+  /* Elevation (soft, tinted with the base purple) */
+  --shadow-sm: 0 1px 2px rgba(6, 4, 15, 0.45);
+  --shadow-md: 0 6px 18px rgba(6, 4, 15, 0.4);
+  --shadow-lg: 0 18px 42px rgba(6, 4, 15, 0.55);
+  --shadow-focus: 0 0 0 3px var(--color-accent-ring);
+  --shadow-focus-danger: 0 0 0 3px var(--color-danger-border);
+  --shadow-button-glow: 0 0 1rem rgba(121, 77, 255, 0.24);
+  --shadow-modal-glow: 0 0 2rem rgba(121, 77, 255, 0.18);
+  /* Pressed/inset surfaces (active chips, toggles, sunken wells). */
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+  /* Ambient halo behind the lock/setup card. */
+  --shadow-lock-glow: 0 0 2.5rem rgba(121, 77, 255, 0.15);
+
+  /* Typography */
+  --font-sans:
+    "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono:
+    "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1.09375rem;
+  --text-md: var(--text-base);
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 1.75rem;
+  --text-display: 2.25rem;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --leading-tight: 1.25;
+  --leading-normal: 1.6;
+  --tracking-wide: 0.06em;
+
+  /* Layout */
+  --sidebar-width: 15.5rem;
+  --sidebar-width-rail: 4.5rem;
+  --panel-width: 16.5rem;
+  --notes-list-width: 19rem;
+  --content-max: 78rem;
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 300ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Select affordance: an encoded SVG so the arrow never inherits the OS
+   * theme. Lives here because a data URI is a colour value in disguise. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a398c3' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  /* Modal scrim + photo caption fade (alpha colours live here only). */
+  --color-scrim: rgba(6, 4, 15, 0.62);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(6, 4, 15, 0.78) 70%
+  );
+
+  /* Contact avatar presets — picked by a hash of the name so the address book
+   * stays scannable. Same five in both themes; the letter is inverse-coloured. */
+  --avatar-gradient-1: linear-gradient(135deg, #6b3fd4 0%, #9a6bff 100%);
+  --avatar-gradient-2: linear-gradient(135deg, #4b2ea8 0%, #7a4fe0 100%);
+  --avatar-gradient-3: linear-gradient(135deg, #8b3fb0 0%, #c05fd6 100%);
+  --avatar-gradient-4: linear-gradient(135deg, #3a3fa8 0%, #5f74e0 100%);
+  --avatar-gradient-5: linear-gradient(135deg, #2f7f6e 0%, #43ad94 100%);
+
+  /* Focus rings live in --shadow-focus; these two only feed the :focus fallback
+ * below for engines without :focus-visible (12b.4). */
+  --focus-outline-width: 2px;
+  --focus-outline-offset: 2px;
+
+  /* Ambient glow behind lock/setup screens and shell */
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(121, 77, 255, 0.22),
+    transparent 70%
+  );
+}
+
+/* Light mode mirror — brand/accent/status hues stay identical. */
+[data-theme="light"] {
+  color-scheme: light;
+  --color-base: #f5f2fc;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #faf8ff;
+  --color-surface-raised: #f4effc;
+  --color-surface-hover: #ebe3fa;
+  --color-surface-input: #f8f5ff;
+  --color-border: #e1d8f5;
+  --color-border-subtle: #ece5fa;
+  --color-border-strong: #c5b4ea;
+  --color-card-border: rgba(49, 0, 150, 0.12);
+  --color-accent: #6333f0;
+  --color-accent-hover: #5222df;
+  --color-accent-soft: rgba(99, 51, 240, 0.1);
+  --color-accent-ring: rgba(99, 51, 240, 0.24);
+  --color-accent-gradient-start: #794dff;
+  --color-accent-gradient-end: #5324dc;
+  --gradient-accent: linear-gradient(
+    135deg,
+    var(--color-accent-gradient-start) 0%,
+    var(--color-accent-gradient-end) 100%
+  );
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(121, 77, 255, 0.14),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(121, 77, 255, 0.12) 0%,
+    rgba(49, 0, 150, 0.04) 60%,
+    rgba(255, 255, 255, 0.9) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.4) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  /* Light-theme status hues are darkened: as badge/alert text they sit on the
+     soft tints over a near-white surface, which #16a34a/#d97706/#dc2626 failed
+     (2.8-3.3:1). The `-soft`/`-border` tints and the gradients keep their own
+     values — they are backgrounds, not text (15.13). */
+  --color-success: #0f7033;
+  --color-warn: #915004;
+  --color-danger: #b92020;
+  --color-success-soft: rgba(22, 163, 74, 0.11);
+  --color-warn-soft: rgba(217, 119, 6, 0.13);
+  --color-danger-soft: rgba(220, 38, 38, 0.1);
+  --color-success-border: rgba(22, 163, 74, 0.28);
+  --color-warn-border: rgba(217, 119, 6, 0.3);
+  --color-danger-border: rgba(220, 38, 38, 0.28);
+  --gradient-success: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
+  --gradient-warn: linear-gradient(90deg, #d97706 0%, #f59e0b 100%);
+  --gradient-danger: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
+  --color-text: #1b1330;
+  --color-text-muted: #5d527c;
+  --color-text-subtle: #8276a3;
+  --color-text-inverse: #ffffff;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235d527c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-scrim: rgba(27, 19, 48, 0.45);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(27, 19, 48, 0.7) 70%
+  );
+  --shadow-sm: 0 1px 3px rgba(27, 19, 48, 0.06);
+  --shadow-md: 0 6px 18px rgba(27, 19, 48, 0.08);
+  --shadow-lg: 0 18px 40px rgba(27, 19, 48, 0.12);
+  --shadow-inset: inset 0 1px 2px rgba(27, 19, 48, 0.08);
+  --shadow-button-glow: 0 0 1rem rgba(99, 51, 240, 0.14);
+  --shadow-modal-glow: 0 0 2rem rgba(99, 51, 240, 0.12);
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(121, 77, 255, 0.09),
+    transparent 70%
+  );
+}
+
+/* Windows/macOS "increase contrast" — thicker edges, darker text. The light
+ * mirror is redeclared here because [data-theme] outranks :root. */
+@media (prefers-contrast: high) {
+  :root {
+    --border-width: 2px;
+    --color-text: #ffffff;
+    --color-text-muted: #ded8f5;
+    --color-text-subtle: #c6bce6;
+    --color-border: #6d5aa8;
+    --color-border-subtle: #584a8a;
+    --color-border-strong: #a793e6;
+  }
+
+  [data-theme="light"] {
+    --color-text: #000000;
+    --color-text-muted: #2b2242;
+    --color-text-subtle: #453a63;
+    --color-border: #6b5a92;
+    --color-border-subtle: #8574ab;
+    --color-border-strong: #3d3160;
+  }
+}
+
+/* Print remaps the tokens instead of hardcoding hex in app.css: paper is
+ * white, shadows and the ambient glow are dropped to save ink. */
+@media print {
+  :root {
+    color-scheme: light;
+    --color-base: #ffffff;
+    --color-surface: #ffffff;
+    --color-surface-subtle: #ffffff;
+    --color-surface-raised: #ffffff;
+    --color-surface-hover: #ffffff;
+    --color-surface-input: #ffffff;
+    --color-border: #8c8c8c;
+    --color-border-subtle: #b0b0b0;
+    --color-border-strong: #5a5a5a;
+    --color-text: #000000;
+    --color-text-muted: #262626;
+    --color-text-subtle: #404040;
+    --shadow-sm: none;
+    --shadow-md: none;
+    --shadow-lg: none;
+    --shadow-inset: none;
+    --gradient-app-glow: none;
+    --gradient-card-shine: none;
+    --gradient-hero: none;
+  }
+
+  body {
+    background-image: none;
+  }
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+/* Settings anchors scroll to their section instead of snapping instantly. */
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-base);
+  background-image: var(--gradient-app-glow);
+  background-attachment: fixed;
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  accent-color: var(--color-accent);
+}
+
+::selection {
+  background: var(--color-accent-soft);
+}
+
+/* Money and figures always use tabular numerals. `font-feature-settings`
+ * is belt-and-braces for fonts that ignore `font-variant-numeric`. */
+.figure {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}

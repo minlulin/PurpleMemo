@@ -1,0 +1,91 @@
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+
+import {
+  applyPayment,
+  formatMMK,
+  fromCents,
+  isPartialAmount,
+  outstandingCents,
+  parseMMK,
+  toCents,
+} from "./money.ts";
+
+test("toCents converts major units to integer cents", () => {
+  assert.equal(toCents(12.5), 1250);
+  assert.equal(toCents(19.99), 1999);
+  assert.equal(toCents(0.29), 29);
+  assert.equal(toCents(125000), 12_500_000);
+  assert.equal(toCents(0), 0);
+});
+
+test("fromCents converts cents back to major units", () => {
+  assert.equal(fromCents(1250), 12.5);
+  assert.equal(fromCents(1999), 19.99);
+});
+
+test("formatMMK shows major units with separators + 2 decimals", () => {
+  assert.equal(formatMMK(1_250_000), "12,500.00");
+  assert.equal(formatMMK(12_500_000), "125,000.00");
+  assert.equal(formatMMK(5), "0.05");
+  assert.equal(formatMMK(0), "0.00");
+});
+
+test("outstandingCents is never negative (cash basis)", () => {
+  assert.equal(outstandingCents(10_000, 3_000), 7_000);
+  assert.equal(
+    outstandingCents(3_000, 5_000),
+    0,
+    "overpayment must not go negative",
+  );
+  assert.equal(outstandingCents(3_000, 0), 3_000);
+});
+
+test("applyPayment never overpays and reports what counted", () => {
+  assert.deepEqual(applyPayment(10_000, 3_000, 4_000), {
+    newPaidCents: 7_000,
+    appliedCents: 4_000,
+  });
+  assert.deepEqual(applyPayment(10_000, 9_000, 5_000), {
+    newPaidCents: 10_000,
+    appliedCents: 1_000,
+    // The extra 4,000 never counts — promises/unpaid are never income.
+  });
+  assert.deepEqual(applyPayment(10_000, 10_000, 1_000), {
+    newPaidCents: 10_000,
+    appliedCents: 0,
+  });
+});
+
+test("parseMMK parses user amount input to integer cents (edge)", () => {
+  assert.equal(parseMMK("1234.56"), 123456);
+  assert.equal(parseMMK("1234"), 123400);
+  assert.equal(parseMMK("1,234.56"), 123456);
+  assert.equal(parseMMK("  50  "), 5000);
+  assert.equal(parseMMK("0.05"), 5);
+  assert.equal(parseMMK("12.3"), 1230);
+  assert.equal(parseMMK(""), null);
+  assert.equal(parseMMK("    "), null);
+  assert.equal(parseMMK("abc"), null);
+  assert.equal(parseMMK("-5"), null);
+  assert.equal(parseMMK("1.2.3"), null);
+  assert.equal(parseMMK("1.505"), null);
+});
+
+test("isPartialAmount lets a half-typed amount through (no error mid-edit)", () => {
+  // Everything parseMMK rejects only because it is unfinished.
+  assert.equal(isPartialAmount(""), true);
+  assert.equal(isPartialAmount("12"), true);
+  assert.equal(isPartialAmount("12."), true);
+  assert.equal(isPartialAmount("12.5"), true);
+  assert.equal(isPartialAmount("12.55"), true);
+  assert.equal(isPartialAmount("1,234."), true);
+  assert.equal(isPartialAmount("  7 "), true);
+
+  // Genuinely wrong input is not "still typing".
+  assert.equal(isPartialAmount("abc"), false);
+  assert.equal(isPartialAmount("1.2.3"), false);
+  assert.equal(isPartialAmount("1.234"), false);
+  assert.equal(isPartialAmount("-5"), false);
+  assert.equal(isPartialAmount("5."), true);
+});

@@ -1,0 +1,290 @@
+// Global search.
+//
+// Reads the approved contract (`searchContract.ts`) and runs it: one bounded
+// query per entity, results grouped, capped, and ordered the same way every
+// time. Nothing here decides what is searchable — that is the contract's job,
+// and the two are kept apart so a privacy decision cannot quietly become a
+// query detail.
+//
+// Two rules worth stating before the code:
+//
+// 1. **No user text reaches SQL as syntax.** Notes use the existing FTS5 MATCH
+//    builder, which quotes every token (`buildMatchQuery`). Everything else
+//    binds a `%term%` parameter. Table and column names come from the contract,
+//    which is code-owned.
+// 2. **Ordering is deterministic.** Within a type: notes by FTS rank then date
+//    then id; the rest by "does the title start with this", then date, then id.
+//    Across types: the contract's own order, with the total cap trimming from the
+//    end. The same query and the same data always produce the same list, which
+//    is what lets Up/Down mean something while someone types.
+
+import type { DataDriver, Queryable } from "../data/driver.ts";
+import { todayLocal } from "./dates.ts";
+import { buildMatchQuery } from "./search.ts";
+import {
+  isSearchable,
+  likeExpression,
+  normalizeTerm,
+  SEARCH_CONTRACT,
+  SEARCH_TOTAL_CAP,
+  type SearchEntitySpec,
+} from "./searchContract.ts";
+import type { LinkableEntity, LinkableEntityType } from "./types.ts";
+
+/** One hit, already flattened for the UI. */
+export interface SearchResult {
+  type: SearchEntitySpec["type"];
+  label: string;
+  /** Row id — the key `opens.key` names. */
+  id: number | null;
+  /** `entry_date` for a journal entry: it has no meaningful row navigation. */
+  dateKey: string | null;
+  title: string;
+  excerpt: string | null;
+  date: string | null;
+  /** "Archived", "Done", "Paid" — or null when the row is plainly live. */
+  state: string | null;
+  /** The entity key a relationship-style jump would use, when there is one. */
+  entity: LinkableEntity | null;
+  /** Owning list for shopping items, so a result opens the right list. */
+  parentId: number | null;
+}
+
+export interface SearchGroup {
+  type: SearchEntitySpec["type"];
+  label: string;
+  results: SearchResult[];
+  /** True when this entity matched more rows than its cap allowed. */
+  capped: boolean;
+}
+
+export interface SearchOptions {
+  /** Hide archived/completed rows unless this is true. */
+  includeInactive?: boolean;
+  /** Only these entity types; empty or omitted means all of them. */
+  types?: SearchEntitySpec["type"][];
+  /** Only rows whose date column is on or after this `yyyy-mm-dd`. */
+  since?: string;
+  /** Only rows whose date column is on or before this `yyyy-mm-dd`. */
+  until?: string;
+  totalCap?: number;
+  /** Injectable clock, so "last 30 days" is testable. */
+  today?: string;
+}
+
+const EXCERPT_CHARS = 140;
+
+/** First non-empty of the contract's title columns, trimmed and capped. */
+function titleOf(row: Record<string, unknown>, spec: SearchEntitySpec): string {
+  for (const column of spec.title) {
+    const value = row[column];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return trimTo(value.trim(), 80);
+    }
+  }
+  return `${spec.label} ${String(row.id ?? "")}`.trim();
+}
+
+/** The excerpt: the row's own long text, flattened and capped. */
+function excerptOf(
+  row: Record<string, unknown>,
+  spec: SearchEntitySpec,
+): string | null {
+  if (spec.excerpt === null) return null;
+  const value = row[spec.excerpt];
+  if (typeof value !== "string") return null;
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (flat.length === 0 || flat === titleOf(row, spec)) return null;
+  return trimTo(flat, EXCERPT_CHARS);
+}
+
+function trimTo(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/**
+ * The bound parameters and WHERE clauses for one entity.
+ *
+ * Every value is a `?`. The only interpolated pieces are the contract's own
+ * column and table names, which are code-owned and never derived from input.
+ */
+export function buildSearchQuery(
+  spec: SearchEntitySpec,
+  input: string,
+  options: SearchOptions,
+): { sql: string; params: unknown[] } {
+  const term = normalizeTerm(input);
+  // Every column is qualified: the FTS query joins two tables, so a bare
+  // `archived` is ambiguous there and only works by accident elsewhere.
+  const alias = spec.match === "fts" ? "n." : "";
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (spec.match === "fts") {
+    // The existing builder: every token quoted, AND-ed, prefix-matched.
+    clauses.push("notes_fts MATCH ?");
+    params.push(buildMatchQuery(input));
+  } else {
+    clauses.push(`(${likeExpression(spec)})`);
+    // One parameter per searchable column — the OR cannot share one.
+    for (const _ of spec.searchable) params.push(`%${term}%`);
+  }
+
+  if (spec.inactive !== null && options.includeInactive !== true) {
+    // Bound, not interpolated: 1 for the 0/1 flags, 'paid' for jobs.status.
+    clauses.push(`${alias}${spec.inactive.column} IS NOT ?`);
+    params.push(spec.inactive.value);
+  }
+  if (options.since !== undefined && spec.date !== null) {
+    clauses.push(
+      `${alias}${spec.date} IS NOT NULL AND ${alias}${spec.date} >= ?`,
+    );
+    params.push(options.since);
+  }
+  if (options.until !== undefined && spec.date !== null) {
+    clauses.push(
+      `${alias}${spec.date} IS NOT NULL AND ${alias}${spec.date} <= ?`,
+    );
+    params.push(options.until);
+  }
+
+  const prefix =
+    spec.match === "fts"
+      ? "SELECT n.* FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid"
+      : `SELECT * FROM ${spec.table}`;
+  // A title that STARTS with the term outranks one that merely contains it,
+  // which is what someone typing a name is looking for.
+  if (spec.match === "like" && spec.title[0] !== undefined) {
+    params.push(`${term}%`);
+  }
+  const rank =
+    spec.match === "fts"
+      ? "rank"
+      : spec.title[0] === undefined
+        ? "id DESC"
+        : `(lower(${spec.title[0]}) LIKE ?) DESC`;
+  // A total order, always: the same query must not reorder between two runs.
+  const tieBreak = `, ${alias}${spec.date ?? "id"} DESC, ${alias}id DESC`;
+
+  return {
+    sql: `${prefix} WHERE ${clauses.join(" AND ")} ORDER BY ${rank}${tieBreak} LIMIT ${spec.cap + 1}`,
+    params,
+  };
+}
+
+/**
+ * "Archived" / "Done" / "Paid", when this row is one of those.
+ *
+ * SQLite hands back a number for a 0/1 column and a string for `status`, and a
+ * driver behind an IPC boundary may hand back either, so both sides are
+ * compared as text. Only ever reached when the caller asked for inactive rows:
+ * by default they were filtered out in SQL.
+ */
+function stateOf(row: Record<string, unknown>, spec: SearchEntitySpec) {
+  if (spec.inactive === null) return null;
+  const value = row[spec.inactive.column];
+  if (value === null || value === undefined) return null;
+  return String(value) === String(spec.inactive.value)
+    ? spec.inactive.label
+    : null;
+}
+
+/** One entity's rows, already shaped for the UI. */
+function toResults(rows: Queryable[], spec: SearchEntitySpec): SearchResult[] {
+  return rows.map((raw) => {
+    const row = raw as Record<string, unknown>;
+    const id = typeof row.id === "number" ? row.id : null;
+    const dateKey =
+      spec.opens.key === "entry_date" && typeof row.entry_date === "string"
+        ? row.entry_date
+        : null;
+    const entity: LinkableEntity | null =
+      spec.type === "note" || spec.type === "task" || spec.type === "contact"
+        ? { type: spec.type as LinkableEntityType, id: id as number }
+        : null;
+    return {
+      type: spec.type,
+      label: spec.label,
+      id,
+      dateKey,
+      title: titleOf(row, spec),
+      excerpt: excerptOf(row, spec),
+      date: spec.date === null ? null : date(row[spec.date]),
+      state: stateOf(row, spec),
+      entity,
+      parentId:
+        spec.type === "shopping_item" && typeof row.list_id === "number"
+          ? row.list_id
+          : null,
+    };
+  });
+}
+
+function date(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Run the contract.
+ *
+ * Empty or punctuation-only input returns no groups and no error: the FTS
+ * builder turns `"` into an operator, and a search box that flashes a SQL error
+ * at someone who typed a quote is the worst possible answer.
+ */
+export async function globalSearch(
+  driver: DataDriver,
+  input: string,
+  options: SearchOptions = {},
+): Promise<SearchGroup[]> {
+  if (!isSearchable(input)) return [];
+  const wanted = new Set(options.types ?? []);
+  const groups: SearchGroup[] = [];
+  for (const spec of SEARCH_CONTRACT) {
+    if (wanted.size > 0 && !wanted.has(spec.type)) continue;
+    const { sql, params } = buildSearchQuery(spec, input, options);
+    const rows = await driver.query(sql, params);
+    // One row over the cap tells us it bit, without a second COUNT query.
+    const capped = rows.length > spec.cap;
+    groups.push({
+      type: spec.type,
+      label: spec.label,
+      results: toResults(rows.slice(0, spec.cap), spec),
+      capped,
+    });
+  }
+  return applyTotalCap(groups, options.totalCap ?? SEARCH_TOTAL_CAP);
+}
+
+/**
+ * The total cap, applied across groups in contract order.
+ *
+ * Groups that end up empty are dropped rather than shown as headings with
+ * nothing under them.
+ */
+export function applyTotalCap(
+  groups: SearchGroup[],
+  totalCap: number,
+): SearchGroup[] {
+  const out: SearchGroup[] = [];
+  let left = totalCap;
+  for (const group of groups) {
+    if (left <= 0) break;
+    const results = group.results.slice(0, left);
+    left -= results.length;
+    if (results.length > 0) out.push({ ...group, results });
+  }
+  return out;
+}
+
+/** `yyyy-mm-dd` for "N days ago", for the date filter. */
+export function daysAgo(days: number, today: string = todayLocal()): string {
+  const [y, m, d] = today.split("-").map((part) => Number.parseInt(part, 10));
+  const date = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+/** How many results in total, for the "showing N" line. */
+export function resultCount(groups: SearchGroup[]): number {
+  return groups.reduce((n, group) => n + group.results.length, 0);
+}
