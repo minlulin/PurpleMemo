@@ -10,6 +10,7 @@ import { EmptyState } from "../components/EmptyState.tsx";
 import {
   IconChevronLeft,
   IconChevronRight,
+  IconExpand,
   IconEye,
   IconFolder,
   IconMarkdown,
@@ -20,6 +21,7 @@ import {
 } from "../components/icons.tsx";
 import { LinksSection } from "../components/LinksSection.tsx";
 import { markdownComponents } from "../components/MarkdownLink.tsx";
+import { NoteReaderDialog } from "../components/NoteReaderDialog.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
@@ -79,6 +81,8 @@ interface EditorProps {
   /** Edit | Split | Read — page-owned too, persisted in settings. */
   viewMode: NotesViewMode;
   onViewMode: (mode: NotesViewMode) => void;
+  /** Open dedicated pop-up modal reader. */
+  onOpenReader: () => void;
 }
 
 function NoteEditor(p: EditorProps) {
@@ -134,6 +138,15 @@ function NoteEditor(p: EditorProps) {
         </select>
       </div>
       <div className="editor-viewbar">
+        <button
+          type="button"
+          className="btn"
+          title={t("notes.openReader")}
+          aria-label={t("notes.openReaderAria")}
+          onClick={p.onOpenReader}
+        >
+          <IconExpand className="icon" /> {t("notes.openReader")}
+        </button>
         {/* A fieldset IS the ARIA `group` role (the spec's ask) and is what
             biome's useSemanticElements demands — same shape as the Settings
             theme switch. */}
@@ -361,6 +374,8 @@ export default function NotesPage(p: NotesPageProps) {
   const listGuard = useMemo(() => createLoadGuard(), []);
   /** Set when a relationship sent us to a note that is not there. */
   const [focusMissing, setFocusMissing] = useState(false);
+  /** Open pop-up full-view reader dialog. */
+  const [readerOpen, setReaderOpen] = useState(false);
 
   /**
    * Load the two Notes-page view preferences once on mount. A missing or
@@ -516,6 +531,39 @@ export default function NotesPage(p: NotesPageProps) {
     () => notes.find((n) => n.id === selectedId) ?? null,
     [notes, selectedId],
   );
+
+  const currentIndex =
+    selected !== null ? notes.findIndex((n) => n.id === selected.id) : -1;
+  const hasPrev = currentIndex > 0;
+  const hasNext = currentIndex >= 0 && currentIndex < notes.length - 1;
+  const handlePrevNote = useCallback(() => {
+    if (currentIndex > 0) {
+      setSelectedId(notes[currentIndex - 1]?.id ?? null);
+    }
+  }, [currentIndex, notes]);
+  const handleNextNote = useCallback(() => {
+    if (currentIndex >= 0 && currentIndex < notes.length - 1) {
+      setSelectedId(notes[currentIndex + 1]?.id ?? null);
+    }
+  }, [currentIndex, notes]);
+
+  const activeCollectionName = useMemo(() => {
+    if (!selected || selected.collection_id === null) return null;
+    return (
+      collections.find((c) => c.id === selected.collection_id)?.name ?? null
+    );
+  }, [selected, collections]);
+
+  const activeReaderNote: NoteRow | null = useMemo(() => {
+    if (!selected) return null;
+    return {
+      ...selected,
+      title: title.trim().length > 0 ? title : selected.title,
+      content,
+      tags,
+      collection_id: noteCollection === "none" ? null : noteCollection,
+    };
+  }, [selected, title, content, tags, noteCollection]);
   const toast = useToast();
 
   useEffect(() => {
@@ -831,6 +879,10 @@ export default function NotesPage(p: NotesPageProps) {
               type="button"
               className={`note-card${note.pinned === 1 ? " note-card-pin-indicator" : ""}${isActive ? " is-active" : ""}`}
               onClick={() => setSelectedId(note.id)}
+              onDoubleClick={() => {
+                setSelectedId(note.id);
+                setReaderOpen(true);
+              }}
             >
               <span className="note-card-title">
                 {note.pinned === 1 && (
@@ -1002,71 +1054,90 @@ export default function NotesPage(p: NotesPageProps) {
                 <Skeleton count={5} />
               </li>
             </ul>
-            <section className="editor-pane" aria-label={t("notes.editorAria")}>
-              <Skeleton variant="card" />
-            </section>
+            <div className="editor-and-links">
+              <section
+                className="editor-pane"
+                aria-label={t("notes.editorAria")}
+              >
+                <Skeleton variant="card" />
+              </section>
+            </div>
           </div>
         ) : (
           <div className="notes-body">
             <ul className="note-list" aria-label={t("notes.noteListAria")}>
               {listBody}
             </ul>
-            <section
-              className="editor-pane animate-fade-in"
-              aria-label={t("notes.editorAria")}
-              key={selected?.id ?? "empty"}
-            >
-              {selected === null ? (
-                focusMissing ? (
-                  <EmptyState>{t("notes.missing")}</EmptyState>
+            <div className="editor-and-links">
+              <section
+                className="editor-pane animate-fade-in"
+                aria-label={t("notes.editorAria")}
+                key={selected?.id ?? "empty"}
+              >
+                {selected === null ? (
+                  focusMissing ? (
+                    <EmptyState>{t("notes.missing")}</EmptyState>
+                  ) : (
+                    <EmptyState>{t("notes.selectPrompt")}</EmptyState>
+                  )
                 ) : (
-                  <EmptyState>{t("notes.selectPrompt")}</EmptyState>
-                )
-              ) : (
-                // No `key` here (review P3-22): the wrapping section is already
-                // keyed by note id, so it remounts this subtree on every note
-                // change. A second key on the child was a duplicate source of
-                // truth for "which note is shown", and one that could only ever
-                // agree with the outer one.
-                <NoteEditor
-                  title={title}
-                  content={content}
-                  tags={tags}
-                  collection={noteCollection}
-                  saving={saving}
-                  pinned={selected.pinned === 1}
-                  archived={selected.archived === 1}
-                  dirty={dirty}
-                  collections={collections}
-                  onTitle={(v) => editNote({ title: v })}
-                  onContent={(v) => editNote({ content: v })}
-                  onTags={(v) => editNote({ tags: v })}
-                  onCollection={(v) => editNote({ collection: v })}
-                  onSave={() => void handleSave()}
-                  onPin={() => void handlePin(selected)}
-                  onArchive={() => void handleArchive(selected)}
-                  onToJournal={() => void handleToJournal()}
-                  sendingToJournal={sendingToJournal}
-                  onDelete={() => void handleDelete(selected.id)}
-                  onDiscard={handleDiscardDraft}
-                  splitRatio={splitRatio}
-                  onSplitRatio={setSplitRatio}
-                  viewMode={viewMode}
-                  onViewMode={changeViewMode}
+                  // No `key` here (review P3-22): the wrapping section is already
+                  // keyed by note id, so it remounts this subtree on every note
+                  // change. A second key on the child was a duplicate source of
+                  // truth for "which note is shown", and one that could only ever
+                  // agree with the outer one.
+                  <NoteEditor
+                    title={title}
+                    content={content}
+                    tags={tags}
+                    collection={noteCollection}
+                    saving={saving}
+                    pinned={selected.pinned === 1}
+                    archived={selected.archived === 1}
+                    dirty={dirty}
+                    collections={collections}
+                    onTitle={(v) => editNote({ title: v })}
+                    onContent={(v) => editNote({ content: v })}
+                    onTags={(v) => editNote({ tags: v })}
+                    onCollection={(v) => editNote({ collection: v })}
+                    onSave={() => void handleSave()}
+                    onPin={() => void handlePin(selected)}
+                    onArchive={() => void handleArchive(selected)}
+                    onToJournal={() => void handleToJournal()}
+                    sendingToJournal={sendingToJournal}
+                    onDelete={() => void handleDelete(selected.id)}
+                    onDiscard={handleDiscardDraft}
+                    splitRatio={splitRatio}
+                    onSplitRatio={setSplitRatio}
+                    viewMode={viewMode}
+                    onViewMode={changeViewMode}
+                    onOpenReader={() => setReaderOpen(true)}
+                  />
+                )}
+              </section>
+              {selected === null ? null : (
+                // Relationships belong to the note, not to the editor: this sits
+                // below the editor pane so the layout above is untouched.
+                <LinksSection
+                  entity={{ type: "note", id: selected.id }}
+                  onOpenEntity={p.onOpenEntity}
                 />
               )}
-            </section>
-            {selected === null ? null : (
-              // Relationships belong to the note, not to the editor: this sits
-              // below the editor pane so the layout above is untouched.
-              <LinksSection
-                entity={{ type: "note", id: selected.id }}
-                onOpenEntity={p.onOpenEntity}
-              />
-            )}
+            </div>
           </div>
         )}
       </section>
+      {readerOpen && activeReaderNote !== null && (
+        <NoteReaderDialog
+          note={activeReaderNote}
+          collectionName={activeCollectionName}
+          hasPrev={hasPrev}
+          hasNext={hasNext}
+          onPrev={handlePrevNote}
+          onNext={handleNextNote}
+          onClose={() => setReaderOpen(false)}
+        />
+      )}
     </div>
   );
 }

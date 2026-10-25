@@ -503,3 +503,25 @@ export function IconFilter(props: IconProps) {
     </svg>
   );
 }
+
+export function IconExpand(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <path d="M15 3h6v6" />
+      <path d="m21 3-7 7" />
+      <path d="M9 21H3v-6" />
+      <path d="m3 21 7-7" />
+    </svg>
+  );
+}
+
+export function IconCopy(props: IconProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
+    <svg {...base(props)}>
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}

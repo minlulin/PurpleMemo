@@ -2197,6 +2197,15 @@ button.chip:hover {
   gap: var(--space-5);
 }
 
+.editor-and-links {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+}
+
 @media (max-width: 72rem) {
   .notes-body {
     flex-direction: column;
@@ -2388,6 +2397,8 @@ input.editor-title {
 .editor-viewbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
   padding-bottom: var(--space-2);
 }
 
@@ -3485,6 +3496,75 @@ tbody .week-row {
   box-shadow: var(--shadow-lg), var(--shadow-modal-glow);
 }
 
+.note-reader-modal {
+  inline-size: min(58rem, 100%);
+  max-block-size: min(92vh, 58rem);
+  gap: var(--space-4);
+  padding: var(--space-6);
+}
+
+.note-reader-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-bottom: var(--border-width) solid var(--color-border);
+  padding-bottom: var(--space-4);
+}
+
+.note-reader-heading-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.note-reader-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+  line-height: var(--leading-tight);
+  margin: 0;
+  word-break: break-word;
+}
+
+.note-reader-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.note-reader-body {
+  flex: 1;
+  min-height: 12rem;
+  max-height: calc(90vh - 16rem);
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-1);
+  line-height: var(--leading-normal);
+  font-size: var(--text-base);
+}
+
+.note-reader-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  border-top: var(--border-width) solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+.note-reader-nav,
+.note-reader-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .global-search-modal {
   inline-size: min(56rem, 100%);
   gap: var(--space-3);
@@ -3893,6 +3973,7 @@ tbody .week-row {
   .budget-page,
   .notes-main,
   .notes-body,
+  .editor-and-links,
   .editor-split,
   .kpi-grid,
   .dashboard-grid {
