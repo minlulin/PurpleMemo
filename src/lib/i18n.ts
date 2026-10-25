@@ -354,6 +354,8 @@ export const en = {
   "tasks.noteLabel": "Note (optional)",
   "tasks.notePlaceholder": "Details or context",
   "tasks.add": "Add task",
+  "tasks.importCsv": "Import CSV",
+  "tasks.importTitle": "Import tasks from CSV",
   "tasks.remindersAria": "Reminders",
   "tasks.remindersHeading": "Scheduled Reminders",
   "tasks.noReminders": "No scheduled reminders.",
@@ -528,6 +530,41 @@ export const en = {
   "links.unavailable": "{type} — unavailable (it was deleted)",
   "links.unlinkWhat": "link",
   "links.unlink": "Unlink",
+
+  "import.chooseFile": "Choose CSV file",
+  "import.chooseAnother": "Choose another file",
+  "import.fileHint":
+    "CSV files only. Nothing is written until you confirm the preview.",
+  "import.downloadTemplate": "Download template CSV",
+  "import.reading": "Reading…",
+  "import.rowsToImportAria": "Rows to import",
+  "import.errorsTitle": "Rows that will be skipped",
+  "import.errorsAria": "Row errors",
+  "import.rowError": "Row {row}: {reason}",
+  "import.nothing":
+    "No rows can be imported — fix the errors and choose the file again.",
+  "import.import": "Import",
+  "import.importing": "Importing…",
+  "import.resultTitle": "Import complete",
+  "import.done": "Done",
+  "import.error.tooLarge":
+    "CSV file is larger than the {limit} MiB limit — import rejected.",
+  "import.error.tooManyRows":
+    "CSV has more than {rows} rows — import rejected.",
+  "import.error.missingColumn":
+    "CSV is missing the required column {columns} — import rejected.",
+  "import.error.missingColumns":
+    "CSV is missing the required columns {columns} — import rejected.",
+  "import.reason.titleRequired": "Title is required.",
+  "import.reason.dueDate": "Due date must be YYYY-MM-DD (or empty).",
+  "import.reason.done": "Done must be true, false, yes, no, 1 or 0.",
+  "import.reason.repeat":
+    "Repeat must be none, daily, weekly or monthly (or empty).",
+  "import.reason.nameRequired": "Name is required.",
+  "import.reason.birthday": "Birthday must be YYYY-MM-DD (or empty).",
+
+  "contacts.importCsv": "Import CSV",
+  "contacts.importTitle": "Import contacts from CSV",
 
   "onboarding.title": "Welcome to Purple Memo",
   "onboarding.intro": "A quick note on what this app can and cannot do.",
@@ -861,6 +898,8 @@ export const my: Record<MessageKey, string> = {
   "tasks.noteLabel": "မှတ်ချက် (မဖြစ်မနေ မဟုတ်)",
   "tasks.notePlaceholder": "အသေးစိတ် သို့မဟုတ် အကြောင်းအရာ",
   "tasks.add": "လုပ်ငန်း ထည့်မည်",
+  "tasks.importCsv": "CSV တင်သွင်းမည်",
+  "tasks.importTitle": "CSV မှ လုပ်ငန်းများ တင်သွင်းမည်",
   "tasks.remindersAria": "သတိပေးချက်များ",
   "tasks.remindersHeading": "အချိန်ဇယားဆွဲထားသော သတိပေးချက်များ",
   "tasks.noReminders": "အချိန်ဇယားဆွဲထားသော သတိပေးချက် မရှိပါ။",
@@ -1037,6 +1076,39 @@ export const my: Record<MessageKey, string> = {
   "links.unlinkWhat": "ချိတ်ဆက်မှု",
   "links.unlink": "ချိတ်ဆက်မှု ဖြုတ်မည်",
 
+  "import.chooseFile": "CSV ဖိုင် ရွေးချယ်မည်",
+  "import.chooseAnother": "အခြားဖိုင် ရွေးချယ်မည်",
+  "import.fileHint": "CSV ဖိုင်များသာ။ အစမ်းကြည့်ရှုမှုကို အတည်ပြုသည်အထိ မည်သည့်အရာမျှ မရေးပါ။",
+  "import.downloadTemplate": "စံပြစာရွက် CSV ဒေါင်းလုဒ်လုပ်မည်",
+  "import.reading": "ဖတ်နေသည်…",
+  "import.rowsToImportAria": "တင်သွင်းမည့် အတန်းများ",
+  "import.errorsTitle": "ကျော်သွားမည့် အတန်းများ",
+  "import.errorsAria": "အတန်း အမှားများ",
+  "import.rowError": "အတန်း {row}: {reason}",
+  "import.nothing": "တင်သွင်း၍ ရသော အတန်း မရှိပါ — အမှားများကို ပြင်ပြီး ဖိုင်ကို ပြန်ရွေးပါ။",
+  "import.import": "တင်သွင်းမည်",
+  "import.importing": "တင်သွင်းနေသည်…",
+  "import.resultTitle": "တင်သွင်းမှု ပြီးပါပြီ",
+  "import.done": "ပြီးပါပြီ",
+  "import.error.tooLarge":
+    "CSV ဖိုင်သည် {limit} MiB ကန့်သတ်ချက်ထက် ကြီးနေသည် — တင်သွင်းမှု ငြင်းပယ်ခဲ့သည်။",
+  "import.error.tooManyRows":
+    "CSV တွင် အတန်း {rows} ခုထက် ပိုနေသည် — တင်သွင်းမှု ငြင်းပယ်ခဲ့သည်။",
+  "import.error.missingColumn":
+    "CSV တွင် လိုအပ်သော ကော်လံ {columns} မပါဝင်ပါ — တင်သွင်းမှု ငြင်းပယ်ခဲ့သည်။",
+  "import.error.missingColumns":
+    "CSV တွင် လိုအပ်သော ကော်လံများ {columns} မပါဝင်ပါ — တင်သွင်းမှု ငြင်းပယ်ခဲ့သည်။",
+  "import.reason.titleRequired": "ခေါင်းစဉ် လိုအပ်ပါသည်။",
+  "import.reason.dueDate": "ရက်ချိန်းသည် YYYY-MM-DD ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
+  "import.reason.done": "done သည် true၊ false၊ yes၊ no၊ 1 သို့မဟုတ် 0 ဖြစ်ရမည်။",
+  "import.reason.repeat":
+    "repeat သည် none၊ daily၊ weekly သို့မဟုတ် monthly ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
+  "import.reason.nameRequired": "အမည် လိုအပ်ပါသည်။",
+  "import.reason.birthday": "မွေးနေ့သည် YYYY-MM-DD ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
+
+  "contacts.importCsv": "CSV တင်သွင်းမည်",
+  "contacts.importTitle": "CSV မှ ဆက်သွယ်ရန်များ တင်သွင်းမည်",
+
   "onboarding.title": "Purple Memo မှ ကြိုဆိုပါသည်",
   "onboarding.intro": "ဤအက်ပ်က ဘာလုပ်နိုင်သည်၊ ဘာမလုပ်နိုင်သည်ကို အမြန်ရှင်းပြချက်။",
   "onboarding.pinTitle": "PIN ပြန်လည်ရယူမှုတွင် ကန့်သတ်ချက်များ ရှိသည်",
@@ -1087,6 +1159,30 @@ export const enPlurals = {
     one: "{count} item due",
     other: "{count} items due",
   },
+  "import.ready": {
+    one: "{count} row ready to import",
+    other: "{count} rows ready to import",
+  },
+  "import.failed": {
+    one: "{count} row has errors",
+    other: "{count} rows have errors",
+  },
+  "import.resultImported": {
+    one: "{count} row imported",
+    other: "{count} rows imported",
+  },
+  "import.resultSkipped": {
+    one: "{count} row had errors and was skipped",
+    other: "{count} rows had errors and were skipped",
+  },
+  "tasks.imported": {
+    one: "{count} task imported",
+    other: "{count} tasks imported",
+  },
+  "contacts.imported": {
+    one: "{count} contact imported",
+    other: "{count} contacts imported",
+  },
 } as const;
 
 export type PluralKey = keyof typeof enPlurals;
@@ -1113,6 +1209,30 @@ export const myPlurals: Record<PluralKey, PluralForms> = {
     one: "ရက်ချိန်းရောက် {count} ခု",
     other: "ရက်ချိန်း ရောက် {count} ခု",
   },
+  "import.ready": {
+    one: "တင်သွင်းရန် အသင့်ဖြစ်သော အတန်း {count} ခု",
+    other: "တင်သွင်းရန် အသင့်ဖြစ်သော အတန်း {count} ခု",
+  },
+  "import.failed": {
+    one: "အမှားရှိသော အတန်း {count} ခု",
+    other: "အမှားရှိသော အတန်း {count} ခု",
+  },
+  "import.resultImported": {
+    one: "တင်သွင်းပြီးသော အတန်း {count} ခု",
+    other: "တင်သွင်းပြီးသော အတန်း {count} ခု",
+  },
+  "import.resultSkipped": {
+    one: "အမှားရှိသဖြင့် ကျော်သွားသော အတန်း {count} ခု",
+    other: "အမှားရှိသဖြင့် ကျော်သွားသော အတန်း {count} ခု",
+  },
+  "tasks.imported": {
+    one: "လုပ်ငန်း {count} ခု တင်သွင်းပြီး",
+    other: "လုပ်ငန်း {count} ခု တင်သွင်းပြီး",
+  },
+  "contacts.imported": {
+    one: "ဆက်သွယ်ရန် {count} ခု တင်သွင်းပြီး",
+    other: "ဆက်သွယ်ရန် {count} ခု တင်သွင်းပြီး",
+  },
 };
 
 const plurals: Record<Locale, Partial<Record<PluralKey, PluralForms>>> = {
@@ -1123,6 +1243,26 @@ const plurals: Record<Locale, Partial<Record<PluralKey, PluralForms>>> = {
 // -- Lookup -------------------------------------------------------------------
 
 export type MessageParams = Record<string, string | number>;
+
+/**
+ * An Error that names a translation key instead of pre-rendering text, so the
+ * UI can render it in the locale active when it is shown rather than the one
+ * active when it was thrown.
+ */
+export interface MessageKeyError extends Error {
+  readonly messageKey: MessageKey;
+  readonly params: MessageParams;
+}
+
+export function isMessageKeyError(value: unknown): value is MessageKeyError {
+  if (!(value instanceof Error)) return false;
+  const record = value as unknown as Record<string, unknown>;
+  return (
+    typeof record.messageKey === "string" &&
+    typeof record.params === "object" &&
+    record.params !== null
+  );
+}
 
 /** `development` throws on a missing key; `production` falls back to English. */
 export type TranslationMode = "development" | "production";

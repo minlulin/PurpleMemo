@@ -13,6 +13,7 @@ import {
   getLocale,
   interpolate,
   isLocale,
+  isMessageKeyError,
   LOCALES,
   localeFromLanguageTag,
   type MessageKey,
@@ -139,4 +140,34 @@ test("switching locale notifies subscribed components exactly once", () => {
     unsubscribe();
     setLocale("en");
   }
+});
+
+test("the import refusals and row reasons have Burmese text", () => {
+  // Presence is checked by the catalogue test; this catches an English copy
+  // pasted into the Burmese side of the import feature.
+  const keys: MessageKey[] = [
+    "import.error.tooLarge",
+    "import.error.tooManyRows",
+    "import.error.missingColumn",
+    "import.error.missingColumns",
+    "import.reason.titleRequired",
+    "import.reason.dueDate",
+    "import.reason.done",
+    "import.reason.repeat",
+    "import.reason.nameRequired",
+    "import.reason.birthday",
+  ];
+  for (const key of keys) {
+    assert.notEqual(translateFor("my", key), translateFor("en", key), key);
+  }
+});
+
+test("a key-carrying error is recognized and a plain Error is not", () => {
+  const keyed = Object.assign(new Error("keyed"), {
+    messageKey: "import.reason.done",
+    params: {},
+  });
+  assert.equal(isMessageKeyError(keyed), true);
+  assert.equal(isMessageKeyError(new Error("plain")), false);
+  assert.equal(isMessageKeyError("not an error"), false);
 });
