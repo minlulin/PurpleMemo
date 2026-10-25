@@ -5,6 +5,7 @@
 import { createBackupRepo } from "../lib/backup.ts";
 import { createBudgetRepo } from "../lib/budget.ts";
 import { createBusinessRepo } from "../lib/business.ts";
+import { type ContactInsert, insertContacts } from "../lib/contactImport.ts";
 import { createContactsRepo } from "../lib/contacts.ts";
 import { createEntityLinksRepo } from "../lib/entityLinks.ts";
 import { createExportsRepo } from "../lib/exports.ts";
@@ -19,6 +20,7 @@ import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
 import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
+import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
 import { createTrashRepo } from "../lib/trash.ts";
 import { createVaultRepo } from "../lib/vault.ts";
@@ -36,6 +38,23 @@ export const businessRepo = createBusinessRepo(driver);
 export const loansRepo = createLoansRepo(driver);
 export const habitsRepo = createHabitsRepo(driver);
 export const tasksRepo = createTasksRepo(driver, trashRepo);
+
+/**
+ * The tasks CSV import's batch write, bound to the one driver here.
+ *
+ * `insertTasks` takes a driver so its one-batch/rollback contract is unit
+ * tested; pages never touch the driver themselves, so this is the seam they
+ * call instead of importing the driver or building a second one.
+ */
+export function insertImportedTasks(rows: TaskInsert[]): Promise<void> {
+  return insertTasks(driver, rows);
+}
+
+/** The contacts CSV import's batch write, bound to the same one driver. */
+export function insertImportedContacts(rows: ContactInsert[]): Promise<void> {
+  return insertContacts(driver, rows);
+}
+
 export const shoppingRepo = createShoppingRepo(driver);
 export const contactsRepo = createContactsRepo(driver, trashRepo);
 export const entityLinksRepo = createEntityLinksRepo(driver);

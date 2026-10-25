@@ -4121,3 +4121,47 @@ tbody .week-row {
 .exports-table tr:last-child td {
   border-bottom: none;
 }
+
+/* ---------------------------------------------------------------------------
+ * CSV import dialog
+ * ------------------------------------------------------------------------- */
+
+.import-dialog {
+  inline-size: min(56rem, 100%);
+}
+
+.import-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.import-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Long files can have a lot of rejected rows; the list scrolls instead of
+ * pushing the confirm button off the dialog. */
+.import-error-list {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+  max-block-size: 10rem;
+  overflow-y: auto;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+/* The rows that WILL be written. Reuses `.exports-table` for cell styling;
+ * this wrapper adds the vertical scroll and keeps the header in view. */
+.import-preview-scroll {
+  max-block-size: 20rem;
+  overflow: auto;
+}
+
+.import-preview-scroll thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+}

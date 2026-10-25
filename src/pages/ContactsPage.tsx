@@ -5,21 +5,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
+import { ImportDialog } from "../components/ImportDialog.tsx";
 import {
   IconCalendar,
   IconContacts,
   IconEdit,
   IconSearch,
   IconTrash,
+  IconUpload,
 } from "../components/icons.tsx";
 import { LinksSection } from "../components/LinksSection.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { contactsRepo } from "../data/app.ts";
+import { useToast } from "../components/Toast.tsx";
+import { usePlural, useT } from "../components/useTranslation.ts";
+import { contactsRepo, insertImportedContacts } from "../data/app.ts";
+import { mapContactRows } from "../lib/contactImport.ts";
 import {
   birthdayLabel,
   normalizeMonthDay,
   searchContacts,
 } from "../lib/contacts.ts";
+import { parseCsv } from "../lib/csv.ts";
 import { errText } from "../lib/errors.ts";
 import { createLoadGuard } from "../lib/loads.ts";
 import { missingRowMessage } from "../lib/navigation.ts";
@@ -31,6 +37,15 @@ import type {
 } from "../lib/types.ts";
 
 type BirthdayMode = "none" | "date" | "monthday";
+
+/**
+ * The template CSV the import dialog hands out: the exact header the mapper
+ * reads, plus one example row whose quoted address shows how to keep a comma
+ * inside a cell.
+ */
+const CONTACTS_TEMPLATE_CSV =
+  "name,phones,emails,others,address,birthday,notes,tags\n" +
+  'Mary Jones,+95 9 123 456;+95 9 777 888,mary@example.com,Telegram @mary,"12 Market Road, Yangon",1990-04-18,Met at the market,friends;supplier\n';
 
 function modeOf(birthday: string | null): BirthdayMode {
   if (birthday === null || birthday.length === 0) return "none";
@@ -69,7 +84,11 @@ interface ContactsPageProps {
 }
 
 export default function ContactsPage(p: ContactsPageProps) {
+  const t = useT();
+  const plural = usePlural();
+  const toast = useToast();
   const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [focusMissing, setFocusMissing] = useState(false);
   const [detail, setDetail] = useState<{
@@ -359,6 +378,16 @@ export default function ContactsPage(p: ContactsPageProps) {
               </p>
             </div>
           </div>
+        </div>
+        <div className="page-actions">
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setImportOpen(true)}
+          >
+            <IconUpload className="icon" />
+            {t("contacts.importCsv")}
+          </button>
         </div>
       </header>
 
@@ -719,6 +748,25 @@ export default function ContactsPage(p: ContactsPageProps) {
           )}
         </section>
       </div>
+
+      {importOpen ? (
+        <ImportDialog
+          title={t("contacts.importTitle")}
+          templateCsv={CONTACTS_TEMPLATE_CSV}
+          templateName="purple-memo-contacts-template.csv"
+          onPick={async (file) => file.text()}
+          parse={(text) => mapContactRows(parseCsv(text, ["name"]).rows)}
+          onConfirm={async (rows) => {
+            // One batch; a failure throws before the list refresh and the
+            // toast, and the dialog keeps its preview for a retry.
+            await insertImportedContacts(rows);
+            await reload();
+            toast.success(plural("contacts.imported", rows.length));
+            return { imported: rows.length };
+          }}
+          onClose={() => setImportOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -7,18 +7,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { IconCalendar, IconTasks } from "../components/icons.tsx";
+import { ImportDialog } from "../components/ImportDialog.tsx";
+import { IconCalendar, IconTasks, IconUpload } from "../components/icons.tsx";
 import { LinksSection } from "../components/LinksSection.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { useLocale, useT } from "../components/useTranslation.ts";
-import { tasksRepo } from "../data/app.ts";
+import { useToast } from "../components/Toast.tsx";
+import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
+import { insertImportedTasks, tasksRepo } from "../data/app.ts";
+import { parseCsv } from "../lib/csv.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { formatDate, formatDateTime } from "../lib/format.ts";
 import type { MessageKey } from "../lib/i18n.ts";
+import { mapTaskRows } from "../lib/taskImport.ts";
 import type { LinkableEntity, ReminderRow, TaskRow } from "../lib/types.ts";
 
 type Repeat = TaskRow["repeat"];
+
+/**
+ * The template CSV the import dialog hands out: the exact header the mapper
+ * reads, plus one example row that shows a date, a tolerant `done` spelling
+ * and a repeat value.
+ */
+const TASKS_TEMPLATE_CSV =
+  "title,due_date,done,repeat,note\n" +
+  "Pay electricity bill,2026-12-01,no,monthly,Paid online\n";
 
 const REPEAT_LABELS: Record<Repeat, MessageKey> = {
   none: "tasks.repeat.none",
@@ -56,9 +69,12 @@ export default function TasksPage({
   onOpenEntity,
 }: TasksPageProps) {
   const t = useT();
+  const plural = usePlural();
   const locale = useLocale();
+  const toast = useToast();
   const today = todayLocal();
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
   const [showDone, setShowDone] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -231,6 +247,16 @@ export default function TasksPage({
               <p className="page-subtitle">{t("tasks.subtitle")}</p>
             </div>
           </div>
+        </div>
+        <div className="page-actions">
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setImportOpen(true)}
+          >
+            <IconUpload className="icon" />
+            {t("tasks.importCsv")}
+          </button>
         </div>
       </header>
 
@@ -428,6 +454,25 @@ export default function TasksPage({
       </div>
 
       <RemindersSection refreshKey={remindersFired} />
+
+      {importOpen ? (
+        <ImportDialog
+          title={t("tasks.importTitle")}
+          templateCsv={TASKS_TEMPLATE_CSV}
+          templateName="purple-memo-tasks-template.csv"
+          onPick={async (file) => file.text()}
+          parse={(text) => mapTaskRows(parseCsv(text, ["title"]).rows)}
+          onConfirm={async (rows) => {
+            // One batch; a failure throws before the list refresh and the
+            // toast, and the dialog keeps its preview for a retry.
+            await insertImportedTasks(rows);
+            await reload();
+            toast.success(plural("tasks.imported", rows.length));
+            return { imported: rows.length };
+          }}
+          onClose={() => setImportOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
