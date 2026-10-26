@@ -14,12 +14,12 @@ import { Skeleton } from "../components/Skeleton.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
 import { insertImportedTasks, tasksRepo } from "../data/app.ts";
-import { parseCsv } from "../lib/csv.ts";
+import { parseCsv, readCsvFile } from "../lib/csv.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { formatDate, formatDateTime } from "../lib/format.ts";
 import type { MessageKey } from "../lib/i18n.ts";
-import { mapTaskRows } from "../lib/taskImport.ts";
+import { mapTaskRows, TASK_CSV_ALIASES } from "../lib/taskImport.ts";
 import type { LinkableEntity, ReminderRow, TaskRow } from "../lib/types.ts";
 
 type Repeat = TaskRow["repeat"];
@@ -460,8 +460,35 @@ export default function TasksPage({
           title={t("tasks.importTitle")}
           templateCsv={TASKS_TEMPLATE_CSV}
           templateName="purple-memo-tasks-template.csv"
-          onPick={async (file) => file.text()}
-          parse={(text) => mapTaskRows(parseCsv(text, ["title"]).rows)}
+          onPick={readCsvFile}
+          parse={(text) =>
+            mapTaskRows(parseCsv(text, ["title"], TASK_CSV_ALIASES).rows)
+          }
+          columns={[
+            { key: "title", label: t("tasks.titleLabel") },
+            {
+              key: "due_date",
+              label: t("tasks.dueColumn"),
+              render: (row) =>
+                row.due_date === null ? "—" : formatDate(locale, row.due_date),
+            },
+            {
+              key: "done",
+              label: t("tasks.doneColumn"),
+              render: (row) =>
+                row.done === 1 ? t("import.yes") : t("import.no"),
+            },
+            {
+              key: "repeat",
+              label: t("tasks.repeatLabel"),
+              render: (row) => t(REPEAT_LABELS[row.repeat]),
+            },
+            {
+              key: "note",
+              label: t("tasks.noteColumn"),
+              render: (row) => (row.note === "" ? "—" : row.note),
+            },
+          ]}
           onConfirm={async (rows) => {
             // One batch; a failure throws before the list refresh and the
             // toast, and the dialog keeps its preview for a retry.

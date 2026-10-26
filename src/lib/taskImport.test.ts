@@ -12,8 +12,14 @@ import type {
 } from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { first } from "../test-utils.ts";
+import { parseCsv } from "./csv.ts";
 import { todayLocal } from "./dates.ts";
-import { insertTasks, mapTaskRows, type TaskInsert } from "./taskImport.ts";
+import {
+  insertTasks,
+  mapTaskRows,
+  TASK_CSV_ALIASES,
+  type TaskInsert,
+} from "./taskImport.ts";
 
 const SQLITE_FIXTURE = `
 CREATE TABLE tasks (
@@ -159,40 +165,65 @@ test("done accepts all six spellings case-insensitively", () => {
   );
 });
 
-test("an absent optional column falls back to its empty value", () => {
-  const result = mapTaskRows([{ title: "Only what matters", done: "false" }]);
-  assert.deepEqual(result.valid, [
-    {
-      title: "Only what matters",
-      due_date: null,
-      done: 0,
-      repeat: "none",
-      note: "",
-    },
+test("an absent or blank optional column falls back to its default value", () => {
+  // Only `title` is required by `parseCsv(text, ["title"])`, so omitting `done`
+  // or leaving `done` empty must default to 0 (open) rather than failing rows.
+  const result = mapTaskRows([
+    { title: "Only what matters" },
+    { title: "Blank done", done: "   ", repeat: "Weekly" },
+    { title: "Leap day task", due_date: "2024-02-29", repeat: "MONTHLY" },
   ]);
+  assert.deepEqual(result, {
+    valid: [
+      {
+        title: "Only what matters",
+        due_date: null,
+        done: 0,
+        repeat: "none",
+        note: "",
+      },
+      {
+        title: "Blank done",
+        due_date: null,
+        done: 0,
+        repeat: "weekly",
+        note: "",
+      },
+      {
+        title: "Leap day task",
+        due_date: "2024-02-29",
+        done: 0,
+        repeat: "monthly",
+        note: "",
+      },
+    ],
+    errors: [],
+  });
 });
 
 test("every row-error case is reported with its 1-based data row number", () => {
   const result = mapTaskRows([
     { title: "Good", due_date: "2026-10-31", done: "yes", note: "" },
     { title: "   ", done: "no" }, // 2: blank title
-    { title: "Bad date", due_date: "10/31/2026", done: "no" }, // 3
-    { title: "Bad done", done: "maybe" }, // 4
-    { title: "Empty done", done: "" }, // 5
-    { title: "Bad repeat", done: "no", repeat: "yearly" }, // 6
+    { title: "Bad date format", due_date: "10/31/2026", done: "no" }, // 3
+    { title: "Impossible date", due_date: "2026-02-31", done: "no" }, // 4
+    { title: "Out-of-range month", due_date: "2026-13-01", done: "no" }, // 5
+    { title: "Bad done", done: "maybe" }, // 6
+    { title: "Bad repeat", done: "no", repeat: "yearly" }, // 7
   ]);
   assert.equal(result.valid.length, 1);
   assert.equal(first(result.valid, "valid").title, "Good");
   assert.deepEqual(
     result.errors.map((error) => error.row),
-    [2, 3, 4, 5, 6],
+    [2, 3, 4, 5, 6, 7],
   );
   assert.deepEqual(
     result.errors.map((error) => error.reason),
     [
       "import.reason.titleRequired",
       "import.reason.dueDate",
-      "import.reason.done",
+      "import.reason.dueDate",
+      "import.reason.dueDate",
       "import.reason.done",
       "import.reason.repeat",
     ],
@@ -206,6 +237,25 @@ test("the header is not row 1", () => {
   ]);
   assert.deepEqual(result.errors, [
     { row: 2, reason: "import.reason.titleRequired" },
+  ]);
+});
+
+test("accepts common header aliases and unescapes spreadsheet formula guards", () => {
+  const parsed = parseCsv(
+    'Title,Due Date,Notes\n"\'- Call plumber",2026-12-01,"\'=check meter"\n',
+    ["title"],
+    TASK_CSV_ALIASES,
+  );
+  const { valid, errors } = mapTaskRows(parsed.rows);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(valid, [
+    {
+      title: "- Call plumber",
+      due_date: "2026-12-01",
+      done: 0,
+      repeat: "none",
+      note: "=check meter",
+    },
   ]);
 });
 

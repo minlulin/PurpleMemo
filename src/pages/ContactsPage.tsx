@@ -17,18 +17,20 @@ import {
 import { LinksSection } from "../components/LinksSection.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { useToast } from "../components/Toast.tsx";
-import { usePlural, useT } from "../components/useTranslation.ts";
+import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
 import { contactsRepo, insertImportedContacts } from "../data/app.ts";
-import { mapContactRows } from "../lib/contactImport.ts";
+import { CONTACT_CSV_ALIASES, mapContactRows } from "../lib/contactImport.ts";
 import {
   birthdayLabel,
+  contactInitial,
   normalizeMonthDay,
   searchContacts,
 } from "../lib/contacts.ts";
-import { parseCsv } from "../lib/csv.ts";
+import { parseCsv, readCsvFile } from "../lib/csv.ts";
+import { isValidISODate } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { createLoadGuard } from "../lib/loads.ts";
-import { missingRowMessage } from "../lib/navigation.ts";
 import type {
   ContactChannelKind,
   ContactChannelRow,
@@ -52,10 +54,10 @@ function modeOf(birthday: string | null): BirthdayMode {
   return birthday.length >= 10 ? "date" : "monthday";
 }
 
-const CHANNEL_KINDS: { key: ContactChannelKind; label: string }[] = [
-  { key: "phone", label: "Phone" },
-  { key: "email", label: "Email" },
-  { key: "other", label: "Other" },
+const CHANNEL_KINDS: { key: ContactChannelKind; labelKey: MessageKey }[] = [
+  { key: "phone", labelKey: "contacts.channelKind.phone" },
+  { key: "email", labelKey: "contacts.channelKind.email" },
+  { key: "other", labelKey: "contacts.channelKind.other" },
 ];
 
 /**
@@ -85,6 +87,7 @@ interface ContactsPageProps {
 
 export default function ContactsPage(p: ContactsPageProps) {
   const t = useT();
+  const locale = useLocale();
   const plural = usePlural();
   const toast = useToast();
   const [contacts, setContacts] = useState<ContactRow[]>([]);
@@ -210,7 +213,7 @@ export default function ContactsPage(p: ContactsPageProps) {
         if (cancelled) return;
         if (!found) {
           setFocusMissing(true);
-          setError(missingRowMessage("contact"));
+          setError(t("contacts.missing"));
           return;
         }
         setFocusMissing(false);
@@ -267,15 +270,15 @@ export default function ContactsPage(p: ContactsPageProps) {
     const raw = edit.birthday.trim();
     if (raw.length === 0) return { value: null, error: null };
     if (edit.mode === "date") {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw))
-        return { value: null, error: "Birthday must be a valid date." };
+      if (!isValidISODate(raw))
+        return { value: null, error: t("contacts.birthdayInvalidDate") };
       return { value: raw, error: null };
     }
     const normalized = normalizeMonthDay(raw);
     if (normalized === null)
       return {
         value: null,
-        error: "Month-day must be between 01-01 and 12-31.",
+        error: t("contacts.birthdayInvalidMonthDay"),
       };
     return { value: normalized, error: null };
   };
@@ -363,6 +366,11 @@ export default function ContactsPage(p: ContactsPageProps) {
   const visible = searchContacts(contacts, search);
   const selectedContact = detail?.contact ?? null;
 
+  const channelKindLabel = (kind: ContactChannelKind): string => {
+    const entry = CHANNEL_KINDS.find((k) => k.key === kind);
+    return entry ? t(entry.labelKey) : kind;
+  };
+
   return (
     <div className="budget-page">
       <header className="page-header">
@@ -372,10 +380,8 @@ export default function ContactsPage(p: ContactsPageProps) {
               <IconContacts className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Address Book</h2>
-              <p className="page-subtitle">
-                Personal &amp; business contacts, channels, tags &amp; birthdays
-              </p>
+              <h2 className="editor-title">{t("contacts.title")}</h2>
+              <p className="page-subtitle">{t("contacts.subtitle")}</p>
             </div>
           </div>
         </div>
@@ -400,15 +406,15 @@ export default function ContactsPage(p: ContactsPageProps) {
       <div className="contacts-layout">
         <aside className="contacts-sidebar">
           <div className="dash-card-head">
-            <span className="side-heading">Directory</span>
+            <span className="side-heading">{t("contacts.directory")}</span>
             <span className="badge">{contacts.length}</span>
           </div>
           <span className="input-icon-wrap">
             <input
               className="input"
               type="search"
-              placeholder="Search contacts…"
-              aria-label="Search contacts"
+              placeholder={t("contacts.searchPlaceholder")}
+              aria-label={t("contacts.searchAria")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -423,8 +429,8 @@ export default function ContactsPage(p: ContactsPageProps) {
             }}
           >
             <input
-              aria-label="New contact name"
-              placeholder="New contact name"
+              aria-label={t("contacts.newNameAria")}
+              placeholder={t("contacts.newNamePlaceholder")}
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
@@ -433,7 +439,7 @@ export default function ContactsPage(p: ContactsPageProps) {
               className="btn btn-primary"
               disabled={saving || newName.trim().length === 0}
             >
-              Add
+              {t("contacts.add")}
             </button>
           </form>
 
@@ -442,8 +448,8 @@ export default function ContactsPage(p: ContactsPageProps) {
           ) : visible.length === 0 ? (
             <EmptyState>
               {contacts.length === 0
-                ? "No contacts yet — add one above."
-                : "No contact matches the search."}
+                ? t("contacts.emptyAll")
+                : t("contacts.emptySearch")}
             </EmptyState>
           ) : (
             <ul className="side-list">
@@ -458,7 +464,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                   >
                     <span className="row-title">
                       <span className={avatarClass(c.name)}>
-                        {c.name.slice(0, 1).toUpperCase()}
+                        {contactInitial(c.name)}
                       </span>
                       <span>{c.name}</span>
                     </span>
@@ -475,12 +481,14 @@ export default function ContactsPage(p: ContactsPageProps) {
               <div className="dash-card-head">
                 <div className="row-title">
                   <span className={avatarClass(selectedContact.name)}>
-                    {selectedContact.name.slice(0, 1).toUpperCase()}
+                    {contactInitial(selectedContact.name)}
                   </span>
                   <h3 className="settings-heading">{selectedContact.name}</h3>
                   {selectedContact.birthday ? (
                     <span className="badge badge-accent">
-                      Birthday: {birthdayLabel(selectedContact.birthday)}
+                      {t("contacts.birthdayBadge", {
+                        date: birthdayLabel(selectedContact.birthday, locale),
+                      })}
                     </span>
                   ) : null}
                 </div>
@@ -490,14 +498,14 @@ export default function ContactsPage(p: ContactsPageProps) {
                     className="btn btn-primary"
                     onClick={() => void saveContact()}
                   >
-                    <IconEdit className="icon" /> Save
+                    <IconEdit className="icon" /> {t("contacts.save")}
                   </button>
                   <ConfirmButton
                     className="btn btn-danger"
-                    what="contact to Trash"
+                    what={t("contacts.deleteWhat")}
                     onConfirm={() => removeContact(selectedContact.id)}
                   >
-                    <IconTrash className="icon" /> Move to Trash
+                    <IconTrash className="icon" /> {t("contacts.moveToTrash")}
                   </ConfirmButton>
                 </div>
               </div>
@@ -505,7 +513,7 @@ export default function ContactsPage(p: ContactsPageProps) {
               <div className="entry-form contact-form">
                 <div className="form-grid">
                   <label>
-                    Name
+                    {t("contacts.nameLabel")}
                     <input
                       className="input"
                       value={edit.name}
@@ -515,11 +523,11 @@ export default function ContactsPage(p: ContactsPageProps) {
                     />
                   </label>
                   <label>
-                    Address
+                    {t("contacts.addressLabel")}
                     <input
                       className="input"
                       value={edit.address}
-                      placeholder="Street, city…"
+                      placeholder={t("contacts.addressPlaceholder")}
                       onChange={(e) =>
                         setEdit({ ...edit, address: e.target.value })
                       }
@@ -527,11 +535,11 @@ export default function ContactsPage(p: ContactsPageProps) {
                   </label>
                 </div>
                 <label>
-                  Birthday
+                  {t("contacts.birthdayLabel")}
                   <span className="editor-row">
                     <select
                       className="select"
-                      aria-label="Birthday type"
+                      aria-label={t("contacts.birthdayTypeAria")}
                       value={edit.mode}
                       onChange={(e) =>
                         setEdit({
@@ -541,16 +549,18 @@ export default function ContactsPage(p: ContactsPageProps) {
                         })
                       }
                     >
-                      <option value="none">No birthday</option>
-                      <option value="date">Full date</option>
-                      <option value="monthday">Month and day</option>
+                      <option value="none">{t("contacts.birthdayNone")}</option>
+                      <option value="date">{t("contacts.birthdayFull")}</option>
+                      <option value="monthday">
+                        {t("contacts.birthdayMonthDay")}
+                      </option>
                     </select>
                     {edit.mode === "date" ? (
                       <span className="input-icon-wrap">
                         <input
                           className="input"
                           type="date"
-                          aria-label="Birthday date"
+                          aria-label={t("contacts.birthdayDateAria")}
                           value={
                             edit.birthday.length >= 10 ? edit.birthday : ""
                           }
@@ -564,7 +574,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                     {edit.mode === "monthday" ? (
                       <input
                         className="input"
-                        aria-label="Birthday month and day"
+                        aria-label={t("contacts.birthdayMonthDayAria")}
                         placeholder="MM-DD"
                         value={edit.birthday}
                         onChange={(e) =>
@@ -580,7 +590,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                   </p>
                 ) : null}
                 <label>
-                  Notes
+                  {t("contacts.notesLabel")}
                   <textarea
                     className="textarea"
                     rows={3}
@@ -593,21 +603,24 @@ export default function ContactsPage(p: ContactsPageProps) {
               </div>
 
               <section className="contact-detail-section">
-                <h3 className="side-heading">Channels</h3>
+                <h3 className="side-heading">
+                  {t("contacts.channelsHeading")}
+                </h3>
                 {detail.channels.length === 0 ? (
-                  <p className="muted">No channels yet.</p>
+                  <p className="muted">{t("contacts.channelsEmpty")}</p>
                 ) : (
                   <ul className="budget-list">
                     {detail.channels.map((ch) => (
                       <li key={ch.id} className="budget-row">
                         <span className="row-title">
                           <span className="chip">
-                            {CHANNEL_KINDS.find((k) => k.key === ch.kind)
-                              ?.label ?? ch.kind}
+                            {channelKindLabel(ch.kind)}
                           </span>{" "}
                           <b>{ch.value}</b>
                           {ch.is_primary === 1 ? (
-                            <span className="chip chip-accent">Primary</span>
+                            <span className="chip chip-accent">
+                              {t("contacts.primaryBadge")}
+                            </span>
                           ) : null}
                         </span>
                         <span className="row-actions">
@@ -617,15 +630,17 @@ export default function ContactsPage(p: ContactsPageProps) {
                               className="btn btn-ghost"
                               onClick={() => void makePrimary(ch.id)}
                             >
-                              Make primary
+                              {t("contacts.makePrimary")}
                             </button>
                           )}
                           <ConfirmButton
                             className="btn btn-ghost"
-                            what={`channel ${ch.kind}`}
+                            what={t("contacts.channelDeleteWhat", {
+                              kind: channelKindLabel(ch.kind),
+                            })}
                             onConfirm={() => removeChannel(ch.id)}
                           >
-                            Delete
+                            {t("common.delete")}
                           </ConfirmButton>
                         </span>
                       </li>
@@ -641,7 +656,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                 >
                   <select
                     className="select"
-                    aria-label="Channel kind"
+                    aria-label={t("contacts.channelKindAria")}
                     value={channelDraft.kind}
                     onChange={(e) =>
                       setChannelDraft({
@@ -652,13 +667,13 @@ export default function ContactsPage(p: ContactsPageProps) {
                   >
                     {CHANNEL_KINDS.map((k) => (
                       <option key={k.key} value={k.key}>
-                        {k.label}
+                        {t(k.labelKey)}
                       </option>
                     ))}
                   </select>
                   <input
-                    aria-label="Channel value"
-                    placeholder="09… or name@mail.com"
+                    aria-label={t("contacts.channelValueAria")}
+                    placeholder={t("contacts.channelValuePlaceholder")}
                     value={channelDraft.value}
                     onChange={(e) =>
                       setChannelDraft({
@@ -678,22 +693,22 @@ export default function ContactsPage(p: ContactsPageProps) {
                         })
                       }
                     />
-                    Primary
+                    {t("contacts.primaryBadge")}
                   </label>
                   <button
                     type="submit"
                     className="btn btn-primary"
                     disabled={channelDraft.value.trim().length === 0}
                   >
-                    Add channel
+                    {t("contacts.addChannel")}
                   </button>
                 </form>
               </section>
 
               <section className="contact-detail-section">
-                <h3 className="side-heading">Tags</h3>
+                <h3 className="side-heading">{t("contacts.tagsHeading")}</h3>
                 {detail.tags.length === 0 ? (
-                  <p className="muted">No tags yet.</p>
+                  <p className="muted">{t("contacts.tagsEmpty")}</p>
                 ) : (
                   <div className="note-meta">
                     {detail.tags.map((tag) => (
@@ -702,7 +717,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                         <button
                           type="button"
                           className="side-remove"
-                          aria-label={`Remove tag ${tag}`}
+                          aria-label={t("contacts.removeTagAria", { tag })}
                           onClick={() => void removeTag(tag)}
                         >
                           ×
@@ -719,8 +734,8 @@ export default function ContactsPage(p: ContactsPageProps) {
                   }}
                 >
                   <input
-                    aria-label="New tag"
-                    placeholder="Tag (e.g. family, VIP)"
+                    aria-label={t("contacts.newTagAria")}
+                    placeholder={t("contacts.newTagPlaceholder")}
                     value={newTag}
                     onChange={(e) => setNewTag(e.target.value)}
                   />
@@ -729,7 +744,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                     className="btn"
                     disabled={newTag.trim().length === 0}
                   >
-                    Add tag
+                    {t("contacts.addTag")}
                   </button>
                 </form>
               </section>
@@ -742,8 +757,8 @@ export default function ContactsPage(p: ContactsPageProps) {
           ) : (
             <EmptyState>
               {focusMissing
-                ? missingRowMessage("contact")
-                : "Select a contact on the left, or add a new one."}
+                ? t("contacts.missing")
+                : t("contacts.selectPrompt")}
             </EmptyState>
           )}
         </section>
@@ -754,8 +769,47 @@ export default function ContactsPage(p: ContactsPageProps) {
           title={t("contacts.importTitle")}
           templateCsv={CONTACTS_TEMPLATE_CSV}
           templateName="purple-memo-contacts-template.csv"
-          onPick={async (file) => file.text()}
-          parse={(text) => mapContactRows(parseCsv(text, ["name"]).rows)}
+          onPick={readCsvFile}
+          parse={(text) =>
+            mapContactRows(parseCsv(text, ["name"], CONTACT_CSV_ALIASES).rows)
+          }
+          columns={[
+            { key: "name", label: t("contacts.nameLabel") },
+            {
+              key: "channels",
+              label: t("contacts.channelsHeading"),
+              render: (row) =>
+                row.channels.length === 0
+                  ? "—"
+                  : row.channels
+                      .map((ch) => `${channelKindLabel(ch.kind)}: ${ch.value}`)
+                      .join("; "),
+            },
+            {
+              key: "birthday",
+              label: t("contacts.birthdayLabel"),
+              render: (row) =>
+                row.birthday === null
+                  ? "—"
+                  : birthdayLabel(row.birthday, locale),
+            },
+            {
+              key: "address",
+              label: t("contacts.addressLabel"),
+              render: (row) => (row.address === "" ? "—" : row.address),
+            },
+            {
+              key: "tags",
+              label: t("contacts.tagsHeading"),
+              render: (row) =>
+                row.tags.length === 0 ? "—" : row.tags.join("; "),
+            },
+            {
+              key: "notes",
+              label: t("contacts.notesLabel"),
+              render: (row) => (row.notes === "" ? "—" : row.notes),
+            },
+          ]}
           onConfirm={async (rows) => {
             // One batch; a failure throws before the list refresh and the
             // toast, and the dialog keeps its preview for a retry.

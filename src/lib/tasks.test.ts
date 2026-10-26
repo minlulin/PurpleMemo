@@ -50,6 +50,11 @@ test("nextDueDate: repeat rolls the due date to the next future occurrence", () 
     nextDueDate("2026-01-31", "monthly", "2026-01-31"),
     "2026-02-28",
   );
+  // Malformed or impossible stored due dates fall back to rolling from today
+  // rather than writing "NaN-NaN-NaN" into SQLite.
+  assert.equal(nextDueDate("2026-13-45", "daily", "2026-10-11"), "2026-10-12");
+  assert.equal(nextDueDate("2026-02-31", "daily", "2026-10-11"), "2026-10-12");
+  assert.equal(nextDueDate("not-a-date", "weekly", "2026-10-11"), "2026-10-18");
 });
 
 test("nextReminderAt: a repeating reminder re-arms to its next future occurrence", () => {

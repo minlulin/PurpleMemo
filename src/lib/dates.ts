@@ -3,10 +3,47 @@
 
 /** Local date -> `yyyy-mm-dd` (zero-padded, no UTC shift). */
 export function toISODate(d: Date): string {
-  const y = d.getFullYear();
+  const y = String(d.getFullYear()).padStart(4, "0");
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInCalendarMonth(year: number, month: number): number {
+  switch (month) {
+    case 2:
+      return isLeapYear(year) ? 29 : 28;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    default:
+      return 31;
+  }
+}
+
+/**
+ * True when `raw` is a strict `YYYY-MM-DD` date on the proleptic Gregorian
+ * calendar (year >= 1, month 01-12, real day for that month and leap year).
+ * Checked with plain arithmetic rather than `new Date(...)` so JS Date
+ * rollover (`2026-02-31` -> Mar 3) and two-digit year mapping never smuggle
+ * impossible dates past validation.
+ */
+export function isValidISODate(raw: string): boolean {
+  const match = ISO_DATE_RE.exec(raw);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1 || month < 1 || month > 12) return false;
+  return day >= 1 && day <= daysInCalendarMonth(year, month);
 }
 
 /** Today's local date as `yyyy-mm-dd`. */
@@ -30,15 +67,17 @@ export function yearMonthOf(isoDate: string): string {
   return isoDate.slice(0, 7);
 }
 
-/** Add days to an ISO date, returning a new ISO date (local). */
+/** Add days to an ISO date, returning a new ISO date (local). Invalid input returns unchanged. */
 export function addDays(isoDate: string, days: number): string {
+  if (!isValidISODate(isoDate)) return isoDate;
   const d = new Date(`${isoDate}T00:00:00`);
   d.setDate(d.getDate() + days);
   return toISODate(d);
 }
 
-/** Add months to an ISO date, clamping the day (Jan 31 + 1mo -> Feb 28). */
+/** Add months to an ISO date, clamping the day (Jan 31 + 1mo -> Feb 28). Invalid input returns unchanged. */
 export function addMonths(isoDate: string, months: number): string {
+  if (!isValidISODate(isoDate)) return isoDate;
   const d = new Date(`${isoDate}T00:00:00`);
   const day = d.getDate();
   d.setDate(1);

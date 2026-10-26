@@ -6,9 +6,17 @@
 // with the same title are two tasks, exactly as two manual adds would be.
 
 import type { DataDriver } from "../data/driver.ts";
-import { todayLocal } from "./dates.ts";
+import { unescapeSpreadsheetCell } from "./csv.ts";
+import { isValidISODate, todayLocal } from "./dates.ts";
 import type { MessageKey } from "./i18n.ts";
 import type { TaskRow } from "./types.ts";
+
+/** Common header spellings accepted for Tasks CSV imports. */
+export const TASK_CSV_ALIASES: Record<string, string> = {
+  notes: "note",
+  "due date": "due_date",
+  duedate: "due_date",
+};
 
 /** One accepted row, already validated and ready to bind. */
 export interface TaskInsert {
@@ -32,9 +40,7 @@ export interface TaskImportResult {
   errors: TaskImportError[];
 }
 
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-/** The tolerant boolean vocabulary, lowercased. Anything else is a row error. */
+/** The tolerant boolean vocabulary, lowercased. Empty/absent defaults to 0. */
 const DONE_VALUES: Record<string, number> = {
   true: 1,
   yes: 1,
@@ -46,9 +52,17 @@ const DONE_VALUES: Record<string, number> = {
 
 const REPEAT_VALUES = new Set<string>(["none", "daily", "weekly", "monthly"]);
 
-/** A cell value; a column missing from the file reads as empty. */
-function cell(row: Record<string, string>, name: string): string {
-  return row[name] ?? "";
+/** A cell value; checks optional aliases and unescapes spreadsheet formula guards. */
+function cell(
+  row: Record<string, string>,
+  name: string,
+  aliases: string[] = [],
+): string {
+  if (row[name] !== undefined) return unescapeSpreadsheetCell(row[name]);
+  for (const alias of aliases) {
+    if (row[alias] !== undefined) return unescapeSpreadsheetCell(row[alias]);
+  }
+  return "";
 }
 
 /**
@@ -72,8 +86,8 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       return;
     }
 
-    const dueDate = cell(row, "due_date").trim();
-    if (dueDate !== "" && !DATE_PATTERN.test(dueDate)) {
+    const dueDate = cell(row, "due_date", ["due date", "duedate"]).trim();
+    if (dueDate !== "" && !isValidISODate(dueDate)) {
       errors.push({
         row: rowNumber,
         reason: "import.reason.dueDate",
@@ -81,7 +95,8 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       return;
     }
 
-    const done = DONE_VALUES[cell(row, "done").trim().toLowerCase()];
+    const doneRaw = cell(row, "done").trim().toLowerCase();
+    const done = doneRaw === "" ? 0 : DONE_VALUES[doneRaw];
     if (done === undefined) {
       errors.push({
         row: rowNumber,
@@ -90,7 +105,7 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       return;
     }
 
-    const repeatRaw = cell(row, "repeat").trim();
+    const repeatRaw = cell(row, "repeat").trim().toLowerCase();
     if (repeatRaw !== "" && !REPEAT_VALUES.has(repeatRaw)) {
       errors.push({
         row: rowNumber,
@@ -104,7 +119,7 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       due_date: dueDate === "" ? null : dueDate,
       done,
       repeat: repeatRaw === "" ? "none" : (repeatRaw as TaskRow["repeat"]),
-      note: cell(row, "note"),
+      note: cell(row, "note", ["notes"]),
     });
   });
 

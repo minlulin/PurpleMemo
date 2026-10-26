@@ -4,18 +4,24 @@
 //
 // The file input lives here, inside the dialog, exactly as Settings' backup
 // import does — a hidden input behind a styled button, read with the File API.
-// No native open/read command is involved. The CALLER owns the read via
-// `onPick` (it hands back the text), which keeps size/type policy and any
-// future pre-processing with the page that knows its own format.
+// The CALLER owns the read via `onPick` (`readCsvFile`, which checks the byte
+// cap before calling `file.text()`), keeping size/type policy with the CSV
+// module. Saving the template CSV uses the native `save()` dialog + Rust's
+// atomic export writer, because `<a href="data:..." download>` is blocked by
+// the webview navigation guard (`navigation.rs`).
 //
 // `parse` and `onConfirm` are supplied by the page, so this component knows
 // nothing about tasks or contacts — only about rows, errors and counts.
 
-import { useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { useRef, useState } from "react";
+import { saveCsvTemplate } from "../data/app.ts";
+import { cellText, PREVIEW_ROW_LIMIT } from "../lib/csv.ts";
 import { errText } from "../lib/errors.ts";
 import { isMessageKeyError, type MessageKey } from "../lib/i18n.ts";
 import { Dialog } from "./Dialog.tsx";
 import { IconDownload, IconUpload } from "./icons.tsx";
+import { useToast } from "./Toast.tsx";
 import { usePlural, useT } from "./useTranslation.ts";
 
 /** One rejected row, as the caller's mapper reports it. */
@@ -40,6 +46,15 @@ export interface ImportSummary {
   imported: number;
 }
 
+export { cellText, PREVIEW_ROW_LIMIT };
+
+/** Optional localized column definition for the preview table. */
+export interface ImportColumn<T> {
+  key: string;
+  label: string;
+  render?: (row: NoInfer<T>) => string;
+}
+
 interface ImportDialogProps<T> {
   /** Dialog heading, already translated by the caller. */
   title: string;
@@ -47,6 +62,8 @@ interface ImportDialogProps<T> {
   templateCsv: string;
   /** File name for that download, e.g. `purple-memo-tasks-template.csv`. */
   templateName: string;
+  /** Optional localized preview columns; falls back to `Object.keys(valid[0])`. */
+  columns?: NoInfer<ImportColumn<T>>[];
   /** Read the picked file and return its text. */
   onPick: (file: File) => Promise<string>;
   /** Parse + validate in memory; throw to refuse the whole file. */
@@ -58,24 +75,11 @@ interface ImportDialogProps<T> {
 
 type Phase = "pick" | "preview" | "running" | "done";
 
-/** A preview cell without inventing entity-specific rendering. */
-function cellText(value: unknown): string {
-  if (value === null || value === undefined) return "—";
-  if (Array.isArray(value)) return value.map(cellText).join("; ");
-  if (typeof value === "object") {
-    // Imported channels carry their display string on `value`; showing the
-    // bare object would bury a phone number in JSON in the preview table.
-    const record = value as Record<string, unknown>;
-    if (typeof record.value === "string") return record.value;
-    return JSON.stringify(value);
-  }
-  return String(value);
-}
-
 export function ImportDialog<T extends object>({
   title,
   templateCsv,
   templateName,
+  columns: customColumns,
   onPick,
   parse,
   onConfirm,
@@ -83,11 +87,17 @@ export function ImportDialog<T extends object>({
 }: ImportDialogProps<T>) {
   const t = useT();
   const plural = usePlural();
+  const toast = useToast();
   const [phase, setPhase] = useState<Phase>("pick");
   const [preview, setPreview] = useState<ImportPreview<T> | null>(null);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [reading, setReading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Authoritative in-flight guard for the batch confirm write (P1-5). */
+  const runningRef = useRef(false);
+  /** Authoritative in-flight guard while the native save dialog is open. */
+  const downloadingRef = useRef(false);
 
   /** A key-carrying refusal is rendered in the current locale; anything else
    * (a file-read failure, a database error) keeps its own text. */
@@ -128,7 +138,9 @@ export function ImportDialog<T extends object>({
   };
 
   const confirm = async () => {
+    if (runningRef.current) return;
     if (preview === null || preview.valid.length === 0) return;
+    runningRef.current = true;
     setError(null);
     setPhase("running");
     try {
@@ -137,25 +149,56 @@ export function ImportDialog<T extends object>({
     } catch (e) {
       setError(describe(e));
       setPhase("preview");
+    } finally {
+      runningRef.current = false;
     }
   };
 
-  const templateLink = (
-    <a
+  // Saved through the native dialog + Rust's atomic writer rather than
+  // `<a href="data:..." download>`, which `navigation.rs` blocks in Tauri.
+  const downloadTemplate = async () => {
+    if (downloadingRef.current) return;
+    if (phase === "running") return;
+    downloadingRef.current = true;
+    setDownloading(true);
+    setError(null);
+    try {
+      const path = await save({
+        title: t("import.saveTemplateTitle"),
+        defaultPath: templateName,
+        filters: [{ name: t("import.csvFilter"), extensions: ["csv"] }],
+      });
+      if (path === null) return;
+      await saveCsvTemplate(path, templateCsv);
+      toast.success(t("import.templateSaved", { path }));
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      downloadingRef.current = false;
+      setDownloading(false);
+    }
+  };
+
+  const templateButton = (
+    <button
+      type="button"
       className="btn btn-ghost"
-      href={`data:text/csv;charset=utf-8,${encodeURIComponent(templateCsv)}`}
-      download={templateName}
+      disabled={downloading || phase === "running"}
+      onClick={() => void downloadTemplate()}
     >
       <IconDownload className="icon" />
-      {t("import.downloadTemplate")}
-    </a>
+      {downloading ? t("import.savingTemplate") : t("import.downloadTemplate")}
+    </button>
   );
 
   const skipped = preview?.errors.length ?? 0;
-  const columns =
-    preview !== null && preview.valid.length > 0
-      ? Object.keys(preview.valid[0] ?? {})
-      : [];
+  const resolvedColumns: ImportColumn<T>[] =
+    customColumns ??
+    (preview !== null && preview.valid.length > 0
+      ? Object.keys(preview.valid[0] ?? {}).map((key) => ({ key, label: key }))
+      : []);
+  const previewRows =
+    preview !== null ? preview.valid.slice(0, PREVIEW_ROW_LIMIT) : [];
 
   return (
     <Dialog
@@ -197,7 +240,7 @@ export function ImportDialog<T extends object>({
                 }}
               />
             </label>
-            {templateLink}
+            {templateButton}
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               {t("common.cancel")}
             </button>
@@ -240,35 +283,49 @@ export function ImportDialog<T extends object>({
           {preview.valid.length === 0 ? (
             <p className="alert alert-error">{t("import.nothing")}</p>
           ) : (
-            <div className="exports-table-wrap import-preview-scroll">
-              <table
-                className="exports-table"
-                aria-label={t("import.rowsToImportAria")}
-              >
-                <thead>
-                  <tr>
-                    {columns.map((column) => (
-                      <th key={column} scope="col">
-                        {column}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.valid.map((row, index) => (
-                    // Read-only preview; the row order is the import order.
-                    // biome-ignore lint/suspicious/noArrayIndexKey: static preview, order is the identity
-                    <tr key={index}>
-                      {columns.map((column) => (
-                        <td key={column}>
-                          {cellText((row as Record<string, unknown>)[column])}
-                        </td>
+            <>
+              {preview.valid.length > PREVIEW_ROW_LIMIT ? (
+                <p className="muted">
+                  {t("import.previewCapped", {
+                    shown: PREVIEW_ROW_LIMIT,
+                    total: preview.valid.length,
+                  })}
+                </p>
+              ) : null}
+              <div className="exports-table-wrap import-preview-scroll">
+                <table
+                  className="exports-table"
+                  aria-label={t("import.rowsToImportAria")}
+                >
+                  <thead>
+                    <tr>
+                      {resolvedColumns.map((column) => (
+                        <th key={column.key} scope="col">
+                          {column.label}
+                        </th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {previewRows.map((row, index) => (
+                      // Read-only preview; the row order is the import order.
+                      // biome-ignore lint/suspicious/noArrayIndexKey: static preview, order is the identity
+                      <tr key={index}>
+                        {resolvedColumns.map((column) => (
+                          <td key={column.key}>
+                            {column.render
+                              ? column.render(row)
+                              : cellText(
+                                  (row as Record<string, unknown>)[column.key],
+                                )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
 
           <div className="row-actions">
@@ -280,7 +337,7 @@ export function ImportDialog<T extends object>({
             >
               {t("import.chooseAnother")}
             </button>
-            {templateLink}
+            {templateButton}
             <button
               type="button"
               className="btn btn-ghost"

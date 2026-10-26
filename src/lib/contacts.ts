@@ -3,6 +3,8 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
+import { formatDate } from "./format.ts";
+import type { Locale } from "./i18n.ts";
 import { createTrashRepo } from "./trash.ts";
 import type {
   ContactChannelKind,
@@ -63,13 +65,44 @@ const MONTH_SHORT = [
   "Dec",
 ];
 
+const monthDayFormatters = new Map<Locale, Intl.DateTimeFormat>();
+
+function monthDayFormatter(locale: Locale): Intl.DateTimeFormat {
+  const cached = monthDayFormatters.get(locale);
+  if (cached !== undefined) return cached;
+  const formatter = new Intl.DateTimeFormat(locale, {
+    calendar: "gregory",
+    numberingSystem: "latn",
+    month: "short",
+    day: "numeric",
+  });
+  monthDayFormatters.set(locale, formatter);
+  return formatter;
+}
+
 /**
  * Display label for a birthday: "Oct 20, 1990" for a full date,
- * "Oct 20" for a month-day. Malformed input degrades to a
- * placeholder instead of throwing — the label sits in list rows.
+ * "Oct 20" for a month-day (localized when `locale` is non-English).
+ * Malformed input degrades to a placeholder instead of throwing — the label
+ * sits in list rows.
  */
-export function birthdayLabel(birthday: string): string {
+export function birthdayLabel(birthday: string, locale: Locale = "en"): string {
   if (birthday.length === 0) return "";
+  if (locale !== "en") {
+    if (birthday.length >= 10) {
+      const formatted = formatDate(locale, birthday);
+      if (formatted !== birthday) return formatted;
+    } else if (/^\d{2}-\d{2}$/.test(birthday)) {
+      const leapDate = new Date(`2024-${birthday}T00:00:00`);
+      if (
+        !Number.isNaN(leapDate.getTime()) &&
+        leapDate.getMonth() + 1 === Number(birthday.slice(0, 2)) &&
+        leapDate.getDate() === Number(birthday.slice(3, 5))
+      ) {
+        return monthDayFormatter(locale).format(leapDate);
+      }
+    }
+  }
   const mmdd = birthday.length >= 10 ? birthday.slice(5) : birthday;
   const month = Number(mmdd.slice(0, 2));
   const day = Number(mmdd.slice(3, 5));
@@ -95,6 +128,25 @@ export function normalizeMonthDay(raw: string): string | null {
   const probe = new Date(2024, month - 1, day); // leap year — Feb 29 stays valid
   if (probe.getMonth() !== month - 1 || probe.getDate() !== day) return null;
   return `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, {
+  granularity: "grapheme",
+});
+
+/**
+ * First extended grapheme cluster of `name` for circular contact avatars.
+ * Keeps Burmese consonant + medial/vowel clusters (`"သီတာ"` -> `"သီ"`,
+ * `"မေ"` -> `"မေ"`) and surrogate-pair emojis (`"🏠 Home"` -> `"🏠"`) intact
+ * instead of slicing raw UTF-16 code units.
+ */
+export function contactInitial(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return "?";
+  for (const part of graphemeSegmenter.segment(trimmed)) {
+    return part.segment.toUpperCase();
+  }
+  return "?";
 }
 
 /**

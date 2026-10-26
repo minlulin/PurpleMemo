@@ -9,6 +9,7 @@ import {
   advanceDate,
   datesInMonth,
   daysBetween,
+  isValidISODate,
   localISODateTime,
   shiftYearMonth,
   todayLocal,
@@ -111,4 +112,30 @@ test("addMonthsToDateTime clamps month-end", () => {
   assert.equal(addMonthsToDateTime("2026-01-31T09:00", 1), "2026-02-28T09:00");
   assert.equal(addMonthsToDateTime("2026-03-31T09:00", -1), "2026-02-28T09:00");
   assert.equal(addMonthsToDateTime("garbage", 1), "garbage");
+});
+
+test("isValidISODate accepts real calendar dates and rejects impossible ones", () => {
+  assert.equal(isValidISODate("2026-10-26"), true);
+  assert.equal(isValidISODate("2024-02-29"), true, "leap year");
+  assert.equal(isValidISODate("2000-02-29"), true, "400-year leap year");
+  assert.equal(isValidISODate("0050-06-15"), true, "small year");
+
+  assert.equal(isValidISODate("2026-02-29"), false, "non-leap year");
+  assert.equal(isValidISODate("1900-02-29"), false, "100-year non-leap");
+  assert.equal(isValidISODate("2026-02-31"), false);
+  assert.equal(isValidISODate("2026-04-31"), false);
+  assert.equal(isValidISODate("2026-13-01"), false);
+  assert.equal(isValidISODate("2026-00-10"), false);
+  assert.equal(isValidISODate("2026-01-00"), false);
+  assert.equal(isValidISODate("0000-01-01"), false);
+  assert.equal(isValidISODate("2026-1-5"), false);
+  assert.equal(isValidISODate("10/26/2026"), false);
+  assert.equal(isValidISODate(""), false);
+});
+
+test("addDays and addMonths return impossible or malformed dates unchanged", () => {
+  assert.equal(addDays("2026-13-45", 1), "2026-13-45");
+  assert.equal(addDays("2026-02-31", 1), "2026-02-31");
+  assert.equal(addMonths("2026-13-45", 1), "2026-13-45");
+  assert.equal(addMonths("2026-02-31", 1), "2026-02-31");
 });
