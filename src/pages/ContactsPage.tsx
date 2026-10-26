@@ -714,7 +714,9 @@ export default function ContactsPage(p: ContactsPageProps) {
                   <button
                     type="submit"
                     className="btn btn-primary"
-                    disabled={channelDraft.value.trim().length === 0 || addingChannel}
+                    disabled={
+                      channelDraft.value.trim().length === 0 || addingChannel
+                    }
                   >
                     {t("contacts.addChannel")}
                   </button>

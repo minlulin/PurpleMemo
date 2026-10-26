@@ -617,6 +617,11 @@ export const en = {
   "contacts.newTagPlaceholder": "Tag (e.g. family, VIP)",
   "contacts.addTag": "Add tag",
 
+  "business.jobMissing":
+    "That job is no longer in this view — it may have changed or been deleted.",
+  "business.payableMissing":
+    "That payable is no longer in this view — it may have changed or been deleted.",
+
   "onboarding.title": "Welcome to Purple Memo",
   "onboarding.intro": "A quick note on what this app can and cannot do.",
   "onboarding.pinTitle": "PIN recovery has limits",
@@ -1209,6 +1214,10 @@ export const my: Record<MessageKey, string> = {
   "contacts.newTagAria": "တက်ဂ် အသစ်",
   "contacts.newTagPlaceholder": "တက်ဂ် (ဥပမာ မိသားစု၊ VIP)",
   "contacts.addTag": "တက်ဂ် ထည့်မည်",
+  "business.jobMissing":
+    "ထို အလုပ် ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
+  "business.payableMissing":
+    "ထို ပေးရန်ကျန်ငွေ ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
 
   "onboarding.title": "Purple Memo မှ ကြိုဆိုပါသည်",
   "onboarding.intro": "ဤအက်ပ်က ဘာလုပ်နိုင်သည်၊ ဘာမလုပ်နိုင်သည်ကို အမြန်ရှင်းပြချက်။",

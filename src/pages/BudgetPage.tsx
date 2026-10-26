@@ -617,6 +617,7 @@ function EntriesView() {
   };
 
   const submit = async () => {
+    if (saving) return;
     if (
       amountCents === null ||
       amountCents <= 0 ||
@@ -979,6 +980,9 @@ function MonthView() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    // Cleared with the loading flag: the heading re-renders on the click, so
+    // the previous month's figures must not sit under the new month's label.
+    setDisplay(null);
     (async () => {
       try {
         const [summary, ec, ic] = await Promise.all([
@@ -1326,29 +1330,32 @@ function LimitsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async (ym: string, signal: { cancelled: boolean }) => {
-    try {
-      setLoading(true);
-      const cats = await budgetRepo.listExpenseCategories();
-      const statuses = await Promise.all(
-        cats.map(async (c) => {
-          const info = await budgetRepo.limitStatusFor(c.id, ym);
-          return {
-            categoryId: c.id,
-            spentCents: info.spentCents,
-            limitCents: info.limitCents,
-          };
-        }),
-      );
-      if (signal.cancelled) return;
-      setRows(limitDisplayRows(cats, statuses));
-      setError(null);
-    } catch (e) {
-      if (!signal.cancelled) setError(errText(e));
-    } finally {
-      if (!signal.cancelled) setLoading(false);
-    }
-  }, []);
+  const refresh = useCallback(
+    async (ym: string, signal?: { cancelled: boolean }) => {
+      try {
+        setLoading(true);
+        const cats = await budgetRepo.listExpenseCategories();
+        const statuses = await Promise.all(
+          cats.map(async (c) => {
+            const info = await budgetRepo.limitStatusFor(c.id, ym);
+            return {
+              categoryId: c.id,
+              spentCents: info.spentCents,
+              limitCents: info.limitCents,
+            };
+          }),
+        );
+        if (signal?.cancelled) return;
+        setRows(limitDisplayRows(cats, statuses));
+        setError(null);
+      } catch (e) {
+        if (!signal?.cancelled) setError(errText(e));
+      } finally {
+        if (!signal?.cancelled) setLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const signal = { cancelled: false };
@@ -1527,31 +1534,34 @@ function RecurringView() {
   const [ruleCategory, setRuleCategory] = useState<number | "">("");
   const [ruleWallet, setRuleWallet] = useState<number | "">("");
 
-  const refresh = useCallback(async (includeInactive: boolean, signal?: { cancelled: boolean }) => {
-    try {
-      setLoading(true);
-      const [rs, ec, ws] = await Promise.all([
-        budgetRepo.listRecurring(includeInactive),
-        budgetRepo.listExpenseCategories(),
-        budgetRepo.listWallets(),
-      ]);
-      if (signal?.cancelled) return;
-      setRules(rs);
-      setExpenseCats(ec);
-      setWallets(ws);
-      // Deliberately NOT defaulted to the first category / first wallet
-      // (review P3-30). It used to be, which made "I have not chosen a fallback"
-      // and "I chose Food" indistinguishable — so a rule carrying no category
-      // of its own was booked to `Food` from the first row of the table, with
-      // no click from anyone. A fallback that is filled in by default is not a
-      // fallback; it is a guess that lands in the ledger.
-      setError(null);
-    } catch (e) {
-      if (!signal?.cancelled) setError(errText(e));
-    } finally {
-      if (!signal?.cancelled) setLoading(false);
-    }
-  }, []);
+  const refresh = useCallback(
+    async (includeInactive: boolean, signal?: { cancelled: boolean }) => {
+      try {
+        setLoading(true);
+        const [rs, ec, ws] = await Promise.all([
+          budgetRepo.listRecurring(includeInactive),
+          budgetRepo.listExpenseCategories(),
+          budgetRepo.listWallets(),
+        ]);
+        if (signal?.cancelled) return;
+        setRules(rs);
+        setExpenseCats(ec);
+        setWallets(ws);
+        // Deliberately NOT defaulted to the first category / first wallet
+        // (review P3-30). It used to be, which made "I have not chosen a fallback"
+        // and "I chose Food" indistinguishable — so a rule carrying no category
+        // of its own was booked to `Food` from the first row of the table, with
+        // no click from anyone. A fallback that is filled in by default is not a
+        // fallback; it is a guess that lands in the ledger.
+        setError(null);
+      } catch (e) {
+        if (!signal?.cancelled) setError(errText(e));
+      } finally {
+        if (!signal?.cancelled) setLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const signal = { cancelled: false };

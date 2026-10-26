@@ -69,8 +69,17 @@ export function createJournalRepo(
       return rows[0];
     },
 
-    /** Insert or replace the day's entry (entry_date is UNIQUE). */
+    /**
+     * Insert or replace the day's entry (entry_date is UNIQUE).
+     *
+     * The date is validated here — the write side — because the row is read
+     * back into export paths (`journalExportPath`) with no `CHECK` on the
+     * column: a date from an imported payload must never leave this function.
+     */
     async upsertEntry(entryDate: string, content: string): Promise<void> {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
+        throw new Error(`Invalid journal entry date: ${entryDate}`);
+      }
       await driver.execute(
         `INSERT INTO journal_entries (entry_date, content, created_at, updated_at)
          VALUES (?, ?, ?, ?)

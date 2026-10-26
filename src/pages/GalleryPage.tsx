@@ -574,7 +574,7 @@ export default function GalleryPage() {
               <button
                 type="submit"
                 className="btn"
-                disabled={linkDraft.id === ""}
+                disabled={linkDraft.id === "" || addingLink}
               >
                 Link
               </button>
