@@ -81,17 +81,15 @@ import {
 } from "./lib/session.ts";
 import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
 import type { LinkableEntity } from "./lib/types.ts";
-// The Dashboard is the entry route, so it ships in the shell chunk. Every other
-// page is split into its own chunk and fetched on first visit: the
-// shell used to be one 782 kB bundle that had to be parsed before the first
-// screen could paint, most of it code for pages the user had not opened. Lazy
-// pages are still cached by the WebView after the first visit, so a revisit is
-// as fast as before.
-import DashboardPage from "./pages/DashboardPage";
 
+// Every page (including Dashboard, which sits behind the lock screen inside
+// `<Suspense>`) is split into its own chunk so the initial shell + lock screen
+// paint without parsing the workspace pages first. Lazy pages stay cached by
+// the WebView after first visit.
 const BudgetPage = lazy(() => import("./pages/BudgetPage"));
 const BusinessPage = lazy(() => import("./pages/BusinessPage"));
 const ContactsPage = lazy(() => import("./pages/ContactsPage"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const ExportsPage = lazy(() => import("./pages/ExportsPage"));
 const GalleryPage = lazy(() => import("./pages/GalleryPage"));
 const HabitsPage = lazy(() => import("./pages/HabitsPage"));
