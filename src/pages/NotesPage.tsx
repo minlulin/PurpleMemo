@@ -683,7 +683,12 @@ export default function NotesPage(p: NotesPageProps) {
     void clearNoteDraft(settingsRepo, selected.id).catch(() => undefined);
   }
 
+  const creatingNoteRef = useRef(false);
+  const [creatingNote, setCreatingNote] = useState(false);
   async function handleNew(): Promise<void> {
+    if (creatingNoteRef.current) return;
+    creatingNoteRef.current = true;
+    setCreatingNote(true);
     setError(null);
     try {
       const id = await notesRepo.createNote({
@@ -696,6 +701,9 @@ export default function NotesPage(p: NotesPageProps) {
       setSelectedId(id);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      creatingNoteRef.current = false;
+      setCreatingNote(false);
     }
   }
 
@@ -782,9 +790,14 @@ export default function NotesPage(p: NotesPageProps) {
     }
   }
 
+  const creatingCollectionRef = useRef(false);
+  const [creatingCollection, setCreatingCollection] = useState(false);
   async function handleNewCollection(): Promise<void> {
+    if (creatingCollectionRef.current) return;
     const name = newCollection.trim();
     if (name.length === 0) return;
+    creatingCollectionRef.current = true;
+    setCreatingCollection(true);
     setError(null);
     try {
       await notesRepo.createCollection(name);
@@ -792,6 +805,9 @@ export default function NotesPage(p: NotesPageProps) {
       await refresh();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      creatingCollectionRef.current = false;
+      setCreatingCollection(false);
     }
   }
 
@@ -1005,6 +1021,7 @@ export default function NotesPage(p: NotesPageProps) {
             <button
               type="button"
               className="btn"
+              disabled={creatingCollection || newCollection.trim().length === 0}
               onClick={() => void handleNewCollection()}
             >
               {t("notes.add")}
@@ -1041,6 +1058,7 @@ export default function NotesPage(p: NotesPageProps) {
           <button
             type="button"
             className="btn btn-primary"
+            disabled={creatingNote}
             onClick={() => void handleNew()}
           >
             <IconPlus className="icon" /> {t("notes.newNote")}

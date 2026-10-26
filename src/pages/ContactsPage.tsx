@@ -304,9 +304,14 @@ export default function ContactsPage(p: ContactsPageProps) {
     }
   };
 
+  const addingChannelRef = useRef(false);
+  const [addingChannel, setAddingChannel] = useState(false);
   const addChannel = async () => {
+    if (addingChannelRef.current) return;
     const value = channelDraft.value.trim();
     if (selectedId === null || value.length === 0) return;
+    addingChannelRef.current = true;
+    setAddingChannel(true);
     try {
       await contactsRepo.addChannel({
         contactId: selectedId,
@@ -318,6 +323,9 @@ export default function ContactsPage(p: ContactsPageProps) {
       await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      addingChannelRef.current = false;
+      setAddingChannel(false);
     }
   };
 
@@ -341,15 +349,23 @@ export default function ContactsPage(p: ContactsPageProps) {
     }
   };
 
+  const addingTagRef = useRef(false);
+  const [addingTag, setAddingTag] = useState(false);
   const addTag = async () => {
+    if (addingTagRef.current) return;
     const tag = newTag.trim();
     if (selectedId === null || tag.length === 0) return;
+    addingTagRef.current = true;
+    setAddingTag(true);
     try {
       await contactsRepo.addTag(selectedId, tag);
       setNewTag("");
       await reloadDetail(selectedId, false);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      addingTagRef.current = false;
+      setAddingTag(false);
     }
   };
 
@@ -698,7 +714,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                   <button
                     type="submit"
                     className="btn btn-primary"
-                    disabled={channelDraft.value.trim().length === 0}
+                    disabled={channelDraft.value.trim().length === 0 || addingChannel}
                   >
                     {t("contacts.addChannel")}
                   </button>
@@ -742,7 +758,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                   <button
                     type="submit"
                     className="btn"
-                    disabled={newTag.trim().length === 0}
+                    disabled={newTag.trim().length === 0 || addingTag}
                   >
                     {t("contacts.addTag")}
                   </button>

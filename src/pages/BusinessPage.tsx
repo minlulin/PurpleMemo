@@ -18,6 +18,7 @@ import {
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import type { SearchResult } from "../lib/globalSearch.ts";
+import { missingRowMessage } from "../lib/navigation.ts";
 import {
   formatMMK,
   fromCents,
@@ -495,10 +496,7 @@ function JobsView({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-job-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else
-      setError(
-        "That job is no longer in this view — it may have changed or been deleted.",
-      );
+    else setError("That item is no longer in this view — it may have changed or been deleted.");
   }, [focusId, focusToken, loading]);
 
   const shopName = (id: number | null): string =>
@@ -1030,10 +1028,7 @@ function HistoryView({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-job-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else
-      setError(
-        "That job is no longer in this view — it may have changed or been deleted.",
-      );
+    else setError("That item is no longer in this view — it may have changed or been deleted.");
   }, [focusId, focusToken, loading]);
 
   const shopName = (id: number | null): string =>
@@ -1281,10 +1276,7 @@ function PayablesView({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-payable-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else
-      setError(
-        "That payable is no longer in this view — it may have changed or been deleted.",
-      );
+    else setError("That item is no longer in this view — it may have changed or been deleted.");
   }, [focusId, focusToken, loading]);
 
   const shopName = (id: number | null): string =>

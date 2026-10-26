@@ -160,7 +160,7 @@ export function pickerResults(
   inactive.sort(bySort);
   const offered = options.includeInactive
     ? [...live, ...inactive]
-    : [...live, ...inactive];
+    : live;
 
   const matched = offered.length;
   // Per-type cap first, then the total, so one type cannot crowd out the others.

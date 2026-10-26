@@ -289,8 +289,11 @@ export function noteExportPath(note: NoteRow): string {
 }
 
 export function journalExportPath(entry: JournalEntryRow): string {
-  const year = entry.entry_date.slice(0, 4);
-  return `journal/${year}/${entry.entry_date}.md`;
+  const date = entry.entry_date.match(/^\d{4}-\d{2}-\d{2}$/)
+    ? entry.entry_date
+    : sanitizeFilePart(entry.entry_date, "journal");
+  const year = date.slice(0, 4);
+  return `journal/${year}/${date}.md`;
 }
 
 export function centsToDecimal(cents: number): string {

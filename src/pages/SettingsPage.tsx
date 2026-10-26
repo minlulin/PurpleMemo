@@ -553,7 +553,10 @@ export default function SettingsPage(p: SettingsPageProps) {
     const sync = async () => {
       try {
         const info = await shareRepo.status();
-        if (!cancelled) setShareState(info);
+        if (!cancelled) {
+          setShareState(info);
+          setShareCopied(false);
+        }
       } catch {
         // Keep the last known state — the buttons report real errors.
       }
@@ -618,6 +621,8 @@ export default function SettingsPage(p: SettingsPageProps) {
   const copyShareLink = async () => {
     const url = shareState?.url;
     if (!url) return;
+    setError("");
+    setShareCopied(false);
     try {
       await navigator.clipboard.writeText(url);
       setShareCopied(true);

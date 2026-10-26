@@ -281,7 +281,10 @@ export default function GalleryPage() {
     return jobs.find((j) => j.id === id)?.title ?? `Job #${id}`;
   };
 
+  const addingLinkRef = useRef(false);
+  const [addingLink, setAddingLink] = useState(false);
   const addLink = async () => {
+    if (addingLinkRef.current) return;
     if (!selected || linkDraft.id === "") return;
     const id = linkDraft.id;
     if (
@@ -290,12 +293,17 @@ export default function GalleryPage() {
       )
     )
       return;
+    addingLinkRef.current = true;
+    setAddingLink(true);
     try {
       await galleryRepo.addRef(selected.id, linkDraft.type, id);
       setSelectedRefs(await galleryRepo.listRefsForPhoto(selected.id));
       setLinkDraft({ type: linkDraft.type, id: "" });
     } catch (e) {
       setError(errText(e));
+    } finally {
+      addingLinkRef.current = false;
+      setAddingLink(false);
     }
   };
 

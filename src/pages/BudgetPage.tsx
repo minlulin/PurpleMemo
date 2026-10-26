@@ -132,6 +132,12 @@ function ManageView() {
   const [walletDraft, setWalletDraft] = useState("");
   const [expenseDraft, setExpenseDraft] = useState("");
   const [incomeDraft, setIncomeDraft] = useState("");
+  const addWalletRef = useRef(false);
+  const [addingWallet, setAddingWallet] = useState(false);
+  const addExpenseRef = useRef(false);
+  const [addingExpense, setAddingExpense] = useState(false);
+  const addIncomeRef = useRef(false);
+  const [addingIncome, setAddingIncome] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -166,8 +172,11 @@ function ManageView() {
   }, [refresh]);
 
   const addWallet = async () => {
+    if (addWalletRef.current) return;
     const name = cleanName(walletDraft);
     if (!name) return;
+    addWalletRef.current = true;
+    setAddingWallet(true);
     try {
       await budgetRepo.createWallet(name);
       setWalletDraft("");
@@ -176,30 +185,45 @@ function ManageView() {
       // A duplicate name is a UNIQUE failure — without this the rejection was
       // unhandled and the form gave no feedback at all (review P3-7).
       setError(errText(e));
+    } finally {
+      addWalletRef.current = false;
+      setAddingWallet(false);
     }
   };
 
   const addExpenseCategory = async () => {
+    if (addExpenseRef.current) return;
     const name = cleanName(expenseDraft);
     if (!name) return;
+    addExpenseRef.current = true;
+    setAddingExpense(true);
     try {
       await budgetRepo.createExpenseCategory(name);
       setExpenseDraft("");
       await refresh();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      addExpenseRef.current = false;
+      setAddingExpense(false);
     }
   };
 
   const addIncomeCategory = async () => {
+    if (addIncomeRef.current) return;
     const name = cleanName(incomeDraft);
     if (!name) return;
+    addIncomeRef.current = true;
+    setAddingIncome(true);
     try {
       await budgetRepo.createIncomeCategory(name);
       setIncomeDraft("");
       await refresh();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      addIncomeRef.current = false;
+      setAddingIncome(false);
     }
   };
 
@@ -263,7 +287,7 @@ function ManageView() {
       } else {
         await budgetRepo.deleteIncomeCategory(id);
       }
-      if (editing?.id === id) setEditing(null);
+      if (editing?.id === id && editing.kind === kind) setEditing(null);
       await refresh();
     } catch (e) {
       setError(errText(e));
@@ -383,7 +407,7 @@ function ManageView() {
           <button
             type="submit"
             className="btn btn-primary"
-            disabled={!cleanName(walletDraft)}
+            disabled={!cleanName(walletDraft) || addingWallet}
           >
             Add wallet
           </button>
@@ -425,7 +449,7 @@ function ManageView() {
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={!cleanName(expenseDraft)}
+              disabled={!cleanName(expenseDraft) || addingExpense}
             >
               Add category
             </button>
@@ -466,7 +490,7 @@ function ManageView() {
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={!cleanName(incomeDraft)}
+              disabled={!cleanName(incomeDraft) || addingIncome}
             >
               Add category
             </button>
@@ -649,7 +673,7 @@ function EntriesView() {
       } else {
         await budgetRepo.deleteExpenseEntry(entry.id);
       }
-      if (editing?.id === entry.id) resetForm();
+      if (editing?.id === entry.id && editing.kind === entry.kind) resetForm();
       await refreshDay(date);
     } catch (e) {
       setError(errText(e));
@@ -954,6 +978,7 @@ function MonthView() {
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     (async () => {
       try {
         const [summary, ec, ic] = await Promise.all([
@@ -1301,8 +1326,9 @@ function LimitsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async (ym: string) => {
+  const refresh = useCallback(async (ym: string, signal: { cancelled: boolean }) => {
     try {
+      setLoading(true);
       const cats = await budgetRepo.listExpenseCategories();
       const statuses = await Promise.all(
         cats.map(async (c) => {
@@ -1314,17 +1340,22 @@ function LimitsView() {
           };
         }),
       );
+      if (signal.cancelled) return;
       setRows(limitDisplayRows(cats, statuses));
       setError(null);
     } catch (e) {
-      setError(errText(e));
+      if (!signal.cancelled) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (!signal.cancelled) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh(yearMonth);
+    const signal = { cancelled: false };
+    void refresh(yearMonth, signal);
+    return () => {
+      signal.cancelled = true;
+    };
   }, [yearMonth, refresh]);
 
   const saveLimit = async (categoryId: number) => {
@@ -1469,7 +1500,6 @@ function LimitsView() {
 
 /** Recurring payments: rules list, mark-paid with capped catch-up. */
 function RecurringView() {
-  const today = todayLocal();
   const [rules, setRules] = useState<RecurringPaymentRow[]>([]);
   const [expenseCats, setExpenseCats] = useState<ExpenseCategoryRow[]>([]);
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -1493,17 +1523,19 @@ function RecurringView() {
   const [title, setTitle] = useState("");
   const [amountRaw, setAmountRaw] = useState("");
   const [frequency, setFrequency] = useState<RecurringFrequency>("monthly");
-  const [nextDue, setNextDue] = useState(today);
+  const [nextDue, setNextDue] = useState(() => todayLocal());
   const [ruleCategory, setRuleCategory] = useState<number | "">("");
   const [ruleWallet, setRuleWallet] = useState<number | "">("");
 
-  const refresh = useCallback(async (includeInactive: boolean) => {
+  const refresh = useCallback(async (includeInactive: boolean, signal?: { cancelled: boolean }) => {
     try {
+      setLoading(true);
       const [rs, ec, ws] = await Promise.all([
         budgetRepo.listRecurring(includeInactive),
         budgetRepo.listExpenseCategories(),
         budgetRepo.listWallets(),
       ]);
+      if (signal?.cancelled) return;
       setRules(rs);
       setExpenseCats(ec);
       setWallets(ws);
@@ -1515,14 +1547,18 @@ function RecurringView() {
       // fallback; it is a guess that lands in the ledger.
       setError(null);
     } catch (e) {
-      setError(errText(e));
+      if (!signal?.cancelled) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (!signal?.cancelled) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh(showInactive);
+    const signal = { cancelled: false };
+    void refresh(showInactive, signal);
+    return () => {
+      signal.cancelled = true;
+    };
   }, [showInactive, refresh]);
 
   /**
@@ -1562,7 +1598,7 @@ function RecurringView() {
     if (booking === null) return;
     setBusyId(rule.id);
     try {
-      await budgetRepo.markRecurringPaid(rule.id, today, booking);
+      await budgetRepo.markRecurringPaid(rule.id, todayLocal(), booking);
       await refresh(showInactive);
     } catch (e) {
       setError(errText(e));
@@ -1722,7 +1758,7 @@ function RecurringView() {
       ) : (
         <ul className="budget-list">
           {rules.map((r) => {
-            const d = recurringDisplay(r, today);
+            const d = recurringDisplay(r, todayLocal());
             return (
               <li key={r.id} className="limit-row">
                 <div className="row-main">
