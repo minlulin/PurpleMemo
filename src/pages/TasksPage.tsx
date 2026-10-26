@@ -4,7 +4,7 @@
 // occurrence (tasksRepo.completeTask) instead of closing it — the same
 // function Today completes through.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { ImportDialog } from "../components/ImportDialog.tsx";
@@ -19,6 +19,7 @@ import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { formatDate, formatDateTime } from "../lib/format.ts";
 import type { MessageKey } from "../lib/i18n.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import { mapTaskRows, TASK_CSV_ALIASES } from "../lib/taskImport.ts";
 import type { LinkableEntity, ReminderRow, TaskRow } from "../lib/types.ts";
 
@@ -72,7 +73,6 @@ export default function TasksPage({
   const plural = usePlural();
   const locale = useLocale();
   const toast = useToast();
-  const today = todayLocal();
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [importOpen, setImportOpen] = useState(false);
   const [showDone, setShowDone] = useState(false);
@@ -103,21 +103,65 @@ export default function TasksPage({
   const [dueDate, setDueDate] = useState("");
   const [repeat, setRepeat] = useState<Repeat>("none");
   const [note, setNote] = useState("");
+  /**
+   * The day the loaded rows belong to (B8). The overdue badge reads this
+   * instead of a date read in the render, so badge and rows come from one
+   * load — `loadTasks` refreshes both.
+   *
+   * The WRITE path deliberately does not: `complete` calls `todayLocal()` at
+   * the moment it writes. This page is the one the app stays on across
+   * midnight, so a captured date would hand `completeTask` yesterday and
+   * re-anchor a repeating task a day early.
+   */
+  const [today, setToday] = useState(() => todayLocal());
+  /** Guards the list against an out-of-order load (B9). */
+  const listGuard = useMemo(() => createLoadGuard(), []);
+  /**
+   * The filter as it is *now*, read by `reload` after a handler's awaits (B9):
+   * the closure a row action holds was built in the render it was clicked in,
+   * and still carries the old `showDone`.
+   */
+  const showDoneRef = useRef(showDone);
 
-  const reload = useCallback(async () => {
-    try {
-      setTasks(await tasksRepo.listTasks(showDone));
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [showDone]);
+  /**
+   * Load the list for one filter.
+   *
+   * Token-guarded (B9): flipping "Show done" starts a load while a row
+   * action's own load may still be in flight, and without a token the older
+   * one resolves last and writes rows for the other filter — the completed
+   * section rendering under an unchecked box. A superseded load also may not
+   * clear an error or the loading flag the current one owns.
+   */
+  const loadTasks = useCallback(
+    async (showDoneNow: boolean) => {
+      const token = listGuard.begin();
+      try {
+        const rows = await tasksRepo.listTasks(showDoneNow);
+        if (!listGuard.isCurrent(token)) return;
+        setToday(todayLocal());
+        setTasks(rows);
+        setError(null);
+      } catch (e) {
+        if (listGuard.isCurrent(token)) setError(errText(e));
+      } finally {
+        if (listGuard.isCurrent(token)) setLoading(false);
+      }
+    },
+    [listGuard],
+  );
 
+  /** Refresh with the CURRENT filter — what every row action ends with. */
+  const reload = useCallback(() => loadTasks(showDoneRef.current), [loadTasks]);
+
+  // Runs on mount and on every flip of the filter: it owns the ref, so the
+  // read happens before any handler awaiting this render can call `reload`.
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    showDoneRef.current = showDone;
+    // The flip is the one moment where the rows on screen are knowingly about
+    // the other filter — say so, instead of leaving the skeleton to first paint.
+    setLoading(true);
+    void loadTasks(showDone);
+  }, [loadTasks, showDone]);
 
   /**
    * Arrive at one exact task.
@@ -136,8 +180,9 @@ export default function TasksPage({
         const task = await tasksRepo.getTask(focusId);
         if (cancelled) return;
         if (!task) {
+          // The empty state below already says this, once (B11): an error
+          // banner carrying the same sentence said it a second time.
           setFocusMissing(true);
-          setError(t("tasks.missing"));
           return;
         }
         setFocusMissing(false);
@@ -196,7 +241,8 @@ export default function TasksPage({
     try {
       // The repo owns the repeat roll — Today completes
       // through this same function, so the two surfaces cannot drift.
-      await tasksRepo.completeTask(t.id, today);
+      // The date is read HERE (B8), not from the render the click came from.
+      await tasksRepo.completeTask(t.id, todayLocal());
       await reload();
     } catch (e) {
       setError(errText(e));
@@ -521,6 +567,13 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
   /** Add-reminder submit guard: ref authoritative, state for the button. */
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
+  /**
+   * Row action in flight — the page's `busyRow` shape, scoped to this section
+   * (B10). The three handlers below used to have no flag at all, so a second
+   * click fired a second write; harmless while they are idempotent, and a
+   * double write the moment `acknowledge` grows a state column.
+   */
+  const [busyRow, setBusyRow] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -558,6 +611,10 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
       await tasksRepo.createReminder({ title: trimmed, remindAt, repeat });
       setTitle("");
       setRemindAt("");
+      // Reset the repeat too (B10) — `addTask` does the same. Leaving it where
+      // the last reminder put it silently created more daily reminders after
+      // one daily and several one-offs.
+      setRepeat("none");
       await reload();
     } catch (e) {
       setError(errText(e));
@@ -568,11 +625,15 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
   };
 
   const remove = async (id: number) => {
+    if (busyRow !== null) return;
+    setBusyRow(`reminder:${id}`);
     try {
       await tasksRepo.deleteReminder(id);
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setBusyRow(null);
     }
   };
 
@@ -583,14 +644,20 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
    * new time and a repeating one keeps its `nextReminderAt` anchor.
    */
   const snooze = async (id: number) => {
+    // Flag first, then validation — the pinned order, so the guard is what the
+    // second click meets rather than a form check it happens to pass.
+    if (busyRow !== null) return;
     const at = snoozeDrafts[id] ?? "";
     if (at === "") return;
+    setBusyRow(`reminder:${id}`);
     try {
       await tasksRepo.rescheduleReminder(id, at);
       setSnoozeDrafts((d) => ({ ...d, [id]: "" }));
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setBusyRow(null);
     }
   };
 
@@ -600,11 +667,15 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
    * schema column, no hidden "seen" state that could disagree with the list.
    */
   const acknowledge = async (id: number) => {
+    if (busyRow !== null) return;
+    setBusyRow(`reminder:${id}`);
     try {
       await tasksRepo.deleteReminder(id);
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setBusyRow(null);
     }
   };
 
@@ -652,7 +723,9 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
                   <button
                     type="button"
                     className="btn btn-ghost"
-                    disabled={(snoozeDrafts[r.id] ?? "") === ""}
+                    disabled={
+                      busyRow !== null || (snoozeDrafts[r.id] ?? "") === ""
+                    }
                     onClick={() => void snooze(r.id)}
                   >
                     {t("tasks.snooze")}
@@ -661,6 +734,7 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
                     <ConfirmButton
                       className="btn btn-ghost"
                       what={t("tasks.acknowledgeWhat")}
+                      disabled={busyRow !== null}
                       onConfirm={() => acknowledge(r.id)}
                     >
                       {t("tasks.acknowledge")}
@@ -669,6 +743,7 @@ function RemindersSection({ refreshKey }: { refreshKey: number }) {
                   <ConfirmButton
                     className="btn btn-ghost"
                     what={t("tasks.reminderWhat")}
+                    disabled={busyRow !== null}
                     onConfirm={() => remove(r.id)}
                   >
                     {t("common.delete")}

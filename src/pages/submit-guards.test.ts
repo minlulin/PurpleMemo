@@ -19,6 +19,14 @@
 // business.test.ts). A duplicate PARTIAL payment is legitimately applicable a
 // second time and books a second receipt. No layer below the UI can tell a
 // retry from a second click — the guard has to be here.
+//
+// Batch-2 follow-up: the table below used to be a hand-picked list, found with
+// a first-match brace scan — so a second declaration of the same name
+// (`pay` on BusinessPage, `remove` on TasksPage) was never asserted at all,
+// and a page could gain a write handler nobody was checking. Two tests close
+// that: the shadow test forces every DECLARATION of a guarded name to have its
+// own row, and the inventory test forces every write handler on Contacts,
+// Tasks and Vault to be either guarded or exempted with a stated reason.
 
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -32,18 +40,33 @@ function readPage(name: string): string {
 }
 
 /**
- * The source of one handler, by brace matching. Handles both
- * `const name = (…) =>` and `function name(…)` forms, and does not care how the
- * body is wrapped or formatted — which a regex over the whole file would.
+ * Every declaration of a `const name = (…)` / `const name = async (…)` /
+ * `function name(…)` construct, in source order.
+ *
+ * A page may declare the same name twice, and a first-match search then
+ * asserts the FIRST declaration while the second is checked against its guard
+ * — or not checked at all. `occurrence` (on the table below) and the shadow
+ * test exist so that cannot happen silently.
  */
-function handlerSource(src: string, name: string): string {
-  const declaration = new RegExp(
-    `(const ${name} = (async )?\\(|function ${name}\\()`,
+const DECLARATION =
+  /(?:const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(|function\s+([A-Za-z_$][\w$]*)\s*\()/g;
+
+function declarationOffsets(src: string, name: string): number[] {
+  const re = new RegExp(
+    `(?:const\\s+${name}\\s*=\\s*(?:async\\s*)?\\(|function\\s+${name}\\s*\\()`,
+    "g",
   );
-  const start = src.search(declaration);
-  assert.notEqual(start, -1, `${name} not found — renamed or removed?`);
+  const out: number[] = [];
+  for (const m of src.matchAll(re)) {
+    if (m.index !== undefined) out.push(m.index);
+  }
+  return out;
+}
+
+/** The source between a declaration's first `{` and its match, inclusive. */
+function bodyAt(src: string, start: number): string {
   const open = src.indexOf("{", start);
-  assert.notEqual(open, -1, `${name} has no body`);
+  assert.notEqual(open, -1, "declaration has no body");
   let depth = 0;
   for (let i = open; i < src.length; i += 1) {
     if (src[i] === "{") depth += 1;
@@ -52,7 +75,24 @@ function handlerSource(src: string, name: string): string {
       if (depth === 0) return src.slice(start, i + 1);
     }
   }
-  throw new Error(`${name} body is not brace-balanced`);
+  throw new Error("body is not brace-balanced");
+}
+
+/**
+ * The source of one handler, by brace matching. Handles both
+ * `const name = (…) =>` and `function name(…)` forms, and does not care how the
+ * body is wrapped or formatted — which a regex over the whole file would.
+ *
+ * `occurrence` selects the Nth declaration of that name (1-based), so a row can
+ * target the SECOND `pay` instead of silently re-asserting the first.
+ */
+function handlerSource(src: string, name: string, occurrence = 1): string {
+  const offsets = declarationOffsets(src, name);
+  assert.ok(
+    offsets.length >= occurrence,
+    `${name}${occurrence > 1 ? ` (#${occurrence})` : ""} not found — renamed or removed?`,
+  );
+  return bodyAt(src, offsets[occurrence - 1] as number);
 }
 
 /** Every `await` in a handler body, in source order. */
@@ -63,6 +103,12 @@ function firstAwaitIndex(body: string): number {
 const GUARDS: {
   page: string;
   handler: string;
+  /**
+   * Which declaration of a same-named handler this row asserts (1-based,
+   * default 1). `TasksPage` declares `remove` twice and `BusinessPage`
+   * declares `pay` twice — without this the second one is untested.
+   */
+  occurrence?: number;
   /** The busy expression the handler checks and the button renders. */
   busy: string;
   /** How the flag is released. */
@@ -90,6 +136,19 @@ const GUARDS: {
     handler: "pay",
     busy: "payingId === jobId",
     cleared: "setPayingId(null)",
+    label: "Saving…",
+  },
+  // The payable view's own `pay`, declared further down the same file. Its
+  // guard reads `payableId`, so asserting it against the job handler's body
+  // would have been wrong — and before the shadow test it was not asserted at
+  // all, because the scan stopped at the first match.
+  {
+    page: "BusinessPage.tsx",
+    handler: "pay",
+    occurrence: 2,
+    busy: "payingId === payableId",
+    cleared: "setPayingId(null)",
+    raised: "setPayingId(payableId)",
     label: "Saving…",
   },
   {
@@ -212,6 +271,31 @@ const GUARDS: {
     busy: "savingRef.current",
     cleared: "setSaving(false)",
   },
+  // The reminders half of the page, which the task-row handlers above used to
+  // shadow: `remove` is declared twice, and `snooze`/`acknowledge` carried
+  // none of the page's flag convention at all (B10).
+  {
+    page: "TasksPage.tsx",
+    handler: "remove",
+    occurrence: 2,
+    busy: "busyRow !== null",
+    cleared: "setBusyRow(null)",
+    raised: `setBusyRow(\`reminder:\${id}\`)`,
+  },
+  {
+    page: "TasksPage.tsx",
+    handler: "snooze",
+    busy: "busyRow !== null",
+    cleared: "setBusyRow(null)",
+    raised: `setBusyRow(\`reminder:\${id}\`)`,
+  },
+  {
+    page: "TasksPage.tsx",
+    handler: "acknowledge",
+    busy: "busyRow !== null",
+    cleared: "setBusyRow(null)",
+    raised: `setBusyRow(\`reminder:\${id}\`)`,
+  },
   // Recurring rule form (review P2-4): a plain INSERT below, so a double
   // submit becomes a duplicate rule that double-books through `markPaid`.
   {
@@ -229,6 +313,44 @@ const GUARDS: {
     handler: "addContact",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
+  },
+  // The rest of Contacts: two create forms (a double submit inserts the
+  // channel/tag twice), the detail form's Save (shared flag, the shape
+  // BusinessPage's saveEdit takes), and the two plain-button row actions that
+  // are not behind ConfirmButton.
+  {
+    page: "ContactsPage.tsx",
+    handler: "addChannel",
+    busy: "addingChannelRef.current",
+    cleared: "setAddingChannel(false)",
+    raised: "setAddingChannel(true)",
+  },
+  {
+    page: "ContactsPage.tsx",
+    handler: "addTag",
+    busy: "addingTagRef.current",
+    cleared: "setAddingTag(false)",
+    raised: "setAddingTag(true)",
+  },
+  {
+    page: "ContactsPage.tsx",
+    handler: "saveContact",
+    busy: "savingRef.current",
+    cleared: "setSaving(false)",
+  },
+  {
+    page: "ContactsPage.tsx",
+    handler: "makePrimary",
+    busy: "busyRow !== null",
+    cleared: "setBusyRow(null)",
+    raised: `setBusyRow(\`channel:\${channelId}\`)`,
+  },
+  {
+    page: "ContactsPage.tsx",
+    handler: "removeTag",
+    busy: "busyRow !== null",
+    cleared: "setBusyRow(null)",
+    raised: `setBusyRow(\`tag:\${tag}\`)`,
   },
   {
     page: "ShoppingPage.tsx",
@@ -335,6 +457,40 @@ const GUARDS: {
     cleared: "savingRef.current = false",
     raised: "savingRef.current = true",
   },
+  // The vault (batch-2, B13/audit follow-up): five submits that all read one
+  // page-level `busy` flag, and every one of them awaits a 600k-iteration
+  // derivation before it writes — a wide window for a second click. The two
+  // busy labels are pinned through the catalogue, since the page is localized.
+  {
+    page: "VaultPage.tsx",
+    handler: "doSetup",
+    busy: "busy",
+    cleared: "setBusy(false)",
+    raised: "setBusy(true)",
+    labelKey: "vault.settingUp",
+  },
+  {
+    page: "VaultPage.tsx",
+    handler: "addItem",
+    busy: "busy",
+    cleared: "setBusy(false)",
+    raised: "setBusy(true)",
+  },
+  {
+    page: "VaultPage.tsx",
+    handler: "saveEdit",
+    busy: "busy",
+    cleared: "setBusy(false)",
+    raised: "setBusy(true)",
+  },
+  {
+    page: "VaultPage.tsx",
+    handler: "doChangePassword",
+    busy: "busy",
+    cleared: "setBusy(false)",
+    raised: "setBusy(true)",
+    labelKey: "vault.reencrypting",
+  },
   // The readable-exports page: the build walks the whole database, so a
   // second click during the save dialog queues a second full export.
   {
@@ -378,7 +534,11 @@ const GUARDS: {
 
 test("every money-submit handler refuses a second submit while one is in flight", () => {
   for (const guard of GUARDS) {
-    const body = handlerSource(readPage(guard.page), guard.handler);
+    const body = handlerSource(
+      readPage(guard.page),
+      guard.handler,
+      guard.occurrence,
+    );
     const where = `${guard.page} ${guard.handler}`;
 
     // 1. The early return, before any validation or write.
@@ -410,7 +570,11 @@ test("every money-submit handler refuses a second submit while one is in flight"
 
 test("the flag is raised before the first await, and cleared in finally", () => {
   for (const guard of GUARDS) {
-    const body = handlerSource(readPage(guard.page), guard.handler);
+    const body = handlerSource(
+      readPage(guard.page),
+      guard.handler,
+      guard.occurrence,
+    );
     const where = `${guard.page} ${guard.handler}`;
     const raised =
       guard.raised ??
@@ -485,6 +649,32 @@ test("the button that triggers each guarded handler reads the flag", () => {
     (tasks.match(/disabled=\{saving \|\|/g) ?? []).length,
     2,
     "both TasksPage forms (task, reminder) must disable while saving",
+  );
+
+  // Contacts (batch-2): the detail form's Save reads the shared flag, and both
+  // plain-button row actions read the per-row flag.
+  const contacts = readPage("ContactsPage.tsx");
+  assert.match(
+    contacts,
+    /disabled=\{saving\}/,
+    "ContactsPage's Save must disable while its write is in flight",
+  );
+  assert.ok(
+    (contacts.match(/disabled=\{busyRow !== null\}/g) ?? []).length >= 2,
+    "ContactsPage's Make-primary and remove-tag buttons must disable while a row action is in flight",
+  );
+
+  // The vault: four submits read the page-level flag ahead of their validity
+  // checks, and the change-password form reads it on its own.
+  const vault = readPage("VaultPage.tsx");
+  assert.ok(
+    (vault.match(/disabled=\{\s*busy\s*\|\|/g) ?? []).length >= 4,
+    "the vault's setup, unlock, add and edit submits must disable while busy",
+  );
+  assert.match(
+    vault,
+    /disabled=\{busy\}/,
+    "the change-password submit must disable while busy",
   );
 
   // Recurring rule form (review P2-4): submit reads the saving flag ahead of
@@ -606,4 +796,127 @@ test("the discard reloads the stored row through the tested helper", () => {
     /const rowFields = noteRowToEditor\(selected\)/,
     "the discard must go through noteRowToEditor",
   );
+});
+
+// -- Coverage itself (batch-2 follow-up) ---------------------------------------
+// The table above is only as good as the claim that it covers everything. These
+// two tests pin that claim, because neither failure mode is visible by reading
+// the table: a handler declared twice is silently checked once, and a handler
+// added later is silently checked not at all.
+
+/** The pages whose write handlers this file owns end to end (audit B10/B13). */
+const INVENTORY_PAGES = ["ContactsPage.tsx", "TasksPage.tsx", "VaultPage.tsx"];
+
+/**
+ * Repo method prefixes that CHANGE data. Anything else (`list`, `get`,
+ * `isSetUp`, `lockVault`, `unlock`) is a read or a cache/lock call and needs
+ * no submit guard — which is what keeps this inventory to write handlers
+ * rather than every arrow function in the file.
+ */
+const WRITE_METHOD =
+  /^(?:setup|change|add|create|update|delete|remove|set|save|toggle|reschedule|complete|reopen|upsert|insert|move|restore|mark|apply|capture|convert)/;
+
+/** True when a handler body calls a repo method that writes. */
+function writesSomething(body: string): boolean {
+  for (const m of body.matchAll(/\b\w+Repo\.(\w+)\(/g)) {
+    if (WRITE_METHOD.test(m[1] ?? "")) return true;
+  }
+  return false;
+}
+
+/**
+ * Handlers that write but carry no busy flag of their own, each with the
+ * reason it does not need one. An exemption is a claim about the code, so the
+ * test below re-checks it: a stale exemption is a gap with a nice comment.
+ */
+const EXEMPT: { page: string; handler: string; why: string }[] = [
+  {
+    page: "ContactsPage.tsx",
+    handler: "removeContact",
+    why: "behind ConfirmButton: while its write runs the component renders a disabled busy label and its state machine refuses to re-fire (delete-guards.test.ts pins the two-step)",
+  },
+  {
+    page: "ContactsPage.tsx",
+    handler: "removeChannel",
+    why: "same ConfirmButton contract as removeContact",
+  },
+  {
+    page: "VaultPage.tsx",
+    handler: "removeItem",
+    why: "same ConfirmButton contract, and delete-guards.test.ts reads this very handler",
+  },
+];
+
+test("a same-named handler cannot shadow another", () => {
+  // The bug this exists for: `handlerSource` used to take the FIRST match, so
+  // TasksPage's two `remove`s were represented by one row asserting the task
+  // one, and BusinessPage's payable `pay` was never asserted at all. A row per
+  // name is not coverage — a row per DECLARATION is.
+  const covered = new Map<string, Set<number>>();
+  for (const guard of GUARDS) {
+    const key = `${guard.page} ${guard.handler}`;
+    const occurrences = covered.get(key) ?? new Set<number>();
+    occurrences.add(guard.occurrence ?? 1);
+    covered.set(key, occurrences);
+  }
+  for (const [key, occurrences] of covered) {
+    const parts = key.split(" ");
+    const page = parts[0] ?? "";
+    const handler = parts.slice(1).join(" ");
+    const declared = declarationOffsets(readPage(page), handler);
+    const expected = declared.map((_, i) => i + 1);
+    const actual = [...occurrences].sort((a, b) => a - b);
+    assert.deepEqual(
+      actual,
+      expected,
+      `${page} ${handler}: declared ${declared.length} time(s) but the table covers [${actual}] — every declaration needs its own row, or the last one is judged by the first one's guard`,
+    );
+  }
+});
+
+test("every write handler on Contacts, Tasks and Vault is guarded", () => {
+  // The exemptions first, so a stale one cannot sit unnoticed beside a live
+  // gap: each must still resolve, still write, and not also be guarded.
+  const exempted = new Map<string, string>();
+  for (const entry of EXEMPT) {
+    const key = `${entry.page} ${entry.handler}`;
+    assert.ok(!exempted.has(key), `${key}: listed in EXEMPT twice`);
+    const body = handlerSource(readPage(entry.page), entry.handler);
+    assert.ok(
+      writesSomething(body),
+      `${key}: stale exemption — it no longer writes anything`,
+    );
+    assert.ok(
+      !GUARDS.some((g) => g.page === entry.page && g.handler === entry.handler),
+      `${key}: exempted AND guarded — drop the exemption`,
+    );
+    exempted.set(key, entry.why);
+  }
+
+  const guarded = new Set(
+    GUARDS.map((g) => `${g.page} ${g.handler} ${g.occurrence ?? 1}`),
+  );
+
+  for (const page of INVENTORY_PAGES) {
+    const src = readPage(page);
+    const counts = new Map<string, number>();
+    for (const decl of src.matchAll(DECLARATION)) {
+      const name = decl[1] ?? decl[2];
+      if (name === undefined || decl.index === undefined) continue;
+      // Capitalized names are components (the page itself, RemindersSection) —
+      // they RENDER handlers rather than being one, so their bodies contain
+      // every repo call the page makes. Their own handlers are declared inside
+      // them and are enumerated separately.
+      if (/^[A-Z]/.test(name)) continue;
+      const occurrence = (counts.get(name) ?? 0) + 1;
+      counts.set(name, occurrence);
+      const body = bodyAt(src, decl.index);
+      if (!writesSomething(body)) continue;
+      assert.ok(
+        guarded.has(`${page} ${name} ${occurrence}`) ||
+          exempted.has(`${page} ${name}`),
+        `${page} ${name} (declaration #${occurrence}) writes through a repo but has no submit-guards row and no stated exemption`,
+      );
+    }
+  }
 });

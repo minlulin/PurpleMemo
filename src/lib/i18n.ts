@@ -637,6 +637,59 @@ export const en = {
   "onboarding.offlineBody":
     "Reminders appear only while Purple Memo is open and unlocked. Nothing syncs to a server.",
   "onboarding.dismiss": "Got it",
+
+  // Vault — the page whose copy carries the security contract, so it is on the
+  // catalogue like every other page (B13). The no-recovery warning in
+  // particular must not stay English-only.
+  "vault.title": "Encrypted Vault",
+  "vault.subtitle":
+    "Per-item AES-256-GCM encrypted secrets derived via PBKDF2-SHA256 (600k iterations)",
+  "vault.itemsAria": "Vault items",
+  "vault.changePassword": "Change password",
+  "vault.lock": "Lock vault",
+  "vault.unavailable":
+    "The vault could not be read, so Purple Memo does not know whether one exists yet. Your password and your secrets are unchanged.",
+  "vault.setupHeading": "Set a vault password",
+  "vault.noRecovery":
+    "There is NO recovery. If you forget this password, your secrets cannot be recovered by anyone — not even on this machine. Store it somewhere safe before you continue.",
+  "vault.passwordAtLeast": "Password (at least {min} characters)",
+  "vault.confirmPassword": "Confirm password",
+  "vault.settingUp": "Setting up…",
+  "vault.setPassword": "Set password",
+  "vault.lockedHeading": "Vault locked",
+  "vault.lockedSubtitle":
+    "Enter your vault password to decrypt and manage secrets.",
+  "vault.password": "Password",
+  "vault.unlocking": "Unlocking…",
+  "vault.unlock": "Unlock",
+  "vault.changeHeading": "Change vault password",
+  "vault.currentPassword": "Current password",
+  "vault.newPassword": "New password",
+  "vault.confirmNewPassword": "Confirm new password",
+  "vault.reencrypting": "Re-encrypting…",
+  "vault.storedSecrets": "Stored Secrets",
+  "vault.empty": "The vault is empty — add a secret.",
+  "vault.updated": "updated {date}",
+  "vault.reveal": "Reveal",
+  "vault.hide": "Hide",
+  "vault.edit": "Edit",
+  "vault.deleteWhat": "secret",
+  "vault.editHeading": "Edit secret",
+  "vault.newHeading": "New secret",
+  "vault.titleField": "Title",
+  "vault.secretField": "Secret",
+  "vault.titlePlaceholder": "e.g. Email login, Recovery seed",
+  "vault.secretPlaceholder": "Password, note, recovery code…",
+  "vault.save": "Save",
+  "vault.addSecret": "Add secret",
+  "vault.error.wrongPassword": "Wrong password — nothing was unlocked.",
+  "vault.error.wrongItem": "Could not decrypt this item — wrong password.",
+  "vault.error.passwordShort": "Password must be at least {min} characters.",
+  "vault.error.noMatch": "Passwords do not match.",
+  "vault.error.newPasswordShort":
+    "New password must be at least {min} characters.",
+  "vault.error.newNoMatch": "New passwords do not match.",
+  "vault.error.wrongCurrent": "Wrong current password — nothing was changed.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1234,6 +1287,56 @@ export const my: Record<MessageKey, string> = {
   "onboarding.offlineBody":
     "သတိပေးချက်များသည် Purple Memo ဖွင့်ထားပြီး လော့ခ်ဖွင့်ထားစဉ်တွင်သာ ပေါ်လာမည်။ ဆာဗာသို့ မည်သည့်အရာမျှ မထပ်တူပြုပါ။",
   "onboarding.dismiss": "နားလည်ပါပြီ",
+
+  // Vault — mirrors the English block above key for key, including the
+  // {min} / {date} slots (the catalogue test pins placeholder parity).
+  "vault.title": "ကုဒ်ဝှက်ထားသော လျှို့ဝှက်သေတ္တာ",
+  "vault.subtitle":
+    "တစ်ခုချင်းစီကို AES-256-GCM ဖြင့် ကုဒ်ဖျက်ထားပြီး PBKDF2-SHA256 (600k iterations) ဖြင့် သော့များ ဆွဲထားသည်",
+  "vault.itemsAria": "လျှို့ဝှက်သေတ္တာ အကြောင်းအရာများ",
+  "vault.changePassword": "စကားဝှက် ပြောင်းမည်",
+  "vault.lock": "သော့ခတ်မည်",
+  "vault.unavailable":
+    "လျှို့ဝှက်သေတ္တာကို ဖတ်၍ မရပါ — ရှိ/မရှိကို Purple Memo မသိရသေးပါ။ သင့်စကားဝှက်နှင့် လျှို့ဝှက်အချက်အလက်များ မပြောင်းလဲပါ။",
+  "vault.setupHeading": "လျှို့ဝှက်သေတ္တာ စကားဝှက် သတ်မှတ်မည်",
+  "vault.noRecovery":
+    "ပြန်လည်ရယူ၍ မရပါ။ ဤစကားဝှက်ကို မေ့သွားပါက သင့်လျှို့ဝှက်အချက်အလက်များကို မည်သူမှ ပြန်လည်ရယူ၍ မရပါ — ဤစက်ပေါ်တွင်ပင် မရပါ။ ဆက်လက်မလုပ်မီ ၎င်းကို ဘေးကင်းရာတွင် သိမ်းဆည်းပါ။",
+  "vault.passwordAtLeast": "စကားဝှက် (အနည်းဆုံး စာလုံး {min} လုံး)",
+  "vault.confirmPassword": "စကားဝှက် အတည်ပြုမည်",
+  "vault.settingUp": "သတ်မှတ်နေသည်…",
+  "vault.setPassword": "စကားဝှက် သတ်မှတ်မည်",
+  "vault.lockedHeading": "လျှို့ဝှက်သေတ္တာ သော့ခတ်ထားသည်",
+  "vault.lockedSubtitle": "လျှို့ဝှက်အချက်အလက်များကို ဖွင့်ရန် သင့်လျှို့ဝှက်သေတ္တာစကားဝှက်ကို ထည့်ပါ။",
+  "vault.password": "စကားဝှက်",
+  "vault.unlocking": "ဖွင့်နေသည်…",
+  "vault.unlock": "ဖွင့်မည်",
+  "vault.changeHeading": "လျှို့ဝှက်သေတ္တာ စကားဝှက် ပြောင်းမည်",
+  "vault.currentPassword": "လက်ရှိစကားဝှက်",
+  "vault.newPassword": "စကားဝှက်အသစ်",
+  "vault.confirmNewPassword": "စကားဝှက်အသစ် အတည်ပြုမည်",
+  "vault.reencrypting": "ပြန်လည်ကုဒ်ဖျက်နေသည်…",
+  "vault.storedSecrets": "သိမ်းဆည်းထားသော လျှို့ဝှက်များ",
+  "vault.empty": "လျှို့ဝှက်သေတ္တာ ဗလာဖြစ်နေသည် — ထည့်ပါ။",
+  "vault.updated": "အသစ်ပြင်ဆင်ခြင်း {date}",
+  "vault.reveal": "ပြမည်",
+  "vault.hide": "ကွယ်မည်",
+  "vault.edit": "ပြင်မည်",
+  "vault.deleteWhat": "လျှို့ဝှက်",
+  "vault.editHeading": "လျှို့ဝှက် ပြင်ဆင်မည်",
+  "vault.newHeading": "လျှို့ဝှက်အသစ်",
+  "vault.titleField": "ခေါင်းစဉ်",
+  "vault.secretField": "လျှို့ဝှက်",
+  "vault.titlePlaceholder": "ဥပမာ အီးမေးလ်အကောင့်၊ Recovery seed",
+  "vault.secretPlaceholder": "စကားဝှက်၊ မှတ်စု၊ recovery code…",
+  "vault.save": "သိမ်းမည်",
+  "vault.addSecret": "လျှို့ဝှက် ထည့်မည်",
+  "vault.error.wrongPassword": "စကားဝှက် မှားနေသည် — မည်သည့်အရာမျှ မဖွင့်ရသေးပါ။",
+  "vault.error.wrongItem": "ဤအကြောင်းအရာကို ဖွင့်၍ မရပါ — စကားဝှက် မှားနေသည်။",
+  "vault.error.passwordShort": "စကားဝှက်သည် အနည်းဆုံး စာလုံး {min} လုံး ရှိရမည်။",
+  "vault.error.noMatch": "စကားဝှက်များ မတူပါ။",
+  "vault.error.newPasswordShort": "စကားဝှက်အသစ်သည် အနည်းဆုံး စာလုံး {min} လုံး ရှိရမည်။",
+  "vault.error.newNoMatch": "စကားဝှက်အသစ်များ မတူပါ။",
+  "vault.error.wrongCurrent": "လက်ရှိစကားဝှက် မှားနေသည် — မည်သည့်အရာမျှ မပြောင်းလဲပါ။",
 };
 
 const messages: Record<Locale, Partial<Record<MessageKey, string>>> = {

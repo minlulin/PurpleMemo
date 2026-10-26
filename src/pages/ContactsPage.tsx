@@ -125,8 +125,28 @@ export default function ContactsPage(p: ContactsPageProps) {
     primary: false,
   });
   const [newTag, setNewTag] = useState("");
+  /**
+   * Row action in flight — TasksPage's per-row flag, for the two channel/tag
+   * writes that are not behind `ConfirmButton` (submit-guards B: `makePrimary`
+   * and `removeTag` are plain buttons, so nothing but this stops a second
+   * click re-issuing the same write while the first is still travelling).
+   */
+  const [busyRow, setBusyRow] = useState<string | null>(null);
   /** Guards the detail pane against an out-of-order select. */
   const detailGuard = useMemo(() => createLoadGuard(), []);
+  /**
+   * Mirror of `selectedId` for code that must read the selection *after* an
+   * `await` — the focus effect and the write handlers' post-write refresh.
+   *
+   * It is a ref rather than state on purpose: `selectedId` in a dependency list
+   * re-runs the focus effect on every selection change (B1), and a handler's
+   * closure keeps the selection of the render it was created in (B2). Reading
+   * the ref gives the selection as it is now, without re-rendering anything.
+   */
+  const selectedIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   const reload = useCallback(async () => {
     try {
@@ -191,6 +211,31 @@ export default function ContactsPage(p: ContactsPageProps) {
   };
 
   /**
+   * Refresh the open contact after a write (B2).
+   *
+   * Every write handler awaits its IPC call before it refreshes, and the list
+   * stays clickable while that runs — so the user can select a different
+   * contact in the window. That `select` loads the new contact's detail, and a
+   * refresh of the *old* id started afterwards carries a newer token, so it
+   * wins `detailGuard` and puts the previous contact back in the pane. For a
+   * save it is worse: `repopulateForm` refills the edit form with the old
+   * contact's stored values while the sidebar highlights the new one, so the
+   * next Save writes A's fields onto B.
+   *
+   * A switch during the write is the newer intent, so it invalidates the
+   * in-flight write's refresh rather than racing it: the switched-to contact
+   * has already been loaded by `select`, and there is nothing of the old
+   * contact left to display.
+   */
+  const refreshAfterWrite = async (
+    id: number,
+    repopulateForm: boolean,
+  ): Promise<void> => {
+    if (selectedIdRef.current !== id) return;
+    await reloadDetail(id, repopulateForm);
+  };
+
+  /**
    * Arrive at one exact contact.
    *
    * The detail pane loads by id, so this is the same path a click in the list
@@ -201,6 +246,15 @@ export default function ContactsPage(p: ContactsPageProps) {
    * `select` is deliberately not a dependency: it is re-created every render, so
    * including it would re-run this effect on every keystroke anywhere. The
    * focus token also makes a repeated jump to this same contact intentional.
+   *
+   * `selectedId` is not a dependency either (B1): `App` keeps `focusId` until
+   * navigation clears it, so an effect keyed on the selection re-ran on every
+   * click — saw `selectedId !== focusId` — and selected the focus target again,
+   * snapping the page back to the contact it had arrived at. The current
+   * selection is read from `selectedIdRef`, which does not re-run anything,
+   * and the effect now runs once per jump (the detail used to be fetched twice
+   * on arrival: select → `selectedId` changed → the effect re-ran →
+   * `reloadDetail`).
    */
   // biome-ignore lint/correctness/useExhaustiveDependencies: select is recreated per render
   useEffect(() => {
@@ -212,12 +266,14 @@ export default function ContactsPage(p: ContactsPageProps) {
         const found = await contactsRepo.getContact(focusId);
         if (cancelled) return;
         if (!found) {
+          // The empty state below already says this, once (B11): the error
+          // banner used to carry the same catalogue sentence beside it, so a
+          // deleted contact was announced twice.
           setFocusMissing(true);
-          setError(t("contacts.missing"));
           return;
         }
         setFocusMissing(false);
-        if (selectedId === focusId) {
+        if (selectedIdRef.current === focusId) {
           await reloadDetail(focusId, false);
         } else {
           await select(focusId);
@@ -229,7 +285,7 @@ export default function ContactsPage(p: ContactsPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [p.focusId, p.focusToken, selectedId, reloadDetail]);
+  }, [p.focusId, p.focusToken, reloadDetail]);
 
   const addContact = async () => {
     if (savingRef.current) return;
@@ -284,12 +340,19 @@ export default function ContactsPage(p: ContactsPageProps) {
   };
 
   const saveContact = async () => {
-    if (selectedId === null || edit.name.trim().length === 0) return;
+    // The page-level submit guard, shared with `addContact` — the same shape
+    // BusinessPage's `saveEdit` takes. A second click before React re-renders
+    // would book the same update twice, plus a second list reload.
+    if (savingRef.current) return;
+    const id = selectedIdRef.current;
+    if (id === null || edit.name.trim().length === 0) return;
     const birthday = resolveBirthday();
     setBirthdayError(birthday.error);
     if (birthday.error !== null) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
-      await contactsRepo.updateContact(selectedId, {
+      await contactsRepo.updateContact(id, {
         name: edit.name.trim(),
         address: edit.address.trim(),
         birthday: birthday.value,
@@ -298,9 +361,12 @@ export default function ContactsPage(p: ContactsPageProps) {
       await reload();
       // A save may repopulate: the form already holds exactly what was
       // written, so this only normalises the trimmed values back into it.
-      await reloadDetail(selectedId, true);
+      await refreshAfterWrite(id, true);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -309,18 +375,19 @@ export default function ContactsPage(p: ContactsPageProps) {
   const addChannel = async () => {
     if (addingChannelRef.current) return;
     const value = channelDraft.value.trim();
-    if (selectedId === null || value.length === 0) return;
+    const id = selectedIdRef.current;
+    if (id === null || value.length === 0) return;
     addingChannelRef.current = true;
     setAddingChannel(true);
     try {
       await contactsRepo.addChannel({
-        contactId: selectedId,
+        contactId: id,
         kind: channelDraft.kind,
         value,
         isPrimary: channelDraft.primary,
       });
       setChannelDraft({ kind: "phone", value: "", primary: false });
-      await reloadDetail(selectedId, false);
+      await refreshAfterWrite(id, false);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -330,20 +397,26 @@ export default function ContactsPage(p: ContactsPageProps) {
   };
 
   const makePrimary = async (channelId: number) => {
-    if (selectedId === null) return;
+    if (busyRow !== null) return;
+    const id = selectedIdRef.current;
+    if (id === null) return;
+    setBusyRow(`channel:${channelId}`);
     try {
-      await contactsRepo.setPrimaryChannel(selectedId, channelId);
-      await reloadDetail(selectedId, false);
+      await contactsRepo.setPrimaryChannel(id, channelId);
+      await refreshAfterWrite(id, false);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setBusyRow(null);
     }
   };
 
   const removeChannel = async (channelId: number) => {
-    if (selectedId === null) return;
+    const id = selectedIdRef.current;
+    if (id === null) return;
     try {
       await contactsRepo.deleteChannel(channelId);
-      await reloadDetail(selectedId, false);
+      await refreshAfterWrite(id, false);
     } catch (e) {
       setError(errText(e));
     }
@@ -354,13 +427,14 @@ export default function ContactsPage(p: ContactsPageProps) {
   const addTag = async () => {
     if (addingTagRef.current) return;
     const tag = newTag.trim();
-    if (selectedId === null || tag.length === 0) return;
+    const id = selectedIdRef.current;
+    if (id === null || tag.length === 0) return;
     addingTagRef.current = true;
     setAddingTag(true);
     try {
-      await contactsRepo.addTag(selectedId, tag);
+      await contactsRepo.addTag(id, tag);
       setNewTag("");
-      await reloadDetail(selectedId, false);
+      await refreshAfterWrite(id, false);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -370,12 +444,17 @@ export default function ContactsPage(p: ContactsPageProps) {
   };
 
   const removeTag = async (tag: string) => {
-    if (selectedId === null) return;
+    if (busyRow !== null) return;
+    const id = selectedIdRef.current;
+    if (id === null) return;
+    setBusyRow(`tag:${tag}`);
     try {
-      await contactsRepo.removeTag(selectedId, tag);
-      await reloadDetail(selectedId, false);
+      await contactsRepo.removeTag(id, tag);
+      await refreshAfterWrite(id, false);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      setBusyRow(null);
     }
   };
 
@@ -512,6 +591,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                   <button
                     type="button"
                     className="btn btn-primary"
+                    disabled={saving}
                     onClick={() => void saveContact()}
                   >
                     <IconEdit className="icon" /> {t("contacts.save")}
@@ -644,6 +724,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                             <button
                               type="button"
                               className="btn btn-ghost"
+                              disabled={busyRow !== null}
                               onClick={() => void makePrimary(ch.id)}
                             >
                               {t("contacts.makePrimary")}
@@ -736,6 +817,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                           type="button"
                           className="side-remove"
                           aria-label={t("contacts.removeTagAria", { tag })}
+                          disabled={busyRow !== null}
                           onClick={() => void removeTag(tag)}
                         >
                           ×
