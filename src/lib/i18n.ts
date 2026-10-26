@@ -140,8 +140,6 @@ export const en = {
   "search.type.shoppingItem": "Shopping item",
 
   "settings.language": "Language",
-  "settings.languageHint":
-    "Changes the interface only. Stored dates, amounts and records keep their existing formats.",
 
   "session.remindersTitle": "Reminders",
   "session.previewTitle": "Reminder: {title}",
@@ -440,20 +438,14 @@ export const en = {
 
   "settings.backupTitle": "Backup & restore",
   "settings.backupBadge": ".zip or password-protected",
-  "settings.backupNote":
-    "Export everything — every table and photo — into one file, saved wherever you like. The encryption key is never inside the backup: it stays its own file, and a backup without it cannot open the database it came from. Importing a backup replaces ALL current data with the backup's.",
   "settings.protectBackup":
     "Protect the backup with a password (a .{ext} file that needs this password to open)",
   "settings.backupPassword": "Backup password",
   "settings.confirmBackupPassword": "Confirm backup password",
-  "settings.backupPasswordNote":
-    "There is no way to recover a forgotten backup password, and a password only protects the file itself — anything else that can read the drive it sits on can still copy it.",
   "settings.exporting": "Exporting…",
   "settings.exportBackup": "Export backup",
   "settings.importing": "Importing…",
   "settings.importBackup": "Import backup",
-  "settings.lockedNote":
-    "This backup is password-protected. Enter its password to read what is inside — nothing is changed until you confirm.",
   "settings.opening": "Opening…",
   "settings.openBackup": "Open backup",
   "settings.summary":
@@ -478,10 +470,7 @@ export const en = {
   "reset.dangerZone": "Danger zone",
   "reset.dangerZoneBadge": "Permanent",
   "reset.factoryReset": "Factory reset",
-  "reset.removes":
-    "A factory reset removes everything Purple Memo keeps on this device: your notes, journal, tasks, contacts, photos, the backup copies the app made for itself, your settings and PIN, and the database encryption key from the Windows credential store. First-run setup starts again on the next launch.",
-  "reset.notForensic":
-    "This is ordinary deletion, not forensic erasure. Deleted files can still be recovered with the right tools, and copies kept by Windows backup or any other OS-level backup are outside the app's reach — remove those separately if you need them gone too.",
+  "reset.irreversible": "A factory reset cannot be undone.",
   "reset.acknowledge":
     "I understand this permanently deletes everything Purple Memo stores on this device, and that it cannot be undone.",
   "reset.confirmWhat": "everything Purple Memo stores",
@@ -747,8 +736,6 @@ export const my: Record<MessageKey, string> = {
   "search.type.shoppingItem": "ဈေးဝယ်ပစ္စည်း",
 
   "settings.language": "ဘာသာစကား",
-  "settings.languageHint":
-    "အင်တာဖေ့စ်ကိုသာ ပြောင်းလဲသည်။ သိမ်းဆည်းထားသော ရက်စွဲများ၊ ပမာဏများနှင့် မှတ်တမ်းများသည် လက်ရှိပုံစံအတိုင်း ရှိနေပါမည်။",
 
   "session.remindersTitle": "သတိပေးချက်များ",
   "session.previewTitle": "သတိပေးချက် − {title}",
@@ -1047,20 +1034,14 @@ export const my: Record<MessageKey, string> = {
 
   "settings.backupTitle": "အရန်သိမ်းဆည်းမှုနှင့် ပြန်လည်ရယူမှု",
   "settings.backupBadge": ".zip သို့မဟုတ် စကားဝှက်ကာကွယ်ထားသည်",
-  "settings.backupNote":
-    "ဇယားတိုင်းနှင့် ဓာတ်ပုံတိုင်း အပါအဝင် အရာအားလုံးကို ဖိုင်တစ်ခုတည်းအဖြစ် သင်နှစ်သက်ရာ နေရာတွင် သိမ်းဆည်းမည်။ ကုဒ်ဖျက်သော့သည် အရန်သိမ်းဆည်းမှုထဲတွင် ဘယ်တော့မှ မပါဝင်ပါ — ၎င်းသည် သီးခြားဖိုင်အဖြစ် ရှိနေပြီး သော့မပါသော အရန်သိမ်းဆည်းမှုဖြင့် မူလဒေတာဘေ့စ်ကို ဖွင့်၍ မရပါ။ အရန်သိမ်းဆည်းမှုကို တင်သွင်းခြင်းသည် လက်ရှိဒေတာအားလုံးကို အရန်သိမ်းဆည်းမှုဖြင့် အစားထိုးမည်။",
   "settings.protectBackup":
     "အရန်သိမ်းဆည်းမှုကို စကားဝှက်ဖြင့် ကာကွယ်မည် (ဖွင့်ရန် ဤစကားဝှက် လိုအပ်သော .{ext} ဖိုင်)",
   "settings.backupPassword": "အရန်သိမ်းဆည်းမှု စကားဝှက်",
   "settings.confirmBackupPassword": "အရန်သိမ်းဆည်းမှု စကားဝှက် အတည်ပြုမည်",
-  "settings.backupPasswordNote":
-    "မေ့သွားသော အရန်သိမ်းဆည်းမှု စကားဝှက်ကို ပြန်လည်ရယူရန် နည်းလမ်း မရှိပါ။ စကားဝှက်သည် ဖိုင်ကိုယ်တိုင်ကိုသာ ကာကွယ်သည် — ၎င်းတည်ရှိသော ဒရိုက်ကို ဖတ်နိုင်သည့် အခြားမည်သည့်အရာမဆို ကူးယူနိုင်ဆဲဖြစ်သည်။",
   "settings.exporting": "ထုတ်ယူနေသည်…",
   "settings.exportBackup": "အရန်သိမ်းဆည်းမှု ထုတ်ယူမည်",
   "settings.importing": "တင်သွင်းနေသည်…",
   "settings.importBackup": "အရန်သိမ်းဆည်းမှု တင်သွင်းမည်",
-  "settings.lockedNote":
-    "ဤအရန်သိမ်းဆည်းမှုကို စကားဝှက်ဖြင့် ကာကွယ်ထားသည်။ အတွင်းတွင် ဘာရှိသည်ကို ဖတ်ရန် ၎င်း၏ စကားဝှက်ကို ထည့်ပါ — အတည်ပြုသည်အထိ မည်သည့်အရာမျှ မပြောင်းလဲပါ။",
   "settings.opening": "ဖွင့်နေသည်…",
   "settings.openBackup": "အရန်သိမ်းဆည်းမှု ဖွင့်မည်",
   "settings.summary":
@@ -1084,10 +1065,7 @@ export const my: Record<MessageKey, string> = {
   "reset.dangerZone": "အန္တရာယ်ရှိ အပိုင်း",
   "reset.dangerZoneBadge": "အပြီးအပိုင်း ဖျက်မည်",
   "reset.factoryReset": "ဖက်တိုရီ ရိစတေ့ (Factory reset)",
-  "reset.removes":
-    "ဖက်တိုရီ ရိစတေ့က Purple Memo ဤစက်တွင် သိမ်းဆည်းထားသမျှအားလုံးကို ဖျက်ပစ်ပါမည် — မှတ်စုများ၊ ဒိုင်ယာရီ၊ လုပ်ငန်းများ၊ ဆက်သွယ်ရန်စာရင်း၊ ဓာတ်ပုံများ၊ အက်ပ်က ကိုယ်တိုင်ကူးယူထားသော အရန်မိတ္တူများ၊ ဆက်တင်များနှင့် PIN၊ ပြီးတော့ Windows credential store ထဲက ဒေတာဘေ့စ် သော့ဖြစ်ပါသည်။ နောက်တစ်ကြိမ် ဖွင့်သောအခါ ပထမဆုံး သတ်မှတ်ခြင်း အဆင့်မှ ပြန်စပါမည်။",
-  "reset.notForensic":
-    "ဤဖျက်ခြင်းသည် သာမန် ဖျက်ခြင်းဖြစ်ပြီး ရှာဖွေသိမ်းဆည်းခြင်း (forensic) မဟုတ်ပါ — ဖျက်ထားသော ဖိုင်များကို သင့်လျော်သော ကိရိယာမျးဖြင့် ပြန်ယူနိုင်ဆဲဖြစ်ပြီး၊ Windows backup စသည့် စနစ်အဆင့် အရန်သိမ်းမှုများတွင် ကျန်ရှိနေသေးသော မိတ္တူများကို အက်ပ်မှ မဖျက်နိုင်ပါ — လိုအပ်ပါက ၎င်းတို့ကို သီးခြား ဖယ်ရှားပါ။",
+  "reset.irreversible": "ဖက်တိုရီ ရိစတေ့ကို ပြန်လည်ရယူ၍ မရနိုင်ပါ။",
   "reset.acknowledge":
     "ဤလုပ်ဆောင်ချက်က Purple Memo ဤစက်တွင် သိမ်းဆည်းထားသမျှအားလုံးကို အပြီးအပိုင်း ဖျက်ပစ်မည်ဖြစ်ပြီး ပြန်လည်ရယူ၍ မရကြောင်း ကျွန်ုပ် နားလည်ပါသည်။",
   "reset.confirmWhat": "Purple Memo သိမ်းဆည်းထားသမျှ",
