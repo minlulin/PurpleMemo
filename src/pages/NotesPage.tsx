@@ -43,6 +43,11 @@ import {
 import { errText } from "../lib/errors.ts";
 import { formatDate } from "../lib/format.ts";
 import { createLoadGuard } from "../lib/loads.ts";
+import {
+  countWords,
+  getAdjacentNoteIndices,
+  resolveReaderView,
+} from "../lib/noteReader.ts";
 import { noteExcerpt, parseTags } from "../lib/notes.ts";
 import {
   DEFAULT_VIEW_MODE,
@@ -87,6 +92,7 @@ interface EditorProps {
 
 function NoteEditor(p: EditorProps) {
   const t = useT();
+  const locale = useLocale();
   const plural = usePlural();
   const splitRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -99,8 +105,10 @@ function NoteEditor(p: EditorProps) {
     p.onSplitRatio(clamp((clientX - box.left) / box.width));
   };
 
-  const words =
-    p.content.trim().length === 0 ? 0 : p.content.trim().split(/\s+/).length;
+  const words = useMemo(
+    () => countWords(p.content, locale),
+    [p.content, locale],
+  );
 
   return (
     <>
@@ -345,6 +353,8 @@ export default function NotesPage(p: NotesPageProps) {
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
   const [noteCollection, setNoteCollection] = useState<number | "none">("none");
+  /** Id of the note currently reflected in `title`/`content`/`tags`/`noteCollection`. */
+  const [editorNoteId, setEditorNoteId] = useState<number | null>(null);
   /**
    * The note id the editor was last populated from. List refreshes (search,
    * filter, pin/archive) replace the `notes` array with new row objects —
@@ -532,38 +542,27 @@ export default function NotesPage(p: NotesPageProps) {
     [notes, selectedId],
   );
 
-  const currentIndex =
-    selected !== null ? notes.findIndex((n) => n.id === selected.id) : -1;
-  const hasPrev = currentIndex > 0;
-  const hasNext = currentIndex >= 0 && currentIndex < notes.length - 1;
+  const { hasPrev, hasNext, prevId, nextId } = useMemo(
+    () => getAdjacentNoteIndices(notes, selected?.id ?? null),
+    [notes, selected],
+  );
   const handlePrevNote = useCallback(() => {
-    if (currentIndex > 0) {
-      setSelectedId(notes[currentIndex - 1]?.id ?? null);
-    }
-  }, [currentIndex, notes]);
+    if (prevId !== null) setSelectedId(prevId);
+  }, [prevId]);
   const handleNextNote = useCallback(() => {
-    if (currentIndex >= 0 && currentIndex < notes.length - 1) {
-      setSelectedId(notes[currentIndex + 1]?.id ?? null);
-    }
-  }, [currentIndex, notes]);
+    if (nextId !== null) setSelectedId(nextId);
+  }, [nextId]);
 
-  const activeCollectionName = useMemo(() => {
-    if (!selected || selected.collection_id === null) return null;
-    return (
-      collections.find((c) => c.id === selected.collection_id)?.name ?? null
-    );
-  }, [selected, collections]);
-
-  const activeReaderNote: NoteRow | null = useMemo(() => {
-    if (!selected) return null;
-    return {
-      ...selected,
-      title: title.trim().length > 0 ? title : selected.title,
-      content,
-      tags,
-      collection_id: noteCollection === "none" ? null : noteCollection,
-    };
-  }, [selected, title, content, tags, noteCollection]);
+  const readerView = useMemo(
+    () =>
+      resolveReaderView(
+        selected,
+        editorNoteId,
+        { title, content, tags, collection: noteCollection },
+        collections,
+      ),
+    [selected, editorNoteId, title, content, tags, noteCollection, collections],
+  );
   const toast = useToast();
 
   useEffect(() => {
@@ -578,6 +577,7 @@ export default function NotesPage(p: NotesPageProps) {
         collection: selected.collection_id ?? "none",
       };
       editorRef.current = rowFields;
+      setEditorNoteId(selected.id);
       setTitle(rowFields.title);
       setContent(rowFields.content);
       setTags(rowFields.tags);
@@ -606,6 +606,7 @@ export default function NotesPage(p: NotesPageProps) {
             collection: draft.collection,
           };
           editorRef.current = draftFields;
+          setEditorNoteId(noteId);
           setTitle(draftFields.title);
           setContent(draftFields.content);
           setTags(draftFields.tags);
@@ -613,7 +614,10 @@ export default function NotesPage(p: NotesPageProps) {
         })
         .catch(() => undefined);
     }
-    if (!selected) populatedIdRef.current = null;
+    if (!selected) {
+      populatedIdRef.current = null;
+      setEditorNoteId(null);
+    }
   }, [selected]);
 
   /** True when the editor holds changes the stored note does not have. */
@@ -1127,10 +1131,10 @@ export default function NotesPage(p: NotesPageProps) {
           </div>
         )}
       </section>
-      {readerOpen && activeReaderNote !== null && (
+      {readerOpen && readerView !== null && (
         <NoteReaderDialog
-          note={activeReaderNote}
-          collectionName={activeCollectionName}
+          note={readerView.note}
+          collectionName={readerView.collectionName}
           hasPrev={hasPrev}
           hasNext={hasNext}
           onPrev={handlePrevNote}
