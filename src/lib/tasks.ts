@@ -8,6 +8,7 @@ import {
   addDaysToDateTime,
   addMonths,
   addMonthsToDateTime,
+  isValidISODate,
   todayLocal,
 } from "./dates.ts";
 import { createTrashRepo } from "./trash.ts";
@@ -35,10 +36,15 @@ export function nextDueDate(
     return addMonths(d, 1);
   };
   // Roll from whichever is later: the due date or today (a task with no
-  // due date or one far in the past starts from today).
-  let next = dueDate !== null && dueDate > today ? dueDate : today;
+  // due date, an unreadable one, or one far in the past starts from today).
+  let next =
+    dueDate !== null && isValidISODate(dueDate) && dueDate > today
+      ? dueDate
+      : today;
   for (let i = 0; i < REPEAT_ROLL_MAX_STEPS; i++) {
-    next = step(next);
+    const advanced = step(next);
+    if (advanced <= next) break; // no progress — never loop forever
+    next = advanced;
     if (next > today) return next;
   }
   // Pathological (a decade of daily catch-up) — re-arm one period out.

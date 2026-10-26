@@ -354,6 +354,26 @@ const GUARDS: {
     cleared: "submittingRef.current = false",
     raised: "submittingRef.current = true",
   },
+  // CSV import dialog: duplicate policy is "always insert as new", so a fast
+  // second click on Confirm before React re-renders would insert the whole CSV
+  // batch twice; and clicking Download template while the native save dialog is
+  // open would queue a second dialog + write.
+  {
+    page: "../components/ImportDialog.tsx",
+    handler: "confirm",
+    busy: "runningRef.current",
+    cleared: "runningRef.current = false",
+    raised: "runningRef.current = true",
+    labelKey: "import.importing",
+  },
+  {
+    page: "../components/ImportDialog.tsx",
+    handler: "downloadTemplate",
+    busy: "downloadingRef.current",
+    cleared: "downloadingRef.current = false",
+    raised: "downloadingRef.current = true",
+    labelKey: "import.savingTemplate",
+  },
 ];
 
 test("every money-submit handler refuses a second submit while one is in flight", () => {
@@ -495,6 +515,17 @@ test("the button that triggers each guarded handler reads the flag", () => {
     readPage("MemoriesPage.tsx"),
     /disabled=\{\s*p\.saving \|\|/,
     "MemoriesPage's form submit must disable while saving",
+  );
+  const importDialog = readPage("../components/ImportDialog.tsx");
+  assert.match(
+    importDialog,
+    /disabled=\{\s*phase === "running" \|\| preview\.valid\.length === 0\s*\}/,
+    "ImportDialog's confirm button must disable while running",
+  );
+  assert.match(
+    importDialog,
+    /disabled=\{\s*downloading \|\| phase === "running"\s*\}/,
+    "ImportDialog's template button must disable while saving or running",
   );
 });
 

@@ -7,6 +7,7 @@ import { createBudgetRepo } from "../lib/budget.ts";
 import { createBusinessRepo } from "../lib/business.ts";
 import { type ContactInsert, insertContacts } from "../lib/contactImport.ts";
 import { createContactsRepo } from "../lib/contacts.ts";
+import { encodeCsvTemplate } from "../lib/csv.ts";
 import { createEntityLinksRepo } from "../lib/entityLinks.ts";
 import { createExportsRepo } from "../lib/exports.ts";
 import { createGalleryRepo } from "../lib/gallery.ts";
@@ -53,6 +54,17 @@ export function insertImportedTasks(rows: TaskInsert[]): Promise<void> {
 /** The contacts CSV import's batch write, bound to the same one driver. */
 export function insertImportedContacts(rows: ContactInsert[]): Promise<void> {
   return insertContacts(driver, rows);
+}
+
+/**
+ * Write a CSV import template (UTF-8 with BOM) through Rust's atomic export
+ * file writer — `<a href="data:..." download>` is blocked by `navigation.rs`.
+ */
+export function saveCsvTemplate(
+  path: string,
+  templateCsv: string,
+): Promise<void> {
+  return driver.saveExportFile(path, encodeCsvTemplate(templateCsv));
 }
 
 export const shoppingRepo = createShoppingRepo(driver);

@@ -5,9 +5,10 @@
 // Wrapped in the shared <Dialog> so keyboard focus trap, Esc, and backdrop
 // dismissal behave consistently with the rest of the application.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { formatDate } from "../lib/format.ts";
+import { countWords } from "../lib/noteReader.ts";
 import { parseTags } from "../lib/notes.ts";
 import type { NoteRow } from "../lib/types.ts";
 import { Dialog } from "./Dialog.tsx";
@@ -47,29 +48,57 @@ export function NoteReaderDialog({
   const plural = usePlural();
   const toast = useToast();
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const tags = useMemo(() => parseTags(note.tags), [note.tags]);
 
-  const words = useMemo(() => {
-    const trimmed = note.content.trim();
-    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
-  }, [note.content]);
+  const words = useMemo(
+    () => countWords(note.content, locale),
+    [note.content, locale],
+  );
+
+  // Reset the copied badge when navigating to another note, and clear any
+  // pending timer on note switch or unmount.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: note.id resets the per-note copied state
+  useEffect(() => {
+    setCopied(false);
+    return () => {
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = null;
+      }
+    };
+  }, [note.id]);
 
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(note.content);
       setCopied(true);
       toast.success(t("notes.copied"));
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopied(false);
+      }, 2000);
     } catch {
       // Fallback if clipboard API is not available
       toast.error(t("common.tryAgain"));
     }
   }, [note.content, t, toast]);
 
-  // Arrow key navigation between notes
+  // Arrow key navigation between notes (plain Left/Right only, never with
+  // modifiers used for text selection or word/history jumps).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (
+        e.defaultPrevented ||
+        e.ctrlKey ||
+        e.altKey ||
+        e.metaKey ||
+        e.shiftKey
+      ) {
+        return;
+      }
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement

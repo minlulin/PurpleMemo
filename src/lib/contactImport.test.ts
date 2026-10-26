@@ -17,7 +17,12 @@ import type {
 } from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { first } from "../test-utils.ts";
-import { insertContacts, mapContactRows } from "./contactImport.ts";
+import {
+  CONTACT_CSV_ALIASES,
+  insertContacts,
+  mapContactRows,
+} from "./contactImport.ts";
+import { parseCsv } from "./csv.ts";
 import { todayLocal } from "./dates.ts";
 import type { ContactChannelKind } from "./types.ts";
 
@@ -227,21 +232,73 @@ test("an absent optional column falls back to its empty value", () => {
   ]);
 });
 
+test("accepts full YYYY-MM-DD and month-day MM-DD birthdays", () => {
+  const result = mapContactRows([
+    { name: "Full date", birthday: "1990-04-18" },
+    { name: "Month-day", birthday: "04-18" },
+    { name: "Unpadded slash", birthday: "4/5" },
+    { name: "vCard month-day", birthday: "--02-29" },
+  ]);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(
+    result.valid.map((c) => c.birthday),
+    ["1990-04-18", "04-18", "04-05", "02-29"],
+  );
+});
+
 test("every row-error case is reported with its 1-based data row number", () => {
   const result = mapContactRows([
     { name: "Good", birthday: "1990-04-18" }, // 1
     { name: "   " }, // 2: blank name
-    { name: "Bad birthday", birthday: "18/04/1990" }, // 3
+    { name: "Bad birthday format", birthday: "18/04/1990" }, // 3
+    { name: "Impossible full date", birthday: "1990-02-30" }, // 4
+    { name: "Out-of-range full date", birthday: "1990-99-99" }, // 5
+    { name: "Impossible month-day", birthday: "02-30" }, // 6
   ]);
   assert.equal(result.valid.length, 1);
   assert.deepEqual(
     result.errors.map((error) => error.row),
-    [2, 3],
+    [2, 3, 4, 5, 6],
   );
   assert.deepEqual(
     result.errors.map((error) => error.reason),
-    ["import.reason.nameRequired", "import.reason.birthday"],
+    [
+      "import.reason.nameRequired",
+      "import.reason.birthday",
+      "import.reason.birthday",
+      "import.reason.birthday",
+      "import.reason.birthday",
+    ],
   );
+});
+
+test("accepts singular header aliases and unescapes formula-guarded phone numbers", () => {
+  const parsed = parseCsv(
+    'Name,Phone,Email,Note,Tag\nDaw Aye,"\'+95 9 123; \'+95 9 777",aye@example.com,"\'- VIP client",family\n',
+    ["name"],
+    CONTACT_CSV_ALIASES,
+  );
+  const { valid, errors } = mapContactRows(parsed.rows);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(valid, [
+    {
+      name: "Daw Aye",
+      address: "",
+      birthday: null,
+      notes: "- VIP client",
+      channels: [
+        { kind: "phone", value: "+95 9 123", is_primary: 1, sort_order: 0 },
+        { kind: "phone", value: "+95 9 777", is_primary: 0, sort_order: 1 },
+        {
+          kind: "email",
+          value: "aye@example.com",
+          is_primary: 0,
+          sort_order: 2,
+        },
+      ],
+      tags: ["family"],
+    },
+  ]);
 });
 
 test("the header is not row 1", () => {

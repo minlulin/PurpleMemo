@@ -146,6 +146,10 @@ test("the import refusals and row reasons have Burmese text", () => {
   // Presence is checked by the catalogue test; this catches an English copy
   // pasted into the Burmese side of the import feature.
   const keys: MessageKey[] = [
+    "import.savingTemplate",
+    "import.saveTemplateTitle",
+    "import.csvFilter",
+    "import.templateSaved",
     "import.error.tooLarge",
     "import.error.tooManyRows",
     "import.error.missingColumn",

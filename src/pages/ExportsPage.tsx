@@ -5,6 +5,7 @@ import {
   IconDownload,
   IconJournal,
   IconNotes,
+  IconTasks,
   IconWallet,
 } from "../components/icons.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -44,9 +45,15 @@ const GROUPS: {
     icon: IconWallet,
   },
   {
+    key: "tasks",
+    label: "Tasks CSV",
+    blurb: "Actionable to-dos, due dates and repeat schedules",
+    icon: IconTasks,
+  },
+  {
     key: "contacts",
     label: "Contacts",
-    blurb: "A vCard 4.0 address book",
+    blurb: "vCard 4.0 and CSV address book",
     icon: IconContacts,
   },
 ];
@@ -91,7 +98,7 @@ export default function ExportsPage() {
       );
       await exportsRepo.save(path, bytes);
       toast.success(
-        `Readable export saved to ${path} - ${fileCount} files (${counts.notes} notes, ${counts.journal} journal entries, ${counts.contacts} contacts).`,
+        `Readable export saved to ${path} - ${fileCount} files (${counts.notes} notes, ${counts.journal} journal entries, ${counts.tasks} tasks, ${counts.contacts} contacts).`,
       );
     } catch (e) {
       setError(errText(e));

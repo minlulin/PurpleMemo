@@ -12,9 +12,20 @@
 // two manual adds would be.
 
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
-import { todayLocal } from "./dates.ts";
+import { normalizeMonthDay } from "./contacts.ts";
+import { unescapeSpreadsheetCell } from "./csv.ts";
+import { isValidISODate, todayLocal } from "./dates.ts";
 import type { MessageKey } from "./i18n.ts";
 import type { ContactChannelKind } from "./types.ts";
+
+/** Common singular/plural header spellings accepted for Contacts CSV imports. */
+export const CONTACT_CSV_ALIASES: Record<string, string> = {
+  phone: "phones",
+  email: "emails",
+  other: "others",
+  note: "notes",
+  tag: "tags",
+};
 
 /** One channel as it will be inserted (primary/order already decided). */
 export interface ImportedChannel {
@@ -47,22 +58,45 @@ export interface ContactImportResult {
   errors: ContactImportError[];
 }
 
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * Parse an optional birthday cell: empty -> null, strict calendar `YYYY-MM-DD`,
+ * or month-day (`MM-DD`, `M-D`, `MM/DD`, or vCard `--MM-DD`) normalized to
+ * `MM-DD` — matching the two birthday shapes `ContactsPage` and `contacts.ts`
+ * support. Impossible calendar dates (`1990-02-30`, `02-30`) return `"invalid"`.
+ */
+function parseImportedBirthday(raw: string): string | null | "invalid" {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  if (isValidISODate(trimmed)) return trimmed;
+  const mmddCandidate = trimmed.startsWith("--") ? trimmed.slice(2) : trimmed;
+  const normalized = normalizeMonthDay(mmddCandidate);
+  if (normalized !== null) return normalized;
+  return "invalid";
+}
 
-/** A cell value; a column missing from the file reads as empty. */
-function cell(row: Record<string, string>, name: string): string {
-  return row[name] ?? "";
+/** A cell value; checks optional aliases and unescapes spreadsheet formula guards. */
+function cell(
+  row: Record<string, string>,
+  name: string,
+  aliases: string[] = [],
+): string {
+  if (row[name] !== undefined) return unescapeSpreadsheetCell(row[name]);
+  for (const alias of aliases) {
+    if (row[alias] !== undefined) return unescapeSpreadsheetCell(row[alias]);
+  }
+  return "";
 }
 
 /**
- * Split a `;` list into trimmed, non-empty values. Trimming is what makes
- * `"555-0100; 555-0101"` two usable numbers instead of one with a leading
- * space, and it is what stops a stray `";"` from becoming an empty channel.
+ * Split a `;` list into trimmed, formula-unescaped, non-empty values. Trimming
+ * is what makes `"555-0100; 555-0101"` two usable numbers instead of one with a
+ * leading space, and unescaping per item handles `"; '+95 9 777"` as well as a
+ * leading `'+95 9 123` at the start of the cell.
  */
 function splitValues(raw: string): string[] {
   return raw
     .split(";")
-    .map((value) => value.trim())
+    .map((value) => unescapeSpreadsheetCell(value.trim()))
     .filter((value) => value !== "");
 }
 
@@ -117,8 +151,8 @@ export function mapContactRows(
       return;
     }
 
-    const birthday = cell(row, "birthday").trim();
-    if (birthday !== "" && !DATE_PATTERN.test(birthday)) {
+    const birthday = parseImportedBirthday(cell(row, "birthday"));
+    if (birthday === "invalid") {
       errors.push({
         row: rowNumber,
         reason: "import.reason.birthday",
@@ -129,14 +163,14 @@ export function mapContactRows(
     valid.push({
       name,
       address: cell(row, "address"),
-      birthday: birthday === "" ? null : birthday,
-      notes: cell(row, "notes"),
+      birthday,
+      notes: cell(row, "notes", ["note"]),
       channels: channelsOf(
-        cell(row, "phones"),
-        cell(row, "emails"),
-        cell(row, "others"),
+        cell(row, "phones", ["phone"]),
+        cell(row, "emails", ["email"]),
+        cell(row, "others", ["other"]),
       ),
-      tags: tagsOf(cell(row, "tags")),
+      tags: tagsOf(cell(row, "tags", ["tag"])),
     });
   });
 

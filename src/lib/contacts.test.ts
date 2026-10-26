@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { createMockDriver } from "../data/mock-driver.ts";
 import {
   birthdayLabel,
+  contactInitial,
   createContactsRepo,
   normalizeMonthDay,
   searchContacts,
@@ -85,6 +86,20 @@ test("birthdayLabel: full date includes the year, month-day does not", () => {
 test("birthdayLabel: invalid input degrades instead of throwing", () => {
   assert.equal(birthdayLabel(""), "");
   assert.equal(birthdayLabel("13-40"), "?? 40");
+  assert.equal(birthdayLabel("13-40", "my"), "?? 40");
+  assert.ok(birthdayLabel("1990-10-20", "my").includes("1990"));
+  assert.ok(birthdayLabel("02-29", "my").includes("29"));
+});
+
+test("contactInitial: keeps Burmese extended grapheme clusters and emoji intact", () => {
+  assert.equal(contactInitial("Mary Jones"), "M");
+  assert.equal(contactInitial("  aye chan "), "A");
+  assert.equal(contactInitial("သီတာ"), "သီ");
+  assert.equal(contactInitial("ဖြိုး"), "ဖြို");
+  assert.equal(contactInitial("မေ"), "မေ");
+  assert.equal(contactInitial("ဦးအောင်"), "ဦ");
+  assert.equal(contactInitial("🏠 Home"), "🏠");
+  assert.equal(contactInitial("   "), "?");
 });
 
 test("normalizeMonthDay: pads and accepts / or - separators", () => {
