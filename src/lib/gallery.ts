@@ -145,8 +145,9 @@ const PHOTO_REF_TABLES: Record<PhotoRefEntity, string> = {
  * `entity_type` is CHECK-constrained to exactly these three values and each has
  * one fixed table, so a caller supplies only the kind and the id and cannot
  * pair a type with the wrong table — the failure a free string would invite.
- * `job` is included for the day `business.ts` grows a `deleteJob`; it has no
- * delete path at all today (P2-9).
+ * `job` is not future-proofing: `business.ts` deletes a job through
+ * `deleteLinkedEntity("job", id)` — one batch for the job row and its photo
+ * links, income entries deliberately left (P2-9).
  *
  * Links first: the batch is atomic, so order is a readability choice, and this
  * is the one that stays correct if a real foreign key is ever added.

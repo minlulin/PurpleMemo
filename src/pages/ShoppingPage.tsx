@@ -37,6 +37,17 @@ export default function ShoppingPage({
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  /**
+   * Reorder guard (C5). `moveItem` runs over the `items` snapshot of the
+   * render the click landed in, so two rapid clicks in the same direction
+   * compute the same target order and write it twice (two clicks, one step),
+   * and two opposing moves let the last write erase the other's intent. The
+   * ref is authoritative, the state is what the two arrows read — the page's
+   * own `savingRef` shape, kept separate so a reorder does not grey out the
+   * create forms and vice versa.
+   */
+  const reorderingRef = useRef(false);
+  const [reordering, setReordering] = useState(false);
   const itemLoadSeq = useRef(0);
 
   const reload = useCallback(async () => {
@@ -215,16 +226,22 @@ export default function ShoppingPage({
   };
 
   const move = async (index: number, direction: "up" | "down") => {
+    if (reorderingRef.current) return;
     const next = moveItem(
       items.map((i) => i.id),
       index,
       direction,
     );
+    reorderingRef.current = true;
+    setReordering(true);
     try {
       await shoppingRepo.reorderItems(next);
       await reloadItems(selectedId);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      reorderingRef.current = false;
+      setReordering(false);
     }
   };
 
@@ -400,6 +417,7 @@ export default function ShoppingPage({
                           type="button"
                           className="btn btn-ghost"
                           aria-label={`Move ${item.text} up`}
+                          disabled={reordering}
                           onClick={() => void move(index, "up")}
                         >
                           ▲
@@ -408,6 +426,7 @@ export default function ShoppingPage({
                           type="button"
                           className="btn btn-ghost"
                           aria-label={`Move ${item.text} down`}
+                          disabled={reordering}
                           onClick={() => void move(index, "down")}
                         >
                           ▼

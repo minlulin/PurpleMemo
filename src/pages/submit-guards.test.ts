@@ -364,6 +364,18 @@ const GUARDS: {
     busy: "savingRef.current",
     cleared: "setSaving(false)",
   },
+  // Reorder (batch-3, C5): not a money form, but the same defect — the order
+  // written is derived from the render's `items` snapshot, so two fast clicks
+  // both compute the same target order (two clicks, one step) or, opposing,
+  // let the last write erase the other's intent. Kept off the shared `saving`
+  // flag so a reorder does not grey out the two create forms.
+  {
+    page: "ShoppingPage.tsx",
+    handler: "move",
+    busy: "reorderingRef.current",
+    cleared: "reorderingRef.current = false",
+    raised: "reorderingRef.current = true",
+  },
   {
     page: "HabitsPage.tsx",
     handler: "addHabit",

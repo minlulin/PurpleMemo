@@ -99,6 +99,30 @@ export default function GalleryPage() {
   }, []);
 
   /**
+   * The link-picker's three lists (C6). They used to load once at mount and
+   * never again, so a job renamed in BusinessPage — or a note or memory edited
+   * anywhere else — kept its old title in "Linked to" and the picker for the
+   * rest of the session. Reloaded on mount and every time the inspector opens,
+   * which is the only place these lists render.
+   */
+  const loadPickerLists = useCallback(async (isCancelled?: () => boolean) => {
+    try {
+      const [ns, ms, js] = await Promise.all([
+        // title-only query: notesRepo.listNotes({ projection: "title" })
+        notesRepo.listNoteTitles(),
+        memoriesRepo.listMemories(),
+        businessRepo.listJobs(),
+      ]);
+      if (isCancelled?.()) return;
+      setNotes(ns);
+      setMemories(ms);
+      setJobs(js);
+    } catch (e) {
+      if (!isCancelled?.()) setError(errText(e));
+    }
+  }, []);
+
+  /**
    * Small bytes for a grid tile: the stored thumbnail, or one generated from
    * the full-res bytes and stored for next time. Photos saved before this
    * phase — and photos restored from a backup, which deliberately carry no
@@ -168,22 +192,8 @@ export default function GalleryPage() {
       if (cancelled) return;
       await loadThumbs(list, () => cancelled);
       if (cancelled) return;
-      try {
-        const [ns, ms, js] = await Promise.all([
-          // title-only query: notesRepo.listNotes({ projection: "title" })
-          notesRepo.listNoteTitles(),
-          memoriesRepo.listMemories(),
-          businessRepo.listJobs(),
-        ]);
-        if (cancelled) return;
-        setNotes(ns);
-        setMemories(ms);
-        setJobs(js);
-      } catch (e) {
-        if (!cancelled) setError(errText(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      await loadPickerLists(() => cancelled);
+      if (!cancelled) setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -191,7 +201,7 @@ export default function GalleryPage() {
       if (fullRef.current) URL.revokeObjectURL(fullRef.current.url);
       fullRef.current = null;
     };
-  }, [reload, loadThumbs, thumbUrls]);
+  }, [reload, loadThumbs, loadPickerLists, thumbUrls]);
 
   const pickFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -222,6 +232,9 @@ export default function GalleryPage() {
   };
 
   const select = async (photo: PhotoRow) => {
+    // Refresh the picker's labels each time the inspector opens (C6): titles
+    // are the one part of these three lists that other pages can change.
+    void loadPickerLists();
     setSelected(photo);
     setEdit({ note: photo.note, takenDate: photo.taken_date ?? "" });
     setLinkDraft({ type: "note", id: "" });

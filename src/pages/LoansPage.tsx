@@ -41,7 +41,6 @@ export default function LoansPage({
   focusId?: number | null;
   focusToken?: number;
 }) {
-  const today = todayLocal();
   const [loans, setLoans] = useState<LoanListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +78,18 @@ export default function LoansPage({
   const [dueDate, setDueDate] = useState("");
   const [note, setNote] = useState("");
 
+  /**
+   * The day the loaded rows belong to (C2). `reload` reads `todayLocal()` at
+   * call time instead of taking the render's value: a page left mounted past
+   * midnight used to keep yesterday's overdue chips until something re-rendered
+   * it, and a render-captured date would put that staleness back inside every
+   * load.
+   */
+  const todayRef = useRef(todayLocal());
+
   const reload = useCallback(async () => {
+    const today = todayLocal();
+    todayRef.current = today;
     try {
       setLoans(await loansRepo.listLoansWithState(today));
       setError(null);
@@ -88,10 +98,20 @@ export default function LoansPage({
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, []);
 
   useEffect(() => {
     void reload();
+  }, [reload]);
+
+  // The app keeps this page mounted across midnight (C2), so nothing re-renders
+  // it when the date rolls over: this tick is what reloads the derived state —
+  // overdue is computed against the day, not against the day it was loaded on.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (todayLocal() !== todayRef.current) void reload();
+    }, 60_000);
+    return () => clearInterval(timer);
   }, [reload]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers a jump to the same loan

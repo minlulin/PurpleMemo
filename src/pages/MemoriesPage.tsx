@@ -164,15 +164,26 @@ export default function MemoriesPage({
   focusId?: number | null;
   focusToken?: number;
 }) {
-  const today = todayLocal();
   const [view, setView] = useState<MemoryView>("upcoming");
   const [upcoming, setUpcoming] = useState<MemoryRow[]>([]);
   const [onThisDay, setOnThisDay] = useState<MemoryRow[]>([]);
   const [all, setAll] = useState<MemoryRow[]>([]);
+  /** Mirror of `all` for effects that must not list it as a dependency (C4). */
+  const allRef = useRef<MemoryRow[]>([]);
   const [month, setMonth] = useState<MemoryRow[]>([]);
   const [upcomingBirthdays, setUpcomingBirthdays] = useState<ContactRow[]>([]);
   const [todaysBirthdays, setTodaysBirthdays] = useState<ContactRow[]>([]);
   const [feedMonth, setFeedMonth] = useState(() => yearMonthOf(todayLocal()));
+  /**
+   * The month the feed shows, read by create/delete AFTER their awaits (C3):
+   * both used to close over the `feedMonth` of the render they were clicked in,
+   * so flipping months while one was in flight installed the old month's
+   * entries under the new month's heading. The month is only ever changed
+   * through `showMonth`, so the ref and the state cannot disagree.
+   */
+  const feedMonthRef = useRef(feedMonth);
+  /** Sequence token for the month feed: only the newest load installs (C3). */
+  const monthSeqRef = useRef(0);
   /**
    * `submitForm` submit guard (review P3-6): the ref is authoritative, the
    * state is what the form's button reads — the pinned money-form shape.
@@ -188,7 +199,17 @@ export default function MemoriesPage({
     note: "",
   });
 
+  /**
+   * The day the date-derived reads belong to (C2). `reload` calls
+   * `todayLocal()` itself instead of taking the render's value: the page is
+   * deliberately left mounted, so a render-captured date went stale at
+   * midnight and only ever healed if something happened to re-render it.
+   */
+  const todayRef = useRef(todayLocal());
+
   const reload = useCallback(async () => {
+    const today = todayLocal();
+    todayRef.current = today;
     try {
       const [up, otd, everything, bdays, bdaysToday] = await Promise.all([
         memoriesRepo.upcoming(today),
@@ -208,20 +229,37 @@ export default function MemoriesPage({
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers a jump to the same memory
+  // "Birthdays today", "Next 14 days" and on-this-day are all keyed on the
+  // date, and nothing re-renders a parked page when the date rolls over (C2):
+  // this tick reloads the moment the local day changes, instead of showing
+  // yesterday's lists until the user happens to tap something.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (todayLocal() !== todayRef.current) void reload();
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [reload]);
+
+  // The current list for the focus effect's existence check, kept up to date
+  // so that effect can be keyed on the arrival signals alone (C4).
+  useEffect(() => {
+    allRef.current = all;
+  }, [all]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers a jump to the same memory; `all` is deliberately NOT a dependency — with it here, every reload re-ran this and snapped the user back to "all" after each action (C4)
   useEffect(() => {
     if (focusId === null || loading) return;
     setView("all");
-    if (!all.some((memory) => memory.id === focusId)) {
+    if (!allRef.current.some((memory) => memory.id === focusId)) {
       setError("That memory no longer exists — it may have been deleted.");
     } else setError(null);
-  }, [focusId, focusToken, loading, all]);
+  }, [focusId, focusToken, loading]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers scrolling to the same memory
   useEffect(() => {
@@ -231,20 +269,31 @@ export default function MemoriesPage({
       ?.scrollIntoView({ block: "nearest" });
   }, [focusId, focusToken, view]);
 
+  /**
+   * Load one month's feed through the sequence token (C3): a create/delete's
+   * load and a month-navigation load can be in flight together, and without a
+   * token the older one resolves last and writes its rows under whatever
+   * heading is on screen then.
+   */
+  const loadMonth = useCallback(async (month: string) => {
+    const seq = ++monthSeqRef.current;
+    try {
+      const feed = await memoriesRepo.monthFeed(month);
+      if (seq === monthSeqRef.current) setMonth(feed);
+    } catch (e) {
+      if (seq === monthSeqRef.current) setError(errText(e));
+    }
+  }, []);
+
+  /** The only writer of `feedMonth`, so `feedMonthRef` tracks it exactly. */
+  const showMonth = (month: string) => {
+    feedMonthRef.current = month;
+    setFeedMonth(month);
+  };
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const feed = await memoriesRepo.monthFeed(feedMonth);
-        if (!cancelled) setMonth(feed);
-      } catch (e) {
-        if (!cancelled) setError(errText(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [feedMonth]);
+    void loadMonth(feedMonth);
+  }, [feedMonth, loadMonth]);
 
   const submitForm = async () => {
     if (savingRef.current) return;
@@ -268,8 +317,7 @@ export default function MemoriesPage({
       }
       setForm({ editingId: null, title: "", date: todayLocal(), note: "" });
       await reload();
-      const feed = await memoriesRepo.monthFeed(feedMonth);
-      setMonth(feed);
+      await loadMonth(feedMonthRef.current);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -296,8 +344,7 @@ export default function MemoriesPage({
       await memoriesRepo.deleteMemory(m.id);
       if (form.editingId === m.id) cancelEdit();
       await reload();
-      const feed = await memoriesRepo.monthFeed(feedMonth);
-      setMonth(feed);
+      await loadMonth(feedMonthRef.current);
     } catch (e) {
       setError(errText(e));
     }
@@ -430,7 +477,7 @@ export default function MemoriesPage({
                   className="btn btn-icon"
                   aria-label="Previous month"
                   title="Previous month"
-                  onClick={() => setFeedMonth(shiftYearMonth(feedMonth, -1))}
+                  onClick={() => showMonth(shiftYearMonth(feedMonth, -1))}
                 >
                   <IconChevronLeft className="icon" />
                 </button>
@@ -442,14 +489,14 @@ export default function MemoriesPage({
                   className="btn btn-icon"
                   aria-label="Next month"
                   title="Next month"
-                  onClick={() => setFeedMonth(shiftYearMonth(feedMonth, 1))}
+                  onClick={() => showMonth(shiftYearMonth(feedMonth, 1))}
                 >
                   <IconChevronRight className="icon" />
                 </button>
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => setFeedMonth(yearMonthOf(today))}
+                  onClick={() => showMonth(yearMonthOf(todayLocal()))}
                 >
                   This month
                 </button>
