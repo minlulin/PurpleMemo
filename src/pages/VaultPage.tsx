@@ -3,16 +3,25 @@
 // so before the password is set. The password lives in this page's memory
 // only; P3f adds the app-wide auto-lock on top of the repo's lockVault.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconLock, IconVault } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { vaultRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import { WrongPasswordError } from "../lib/vault.ts";
 
-type VaultPhase = "loading" | "setup" | "unlock" | "open";
+/**
+ * `unavailable` exists because of B12: a failed `isSetUp()` read used to fall
+ * through to `setup`, so a locked database or a broken IPC call rendered
+ * "Set a vault password" — a confident, wrong sentence next to the
+ * no-recovery warning, inviting the user to type a NEW password over a vault
+ * that is fine. A failure now has its own screen.
+ */
+type VaultPhase = "loading" | "unavailable" | "setup" | "unlock" | "open";
 
 interface ItemMeta {
   id: number;
@@ -35,6 +44,7 @@ function vaultErrorText(e: unknown, wrongPassword: string): string {
 }
 
 export default function VaultPage() {
+  const t = useT();
   const [phase, setPhase] = useState<VaultPhase>("loading");
   const [password, setPassword] = useState<string | null>(null);
   const [items, setItems] = useState<ItemMeta[]>([]);
@@ -55,41 +65,70 @@ export default function VaultPage() {
     next: "",
     confirm: "",
   });
-
+  /** Guards the list against an out-of-order read (B6). */
+  const listGuard = useMemo(() => createLoadGuard(), []);
+  /** Guards the reveal map — and cancels in-flight reveals on lock (B6). */
+  const revealGuard = useMemo(() => createLoadGuard(), []);
+  /**
+   * Guards the edit form against an out-of-order `getItem` (B6): a cold item
+   * costs 600k PBKDF2 iterations before it decrypts, so clicking Edit on A and
+   * then B could open A's secret if A resolved last — under B's title.
+   */
+  const editGuard = useMemo(() => createLoadGuard(), []);
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const setUp = await vaultRepo.isSetUp();
-        if (!cancelled) setPhase(setUp ? "unlock" : "setup");
-      } catch (e) {
-        if (!cancelled) {
-          setError(errText(e));
-          setPhase("setup");
-        }
-      }
-    })();
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
   }, []);
 
-  const loadItems = useCallback(async () => {
+  /**
+   * Read whether the vault exists yet — the one call that decides between the
+   * setup and unlock screens. Its failure is B12: reported as `unavailable`
+   * with the real error, never as "there is no vault yet".
+   */
+  const readSetUp = useCallback(async () => {
+    setPhase("loading");
+    setError(null);
     try {
-      setItems(await vaultRepo.listItems());
-      setError(null);
+      const setUp = await vaultRepo.isSetUp();
+      if (mountedRef.current) setPhase(setUp ? "unlock" : "setup");
     } catch (e) {
-      setError(errText(e));
+      if (mountedRef.current) {
+        setError(errText(e));
+        setPhase("unavailable");
+      }
     }
   }, []);
 
+  useEffect(() => {
+    void readSetUp();
+  }, [readSetUp]);
+
+  const loadItems = useCallback(async () => {
+    const token = listGuard.begin();
+    try {
+      const rows = await vaultRepo.listItems();
+      if (!listGuard.isCurrent(token)) return; // superseded by a newer read
+      setItems(rows);
+      setError(null);
+    } catch (e) {
+      if (listGuard.isCurrent(token)) setError(errText(e));
+    }
+  }, [listGuard]);
+
   const doSetup = async () => {
+    // Refuses a second submit while one is in flight: the marker INSERT is
+    // deliberately not an upsert, so two racing setups would make the second
+    // one fail on a UNIQUE violation the user never caused.
+    if (busy) return;
     if (setup.pwd.length < MIN_PASSWORD) {
-      setError(`Password must be at least ${MIN_PASSWORD} characters.`);
+      setError(t("vault.error.passwordShort", { min: MIN_PASSWORD }));
       return;
     }
     if (setup.pwd !== setup.confirm) {
-      setError("Passwords do not match.");
+      setError(t("vault.error.noMatch"));
       return;
     }
     setBusy(true);
@@ -117,7 +156,7 @@ export default function VaultPage() {
       setError(null);
       await loadItems();
     } catch (e) {
-      setError(vaultErrorText(e, "Wrong password — nothing was unlocked."));
+      setError(vaultErrorText(e, t("vault.error.wrongPassword")));
     } finally {
       setBusy(false);
     }
@@ -125,14 +164,31 @@ export default function VaultPage() {
 
   const doLock = () => {
     vaultRepo.lockVault();
+    // Nothing the in-flight loads write may land after the lock (B6): the repo
+    // has already dropped its keys, so a reveal/edit/list read that was
+    // mid-await must not repopulate the screen the lock just cleared.
+    revealGuard.cancel();
+    editGuard.cancel();
+    listGuard.cancel();
     setPassword(null);
     setRevealed(new Map());
     setEdit(null);
+    // Everything holding plaintext goes, not just what is on screen (B3):
+    // `draft` is the new-secret title + secret in a plain textarea, and
+    // `change` holds the typed passwords — `change.old` is a credential and
+    // must not outlive the form, while `change.open` would otherwise bring the
+    // half-filled form back after the next unlock. `error` belongs to the
+    // session that just ended.
+    setDraft({ title: "", secret: "" });
+    setChange({ open: false, old: "", next: "", confirm: "" });
+    setError(null);
     setItems([]);
     setPhase("unlock");
   };
 
   const addItem = async () => {
+    // A second click before the re-render would insert the same secret twice.
+    if (busy) return;
     if (password === null) return;
     const title = draft.title.trim();
     if (title.length === 0 || draft.secret.length === 0) return;
@@ -156,33 +212,38 @@ export default function VaultPage() {
       setRevealed(next);
       return;
     }
+    const token = revealGuard.begin();
     try {
       const got = await vaultRepo.getItem(id, password);
+      if (!revealGuard.isCurrent(token)) return; // superseded (or locked)
       if (got) {
         const next = new Map(revealed);
         next.set(id, got.plaintext);
         setRevealed(next);
       }
     } catch (e) {
-      setError(
-        vaultErrorText(e, "Could not decrypt this item — wrong password."),
-      );
+      if (!revealGuard.isCurrent(token)) return;
+      setError(vaultErrorText(e, t("vault.error.wrongItem")));
     }
   };
 
   const startEdit = async (item: ItemMeta) => {
     if (password === null) return;
+    const token = editGuard.begin();
     try {
       const got = await vaultRepo.getItem(item.id, password);
+      // A slower older getItem must not reopen the previously clicked item
+      // (B6) — the last click decides which secret the form holds.
+      if (!editGuard.isCurrent(token)) return;
       setEdit({ id: item.id, title: item.title, secret: got?.plaintext ?? "" });
     } catch (e) {
-      setError(
-        vaultErrorText(e, "Could not decrypt this item — wrong password."),
-      );
+      if (!editGuard.isCurrent(token)) return;
+      setError(vaultErrorText(e, t("vault.error.wrongItem")));
     }
   };
 
   const saveEdit = async () => {
+    if (busy) return;
     if (password === null || edit === null) return;
     const title = edit.title.trim();
     if (title.length === 0 || edit.secret.length === 0) return;
@@ -219,13 +280,17 @@ export default function VaultPage() {
   };
 
   const doChangePassword = async () => {
+    // Two re-encryption batches must not overlap: the second would carry the
+    // OLD `change.old` and report "wrong current password" over a change that
+    // already landed.
+    if (busy) return;
     if (change.old.length === 0) return;
     if (change.next.length < MIN_PASSWORD) {
-      setError(`New password must be at least ${MIN_PASSWORD} characters.`);
+      setError(t("vault.error.newPasswordShort", { min: MIN_PASSWORD }));
       return;
     }
     if (change.next !== change.confirm) {
-      setError("New passwords do not match.");
+      setError(t("vault.error.newNoMatch"));
       return;
     }
     setBusy(true);
@@ -234,10 +299,12 @@ export default function VaultPage() {
       setPassword(change.next);
       setChange({ open: false, old: "", next: "", confirm: "" });
       setError(null);
+      // `changePassword` rewrites every row with a fresh salt, ciphertext AND
+      // `updated_at` (B7) — the only vault write that did not refresh the list,
+      // so every "updated" chip kept its old date until the page was revisited.
+      await loadItems();
     } catch (e) {
-      setError(
-        vaultErrorText(e, "Wrong current password — nothing was changed."),
-      );
+      setError(vaultErrorText(e, t("vault.error.wrongCurrent")));
     } finally {
       setBusy(false);
     }
@@ -251,11 +318,8 @@ export default function VaultPage() {
             <IconVault className="icon" />
           </span>
           <div>
-            <h2 className="editor-title">Encrypted Vault</h2>
-            <p className="page-subtitle">
-              Per-item AES-256-GCM encrypted secrets derived via PBKDF2-SHA256
-              (600k iterations)
-            </p>
+            <h2 className="editor-title">{t("vault.title")}</h2>
+            <p className="page-subtitle">{t("vault.subtitle")}</p>
           </div>
         </div>
       </div>
@@ -266,10 +330,10 @@ export default function VaultPage() {
             className={change.open ? "btn is-on" : "btn"}
             onClick={() => setChange({ ...change, open: !change.open })}
           >
-            Change password
+            {t("vault.changePassword")}
           </button>
           <button type="button" className="btn" onClick={doLock}>
-            <IconLock className="icon" /> Lock vault
+            <IconLock className="icon" /> {t("vault.lock")}
           </button>
         </div>
       ) : null}
@@ -281,6 +345,32 @@ export default function VaultPage() {
       <div className="budget-page">
         {header}
         <Skeleton variant="card" />
+      </div>
+    );
+  }
+
+  // B12: the vault state could not be read, so we do not know whether there is
+  // a vault. Saying so is the only honest rendering — and the retry button is
+  // the way back, rather than a setup form the user must not fill in.
+  if (phase === "unavailable") {
+    return (
+      <div className="budget-page">
+        {header}
+        {error ? (
+          <p className="alert alert-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <EmptyState>{t("vault.unavailable")}</EmptyState>
+        <div className="editor-actions">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void readSetUp()}
+          >
+            {t("common.tryAgain")}
+          </button>
+        </div>
       </div>
     );
   }
@@ -305,15 +395,13 @@ export default function VaultPage() {
             <span className="page-icon-badge">
               <IconVault className="icon" />
             </span>
-            <h2 className="editor-title">Set a vault password</h2>
+            <h2 className="editor-title">{t("vault.setupHeading")}</h2>
           </div>
           <p className="alert alert-error" role="note">
-            There is NO recovery. If you forget this password, your secrets
-            cannot be recovered by anyone — not even on this machine. Store it
-            somewhere safe before you continue.
+            {t("vault.noRecovery")}
           </p>
           <label>
-            Password (at least {MIN_PASSWORD} characters)
+            {t("vault.passwordAtLeast", { min: MIN_PASSWORD })}
             <input
               className="input"
               type="password"
@@ -323,7 +411,7 @@ export default function VaultPage() {
             />
           </label>
           <label>
-            Confirm password
+            {t("vault.confirmPassword")}
             <input
               className="input"
               type="password"
@@ -338,7 +426,7 @@ export default function VaultPage() {
               className="btn btn-primary"
               disabled={busy || setup.pwd.length === 0}
             >
-              {busy ? "Setting up…" : "Set password"}
+              {busy ? t("vault.settingUp") : t("vault.setPassword")}
             </button>
           </div>
         </form>
@@ -366,13 +454,11 @@ export default function VaultPage() {
             <span className="page-icon-badge">
               <IconLock className="icon" />
             </span>
-            <h2 className="editor-title">Vault locked</h2>
-            <p className="page-subtitle">
-              Enter your vault password to decrypt and manage secrets.
-            </p>
+            <h2 className="editor-title">{t("vault.lockedHeading")}</h2>
+            <p className="page-subtitle">{t("vault.lockedSubtitle")}</p>
           </div>
           <label>
-            Password
+            {t("vault.password")}
             <input
               className="input"
               type="password"
@@ -387,7 +473,7 @@ export default function VaultPage() {
               className="btn btn-primary"
               disabled={busy || unlockPwd.length === 0}
             >
-              {busy ? "Unlocking…" : "Unlock"}
+              {busy ? t("vault.unlocking") : t("vault.unlock")}
             </button>
           </div>
         </form>
@@ -412,9 +498,9 @@ export default function VaultPage() {
             void doChangePassword();
           }}
         >
-          <h3 className="side-heading">Change vault password</h3>
+          <h3 className="side-heading">{t("vault.changeHeading")}</h3>
           <label>
-            Current password
+            {t("vault.currentPassword")}
             <input
               className="input"
               type="password"
@@ -424,7 +510,7 @@ export default function VaultPage() {
             />
           </label>
           <label>
-            New password
+            {t("vault.newPassword")}
             <input
               className="input"
               type="password"
@@ -434,7 +520,7 @@ export default function VaultPage() {
             />
           </label>
           <label>
-            Confirm new password
+            {t("vault.confirmNewPassword")}
             <input
               className="input"
               type="password"
@@ -447,7 +533,7 @@ export default function VaultPage() {
           </label>
           <div className="editor-actions">
             <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? "Re-encrypting…" : "Change password"}
+              {busy ? t("vault.reencrypting") : t("vault.changePassword")}
             </button>
             <button
               type="button"
@@ -456,20 +542,20 @@ export default function VaultPage() {
                 setChange({ open: false, old: "", next: "", confirm: "" })
               }
             >
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
         </form>
       ) : null}
 
       <div className="split-workspace-grid">
-        <section className="settings-section" aria-label="Vault items">
+        <section className="settings-section" aria-label={t("vault.itemsAria")}>
           <div className="dash-card-head">
-            <h3 className="side-heading">Stored Secrets</h3>
+            <h3 className="side-heading">{t("vault.storedSecrets")}</h3>
             <span className="badge">{items.length}</span>
           </div>
           {items.length === 0 ? (
-            <EmptyState>The vault is empty — add a secret.</EmptyState>
+            <EmptyState>{t("vault.empty")}</EmptyState>
           ) : (
             <ul className="budget-list">
               {items.map((item) => (
@@ -478,7 +564,7 @@ export default function VaultPage() {
                     <span className="row-title">
                       <b>{item.title}</b>
                       <span className="chip figure">
-                        updated {item.updated_at}
+                        {t("vault.updated", { date: item.updated_at })}
                       </span>
                     </span>
                     {revealed.has(item.id) ? (
@@ -493,21 +579,23 @@ export default function VaultPage() {
                       className="btn btn-ghost"
                       onClick={() => void toggleReveal(item.id)}
                     >
-                      {revealed.has(item.id) ? "Hide" : "Reveal"}
+                      {revealed.has(item.id)
+                        ? t("vault.hide")
+                        : t("vault.reveal")}
                     </button>
                     <button
                       type="button"
                       className="btn btn-ghost"
                       onClick={() => void startEdit(item)}
                     >
-                      Edit
+                      {t("vault.edit")}
                     </button>
                     <ConfirmButton
                       className="btn btn-ghost"
-                      what="secret"
+                      what={t("vault.deleteWhat")}
                       onConfirm={() => removeItem(item.id)}
                     >
-                      Delete
+                      {t("common.delete")}
                     </ConfirmButton>
                   </span>
                 </li>
@@ -523,9 +611,9 @@ export default function VaultPage() {
                 void saveEdit();
               }}
             >
-              <h3 className="side-heading">Edit secret</h3>
+              <h3 className="side-heading">{t("vault.editHeading")}</h3>
               <label>
-                Title
+                {t("vault.titleField")}
                 <input
                   className="input"
                   value={edit.title}
@@ -533,7 +621,7 @@ export default function VaultPage() {
                 />
               </label>
               <label>
-                Secret
+                {t("vault.secretField")}
                 <textarea
                   className="textarea"
                   rows={3}
@@ -551,14 +639,14 @@ export default function VaultPage() {
                     edit.secret.length === 0
                   }
                 >
-                  Save
+                  {t("vault.save")}
                 </button>
                 <button
                   type="button"
                   className="btn"
                   onClick={() => setEdit(null)}
                 >
-                  Cancel
+                  {t("common.cancel")}
                 </button>
               </div>
             </form>
@@ -572,22 +660,22 @@ export default function VaultPage() {
             void addItem();
           }}
         >
-          <h3 className="side-heading">New secret</h3>
+          <h3 className="side-heading">{t("vault.newHeading")}</h3>
           <label>
-            Title
+            {t("vault.titleField")}
             <input
               className="input"
-              placeholder="e.g. Email login, Recovery seed"
+              placeholder={t("vault.titlePlaceholder")}
               value={draft.title}
               onChange={(e) => setDraft({ ...draft, title: e.target.value })}
             />
           </label>
           <label>
-            Secret
+            {t("vault.secretField")}
             <textarea
               className="textarea"
               rows={4}
-              placeholder="Password, note, recovery code…"
+              placeholder={t("vault.secretPlaceholder")}
               value={draft.secret}
               onChange={(e) => setDraft({ ...draft, secret: e.target.value })}
             />
@@ -602,7 +690,7 @@ export default function VaultPage() {
                 draft.secret.length === 0
               }
             >
-              Add secret
+              {t("vault.addSecret")}
             </button>
           </div>
         </form>

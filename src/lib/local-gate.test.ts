@@ -30,9 +30,16 @@ function gitAvailable(): boolean {
 }
 
 /**
- * A temp directory plus the environment that keeps the host's own git config
+ * A temp directory plus the environment that keeps the host's own git state
  * out of the result: a global `core.hooksPath` would otherwise make the
  * "unarmed" case look armed.
+ *
+ * Git identity and command-scoped config are cleared as well as the config
+ * *files*. Running inside a hook — the pre-push gate runs this very suite —
+ * or inside a linked worktree exports `GIT_DIR` (and possibly
+ * `GIT_CONFIG_PARAMETERS`), which would make every `git` call below resolve to
+ * the HOST repository instead of the throwaway one: the unarmed repo would
+ * read as armed and the non-checkout copy as a checkout.
  */
 function sandbox(): {
   dir: string;
@@ -42,12 +49,26 @@ function sandbox(): {
   const dir = mkdtempSync(join(tmpdir(), "purple-memo-gate-"));
   const emptyConfig = join(dir, "empty.gitconfig");
   writeFileSync(emptyConfig, "");
-  const env = {
-    ...process.env,
-    GIT_CONFIG_GLOBAL: emptyConfig,
-    GIT_CONFIG_SYSTEM: emptyConfig,
-    GIT_CONFIG_NOSYSTEM: "1",
-  };
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (
+      key === "GIT_DIR" ||
+      key === "GIT_WORK_TREE" ||
+      key === "GIT_COMMON_DIR" ||
+      key === "GIT_INDEX_FILE" ||
+      key === "GIT_OBJECT_DIRECTORY" ||
+      key === "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
+      key === "GIT_CONFIG_PARAMETERS" ||
+      key === "GIT_CONFIG_COUNT" ||
+      key.startsWith("GIT_CONFIG_KEY_") ||
+      key.startsWith("GIT_CONFIG_VALUE_")
+    ) {
+      delete env[key];
+    }
+  }
+  env.GIT_CONFIG_GLOBAL = emptyConfig;
+  env.GIT_CONFIG_SYSTEM = emptyConfig;
+  env.GIT_CONFIG_NOSYSTEM = "1";
   return {
     dir,
     env,

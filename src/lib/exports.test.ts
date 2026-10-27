@@ -1,20 +1,27 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { strFromU8, unzipSync } from "fflate";
+import { CONTACT_CSV_ALIASES, mapContactRows } from "./contactImport.ts";
+import { parseCsv as parseImportCsv } from "./csv.ts";
 import {
   ALL_EXPORT_GROUPS,
   buildExportArchive,
   buildExportFiles,
   centsToDecimal,
+  contactsCsv,
   contactVcard,
   csvText,
   EXPORT_FIELD_MAPPING,
   type ExportContact,
   type ExportData,
+  fieldMappingMarkdown,
   journalMarkdown,
   noteMarkdown,
   sanitizeFilePart,
+  tasksCsv,
 } from "./exports.ts";
+import { mapTaskRows, TASK_CSV_ALIASES } from "./taskImport.ts";
 
 function fixture(): ExportData {
   return {
@@ -117,6 +124,26 @@ function fixture(): ExportData {
         note: "@lookup",
         created_at: "2026-10-04",
         shop: null,
+      },
+    ],
+    tasks: [
+      {
+        id: 31,
+        title: "Pay electricity bill",
+        due_date: "2026-11-01",
+        done: 0,
+        repeat: "monthly",
+        note: "- Online portal",
+        created_at: "2026-10-01",
+      },
+      {
+        id: 32,
+        title: "File receipt",
+        due_date: null,
+        done: 1,
+        repeat: "none",
+        note: "",
+        created_at: "2026-10-02",
       },
     ],
     contacts: [
@@ -286,14 +313,23 @@ test("the archive contains every selected file and omits unselected groups", asy
 
   const notesOnly = buildExportFiles(
     data,
-    { notes: true, journal: false, finance: false, contacts: false },
+    {
+      notes: true,
+      journal: false,
+      finance: false,
+      tasks: false,
+      contacts: false,
+    },
     "2026-10-20",
   );
   assert.ok(notesOnly.files.some((file) => file.path.startsWith("notes/")));
   assert.ok(!notesOnly.files.some((file) => file.path === "contacts.vcf"));
+  assert.ok(!notesOnly.files.some((file) => file.path === "contacts.csv"));
+  assert.ok(!notesOnly.files.some((file) => file.path === "tasks.csv"));
   assert.ok(!notesOnly.files.some((file) => file.path.startsWith("journal/")));
   assert.ok(!notesOnly.files.some((file) => file.path.startsWith("finance/")));
   assert.equal(notesOnly.counts.notes, 2);
+  assert.equal(notesOnly.counts.tasks, 0);
   assert.equal(notesOnly.counts.contacts, 0);
 });
 
@@ -308,6 +344,7 @@ test("field mapping names every exported table and every deliberate exclusion", 
     "loans",
     "jobs",
     "payables",
+    "tasks",
     "contacts",
     "trash_items",
     "vault_items",
@@ -315,6 +352,57 @@ test("field mapping names every exported table and every deliberate exclusion", 
   ]) {
     assert.match(sources, new RegExp(table));
   }
+  const docs = readFileSync(
+    new URL("../../docs/EXPORTS.md", import.meta.url),
+    "utf8",
+  );
+  for (const line of fieldMappingMarkdown().split("\n")) {
+    if (line.startsWith("|")) assert.ok(docs.includes(line), line);
+  }
+});
+
+test("tasks.csv and contacts.csv round-trip losslessly through the CSV importers", () => {
+  const data = fixture();
+  const tasksText = tasksCsv(data.tasks);
+  const importedTasks = mapTaskRows(
+    parseImportCsv(tasksText, ["title"], TASK_CSV_ALIASES).rows,
+  );
+  assert.deepEqual(importedTasks.errors, []);
+  assert.deepEqual(importedTasks.valid, [
+    {
+      title: "Pay electricity bill",
+      due_date: "2026-11-01",
+      done: 0,
+      repeat: "monthly",
+      note: "- Online portal",
+    },
+    {
+      title: "File receipt",
+      due_date: null,
+      done: 1,
+      repeat: "none",
+      note: "",
+    },
+  ]);
+
+  const contactsText = contactsCsv(data.contacts);
+  const importedContacts = mapContactRows(
+    parseImportCsv(contactsText, ["name"], CONTACT_CSV_ALIASES).rows,
+  );
+  assert.deepEqual(importedContacts.errors, []);
+  assert.deepEqual(importedContacts.valid, [
+    {
+      name: "Daw \u1000\u103c\u100a\u103a",
+      address: "No. 1, Main St; Yangon",
+      birthday: "10-20",
+      notes: "Met at, coffee",
+      channels: [
+        { kind: "phone", value: "+95 9 123", is_primary: 1, sort_order: 0 },
+        { kind: "email", value: "a@example.com", is_primary: 0, sort_order: 1 },
+      ],
+      tags: ["family", "yangon"],
+    },
+  ]);
 });
 
 test("markdown helpers keep a trailing newline without adding blank ones", () => {

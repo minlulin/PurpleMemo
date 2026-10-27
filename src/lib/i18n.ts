@@ -324,7 +324,6 @@ export const en = {
   "notes.viewRead": "Read",
   "notes.openReader": "Pop-up reader",
   "notes.openReaderAria": "Open note in pop-up reader",
-  "notes.readerTitle": "Note Reader",
   "notes.prevNote": "Previous note",
   "notes.nextNote": "Next note",
   "notes.copyMarkdown": "Copy Markdown",
@@ -359,6 +358,9 @@ export const en = {
   "tasks.add": "Add task",
   "tasks.importCsv": "Import CSV",
   "tasks.importTitle": "Import tasks from CSV",
+  "tasks.dueColumn": "Due date",
+  "tasks.doneColumn": "Done",
+  "tasks.noteColumn": "Note",
   "tasks.remindersAria": "Reminders",
   "tasks.remindersHeading": "Scheduled Reminders",
   "tasks.noReminders": "No scheduled reminders.",
@@ -441,20 +443,14 @@ export const en = {
 
   "settings.backupTitle": "Backup & restore",
   "settings.backupBadge": ".zip or password-protected",
-  "settings.backupNote":
-    "Export everything — every table and photo — into one file, saved wherever you like. The encryption key is never inside the backup: it stays its own file, and a backup without it cannot open the database it came from. Importing a backup replaces ALL current data with the backup's.",
   "settings.protectBackup":
     "Protect the backup with a password (a .{ext} file that needs this password to open)",
   "settings.backupPassword": "Backup password",
   "settings.confirmBackupPassword": "Confirm backup password",
-  "settings.backupPasswordNote":
-    "There is no way to recover a forgotten backup password, and a password only protects the file itself — anything else that can read the drive it sits on can still copy it.",
   "settings.exporting": "Exporting…",
   "settings.exportBackup": "Export backup",
   "settings.importing": "Importing…",
   "settings.importBackup": "Import backup",
-  "settings.lockedNote":
-    "This backup is password-protected. Enter its password to read what is inside — nothing is changed until you confirm.",
   "settings.opening": "Opening…",
   "settings.openBackup": "Open backup",
   "settings.summary":
@@ -479,10 +475,7 @@ export const en = {
   "reset.dangerZone": "Danger zone",
   "reset.dangerZoneBadge": "Permanent",
   "reset.factoryReset": "Factory reset",
-  "reset.removes":
-    "A factory reset removes everything Purple Memo keeps on this device: your notes, journal, tasks, contacts, photos, the backup copies the app made for itself, your settings and PIN, and the database encryption key from the Windows credential store. First-run setup starts again on the next launch.",
-  "reset.notForensic":
-    "This is ordinary deletion, not forensic erasure. Deleted files can still be recovered with the right tools, and copies kept by Windows backup or any other OS-level backup are outside the app's reach — remove those separately if you need them gone too.",
+  "reset.irreversible": "A factory reset cannot be undone.",
   "reset.acknowledge":
     "I understand this permanently deletes everything Purple Memo stores on this device, and that it cannot be undone.",
   "reset.confirmWhat": "everything Purple Memo stores",
@@ -539,6 +532,14 @@ export const en = {
   "import.fileHint":
     "CSV files only. Nothing is written until you confirm the preview.",
   "import.downloadTemplate": "Download template CSV",
+  "import.savingTemplate": "Saving…",
+  "import.saveTemplateTitle": "Save CSV template",
+  "import.csvFilter": "CSV file",
+  "import.templateSaved": "Template CSV saved to {path}.",
+  "import.previewCapped":
+    "Showing the first {shown} of {total} rows in the preview — all {total} valid rows will be imported.",
+  "import.yes": "Yes",
+  "import.no": "No",
   "import.reading": "Reading…",
   "import.rowsToImportAria": "Rows to import",
   "import.errorsTitle": "Rows that will be skipped",
@@ -559,15 +560,72 @@ export const en = {
   "import.error.missingColumns":
     "CSV is missing the required columns {columns} — import rejected.",
   "import.reason.titleRequired": "Title is required.",
-  "import.reason.dueDate": "Due date must be YYYY-MM-DD (or empty).",
-  "import.reason.done": "Done must be true, false, yes, no, 1 or 0.",
+  "import.reason.dueDate":
+    "Due date must be a valid YYYY-MM-DD date (or empty).",
+  "import.reason.done": "Done must be true, false, yes, no, 1 or 0 (or empty).",
   "import.reason.repeat":
     "Repeat must be none, daily, weekly or monthly (or empty).",
   "import.reason.nameRequired": "Name is required.",
-  "import.reason.birthday": "Birthday must be YYYY-MM-DD (or empty).",
+  "import.reason.birthday":
+    "Birthday must be a valid YYYY-MM-DD or MM-DD date (or empty).",
 
+  "contacts.title": "Address Book",
+  "contacts.subtitle":
+    "Personal & business contacts, channels, tags & birthdays",
   "contacts.importCsv": "Import CSV",
   "contacts.importTitle": "Import contacts from CSV",
+  "contacts.directory": "Directory",
+  "contacts.searchPlaceholder": "Search contacts…",
+  "contacts.searchAria": "Search contacts",
+  "contacts.newNamePlaceholder": "New contact name",
+  "contacts.newNameAria": "New contact name",
+  "contacts.add": "Add",
+  "contacts.emptyAll": "No contacts yet — add one above.",
+  "contacts.emptySearch": "No contact matches the search.",
+  "contacts.selectPrompt": "Select a contact on the left, or add a new one.",
+  "contacts.missing":
+    "That contact no longer exists — it may have been deleted.",
+  "contacts.birthdayBadge": "Birthday: {date}",
+  "contacts.save": "Save",
+  "contacts.moveToTrash": "Move to Trash",
+  "contacts.deleteWhat": "contact to Trash",
+  "contacts.nameLabel": "Name",
+  "contacts.addressLabel": "Address",
+  "contacts.addressPlaceholder": "Street, city…",
+  "contacts.birthdayLabel": "Birthday",
+  "contacts.birthdayTypeAria": "Birthday type",
+  "contacts.birthdayNone": "No birthday",
+  "contacts.birthdayFull": "Full date",
+  "contacts.birthdayMonthDay": "Month and day",
+  "contacts.birthdayDateAria": "Birthday date",
+  "contacts.birthdayMonthDayAria": "Birthday month and day",
+  "contacts.birthdayInvalidDate": "Birthday must be a valid date.",
+  "contacts.birthdayInvalidMonthDay":
+    "Month-day must be between 01-01 and 12-31.",
+  "contacts.notesLabel": "Notes",
+  "contacts.channelsHeading": "Channels",
+  "contacts.channelsEmpty": "No channels yet.",
+  "contacts.channelKind.phone": "Phone",
+  "contacts.channelKind.email": "Email",
+  "contacts.channelKind.other": "Other",
+  "contacts.primaryBadge": "Primary",
+  "contacts.makePrimary": "Make primary",
+  "contacts.channelDeleteWhat": "channel {kind}",
+  "contacts.channelKindAria": "Channel kind",
+  "contacts.channelValueAria": "Channel value",
+  "contacts.channelValuePlaceholder": "09… or name@mail.com",
+  "contacts.addChannel": "Add channel",
+  "contacts.tagsHeading": "Tags",
+  "contacts.tagsEmpty": "No tags yet.",
+  "contacts.removeTagAria": "Remove tag {tag}",
+  "contacts.newTagAria": "New tag",
+  "contacts.newTagPlaceholder": "Tag (e.g. family, VIP)",
+  "contacts.addTag": "Add tag",
+
+  "business.jobMissing":
+    "That job is no longer in this view — it may have changed or been deleted.",
+  "business.payableMissing":
+    "That payable is no longer in this view — it may have changed or been deleted.",
 
   "onboarding.title": "Welcome to Purple Memo",
   "onboarding.intro": "A quick note on what this app can and cannot do.",
@@ -584,6 +642,59 @@ export const en = {
   "onboarding.offlineBody":
     "Reminders appear only while Purple Memo is open and unlocked. Nothing syncs to a server.",
   "onboarding.dismiss": "Got it",
+
+  // Vault — the page whose copy carries the security contract, so it is on the
+  // catalogue like every other page (B13). The no-recovery warning in
+  // particular must not stay English-only.
+  "vault.title": "Encrypted Vault",
+  "vault.subtitle":
+    "Per-item AES-256-GCM encrypted secrets derived via PBKDF2-SHA256 (600k iterations)",
+  "vault.itemsAria": "Vault items",
+  "vault.changePassword": "Change password",
+  "vault.lock": "Lock vault",
+  "vault.unavailable":
+    "The vault could not be read, so Purple Memo does not know whether one exists yet. Your password and your secrets are unchanged.",
+  "vault.setupHeading": "Set a vault password",
+  "vault.noRecovery":
+    "There is NO recovery. If you forget this password, your secrets cannot be recovered by anyone — not even on this machine. Store it somewhere safe before you continue.",
+  "vault.passwordAtLeast": "Password (at least {min} characters)",
+  "vault.confirmPassword": "Confirm password",
+  "vault.settingUp": "Setting up…",
+  "vault.setPassword": "Set password",
+  "vault.lockedHeading": "Vault locked",
+  "vault.lockedSubtitle":
+    "Enter your vault password to decrypt and manage secrets.",
+  "vault.password": "Password",
+  "vault.unlocking": "Unlocking…",
+  "vault.unlock": "Unlock",
+  "vault.changeHeading": "Change vault password",
+  "vault.currentPassword": "Current password",
+  "vault.newPassword": "New password",
+  "vault.confirmNewPassword": "Confirm new password",
+  "vault.reencrypting": "Re-encrypting…",
+  "vault.storedSecrets": "Stored Secrets",
+  "vault.empty": "The vault is empty — add a secret.",
+  "vault.updated": "updated {date}",
+  "vault.reveal": "Reveal",
+  "vault.hide": "Hide",
+  "vault.edit": "Edit",
+  "vault.deleteWhat": "secret",
+  "vault.editHeading": "Edit secret",
+  "vault.newHeading": "New secret",
+  "vault.titleField": "Title",
+  "vault.secretField": "Secret",
+  "vault.titlePlaceholder": "e.g. Email login, Recovery seed",
+  "vault.secretPlaceholder": "Password, note, recovery code…",
+  "vault.save": "Save",
+  "vault.addSecret": "Add secret",
+  "vault.error.wrongPassword": "Wrong password — nothing was unlocked.",
+  "vault.error.wrongItem": "Could not decrypt this item — wrong password.",
+  "vault.error.passwordShort": "Password must be at least {min} characters.",
+  "vault.error.noMatch": "Passwords do not match.",
+  "vault.error.newPasswordShort":
+    "New password must be at least {min} characters.",
+  "vault.error.newNoMatch": "New passwords do not match.",
+  "vault.error.wrongCurrent": "Wrong current password — nothing was changed.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -871,7 +982,6 @@ export const my: Record<MessageKey, string> = {
   "notes.viewRead": "ဖတ်ရန်",
   "notes.openReader": "ပေါ့ပ်အပ်ဖြင့် ဖတ်ရန်",
   "notes.openReaderAria": "မှတ်စုကို ပေါ့ပ်အပ်ဖြင့် ဖတ်ရန်",
-  "notes.readerTitle": "မှတ်စု ဖတ်ရှုစနစ်",
   "notes.prevNote": "ယခင် မှတ်စု",
   "notes.nextNote": "နောက် မှတ်စု",
   "notes.copyMarkdown": "Markdown ကူးယူရန်",
@@ -906,6 +1016,9 @@ export const my: Record<MessageKey, string> = {
   "tasks.add": "လုပ်ငန်း ထည့်မည်",
   "tasks.importCsv": "CSV တင်သွင်းမည်",
   "tasks.importTitle": "CSV မှ လုပ်ငန်းများ တင်သွင်းမည်",
+  "tasks.dueColumn": "ရက်ချိန်း",
+  "tasks.doneColumn": "ပြီးစီးမှု",
+  "tasks.noteColumn": "မှတ်ချက်",
   "tasks.remindersAria": "သတိပေးချက်များ",
   "tasks.remindersHeading": "အချိန်ဇယားဆွဲထားသော သတိပေးချက်များ",
   "tasks.noReminders": "အချိန်ဇယားဆွဲထားသော သတိပေးချက် မရှိပါ။",
@@ -989,20 +1102,14 @@ export const my: Record<MessageKey, string> = {
 
   "settings.backupTitle": "အရန်သိမ်းဆည်းမှုနှင့် ပြန်လည်ရယူမှု",
   "settings.backupBadge": ".zip သို့မဟုတ် စကားဝှက်ကာကွယ်ထားသည်",
-  "settings.backupNote":
-    "ဇယားတိုင်းနှင့် ဓာတ်ပုံတိုင်း အပါအဝင် အရာအားလုံးကို ဖိုင်တစ်ခုတည်းအဖြစ် သင်နှစ်သက်ရာ နေရာတွင် သိမ်းဆည်းမည်။ ကုဒ်ဖျက်သော့သည် အရန်သိမ်းဆည်းမှုထဲတွင် ဘယ်တော့မှ မပါဝင်ပါ — ၎င်းသည် သီးခြားဖိုင်အဖြစ် ရှိနေပြီး သော့မပါသော အရန်သိမ်းဆည်းမှုဖြင့် မူလဒေတာဘေ့စ်ကို ဖွင့်၍ မရပါ။ အရန်သိမ်းဆည်းမှုကို တင်သွင်းခြင်းသည် လက်ရှိဒေတာအားလုံးကို အရန်သိမ်းဆည်းမှုဖြင့် အစားထိုးမည်။",
   "settings.protectBackup":
     "အရန်သိမ်းဆည်းမှုကို စကားဝှက်ဖြင့် ကာကွယ်မည် (ဖွင့်ရန် ဤစကားဝှက် လိုအပ်သော .{ext} ဖိုင်)",
   "settings.backupPassword": "အရန်သိမ်းဆည်းမှု စကားဝှက်",
   "settings.confirmBackupPassword": "အရန်သိမ်းဆည်းမှု စကားဝှက် အတည်ပြုမည်",
-  "settings.backupPasswordNote":
-    "မေ့သွားသော အရန်သိမ်းဆည်းမှု စကားဝှက်ကို ပြန်လည်ရယူရန် နည်းလမ်း မရှိပါ။ စကားဝှက်သည် ဖိုင်ကိုယ်တိုင်ကိုသာ ကာကွယ်သည် — ၎င်းတည်ရှိသော ဒရိုက်ကို ဖတ်နိုင်သည့် အခြားမည်သည့်အရာမဆို ကူးယူနိုင်ဆဲဖြစ်သည်။",
   "settings.exporting": "ထုတ်ယူနေသည်…",
   "settings.exportBackup": "အရန်သိမ်းဆည်းမှု ထုတ်ယူမည်",
   "settings.importing": "တင်သွင်းနေသည်…",
   "settings.importBackup": "အရန်သိမ်းဆည်းမှု တင်သွင်းမည်",
-  "settings.lockedNote":
-    "ဤအရန်သိမ်းဆည်းမှုကို စကားဝှက်ဖြင့် ကာကွယ်ထားသည်။ အတွင်းတွင် ဘာရှိသည်ကို ဖတ်ရန် ၎င်း၏ စကားဝှက်ကို ထည့်ပါ — အတည်ပြုသည်အထိ မည်သည့်အရာမျှ မပြောင်းလဲပါ။",
   "settings.opening": "ဖွင့်နေသည်…",
   "settings.openBackup": "အရန်သိမ်းဆည်းမှု ဖွင့်မည်",
   "settings.summary":
@@ -1026,10 +1133,7 @@ export const my: Record<MessageKey, string> = {
   "reset.dangerZone": "အန္တရာယ်ရှိ အပိုင်း",
   "reset.dangerZoneBadge": "အပြီးအပိုင်း ဖျက်မည်",
   "reset.factoryReset": "ဖက်တိုရီ ရိစတေ့ (Factory reset)",
-  "reset.removes":
-    "ဖက်တိုရီ ရိစတေ့က Purple Memo ဤစက်တွင် သိမ်းဆည်းထားသမျှအားလုံးကို ဖျက်ပစ်ပါမည် — မှတ်စုများ၊ ဒိုင်ယာရီ၊ လုပ်ငန်းများ၊ ဆက်သွယ်ရန်စာရင်း၊ ဓာတ်ပုံများ၊ အက်ပ်က ကိုယ်တိုင်ကူးယူထားသော အရန်မိတ္တူများ၊ ဆက်တင်များနှင့် PIN၊ ပြီးတော့ Windows credential store ထဲက ဒေတာဘေ့စ် သော့ဖြစ်ပါသည်။ နောက်တစ်ကြိမ် ဖွင့်သောအခါ ပထမဆုံး သတ်မှတ်ခြင်း အဆင့်မှ ပြန်စပါမည်။",
-  "reset.notForensic":
-    "ဤဖျက်ခြင်းသည် သာမန် ဖျက်ခြင်းဖြစ်ပြီး ရှာဖွေသိမ်းဆည်းခြင်း (forensic) မဟုတ်ပါ — ဖျက်ထားသော ဖိုင်များကို သင့်လျော်သော ကိရိယာမျးဖြင့် ပြန်ယူနိုင်ဆဲဖြစ်ပြီး၊ Windows backup စသည့် စနစ်အဆင့် အရန်သိမ်းမှုများတွင် ကျန်ရှိနေသေးသော မိတ္တူများကို အက်ပ်မှ မဖျက်နိုင်ပါ — လိုအပ်ပါက ၎င်းတို့ကို သီးခြား ဖယ်ရှားပါ။",
+  "reset.irreversible": "ဖက်တိုရီ ရိစတေ့ကို ပြန်လည်ရယူ၍ မရနိုင်ပါ။",
   "reset.acknowledge":
     "ဤလုပ်ဆောင်ချက်က Purple Memo ဤစက်တွင် သိမ်းဆည်းထားသမျှအားလုံးကို အပြီးအပိုင်း ဖျက်ပစ်မည်ဖြစ်ပြီး ပြန်လည်ရယူ၍ မရကြောင်း ကျွန်ုပ် နားလည်ပါသည်။",
   "reset.confirmWhat": "Purple Memo သိမ်းဆည်းထားသမျှ",
@@ -1086,6 +1190,14 @@ export const my: Record<MessageKey, string> = {
   "import.chooseAnother": "အခြားဖိုင် ရွေးချယ်မည်",
   "import.fileHint": "CSV ဖိုင်များသာ။ အစမ်းကြည့်ရှုမှုကို အတည်ပြုသည်အထိ မည်သည့်အရာမျှ မရေးပါ။",
   "import.downloadTemplate": "စံပြစာရွက် CSV ဒေါင်းလုဒ်လုပ်မည်",
+  "import.savingTemplate": "သိမ်းဆည်းနေသည်…",
+  "import.saveTemplateTitle": "CSV စံပြစာရွက် သိမ်းဆည်းမည်",
+  "import.csvFilter": "CSV ဖိုင်",
+  "import.templateSaved": "စံပြစာရွက် CSV ကို {path} တွင် သိမ်းဆည်းပြီးပါပြီ။",
+  "import.previewCapped":
+    "အစမ်းကြည့်ရှုမှုတွင် အတန်း {total} ခုအနက် ပထမ {shown} ခုကိုသာ ပြနေသည် — မှန်ကန်သော အတန်း {total} ခုလုံး တင်သွင်းပါမည်။",
+  "import.yes": "ပြီး",
+  "import.no": "မပြီးသေး",
   "import.reading": "ဖတ်နေသည်…",
   "import.rowsToImportAria": "တင်သွင်းမည့် အတန်းများ",
   "import.errorsTitle": "ကျော်သွားမည့် အတန်းများ",
@@ -1105,15 +1217,70 @@ export const my: Record<MessageKey, string> = {
   "import.error.missingColumns":
     "CSV တွင် လိုအပ်သော ကော်လံများ {columns} မပါဝင်ပါ — တင်သွင်းမှု ငြင်းပယ်ခဲ့သည်။",
   "import.reason.titleRequired": "ခေါင်းစဉ် လိုအပ်ပါသည်။",
-  "import.reason.dueDate": "ရက်ချိန်းသည် YYYY-MM-DD ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
-  "import.reason.done": "done သည် true၊ false၊ yes၊ no၊ 1 သို့မဟုတ် 0 ဖြစ်ရမည်။",
+  "import.reason.dueDate":
+    "ရက်ချိန်းသည် မှန်ကန်သော YYYY-MM-DD ရက်စွဲ ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
+  "import.reason.done":
+    "done သည် true၊ false၊ yes၊ no၊ 1 သို့မဟုတ် 0 ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
   "import.reason.repeat":
     "repeat သည် none၊ daily၊ weekly သို့မဟုတ် monthly ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
   "import.reason.nameRequired": "အမည် လိုအပ်ပါသည်။",
-  "import.reason.birthday": "မွေးနေ့သည် YYYY-MM-DD ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
+  "import.reason.birthday":
+    "မွေးနေ့သည် မှန်ကန်သော YYYY-MM-DD သို့မဟုတ် MM-DD ရက်စွဲ ဖြစ်ရမည် (သို့မဟုတ် အလွတ်ထားနိုင်သည်)။",
 
+  "contacts.title": "ဆက်သွယ်ရန် စာရင်း",
+  "contacts.subtitle":
+    "ကိုယ်ရေးနှင့် လုပ်ငန်း ဆက်သွယ်ရန်များ၊ ဆက်သွယ်ရေး လမ်းကြောင်းများ၊ တက်ဂ်များနှင့် မွေးနေ့များ",
   "contacts.importCsv": "CSV တင်သွင်းမည်",
   "contacts.importTitle": "CSV မှ ဆက်သွယ်ရန်များ တင်သွင်းမည်",
+  "contacts.directory": "လမ်းညွှန်စာရင်း",
+  "contacts.searchPlaceholder": "ဆက်သွယ်ရန်များ ရှာဖွေမည်…",
+  "contacts.searchAria": "ဆက်သွယ်ရန်များ ရှာဖွေမည်",
+  "contacts.newNamePlaceholder": "ဆက်သွယ်ရန် အမည်အသစ်",
+  "contacts.newNameAria": "ဆက်သွယ်ရန် အမည်အသစ်",
+  "contacts.add": "ထည့်မည်",
+  "contacts.emptyAll": "ဆက်သွယ်ရန် မရှိသေးပါ — အပေါ်တွင် တစ်ခု ထည့်ပါ။",
+  "contacts.emptySearch": "ရှာဖွေမှုနှင့် ကိုက်ညီသော ဆက်သွယ်ရန် မရှိပါ။",
+  "contacts.selectPrompt": "ဘယ်ဘက်မှ ဆက်သွယ်ရန် တစ်ခုကို ရွေးပါ၊ သို့မဟုတ် အသစ်ထည့်ပါ။",
+  "contacts.missing": "ထို ဆက်သွယ်ရန် မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+  "contacts.birthdayBadge": "မွေးနေ့ - {date}",
+  "contacts.save": "သိမ်းဆည်းမည်",
+  "contacts.moveToTrash": "အမှိုက်ပုံးသို့ ရွှေ့မည်",
+  "contacts.deleteWhat": "ဆက်သွယ်ရန်",
+  "contacts.nameLabel": "အမည်",
+  "contacts.addressLabel": "လိပ်စာ",
+  "contacts.addressPlaceholder": "လမ်း၊ မြို့…",
+  "contacts.birthdayLabel": "မွေးနေ့",
+  "contacts.birthdayTypeAria": "မွေးနေ့ အမျိုးအစား",
+  "contacts.birthdayNone": "မွေးနေ့ မထည့်ပါ",
+  "contacts.birthdayFull": "ရက်စွဲ အပြည့်အစုံ",
+  "contacts.birthdayMonthDay": "လနှင့် ရက်",
+  "contacts.birthdayDateAria": "မွေးနေ့ ရက်စွဲ",
+  "contacts.birthdayMonthDayAria": "မွေးနေ့ လနှင့် ရက်",
+  "contacts.birthdayInvalidDate": "မွေးနေ့သည် မှန်ကန်သော ရက်စွဲ ဖြစ်ရပါမည်။",
+  "contacts.birthdayInvalidMonthDay": "လနှင့် ရက်သည် 01-01 မှ 12-31 အတွင်း ဖြစ်ရပါမည်။",
+  "contacts.notesLabel": "မှတ်ချက်များ",
+  "contacts.channelsHeading": "ဆက်သွယ်ရေး လမ်းကြောင်းများ",
+  "contacts.channelsEmpty": "ဆက်သွယ်ရေး လမ်းကြောင်း မရှိသေးပါ။",
+  "contacts.channelKind.phone": "ဖုန်း",
+  "contacts.channelKind.email": "အီးမေးလ်",
+  "contacts.channelKind.other": "အခြား",
+  "contacts.primaryBadge": "အဓိက",
+  "contacts.makePrimary": "အဓိက ထားမည်",
+  "contacts.channelDeleteWhat": "{kind} လမ်းကြောင်း",
+  "contacts.channelKindAria": "လမ်းကြောင်း အမျိုးအစား",
+  "contacts.channelValueAria": "ဖုန်း သို့မဟုတ် လိပ်စာ",
+  "contacts.channelValuePlaceholder": "09… သို့မဟုတ် name@mail.com",
+  "contacts.addChannel": "လမ်းကြောင်း ထည့်မည်",
+  "contacts.tagsHeading": "တက်ဂ်များ",
+  "contacts.tagsEmpty": "တက်ဂ် မရှိသေးပါ။",
+  "contacts.removeTagAria": "{tag} တက်ဂ် ဖယ်ရှားမည်",
+  "contacts.newTagAria": "တက်ဂ် အသစ်",
+  "contacts.newTagPlaceholder": "တက်ဂ် (ဥပမာ မိသားစု၊ VIP)",
+  "contacts.addTag": "တက်ဂ် ထည့်မည်",
+  "business.jobMissing":
+    "ထို အလုပ် ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
+  "business.payableMissing":
+    "ထို ပေးရန်ကျန်ငွေ ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
 
   "onboarding.title": "Purple Memo မှ ကြိုဆိုပါသည်",
   "onboarding.intro": "ဤအက်ပ်က ဘာလုပ်နိုင်သည်၊ ဘာမလုပ်နိုင်သည်ကို အမြန်ရှင်းပြချက်။",
@@ -1130,6 +1297,56 @@ export const my: Record<MessageKey, string> = {
   "onboarding.offlineBody":
     "သတိပေးချက်များသည် Purple Memo ဖွင့်ထားပြီး လော့ခ်ဖွင့်ထားစဉ်တွင်သာ ပေါ်လာမည်။ ဆာဗာသို့ မည်သည့်အရာမျှ မထပ်တူပြုပါ။",
   "onboarding.dismiss": "နားလည်ပါပြီ",
+
+  // Vault — mirrors the English block above key for key, including the
+  // {min} / {date} slots (the catalogue test pins placeholder parity).
+  "vault.title": "ကုဒ်ဝှက်ထားသော လျှို့ဝှက်သေတ္တာ",
+  "vault.subtitle":
+    "တစ်ခုချင်းစီကို AES-256-GCM ဖြင့် ကုဒ်ဖျက်ထားပြီး PBKDF2-SHA256 (600k iterations) ဖြင့် သော့များ ဆွဲထားသည်",
+  "vault.itemsAria": "လျှို့ဝှက်သေတ္တာ အကြောင်းအရာများ",
+  "vault.changePassword": "စကားဝှက် ပြောင်းမည်",
+  "vault.lock": "သော့ခတ်မည်",
+  "vault.unavailable":
+    "လျှို့ဝှက်သေတ္တာကို ဖတ်၍ မရပါ — ရှိ/မရှိကို Purple Memo မသိရသေးပါ။ သင့်စကားဝှက်နှင့် လျှို့ဝှက်အချက်အလက်များ မပြောင်းလဲပါ။",
+  "vault.setupHeading": "လျှို့ဝှက်သေတ္တာ စကားဝှက် သတ်မှတ်မည်",
+  "vault.noRecovery":
+    "ပြန်လည်ရယူ၍ မရပါ။ ဤစကားဝှက်ကို မေ့သွားပါက သင့်လျှို့ဝှက်အချက်အလက်များကို မည်သူမှ ပြန်လည်ရယူ၍ မရပါ — ဤစက်ပေါ်တွင်ပင် မရပါ။ ဆက်လက်မလုပ်မီ ၎င်းကို ဘေးကင်းရာတွင် သိမ်းဆည်းပါ။",
+  "vault.passwordAtLeast": "စကားဝှက် (အနည်းဆုံး စာလုံး {min} လုံး)",
+  "vault.confirmPassword": "စကားဝှက် အတည်ပြုမည်",
+  "vault.settingUp": "သတ်မှတ်နေသည်…",
+  "vault.setPassword": "စကားဝှက် သတ်မှတ်မည်",
+  "vault.lockedHeading": "လျှို့ဝှက်သေတ္တာ သော့ခတ်ထားသည်",
+  "vault.lockedSubtitle": "လျှို့ဝှက်အချက်အလက်များကို ဖွင့်ရန် သင့်လျှို့ဝှက်သေတ္တာစကားဝှက်ကို ထည့်ပါ။",
+  "vault.password": "စကားဝှက်",
+  "vault.unlocking": "ဖွင့်နေသည်…",
+  "vault.unlock": "ဖွင့်မည်",
+  "vault.changeHeading": "လျှို့ဝှက်သေတ္တာ စကားဝှက် ပြောင်းမည်",
+  "vault.currentPassword": "လက်ရှိစကားဝှက်",
+  "vault.newPassword": "စကားဝှက်အသစ်",
+  "vault.confirmNewPassword": "စကားဝှက်အသစ် အတည်ပြုမည်",
+  "vault.reencrypting": "ပြန်လည်ကုဒ်ဖျက်နေသည်…",
+  "vault.storedSecrets": "သိမ်းဆည်းထားသော လျှို့ဝှက်များ",
+  "vault.empty": "လျှို့ဝှက်သေတ္တာ ဗလာဖြစ်နေသည် — ထည့်ပါ။",
+  "vault.updated": "အသစ်ပြင်ဆင်ခြင်း {date}",
+  "vault.reveal": "ပြမည်",
+  "vault.hide": "ကွယ်မည်",
+  "vault.edit": "ပြင်မည်",
+  "vault.deleteWhat": "လျှို့ဝှက်",
+  "vault.editHeading": "လျှို့ဝှက် ပြင်ဆင်မည်",
+  "vault.newHeading": "လျှို့ဝှက်အသစ်",
+  "vault.titleField": "ခေါင်းစဉ်",
+  "vault.secretField": "လျှို့ဝှက်",
+  "vault.titlePlaceholder": "ဥပမာ အီးမေးလ်အကောင့်၊ Recovery seed",
+  "vault.secretPlaceholder": "စကားဝှက်၊ မှတ်စု၊ recovery code…",
+  "vault.save": "သိမ်းမည်",
+  "vault.addSecret": "လျှို့ဝှက် ထည့်မည်",
+  "vault.error.wrongPassword": "စကားဝှက် မှားနေသည် — မည်သည့်အရာမျှ မဖွင့်ရသေးပါ။",
+  "vault.error.wrongItem": "ဤအကြောင်းအရာကို ဖွင့်၍ မရပါ — စကားဝှက် မှားနေသည်။",
+  "vault.error.passwordShort": "စကားဝှက်သည် အနည်းဆုံး စာလုံး {min} လုံး ရှိရမည်။",
+  "vault.error.noMatch": "စကားဝှက်များ မတူပါ။",
+  "vault.error.newPasswordShort": "စကားဝှက်အသစ်သည် အနည်းဆုံး စာလုံး {min} လုံး ရှိရမည်။",
+  "vault.error.newNoMatch": "စကားဝှက်အသစ်များ မတူပါ။",
+  "vault.error.wrongCurrent": "လက်ရှိစကားဝှက် မှားနေသည် — မည်သည့်အရာမျှ မပြောင်းလဲပါ။",
 };
 
 const messages: Record<Locale, Partial<Record<MessageKey, string>>> = {

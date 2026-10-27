@@ -24,8 +24,13 @@ from `backup_save_file`; an export is never passed off as a backup.
   major units (`amount`, dot separator, two places).
 - A CSV text value starting with `=`, `+`, `-`, `@`, tab or carriage return is
   prefixed with an apostrophe so spreadsheet software treats it as text.
-- Contacts are one vCard 4.0 file, `contacts.vcf`, with CRLF line endings and
-  UTF-8 line folding at 75 octets. Month-day birthdays use `BDAY:--MM-DD`.
+- Tasks are written to `tasks.csv` with the same columns accepted by the Tasks
+  CSV importer (`title`, `due_date`, `done`, `repeat`, `note`, plus `id` and
+  `created_at`).
+- Contacts are exported as both `contacts.vcf` (vCard 4.0 with CRLF line endings
+  and UTF-8 line folding at 75 octets; month-day birthdays use `BDAY:--MM-DD`)
+  and `contacts.csv` (semicolon-separated channels and tags matching the
+  Contacts CSV importer).
 
 ## Field-by-field inclusion
 
@@ -40,11 +45,12 @@ from `backup_save_file`; an export is never passed off as a backup.
 | loans | id, counterparty, direction, amount_cents, amount, repaid_cents, repaid, remaining_cents, remaining, due_date, state, note, created_at | finance/loans.csv | state is derived at export time from repaid_cents, amount_cents and due_date. |
 | jobs + shops | id, title, shop, total_cents, total, paid_cents, paid, remaining_cents, remaining, job_date, warranty_days, status, note, created_at | finance/jobs.csv | shop is the shop name, or empty when the job has none. Remaining never goes below zero. |
 | payables + shops | id, title, shop, amount_cents, amount, due_date, paid, note, created_at | finance/payables.csv | Paid and unpaid rows are both exported; paid stays the stored 0/1 flag. |
-| contacts, contact_channels, contact_tags | id, name, address, birthday, notes, created_at, channels, tags | contacts.vcf | One vCard 4.0 card per contact; channels keep their stored order and primary flag. |
+| tasks | id, title, due_date, done, repeat, note, created_at | tasks.csv | Open and completed tasks are both exported; columns match the Tasks CSV importer. |
+| contacts, contact_channels, contact_tags | id, name, address, birthday, notes, created_at, channels, tags | contacts.vcf, contacts.csv | vCard 4.0 cards plus a semicolon-joined CSV matching the Contacts CSV importer; channels keep primary order. |
 | wallets, income_categories, expense_categories, shops | id, name | referenced by name in finance CSVs | Reference tables are not separate files; a renamed row exports under its current name. |
 | trash_items | - | - | Deliberately excluded from readable exports. Trash stays recoverable in the app and is included in backup archives. |
 | vault_items | - | - | Deliberately excluded. Vault contents are ciphertext and are covered by backup archives instead. |
-| habits, tasks, shopping, memories, gallery | - | - | Not part of the readable export set; they remain available through backup archives. |
+| habits, reminders, shopping, memories, gallery | - | - | Not part of the readable export set; they remain available through backup archives. |
 | settings | - | - | Never exported: theme, PIN, security question and notification preferences are local app state. |
 
 ## Deliberate limits
@@ -52,5 +58,5 @@ from `backup_save_file`; an export is never passed off as a backup.
 - Photo bytes and Vault plaintext/ciphertext are not in a readable export.
 - Trash contents and settings are not in a readable export.
 - Relationships (`links`) are not a separate file; they remain in backups.
-- Habits, tasks, shopping lists, memories and gallery metadata are outside the
-  export set and remain in backups.
+- Habits, scheduled reminders, shopping lists, memories and gallery metadata are
+  outside the export set and remain in backups.

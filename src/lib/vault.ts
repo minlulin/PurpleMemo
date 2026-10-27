@@ -164,10 +164,33 @@ export function createVaultRepo(driver: DataDriver) {
     { salt: string; key: CryptoKey; tag: string }
   >();
 
+  /**
+   * Bumped by {@link dropKeyCache}. A derivation that started before the bump
+   * must not repopulate the cache after it (B4): `deriveItemKey` awaits a query
+   * and ~600k PBKDF2 iterations, and `lockVault` is synchronous — without this
+   * counter the clear lands on an empty cache and the key arrives right behind
+   * it, leaving a decrypting `CryptoKey` cached while the vault reports itself
+   * locked, which is exactly the window `lockVault`'s comment claims to bound.
+   */
+  let keyGeneration = 0;
+
+  /**
+   * Drop every cached key and invalidate derivations still in flight.
+   *
+   * Used by `lockVault` and by `changePassword` (whose keys all belong to the
+   * outgoing password). The generation, not the clear, is what makes the
+   * guarantee true — see {@link keyGeneration}.
+   */
+  function dropKeyCache(): void {
+    keyGeneration += 1;
+    keyCache.clear();
+  }
+
   async function deriveItemKey(
     itemId: number,
     password: string,
   ): Promise<{ salt: string; key: CryptoKey; tag: string }> {
+    const generation = keyGeneration;
     // Cache first, so a hit costs no query — and the entry carries the salt its
     // tag was derived from, so the tag can be recomputed without one.
     const cached = keyCache.get(itemId);
@@ -183,7 +206,7 @@ export function createVaultRepo(driver: DataDriver) {
     if (!salt) throw new Error(`vault item ${itemId} has no salt`);
     const key = await deriveVaultKey(password, salt);
     const entry = { salt, key, tag: await deriveVaultTag(password, salt) };
-    keyCache.set(itemId, entry);
+    if (generation === keyGeneration) keyCache.set(itemId, entry);
     return entry;
   }
 
@@ -253,9 +276,16 @@ export function createVaultRepo(driver: DataDriver) {
       }
     },
 
-    /** Drop all in-memory keys (auto-lock bounds the unlocked window). */
+    /**
+     * Drop all in-memory keys (auto-lock bounds the unlocked window).
+     *
+     * Synchronous, so it also invalidates any derivation that is mid-flight —
+     * see {@link dropKeyCache}. The in-flight call still gets its key back (its
+     * caller is one await away from using it) but nothing is cached behind the
+     * lock.
+     */
     lockVault(): void {
-      keyCache.clear();
+      dropKeyCache();
     },
 
     async addItem(
@@ -320,9 +350,19 @@ export function createVaultRepo(driver: DataDriver) {
       const row = rows[0];
       if (!row) throw new Error(`vault item ${id} not found`);
       const { key } = await deriveItemKey(id, password);
-      const plaintext =
-        fields.plaintext ??
-        (await decryptItem(key, { ciphertext: row.ciphertext, iv: row.iv }));
+      // The password is PROVEN here even when a new plaintext is supplied
+      // (B5). `deriveItemKey` never fails on a wrong password — the tag only
+      // decides whether a cached key may be reused, otherwise it derives
+      // whatever it is handed — so skipping this decrypt would let
+      // `updateItem(id, { plaintext }, wrongPassword)` re-encrypt the row under
+      // a key from the wrong password, keep the item's real salt, and report
+      // success. The row would then be unreadable by the real password, and at
+      // `MIN(id)` (what `unlock` proves against) that rejects the vault itself.
+      const stored = await decryptItem(key, {
+        ciphertext: row.ciphertext,
+        iv: row.iv,
+      });
+      const plaintext = fields.plaintext ?? stored;
       const cipher = await encryptWithKey(key, plaintext);
       await driver.execute(
         "UPDATE vault_items SET title = ?, ciphertext = ?, iv = ?, updated_at = ? WHERE id = ?",
@@ -398,8 +438,9 @@ export function createVaultRepo(driver: DataDriver) {
       // it was derived from the OLD password, so each would need a fresh tag
       // and a fresh key from the new one. Clearing costs one PBKDF2 per item
       // on next use, which is the price of keeping a tag of the new password in
-      // memory instead of nothing.
-      keyCache.clear();
+      // memory instead of nothing. `dropKeyCache` (B4) also invalidates a
+      // derivation that started under the old password and has not landed yet.
+      dropKeyCache();
     },
 
     async deleteItem(id: number): Promise<void> {

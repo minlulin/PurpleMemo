@@ -92,9 +92,3 @@ export function focusedRowFor(
 ): number | null {
   return target.entity?.type === type ? target.entity.id : null;
 }
-
-/** What a page says when the row it was sent to is not there. */
-export function missingRowMessage(type: LinkableEntityType): string {
-  const name = type === "note" ? "note" : type === "task" ? "task" : "contact";
-  return `That ${name} no longer exists — it may have been deleted.`;
-}

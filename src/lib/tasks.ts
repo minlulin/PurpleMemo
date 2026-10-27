@@ -8,20 +8,40 @@ import {
   addDaysToDateTime,
   addMonths,
   addMonthsToDateTime,
+  isValidISODate,
   todayLocal,
 } from "./dates.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { ReminderRow, TaskRow } from "./types.ts";
 
-/** Hard cap on catch-up steps when rolling an overdue repeat forward. */
+/**
+ * Hard cap on catch-up steps in {@link nextReminderAt}'s walk (an unparseable
+ * stamp would otherwise never advance far enough to end it).
+ */
 export const REPEAT_ROLL_MAX_STEPS = 1000;
 
 /**
- * Next due date after marking a repeating task done. `none` repeats
- * never roll (the task simply stays done). Every other repeat advances the
- * due date by one period per step until it lands strictly after `today` —
- * completing an overdue task re-arms it in the future instead of leaving it
- * immediately overdue again. The walk is hard-capped.
+ * Next due date after marking a repeating task done.
+ *
+ * `none` repeats never roll (the task simply stays done). Every other repeat
+ * advances ONE period from whichever is later: the stored due date when it is
+ * still in the future, or today.
+ *
+ * One step is all this needs, because that starting point is never behind
+ * `today` — so the result is always strictly in the future, which is the whole
+ * contract: completing an overdue task re-arms it instead of leaving it
+ * immediately overdue again. An earlier version walked period-by-period from
+ * the stored date with a cap and a progress guard, but `next` could never be
+ * older than `today`, so the first step always returned and the loop was dead
+ * code describing a walk that never happened (B14).
+ *
+ * The consequence to know: an OVERDUE task re-anchors to the completion day
+ * rather than to its old schedule. A daily task three days late lands on
+ * tomorrow — where a walk would land too — but a monthly task due on the 1st
+ * and completed on the 19th is next due on the 19th of the following month,
+ * not the 1st. Shifted anchors are the trade for "one step, always future";
+ * `nextReminderAt` below is the counterpart that *does* walk, because a
+ * reminder that lands one period short of now fires again on the next poll.
  */
 export function nextDueDate(
   dueDate: string | null,
@@ -35,14 +55,14 @@ export function nextDueDate(
     return addMonths(d, 1);
   };
   // Roll from whichever is later: the due date or today (a task with no
-  // due date or one far in the past starts from today).
-  let next = dueDate !== null && dueDate > today ? dueDate : today;
-  for (let i = 0; i < REPEAT_ROLL_MAX_STEPS; i++) {
-    next = step(next);
-    if (next > today) return next;
-  }
-  // Pathological (a decade of daily catch-up) — re-arm one period out.
-  return next;
+  // due date, an unreadable one, or one far in the past starts from today).
+  const from =
+    dueDate !== null && isValidISODate(dueDate) && dueDate > today
+      ? dueDate
+      : today;
+  // Both branches advance a VALID date (an unreadable due date never reaches
+  // here — `isValidISODate` rejected it), so this is strictly after `today`.
+  return step(from);
 }
 
 /**
@@ -66,9 +86,10 @@ function stepReminderTime(
  * single step would leave it still overdue, and it would fire again on every
  * poll until it had caught up.
  *
- * The walk is hard-capped like `nextDueDate`, and a step that does not advance
- * the time ends it instead of looping forever (an unparseable value comes back
- * unchanged from the date helpers, so that guard is what terminates it).
+ * The walk is hard-capped by `REPEAT_ROLL_MAX_STEPS`, and a step that does
+ * not advance the time ends it instead of looping forever (an unparseable
+ * value comes back unchanged from the date helpers, so that guard is what
+ * terminates it) — unlike `nextDueDate`, which needs only its single step.
  */
 export function nextReminderAt(
   remindAt: string,

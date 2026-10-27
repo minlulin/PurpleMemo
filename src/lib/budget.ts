@@ -359,6 +359,10 @@ export function createBudgetRepo(driver: DataDriver) {
      * delete — correctly. Rather than surface that as an opaque foreign-key
      * error, the usage is checked and named: a wallet with entries in it is
      * history, and deleting it would strand those entries.
+     *
+     * `recurring_payments.wallet_id` has no ON DELETE action either; null it
+     * out first so deleting a wallet with only recurring rules attached does
+     * not hit a foreign-key error.
      */
     async deleteWallet(id: number): Promise<void> {
       const rows = await driver.query<{ uses: number }>(
@@ -372,7 +376,13 @@ export function createBudgetRepo(driver: DataDriver) {
           `This wallet has ${uses} entr${uses === 1 ? "y" : "ies"} recorded against it. Rename it instead, or delete those entries first.`,
         );
       }
-      await driver.execute("DELETE FROM wallets WHERE id = ?", [id]);
+      await driver.batch([
+        {
+          sql: "UPDATE recurring_payments SET wallet_id = NULL WHERE wallet_id = ?",
+          params: [id],
+        },
+        { sql: "DELETE FROM wallets WHERE id = ?", params: [id] },
+      ]);
     },
 
     /** Balance = income − expense entries naming the wallet. */
@@ -468,6 +478,10 @@ export function createBudgetRepo(driver: DataDriver) {
      * cascades (`expense_limits.category_id ... ON DELETE CASCADE`), but
      * entries do not — an expense entry naming a deleted category would leave
      * the Budget's totals unable to explain themselves.
+     *
+     * `recurring_payments.category_id` has no ON DELETE action; null it out
+     * first so deleting a category with only recurring rules attached does
+     * not hit a foreign-key error.
      */
     async deleteExpenseCategory(id: number): Promise<void> {
       const rows = await driver.query<{ uses: number }>(
@@ -480,7 +494,13 @@ export function createBudgetRepo(driver: DataDriver) {
           `This category has ${uses} expense entr${uses === 1 ? "y" : "ies"} in it. Rename it instead, or delete those entries first.`,
         );
       }
-      await driver.execute("DELETE FROM expense_categories WHERE id = ?", [id]);
+      await driver.batch([
+        {
+          sql: "UPDATE recurring_payments SET category_id = NULL WHERE category_id = ?",
+          params: [id],
+        },
+        { sql: "DELETE FROM expense_categories WHERE id = ?", params: [id] },
+      ]);
     },
 
     /** Delete an income category, only while unused. */
@@ -663,7 +683,7 @@ export function createBudgetRepo(driver: DataDriver) {
             input.categoryId,
             input.walletId,
             input.entryDate,
-            input.note,
+            input.note ?? "",
             todayLocal(),
           ],
         },

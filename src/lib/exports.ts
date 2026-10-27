@@ -15,15 +15,22 @@ import type {
   NoteRow,
   PayableRow,
   ShopRow,
+  TaskRow,
   WalletRow,
 } from "./types.ts";
 
-export type ExportGroup = "notes" | "journal" | "finance" | "contacts";
+export type ExportGroup =
+  | "notes"
+  | "journal"
+  | "finance"
+  | "tasks"
+  | "contacts";
 
 export interface ExportSelection {
   notes: boolean;
   journal: boolean;
   finance: boolean;
+  tasks: boolean;
   contacts: boolean;
 }
 
@@ -31,6 +38,7 @@ export const ALL_EXPORT_GROUPS: ExportSelection = {
   notes: true,
   journal: true,
   finance: true,
+  tasks: true,
   contacts: true,
 };
 
@@ -82,6 +90,7 @@ export interface ExportData {
   loans: ExportLoanRow[];
   jobs: ExportJobRow[];
   payables: ExportPayableRow[];
+  tasks: TaskRow[];
   contacts: ExportContact[];
   today: string;
 }
@@ -99,6 +108,7 @@ export interface ExportCounts {
   loans: number;
   jobs: number;
   payables: number;
+  tasks: number;
   contacts: number;
 }
 
@@ -182,11 +192,18 @@ export const EXPORT_FIELD_MAPPING: FieldMappingRow[] = [
       "Paid and unpaid rows are both exported; paid stays the stored 0/1 flag.",
   },
   {
+    source: "tasks",
+    fields: "id, title, due_date, done, repeat, note, created_at",
+    destination: "tasks.csv",
+    notes:
+      "Open and completed tasks are both exported; columns match the Tasks CSV importer.",
+  },
+  {
     source: "contacts, contact_channels, contact_tags",
     fields: "id, name, address, birthday, notes, created_at, channels, tags",
-    destination: "contacts.vcf",
+    destination: "contacts.vcf, contacts.csv",
     notes:
-      "One vCard 4.0 card per contact; channels keep their stored order and primary flag.",
+      "vCard 4.0 cards plus a semicolon-joined CSV matching the Contacts CSV importer; channels keep primary order.",
   },
   {
     source: "wallets, income_categories, expense_categories, shops",
@@ -210,7 +227,7 @@ export const EXPORT_FIELD_MAPPING: FieldMappingRow[] = [
       "Deliberately excluded. Vault contents are ciphertext and are covered by backup archives instead.",
   },
   {
-    source: "habits, tasks, shopping, memories, gallery",
+    source: "habits, reminders, shopping, memories, gallery",
     fields: "-",
     destination: "-",
     notes:
@@ -272,8 +289,11 @@ export function noteExportPath(note: NoteRow): string {
 }
 
 export function journalExportPath(entry: JournalEntryRow): string {
-  const year = entry.entry_date.slice(0, 4);
-  return `journal/${year}/${entry.entry_date}.md`;
+  const date = entry.entry_date.match(/^\d{4}-\d{2}-\d{2}$/)
+    ? entry.entry_date
+    : sanitizeFilePart(entry.entry_date, "journal");
+  const year = date.slice(0, 4);
+  return `journal/${year}/${date}.md`;
 }
 
 export function centsToDecimal(cents: number): string {
@@ -535,6 +555,56 @@ export function payablesCsv(rows: ExportPayableRow[]): string {
   );
 }
 
+export function tasksCsv(rows: TaskRow[]): string {
+  return csvDocument(
+    ["id", "title", "due_date", "done", "repeat", "note", "created_at"],
+    rows.map((row) => [
+      row.id,
+      row.title,
+      row.due_date,
+      row.done,
+      row.repeat,
+      row.note,
+      row.created_at,
+    ]),
+  );
+}
+
+export function contactsCsv(contacts: ExportContact[]): string {
+  const byKind = (channels: ContactChannelRow[], kind: ContactChannelKind) =>
+    channels
+      .filter((ch) => ch.kind === kind)
+      .sort((a, b) => b.is_primary - a.is_primary)
+      .map((ch) => ch.value)
+      .join("; ");
+  return csvDocument(
+    [
+      "id",
+      "name",
+      "phones",
+      "emails",
+      "others",
+      "address",
+      "birthday",
+      "notes",
+      "tags",
+      "created_at",
+    ],
+    contacts.map(({ contact, channels, tags }) => [
+      contact.id,
+      contact.name,
+      byKind(channels, "phone"),
+      byKind(channels, "email"),
+      byKind(channels, "other"),
+      contact.address,
+      contact.birthday,
+      contact.notes,
+      tags.join("; "),
+      contact.created_at,
+    ]),
+  );
+}
+
 export function escapeVcardText(raw: string): string {
   return raw
     .replace(/\\/g, "\\\\")
@@ -647,7 +717,10 @@ export function readmeText(
   if (selection.journal) groups.push("journal/ - Markdown journal entries");
   if (selection.finance)
     groups.push("finance/ - income, expenses, loans, jobs, payables CSV");
-  if (selection.contacts) groups.push("contacts.vcf - vCard 4.0 address book");
+  if (selection.tasks)
+    groups.push("tasks.csv - tasks & repeating schedules CSV");
+  if (selection.contacts)
+    groups.push("contacts.vcf + contacts.csv - vCard 4.0 and CSV address book");
   return [
     "Purple Memo readable export",
     `Generated: ${exportedAt}`,
@@ -685,6 +758,7 @@ export function buildExportFiles(
     loans: 0,
     jobs: 0,
     payables: 0,
+    tasks: 0,
     contacts: 0,
   };
   if (selection.notes) {
@@ -731,10 +805,21 @@ export function buildExportFiles(
     counts.jobs = data.jobs.length;
     counts.payables = data.payables.length;
   }
+  if (selection.tasks) {
+    files.push({
+      path: "tasks.csv",
+      text: tasksCsv(data.tasks),
+    });
+    counts.tasks = data.tasks.length;
+  }
   if (selection.contacts) {
     files.push({
       path: "contacts.vcf",
       text: contactsVcard(data.contacts),
+    });
+    files.push({
+      path: "contacts.csv",
+      text: contactsCsv(data.contacts),
     });
     counts.contacts = data.contacts.length;
   }
@@ -828,6 +913,7 @@ export function createExportsRepo(driver: DataDriver) {
         loans,
         jobRows,
         payableRows,
+        tasks,
         contacts,
         channels,
         tags,
@@ -901,6 +987,9 @@ export function createExportsRepo(driver: DataDriver) {
                 ORDER BY payables.id`,
             )
           : none<PayableJoinedRow>(),
+        selection.tasks
+          ? driver.query<TaskRow>("SELECT * FROM tasks ORDER BY id")
+          : none<TaskRow>(),
         selection.contacts
           ? driver.query<ContactRow>("SELECT * FROM contacts ORDER BY name, id")
           : none<ContactRow>(),
@@ -955,6 +1044,7 @@ export function createExportsRepo(driver: DataDriver) {
           ...row,
           shop: shop_name,
         })),
+        tasks,
         contacts: contacts.map((contact) => ({
           contact,
           channels: channelsByContact.get(contact.id) ?? [],

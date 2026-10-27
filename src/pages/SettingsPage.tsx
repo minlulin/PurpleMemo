@@ -583,7 +583,10 @@ export default function SettingsPage(p: SettingsPageProps) {
     const sync = async () => {
       try {
         const info = await shareRepo.status();
-        if (!cancelled) setShareState(info);
+        if (!cancelled) {
+          setShareState(info);
+          setShareCopied(false);
+        }
       } catch {
         // Keep the last known state — the buttons report real errors.
       }
@@ -648,6 +651,8 @@ export default function SettingsPage(p: SettingsPageProps) {
   const copyShareLink = async () => {
     const url = shareState?.url;
     if (!url) return;
+    setError("");
+    setShareCopied(false);
     try {
       await navigator.clipboard.writeText(url);
       setShareCopied(true);
@@ -783,10 +788,6 @@ export default function SettingsPage(p: SettingsPageProps) {
             </span>
             <div>
               <h2 className="editor-title">Settings</h2>
-              <p className="page-subtitle">
-                Appearance, PIN security, database key export, local backups,
-                LAN share &amp; updates
-              </p>
             </div>
           </div>
         </div>
@@ -835,10 +836,6 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">Appearance</h3>
           <span className="badge badge-accent">{p.theme}</span>
         </div>
-        <p className="page-subtitle">
-          Choose between the dark-first PurpleShade palette and its high-clarity
-          light mode mirror.
-        </p>
         <fieldset className="theme-segmented">
           <legend className="visually-hidden">Theme</legend>
           <button
@@ -873,7 +870,6 @@ export default function SettingsPage(p: SettingsPageProps) {
               ))}
             </select>
           </label>
-          <p className="muted">{t("settings.languageHint")}</p>
         </div>
       </section>
 
@@ -973,11 +969,6 @@ export default function SettingsPage(p: SettingsPageProps) {
             {preview ? "previews on" : "previews off"}
           </span>
         </div>
-        <p className="page-subtitle">
-          Reminders alert only while Purple Memo is open and unlocked — there is
-          no background delivery. Your operating system may show notifications
-          on screen while they do.
-        </p>
         <label className="check-label">
           <input
             type="checkbox"
@@ -1010,10 +1001,6 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">Vault</h3>
           <span className="badge badge-accent">AES-256-GCM</span>
         </div>
-        <p className="muted">
-          Password-protected secrets. Setup, unlock and password changes live on
-          the Vault page.
-        </p>
         <div className="editor-row">
           <button
             type="button"
@@ -1035,12 +1022,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           <span className="badge badge-warn">Sensitive</span>
         </div>
         <p className="muted">
-          A database backup without this key is unopenable — and this key on its
-          own opens your data. Save it as its own file, stored apart from any
-          backup, and never send it anywhere. The key is written straight to the
-          file you choose and is never shown, copied, or kept in memory by this
-          window. Every export is recorded in key-export.log beside the
-          database. Backup export and import live below.
+          If this key is lost, the data it protects cannot be recovered.
         </p>
         <label className="settings-check">
           <input
@@ -1071,7 +1053,6 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">{t("settings.backupTitle")}</h3>
           <span className="badge">{t("settings.backupBadge")}</span>
         </div>
-        <p className="muted">{t("settings.backupNote")}</p>
         <label className="check-label">
           <input
             type="checkbox"
@@ -1086,33 +1067,30 @@ export default function SettingsPage(p: SettingsPageProps) {
           {t("settings.protectBackup", { ext: ENCRYPTED_BACKUP_EXTENSION })}
         </label>
         {passwordBackup && (
-          <>
-            <div className="form-grid">
-              <label>
-                {t("settings.backupPassword")}
-                <input
-                  className="input"
-                  type="password"
-                  autoComplete="new-password"
-                  disabled={backupBusy}
-                  value={backupPassword}
-                  onChange={(e) => setBackupPassword(e.target.value)}
-                />
-              </label>
-              <label>
-                {t("settings.confirmBackupPassword")}
-                <input
-                  className="input"
-                  type="password"
-                  autoComplete="new-password"
-                  disabled={backupBusy}
-                  value={backupPasswordConfirm}
-                  onChange={(e) => setBackupPasswordConfirm(e.target.value)}
-                />
-              </label>
-            </div>
-            <p className="muted">{t("settings.backupPasswordNote")}</p>
-          </>
+          <div className="form-grid">
+            <label>
+              {t("settings.backupPassword")}
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                disabled={backupBusy}
+                value={backupPassword}
+                onChange={(e) => setBackupPassword(e.target.value)}
+              />
+            </label>
+            <label>
+              {t("settings.confirmBackupPassword")}
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                disabled={backupBusy}
+                value={backupPasswordConfirm}
+                onChange={(e) => setBackupPasswordConfirm(e.target.value)}
+              />
+            </label>
+          </div>
         )}
         <div className="editor-row">
           <button
@@ -1142,7 +1120,6 @@ export default function SettingsPage(p: SettingsPageProps) {
         </div>
         {lockedFile !== null && (
           <div>
-            <p className="alert alert-note">{t("settings.lockedNote")}</p>
             <label>
               {t("settings.backupPassword")}
               <input
@@ -1229,19 +1206,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             {shareState?.running ? "Live on LAN" : "Off"}
           </span>
         </div>
-        <p className="muted">
-          A read-only view of your dashboard for a phone on the same Wi-Fi:
-          money, wallets, due items, habits, upcoming dates and recent notes.
-          The vault, settings and photos are never part of it. Anyone the link
-          reaches can read that snapshot, so turn it off when you are done —
-          sharing never survives a restart and stops when the app is locked.
-        </p>
-        <p className="alert alert-note" role="note">
-          The snapshot is AES-256-GCM encrypted. Its key is carried in the link
-          fragment, which is not sent in HTTP requests. HTTP cannot authenticate
-          the desktop, so an active network attacker could replace this page and
-          capture the key. Use only on a trusted private network.
-        </p>
+        <p className="muted">Use sharing only on a trusted private network.</p>
         {shareState?.running && (
           <p className="alert alert-note" role="status">
             Sharing is live. Locking Purple Memo stops this sharing session and
@@ -1305,9 +1270,6 @@ export default function SettingsPage(p: SettingsPageProps) {
                 {shareBusy ? "Starting…" : "Start sharing"}
               </button>
             </div>
-            <p className="muted">
-              Every start and stop is recorded in share.log beside the database.
-            </p>
           </div>
         )}
         {shareState !== null &&
@@ -1326,11 +1288,6 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">Updates</h3>
           <span className="badge">Signed releases</span>
         </div>
-        <p className="muted">
-          Releases are built, signed and published by hand, so Purple Memo only
-          checks the release feed when you ask it to. A downloaded update is
-          verified against the bundled public key before it is installed.
-        </p>
         <div className="editor-row">
           <button
             type="button"
@@ -1396,11 +1353,6 @@ export default function SettingsPage(p: SettingsPageProps) {
             Version {appVersion}
           </p>
         )}
-        <p className="muted">
-          Purple Memo — a personal, offline-first notebook and finance manager.
-          No accounts, no servers, no cloud. Everything lives in an encrypted
-          SQLCipher database on this machine.
-        </p>
       </section>
 
       <section
@@ -1416,12 +1368,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           </span>
         </div>
         <h4 className="side-heading">{t("reset.factoryReset")}</h4>
-        <p className="muted">{t("reset.removes")}</p>
-        {/* One child: `.alert` is a flex container, so the sentence must live
-            in a single element or every text run becomes its own flex item. */}
-        <p className="alert alert-warn" role="note">
-          <span>{t("reset.notForensic")}</span>
-        </p>
+        <p className="muted">{t("reset.irreversible")}</p>
         <label className="settings-check">
           <input
             type="checkbox"

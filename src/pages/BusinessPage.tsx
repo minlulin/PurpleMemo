@@ -6,6 +6,7 @@ import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconBusiness, IconCalendar } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { budgetRepo, businessRepo } from "../data/app.ts";
 import {
   inWarranty,
@@ -434,6 +435,7 @@ function JobsView({
   focusId?: number | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [jobs, setJobs] = useState<ReceivableJob[]>([]);
   const [shops, setShops] = useState<ShopRow[]>([]);
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -495,10 +497,7 @@ function JobsView({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-job-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else
-      setError(
-        "That job is no longer in this view — it may have changed or been deleted.",
-      );
+    else setError(t("business.jobMissing"));
   }, [focusId, focusToken, loading]);
 
   const shopName = (id: number | null): string =>
@@ -990,6 +989,7 @@ function HistoryView({
   focusId?: number | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [shops, setShops] = useState<ShopRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1030,10 +1030,7 @@ function HistoryView({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-job-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else
-      setError(
-        "That job is no longer in this view — it may have changed or been deleted.",
-      );
+    else setError(t("business.jobMissing"));
   }, [focusId, focusToken, loading]);
 
   const shopName = (id: number | null): string =>
@@ -1228,6 +1225,7 @@ function PayablesView({
   includePaid?: boolean;
   focusToken?: number;
 }) {
+  const t = useT();
   const today = todayLocal();
   const [payables, setPayables] = useState<PayableRow[]>([]);
   const [shops, setShops] = useState<ShopRow[]>([]);
@@ -1281,10 +1279,7 @@ function PayablesView({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-payable-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else
-      setError(
-        "That payable is no longer in this view — it may have changed or been deleted.",
-      );
+    else setError(t("business.payableMissing"));
   }, [focusId, focusToken, loading]);
 
   const shopName = (id: number | null): string =>

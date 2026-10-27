@@ -512,9 +512,23 @@ test("deleteWallet: singular wording for one entry", async () => {
 test("deleteWallet: an unused wallet is deleted", async () => {
   const driver = createMockDriver({ results: [[{ uses: 0 }]] });
   await createBudgetRepo(driver).deleteWallet(2);
-  const sql = at(driver.callsTo("execute"), 0, "execute").args[0] as string;
-  assert.equal(sql, "DELETE FROM wallets WHERE id = ?");
-  assert.deepEqual(at(driver.callsTo("execute"), 0, "execute").args[1], [2]);
+  // F1: a recurring rule can be the only row referencing the wallet, and its
+  // FK has no ON DELETE action — so the reference is nulled in the SAME batch,
+  // ahead of the DELETE. One batch: the two statements commit or roll back as
+  // one, and nothing reaches the driver outside it.
+  const batch = argsOf(driver, "batch")[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  assert.equal(batch.length, 2, "null the recurring reference, then delete");
+  assert.equal(
+    at(batch, 0, "batch").sql,
+    "UPDATE recurring_payments SET wallet_id = NULL WHERE wallet_id = ?",
+  );
+  assert.deepEqual(at(batch, 0, "batch").params, [2]);
+  assert.equal(at(batch, 1, "batch").sql, "DELETE FROM wallets WHERE id = ?");
+  assert.deepEqual(at(batch, 1, "batch").params, [2]);
+  assert.deepEqual(driver.callsTo("execute"), [], "no write outside the batch");
 });
 
 test("deleteExpenseCategory: refused while in use, allowed when not", async () => {
@@ -524,12 +538,28 @@ test("deleteExpenseCategory: refused while in use, allowed when not", async () =
     /3 expense entries in it/,
   );
   assert.deepEqual(used.callsTo("execute"), []);
+  assert.deepEqual(used.callsTo("batch"), []);
 
   const unused = createMockDriver({ results: [[{ uses: 0 }]] });
   await createBudgetRepo(unused).deleteExpenseCategory(3);
-  const call = at(unused.callsTo("execute"), 0, "execute");
-  assert.equal(call.args[0], "DELETE FROM expense_categories WHERE id = ?");
-  assert.deepEqual(call.args[1], [3]);
+  // Same F1 shape as `deleteWallet`: recurring rule reference nulled, then the
+  // category deleted, in one batch.
+  const batch = argsOf(unused, "batch")[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  assert.equal(batch.length, 2, "null the recurring reference, then delete");
+  assert.equal(
+    at(batch, 0, "batch").sql,
+    "UPDATE recurring_payments SET category_id = NULL WHERE category_id = ?",
+  );
+  assert.deepEqual(at(batch, 0, "batch").params, [3]);
+  assert.equal(
+    at(batch, 1, "batch").sql,
+    "DELETE FROM expense_categories WHERE id = ?",
+  );
+  assert.deepEqual(at(batch, 1, "batch").params, [3]);
+  assert.deepEqual(unused.callsTo("execute"), [], "no write outside the batch");
 });
 
 test("deleteIncomeCategory: same usage rule on the income side", async () => {
