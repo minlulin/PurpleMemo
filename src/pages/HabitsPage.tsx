@@ -50,16 +50,32 @@ export default function HabitsPage() {
   /** Add-habit submit guard: ref authoritative, state for the button (P3-6). */
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
+  /**
+   * A toggle is in flight (D3). `toggleLog` is read-then-write: a second tap
+   * deletes what the first insert wrote — one intent, no log — or, interleaved
+   * before either write, both inserts trip UNIQUE (habit_id, log_date) and
+   * surface as a raw SQLite banner. Same shape as InboxPage's
+   * `convertingRef`: the ref is authoritative, the state is what the buttons
+   * read. Deliberately page-level, not per-row: one toggle ends in a reload of
+   * the whole page, so every toggle button waits for it rather than looking
+   * live while its tap would be refused.
+   */
+  const togglingRef = useRef<boolean>(false);
+  const [toggling, setToggling] = useState(false);
+  /** Sequence token for `reload`: two toggles may not install out of order (D3). */
+  const reloadSeqRef = useRef(0);
 
   const reload = useCallback(async () => {
     // The day THIS load is for, read when the load runs (C2).
     const day = todayLocal();
+    const seq = ++reloadSeqRef.current;
     try {
       // One two-query pass covers every habit: the old shape was
       // progress (2 queries) plus calendar dates (1 query) per habit — 3N IPC
       // round trips on first paint. `habitProgressList` already reads all the
       // log rows it needs, so the dates ride along at no extra cost.
       const progs = await habitsRepo.habitProgressList(day);
+      if (seq !== reloadSeqRef.current) return; // a newer load owns the view
       const hs = progs.map((p) => p.habit);
       setHabits(hs);
       setProgress(
@@ -79,9 +95,9 @@ export default function HabitsPage() {
       setToday(day);
       setError(null);
     } catch (e) {
-      setError(errText(e));
+      if (seq === reloadSeqRef.current) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (seq === reloadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -118,11 +134,17 @@ export default function HabitsPage() {
   };
 
   const toggle = async (habitId: number, date: string) => {
+    if (togglingRef.current) return;
+    togglingRef.current = true;
+    setToggling(true);
     try {
       await habitsRepo.toggleLog(habitId, date);
       await reload();
     } catch (e) {
       setError(errText(e));
+    } finally {
+      togglingRef.current = false;
+      setToggling(false);
     }
   };
 
@@ -219,6 +241,7 @@ export default function HabitsPage() {
                       type="button"
                       className={doneToday ? "btn is-on" : "btn btn-primary"}
                       aria-pressed={doneToday}
+                      disabled={toggling}
                       onClick={() => void toggle(h.id, todayLocal())}
                     >
                       {doneToday ? "Done today ✓" : "Mark done today"}
@@ -249,6 +272,7 @@ export default function HabitsPage() {
                           }
                           aria-pressed={d.done}
                           aria-label={d.date}
+                          disabled={toggling}
                           onClick={() => void toggle(h.id, d.date)}
                         >
                           <span>{DAY_LABELS[dayIdx]}</span>
@@ -351,7 +375,7 @@ export default function HabitsPage() {
                                           .join(" ")}
                                         aria-pressed={cell.hasEntry}
                                         aria-label={cell.date}
-                                        disabled={cell.date > today}
+                                        disabled={toggling || cell.date > today}
                                         onClick={() =>
                                           void toggle(h.id, cell.date)
                                         }

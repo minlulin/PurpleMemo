@@ -57,6 +57,13 @@ export default function JournalPage({
   const contentRef = useRef("");
   /** Monotonic load token: a slow load for day A must never clobber day B. */
   const loadSeqRef = useRef(0);
+  /**
+   * The day the editor's text was actually loaded for (D2). `activeDate`
+   * flips on the click; `content` two awaits later. A Save in that window
+   * would upsert the PREVIOUS day's text into the day just clicked —
+   * overwriting its entry if it had one, creating a phantom entry if not.
+   */
+  const loadedForRef = useRef<string | null>(null);
 
   const refreshGrid = useCallback(async (ym: string) => {
     try {
@@ -99,6 +106,7 @@ export default function JournalPage({
         }
         setEntryBase(base);
         setSavedContent(rowContent);
+        loadedForRef.current = date;
         contentRef.current = draftContent ?? rowContent;
         setContent(draftContent ?? rowContent);
       } catch (e) {
@@ -165,8 +173,16 @@ export default function JournalPage({
   }
 
   async function handleSave(): Promise<void> {
+    // Refuse while the day the editor was loaded for is not the day on
+    // screen (D2): `activeDate` has already flipped but `content` still holds
+    // the previous day's text — the window spans the whole load (two awaits)
+    // plus the effect gap before it starts.
+    if (loadedForRef.current !== activeDate) return;
     const date = activeDate;
     const snapshot = content; // what this save persists
+    // The load generation this text belongs to: a day switch that starts
+    // while the write is in flight now owns the editor.
+    const seq = loadSeqRef.current;
     setSaving(true);
     setError(null);
     try {
@@ -174,18 +190,20 @@ export default function JournalPage({
       // upsertEntry stamped updated_at = todayLocal(); rebase every later
       // draft onto the new entry state.
       const base = todayLocal();
-      setEntryBase(base);
-      setSavedContent(snapshot);
-      // Keystrokes typed while the save was in flight keep their draft.
-      const movedOn = contentRef.current !== snapshot;
-      const op = movedOn
-        ? saveJournalDraft(settingsRepo, date, {
-            baseUpdatedAt: base,
-            savedAt: Date.now(),
-            content: contentRef.current,
-          })
-        : clearJournalDraft(settingsRepo, date);
-      await op.catch(() => undefined);
+      if (seq === loadSeqRef.current) {
+        setEntryBase(base);
+        setSavedContent(snapshot);
+        // Keystrokes typed while the save was in flight keep their draft.
+        const movedOn = contentRef.current !== snapshot;
+        const op = movedOn
+          ? saveJournalDraft(settingsRepo, date, {
+              baseUpdatedAt: base,
+              savedAt: Date.now(),
+              content: contentRef.current,
+            })
+          : clearJournalDraft(settingsRepo, date);
+        await op.catch(() => undefined);
+      }
       await refreshGrid(yearMonthOf(date));
     } catch (e) {
       setError(errText(e));
@@ -366,7 +384,7 @@ export default function JournalPage({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={saving}
+            disabled={saving || loading}
             onClick={() => void handleSave()}
           >
             {saving ? "Saving…" : "Save entry"}

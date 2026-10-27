@@ -16,11 +16,18 @@ import { IconInbox, IconSpinner } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, useT } from "../components/useTranslation.ts";
-import { inboxRepo } from "../data/app.ts";
+import { inboxRepo, journalRepo, settingsRepo } from "../data/app.ts";
+import { todayLocal } from "../lib/dates.ts";
+import {
+  appendJournalBlock,
+  draftBaseMatches,
+  loadJournalDraft,
+  saveJournalDraft,
+} from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
 import { formatDateTime } from "../lib/format.ts";
 import type { MessageKey } from "../lib/i18n.ts";
-import { targetKey } from "../lib/inbox.ts";
+import { journalBlock, targetKey } from "../lib/inbox.ts";
 import type { InboxRow, InboxTarget } from "../lib/types.ts";
 
 interface InboxPageProps {
@@ -40,6 +47,44 @@ const TARGET_BUTTONS: { target: InboxTarget; label: MessageKey }[] = [
   { target: "task", label: "inbox.makeTask" },
   { target: "journal", label: "inbox.addToJournal" },
 ];
+
+/**
+ * Fold the just-appended block into the day's unsaved journal draft (D1).
+ *
+ * The journal target appends to today's SHARED entry from behind the journal
+ * editor's back, and `loadEntry` restores a day draft over the row whenever its
+ * base still matches. So the exact block the batch appended is folded into a
+ * draft written against the PRE-append base — the settings-side twin of the
+ * row's `ON CONFLICT ... DO UPDATE`, and the same fold `NotesPage.handleToJournal`
+ * does for its own append. Without it, a same-day draft restores over the entry
+ * that now holds the block (the block invisible, the next Save wiping it), or
+ * the new base makes the draft look stale and drops the user's unsaved typing.
+ * Any draft written against another base stays stale and is dropped on the next
+ * load, never merged — drafts.ts's rule. Best-effort: the entry append has
+ * already succeeded, so a failure here must not fail the conversion.
+ */
+async function foldJournalDraft(
+  entryDate: string,
+  baseBefore: string | null,
+  body: string,
+): Promise<void> {
+  try {
+    const draft = await loadJournalDraft(settingsRepo, entryDate);
+    if (draft === null || !draftBaseMatches(draft.baseUpdatedAt, baseBefore)) {
+      return;
+    }
+    await saveJournalDraft(settingsRepo, entryDate, {
+      // The batch stamps the row's `updated_at` with today's date.
+      baseUpdatedAt: todayLocal(),
+      savedAt: Date.now(),
+      // The same helper the batch's `excluded.content` goes through, so the
+      // draft and the row can never disagree on what the block is.
+      content: appendJournalBlock(draft.content, journalBlock(body)),
+    });
+  } catch {
+    // Best-effort: the appended entry is already stored.
+  }
+}
 
 export default function InboxPage(p: InboxPageProps) {
   const toast = useToast();
@@ -127,7 +172,20 @@ export default function InboxPage(p: InboxPageProps) {
     setConvertingId(row.id);
     setError(null);
     try {
+      // D1: the journal target appends to today's SHARED entry. Read the
+      // pre-append base FIRST (the batch rewrites `updated_at`) and only for a
+      // row this call will actually append to — the repo refuses a row that is
+      // not open, and an early return appends nothing to fold.
+      const entryDate =
+        target === "journal" && row.status === "open" ? todayLocal() : null;
+      const baseBefore =
+        entryDate === null
+          ? null
+          : ((await journalRepo.getEntry(entryDate))?.updated_at ?? null);
       const result = await inboxRepo.convert(row.id, target);
+      if (entryDate !== null) {
+        await foldJournalDraft(entryDate, baseBefore, row.body);
+      }
       // Deliberately does not claim authorship: if another click won the race,
       // this is the target that other call created, and the message stays true.
       toast.success(

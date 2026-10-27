@@ -382,6 +382,17 @@ const GUARDS: {
     busy: "savingRef.current",
     cleared: "setSaving(false)",
   },
+  // Habits' primary action (batch-4, D3): `toggleLog` is read-then-write, so
+  // a double tap either deletes what the first insert wrote (one intent, no
+  // log) or trips UNIQUE (habit_id, log_date) as a raw SQLite banner. The
+  // guard is page-level because one toggle ends in a reload of the whole page.
+  {
+    page: "HabitsPage.tsx",
+    handler: "toggle",
+    busy: "togglingRef.current",
+    cleared: "setToggling(false)",
+    raised: "setToggling(true)",
+  },
   {
     page: "MemoriesPage.tsx",
     handler: "submitForm",
