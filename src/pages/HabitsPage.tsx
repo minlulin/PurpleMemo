@@ -16,7 +16,7 @@ import { Skeleton } from "../components/Skeleton.tsx";
 import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
-import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
+import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
 import type { HabitRow } from "../lib/types.ts";
 
 interface HabitProgress {
@@ -348,13 +348,7 @@ export default function HabitsPage() {
                         <tbody>
                           {buildMonthGrid(gridMonth, dates.get(h.id) ?? []).map(
                             (week) => (
-                              <tr
-                                className="week-row"
-                                key={
-                                  week.find((c) => c !== null)?.date ??
-                                  `${gridMonth}-blank`
-                                }
-                              >
+                              <tr className="week-row" key={weekRowKey(week)}>
                                 {week.map((cell, ci) => (
                                   <td
                                     key={cell?.date ?? `blank-${ci}`}

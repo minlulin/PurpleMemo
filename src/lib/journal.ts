@@ -46,6 +46,21 @@ export function buildMonthGrid(
   return weeks;
 }
 
+/**
+ * React key for one grid week: the date of its first dated cell. Every week
+ * `buildMonthGrid` emits has one — leading blanks are at most 6 (`getDay()`
+ * 0–6), trailing padding at most 6, and a month runs 28–31 days — so there is
+ * no blank-week shape to fabricate a fallback key for (D12). Reaching the
+ * throw means the grid itself is broken, not that the row should render
+ * under an invented key.
+ */
+export function weekRowKey(week: MonthGridCell[]): string {
+  for (const cell of week) {
+    if (cell !== null) return cell.date;
+  }
+  throw new Error("buildMonthGrid emitted a week with no dated cell");
+}
+
 /** English month label for the grid header ("October 2026"), "" if invalid. */
 export function monthLabel(yearMonth: string): string {
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(yearMonth);

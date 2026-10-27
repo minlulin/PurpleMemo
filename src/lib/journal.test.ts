@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { buildMonthGrid, monthLabel } from "./journal.ts";
+import { buildMonthGrid, monthLabel, weekRowKey } from "./journal.ts";
 
 test("October 2026 grid: Sunday-start, 4 leading blanks, 5 full weeks", () => {
   const weeks = buildMonthGrid("2026-10", []);
@@ -41,6 +41,26 @@ test("invalid year-month strings yield an empty grid", () => {
   assert.deepEqual(buildMonthGrid("2026-13", []), []);
   assert.deepEqual(buildMonthGrid("bogus", []), []);
   assert.deepEqual(buildMonthGrid("", []), []);
+});
+
+test("every emitted week has a dated cell to key on (D12)", () => {
+  // The grid rows used to carry a `?? blank-key` fallback, advertising an
+  // all-blank week that buildMonthGrid cannot produce: leading blanks are at
+  // most 6, trailing padding at most 6, and a month runs 28-31 days.
+  for (const yearMonth of ["2026-10", "2026-02", "2026-08", "2027-05"]) {
+    const weeks = buildMonthGrid(yearMonth, []);
+    assert.ok(weeks.length > 0);
+    for (const week of weeks) {
+      const firstDated = week.find((cell) => cell !== null);
+      assert.ok(firstDated, `${yearMonth} produced a blank-only week`);
+      assert.equal(weekRowKey(week), firstDated.date);
+    }
+  }
+  assert.throws(
+    () => weekRowKey([null, null]),
+    /no dated cell/,
+    "a broken grid fails loudly instead of rendering under an invented key",
+  );
 });
 
 test("monthLabel renders the English month name", () => {

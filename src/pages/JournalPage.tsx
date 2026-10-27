@@ -21,7 +21,7 @@ import {
   saveJournalDraft,
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
-import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
+import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
 
 const WEEKDAY_HEADS = [
   "Sun",
@@ -341,8 +341,7 @@ export default function JournalPage({
           </thead>
           <tbody>
             {weeks.map((week) => {
-              const rowKey =
-                week.find((cell) => cell !== null)?.date ?? week.length;
+              const rowKey = weekRowKey(week);
               let blanks = 0;
               return (
                 <tr className="week-row" key={rowKey}>
