@@ -170,6 +170,48 @@
 5. **Raw diagnostics in the renderer.** Reset failures include absolute paths and OS errors (`src-tauri/src/reset.rs:282-288,294-305,310-325`), while the reset screen renders details verbatim (`src/components/ResetScreen.tsx:109-132`); `src/lib/reset.test.ts:158-198` pins that presentation. DB commands also forward DB errors (`src-tauri/src/commands.rs:120-137`; `src-tauri/src/db.rs:903-907,943-945`): the pinned rusqlite's [`SqlInputError` display](https://github.com/rusqlite/rusqlite/blob/v0.40.2/src/error.rs#L345-L351) can include the SQL text. The renderer is a documented trusted boundary and supplied that SQL, so this alone is not an external disclosure; no key in an IPC error was established. Decide whether troubleshooting value outweighs exposing local paths or SQL in UI text, screenshots or user-shared reports; if not, use sanitized display errors and an appropriately protected diagnostic channel.
 6. **Close-to-tray after a partial reset.** With a tray installed, a closed DB causes close-to-tray to default on (`src-tauri/src/lib.rs:491-528`), and a second launch raises the existing window (`:73-84,551-567`); default-on and second-launch behavior are pinned at `:920-949`. The incomplete-reset guidance says to close and start the app (`src/lib/i18n.ts:498-499`), but closing the window can merely hide the terminal screen. Decide whether reset-terminal sessions should bypass the tray or whether the guidance should explicitly say to use the tray's Quit action (`src-tauri/src/lib.rs:478-483`).
 
+## Resolutions — owner decisions, 2026-10-27
+
+The six decisions above are settled as follows. The original wording is
+preserved; these resolutions are the fix wave's authority.
+
+1. **Key deletion after a partial reset: KEEP.** The key is still deleted
+   even when photo/backup/log removal fails. Reset's promise is
+   irreversible deletion; a leftover encrypted copy without its key is
+   unrecoverable garbage, which is the safer failure mode. The incomplete
+   report plus retry cover the rest. No behavior change.
+2. **Share stop: KEEP bounded, do NOT drain workers.** Responses are
+   ciphertext for already-keyed clients, the snapshot is cleared before
+   the stop flag (unanswered workers fall to 503), and draining risks
+   reset hanging on a stalled client (pinned behavior). Document the
+   rationale in a comment; no behavior change.
+3. **Import FK toggles: KEEP the calls and tests, but the fix for E5 must
+   cover this window too.** The import-wide writer exclusion (see the
+   fix-wave note below) must span from the safety copy through the
+   FK-ON restore, so no write can land in the FK-off window. No API/order
+   change unless the barrier cannot cover it.
+4. **Origin allowlist: KEEP cross-platform.** The alternatives are Tauri's
+   own legitimate origins per platform; the port check already blocks the
+   real attack (a foreign local process); no exploit was established.
+   No change.
+5. **Raw diagnostics: KEEP.** Single-user local app, documented trusted
+   boundary; the paths and SQL are the user's own, and diagnostic value
+   is highest exactly on failure paths (a failing reset must name the
+   file). No key material in errors was established. No change.
+6. **Close-to-tray after a partial reset: CHANGE — bypass the tray.**
+   Reset-terminal sessions bypass close-to-tray: closing the window in
+   that state exits the process, so the next launch is a genuine fresh
+   start and the guidance ("close and start it yourself") becomes true.
+   The change is scoped to the terminal state only; normal close-to-tray
+   behavior is untouched. This is the only decision of the six that
+   changes behavior.
+
+**Fix-wave note (verification, not a finding).** E1, E2 and E5 share one
+root cause — no lifecycle barrier between ordinary work and the
+destructive operations (reset, import). The fix wave should design one
+barrier, not three separate patches; decision 3's FK window is closed by
+that same barrier.
+
 ## Verification performed
 
 Commands were run from the repository root. The JS checks below exercise the IPC/reset contract, not compiled Rust behavior:
