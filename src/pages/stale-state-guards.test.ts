@@ -8,7 +8,8 @@
 //
 //   C2  a date-derived read takes its day when the reload RUNS, not when the
 //       component rendered, and a page left mounted past midnight reloads on
-//       the rollover (nothing else re-renders it);
+//       the rollover (nothing else re-renders it) — the four pages that keep
+//       a day-derived view: Memories, Loans, Dashboard, Habits;
 //   C3  a create/delete refreshes the month the screen shows *now*, through a
 //       load that a newer month-navigation load can supersede;
 //   C4  the search-focus effect is keyed on arrival, not on the data — with
@@ -49,7 +50,14 @@ function handlerSource(src: string, name: string): string {
 }
 
 test("date-derived reloads take their day at call time (C2)", () => {
-  for (const page of ["MemoriesPage.tsx", "LoansPage.tsx"]) {
+  for (const page of [
+    "MemoriesPage.tsx",
+    "LoansPage.tsx",
+    // Dashboard and Habits also derive display from the day — same defect,
+    // same fix, same shape of the rollover tick.
+    "DashboardPage.tsx",
+    "HabitsPage.tsx",
+  ]) {
     const src = readPage(page);
     const body = handlerSource(src, "reload");
     assert.ok(
@@ -62,9 +70,11 @@ test("date-derived reloads take their day at call time (C2)", () => {
       `${page}: reload must not be keyed on a render-captured \`today\` — that only refreshes when something re-renders the page`,
     );
     // Nothing re-renders a parked page, so the rollover needs its own tick.
+    // Pages that hold the day as state compare it directly; pages that only
+    // read it keep the ref of the last day they loaded.
     assert.match(
       src,
-      /if \(todayLocal\(\) !== todayRef\.current\) void reload\(\);/,
+      /if \(todayLocal\(\) !== today(Ref\.current)?\) void reload\(\);/,
       `${page}: a page parked across midnight must reload when the local date changes`,
     );
     assert.ok(
@@ -72,6 +82,46 @@ test("date-derived reloads take their day at call time (C2)", () => {
       `${page}: the date-rollover interval must be cleaned up on unmount`,
     );
   }
+});
+
+test("the day a page displays is the day its rows were loaded for (C2)", () => {
+  // The TasksPage B8 rule: badge and rows come from one load, so the page
+  // never grades yesterday's rows against today's date (or the reverse).
+  for (const page of ["DashboardPage.tsx", "HabitsPage.tsx"]) {
+    const body = handlerSource(readPage(page), "reload");
+    assert.match(
+      body,
+      /setToday\(/,
+      `${page}: reload must publish the day it loaded for, with the rows`,
+    );
+    const dayAt = body.indexOf("const day = todayLocal();");
+    assert.notEqual(dayAt, -1, `${page}: reload must read the day itself`);
+    assert.ok(
+      dayAt < body.search(/\bset[A-Z]/),
+      `${page}: read the day before any state is written`,
+    );
+  }
+});
+
+test("the two write paths book the real day, not the loaded one (C2)", () => {
+  // `today` state is the day the LIST was loaded for; these writes must use
+  // the clock, or a click inside the rollover tick's window books yesterday.
+  assert.match(
+    handlerSource(readPage("DashboardPage.tsx"), "completeTask"),
+    /completeTask\(task\.id, todayLocal\(\)\)/,
+    "DashboardPage: completeTask re-anchors a repeating task off this date — it must take the real day",
+  );
+  const habits = readPage("HabitsPage.tsx");
+  assert.match(
+    habits,
+    /toggle\(h\.id, todayLocal\(\)\)/,
+    'HabitsPage: "Mark done today" must log the real day',
+  );
+  assert.match(
+    habits,
+    /toggle\(h\.id, cell\.date\)/,
+    "HabitsPage: the calendar cells must still log the date they show",
+  );
 });
 
 test("the month feed only installs the month that is current now (C3)", () => {

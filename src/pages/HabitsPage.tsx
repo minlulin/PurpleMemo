@@ -29,7 +29,14 @@ interface HabitProgress {
 const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 
 export default function HabitsPage() {
-  const today = todayLocal();
+  /**
+   * The day the loaded week and the check-in buttons are read against (C2 —
+   * the TasksPage B8 shape): state, so the "Done today" state and the log rows
+   * behind it always come from one load. `reload` sets it with the rows; the
+   * rollover tick below re-runs that load. The two write paths take
+   * `todayLocal()` themselves, so they book the real day.
+   */
+  const [today, setToday] = useState(() => todayLocal());
   const [habits, setHabits] = useState<HabitRow[]>([]);
   const [progress, setProgress] = useState<Map<number, HabitProgress>>(
     new Map(),
@@ -45,12 +52,14 @@ export default function HabitsPage() {
   const [saving, setSaving] = useState(false);
 
   const reload = useCallback(async () => {
+    // The day THIS load is for, read when the load runs (C2).
+    const day = todayLocal();
     try {
       // One two-query pass covers every habit: the old shape was
       // progress (2 queries) plus calendar dates (1 query) per habit — 3N IPC
       // round trips on first paint. `habitProgressList` already reads all the
       // log rows it needs, so the dates ride along at no extra cost.
-      const progs = await habitsRepo.habitProgressList(today);
+      const progs = await habitsRepo.habitProgressList(day);
       const hs = progs.map((p) => p.habit);
       setHabits(hs);
       setProgress(
@@ -66,17 +75,29 @@ export default function HabitsPage() {
           progs.map((p): [number, string[]] => [p.habit.id, p.dates]),
         ),
       );
+      // The rows and the day they belong to land in the same batch.
+      setToday(day);
       setError(null);
     } catch (e) {
       setError(errText(e));
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // The page stays mounted across midnight, so nothing re-renders it when the
+  // date rolls over (C2): this tick is what makes "Mark done today" and the
+  // week strip talk about the new day.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (todayLocal() !== today) void reload();
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [reload, today]);
 
   const addHabit = async () => {
     if (savingRef.current) return;
@@ -198,7 +219,7 @@ export default function HabitsPage() {
                       type="button"
                       className={doneToday ? "btn is-on" : "btn btn-primary"}
                       aria-pressed={doneToday}
-                      onClick={() => void toggle(h.id, today)}
+                      onClick={() => void toggle(h.id, todayLocal())}
                     >
                       {doneToday ? "Done today ✓" : "Mark done today"}
                     </button>

@@ -103,7 +103,16 @@ export default function DashboardPage(p: DashboardPageProps) {
   const t = useT();
   const plural = usePlural();
   const locale = useLocale();
-  const today = todayLocal();
+  /**
+   * The day every card here is read against (C2 — the TasksPage B8 shape):
+   * state rather than a value read in the render, so the badges and the rows
+   * they grade always come from one load. A render-captured date went stale the
+   * moment the page was left mounted past midnight; `reload` sets this together
+   * with the rows, and the rollover tick below is what re-runs that load.
+   * Writes deliberately do NOT use it — they take `todayLocal()` at the moment
+   * they write, so even a click inside the tick's window books the real day.
+   */
+  const [today, setToday] = useState(() => todayLocal());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openTasks, setOpenTasks] = useState<TaskRow[]>([]);
@@ -138,6 +147,9 @@ export default function DashboardPage(p: DashboardPageProps) {
   const pageRef = useRevealWithin<HTMLDivElement>(!loading);
 
   const reload = useCallback(async () => {
+    // The day THIS load is for, read when the load runs — not in the render
+    // that happened to be on screen (C2).
+    const day = todayLocal();
     try {
       const [
         tasks,
@@ -153,10 +165,10 @@ export default function DashboardPage(p: DashboardPageProps) {
       ] = await Promise.all([
         tasksRepo.openTasks(),
         tasksRepo.dueReminders(localISODateTime(new Date())),
-        budgetRepo.listDayEntries(today),
-        budgetRepo.listDayEntries(addDays(today, -1)),
-        memoriesRepo.upcoming(today, TODAY_HORIZON_DAYS),
-        contactsRepo.upcomingBirthdays(TODAY_HORIZON_DAYS, today),
+        budgetRepo.listDayEntries(day),
+        budgetRepo.listDayEntries(addDays(day, -1)),
+        memoriesRepo.upcoming(day, TODAY_HORIZON_DAYS),
+        contactsRepo.upcomingBirthdays(TODAY_HORIZON_DAYS, day),
         businessRepo.listJobs("open"),
         businessRepo.listReceivable(),
         tasksRepo.firedReminders(),
@@ -168,14 +180,14 @@ export default function DashboardPage(p: DashboardPageProps) {
       setMoneyPrev(dayMoneyTotals(prevDayEntries));
       // Every habit's week in one two-query pass instead of two queries per
       // habit; the list read moved into the same call.
-      const habitProg = await habitsRepo.habitProgressList(today);
+      const habitProg = await habitsRepo.habitProgressList(day);
       setHabitWeeks(
         habitProg.map((p) => ({ name: p.habit.name, week: p.week })),
       );
       setMemories(upcoming);
       setBirthdays(birthdayContacts);
       setFired(firedRows);
-      setRecurring(upcomingRecurring(recurringRows, today));
+      setRecurring(upcomingRecurring(recurringRows, day));
       setWarranties(
         expiringWarranties(
           jobs.map((j: JobRow) => ({
@@ -184,24 +196,36 @@ export default function DashboardPage(p: DashboardPageProps) {
             job_date: j.job_date,
             warranty_days: j.warranty_days,
           })),
-          today,
+          day,
           TODAY_HORIZON_DAYS,
         ),
       );
       setReceivableCents(
         receivable.reduce((sum, j) => sum + j.remaining_cents, 0),
       );
+      // The rows and the day they belong to land in the same batch.
+      setToday(day);
       setError(null);
     } catch (e) {
       setError(errText(e));
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // The shell keeps this page mounted across midnight, so nothing re-renders
+  // it when the date rolls over (C2): this tick is what reloads "today at a
+  // glance" — the date label, the overdue badge, the habit check-ins.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (todayLocal() !== today) void reload();
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [reload, today]);
 
   // -- Today actions -------------------------------------------
   // Every action calls the same repository function its source page uses —
@@ -213,7 +237,10 @@ export default function DashboardPage(p: DashboardPageProps) {
     if (busyRow !== null) return;
     setBusyRow(`task:${task.id}`);
     try {
-      await tasksRepo.completeTask(task.id, today);
+      // Read here rather than from `today` state (B8): the state is the day
+      // the LIST was loaded for, while this write must book the real day —
+      // `completeTask` re-anchors a repeating task off this date.
+      await tasksRepo.completeTask(task.id, todayLocal());
       await reload();
     } catch (e) {
       setError(errText(e));
