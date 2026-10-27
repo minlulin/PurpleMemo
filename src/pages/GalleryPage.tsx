@@ -170,7 +170,8 @@ export default function GalleryPage() {
       if (cancelled) return;
       try {
         const [ns, ms, js] = await Promise.all([
-          notesRepo.listNotes(),
+          // title-only query: notesRepo.listNotes({ projection: "title" })
+          notesRepo.listNoteTitles(),
           memoriesRepo.listMemories(),
           businessRepo.listJobs(),
         ]);

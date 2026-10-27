@@ -53,6 +53,7 @@ import type {
   ReminderRow,
   TaskRow,
 } from "../lib/types.ts";
+import { badgeFor, SOON_DAYS, urgencyFor } from "../lib/urgency.ts";
 import { useRevealWithin } from "../lib/useReveal.ts";
 
 interface DashboardPageProps {
@@ -105,7 +106,7 @@ export default function DashboardPage(p: DashboardPageProps) {
   const today = todayLocal();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [dueTasks, setDueTasks] = useState<TaskRow[]>([]);
+  const [openTasks, setOpenTasks] = useState<TaskRow[]>([]);
   const [reminders, setReminders] = useState<ReminderRow[]>([]);
   const [money, setMoney] = useState({ incomeCents: 0, expenseCents: 0 });
   const [moneyPrev, setMoneyPrev] = useState<{
@@ -150,7 +151,7 @@ export default function DashboardPage(p: DashboardPageProps) {
         firedRows,
         recurringRows,
       ] = await Promise.all([
-        tasksRepo.dueTasks(today),
+        tasksRepo.openTasks(),
         tasksRepo.dueReminders(localISODateTime(new Date())),
         budgetRepo.listDayEntries(today),
         budgetRepo.listDayEntries(addDays(today, -1)),
@@ -161,7 +162,7 @@ export default function DashboardPage(p: DashboardPageProps) {
         tasksRepo.firedReminders(),
         budgetRepo.listRecurring(false),
       ]);
-      setDueTasks(tasks);
+      setOpenTasks(tasks);
       setReminders(rems);
       setMoney(dayMoneyTotals(dayEntries));
       setMoneyPrev(dayMoneyTotals(prevDayEntries));
@@ -309,7 +310,14 @@ export default function DashboardPage(p: DashboardPageProps) {
     );
   }
 
-  const dueCount = dueTasks.length + reminders.length + fired.length;
+  // Attention items (plan §A.3): overdue tasks + due reminders + fired
+  // reminders. The open list itself is every color; only the red rows are
+  // asking for action.
+  const attentionCount =
+    openTasks.filter((task) => urgencyFor(task.due_date, today) === "overdue")
+      .length +
+    reminders.length +
+    fired.length;
   const habitsDoneToday = habitWeeks.filter((h) =>
     h.week.some((d) => d.date === today && d.done),
   ).length;
@@ -430,12 +438,14 @@ export default function DashboardPage(p: DashboardPageProps) {
         <div className="kpi-card reveal-on-scroll delay-4 kpi-card-variation is-warn">
           <div className="kpi-head">
             <span className="kpi-label">{t("dashboard.actionItems")}</span>
-            <span className={dueCount > 0 ? "kpi-icon is-warn" : "kpi-icon"}>
+            <span
+              className={attentionCount > 0 ? "kpi-icon is-warn" : "kpi-icon"}
+            >
               <IconTasks className="icon" />
             </span>
           </div>
           <span className="kpi-value figure">
-            {plural("dashboard.itemsDue", dueCount)}
+            {plural("dashboard.itemsDue", attentionCount)}
           </span>
           <span className="kpi-sub">
             {habitWeeks.length > 0
@@ -457,22 +467,26 @@ export default function DashboardPage(p: DashboardPageProps) {
               <div className="dash-card-title">
                 <IconTasks className="icon" />
                 <h3 className="settings-heading">
-                  {t("dashboard.dueTasksHeading")}
+                  {t("dashboard.tasksRemindersHeading")}
                 </h3>
               </div>
-              <span className={dueCount > 0 ? "badge badge-warn" : "badge"}>
-                {dueCount}
+              <span
+                className={attentionCount > 0 ? "badge badge-warn" : "badge"}
+              >
+                {attentionCount}
               </span>
             </div>
-            <p className="muted">{t("dashboard.dueTasksNote")}</p>
-            {dueTasks.length === 0 &&
+            <p className="muted">
+              {t("dashboard.urgencyLegend", { days: SOON_DAYS })}
+            </p>
+            {openTasks.length === 0 &&
             reminders.length === 0 &&
             fired.length === 0 ? (
-              <EmptyState>{t("dashboard.nothingDue")}</EmptyState>
+              <EmptyState>{t("dashboard.noOpenTasks")}</EmptyState>
             ) : (
               <>
                 <ul className="budget-list">
-                  {dueTasks.map((task) => (
+                  {openTasks.map((task) => (
                     <li key={`task-${task.id}`} className="budget-row">
                       <div className="row-main">
                         <span className="row-title">
@@ -520,7 +534,9 @@ export default function DashboardPage(p: DashboardPageProps) {
                           </button>
                         </span>
                       </div>
-                      <span className="badge badge-warn">
+                      <span
+                        className={badgeFor(urgencyFor(task.due_date, today))}
+                      >
                         {t("dashboard.task")}
                       </span>
                     </li>
@@ -559,7 +575,7 @@ export default function DashboardPage(p: DashboardPageProps) {
                             }
                             onClick={() => void snoozeReminder(r)}
                           >
-                            Snooze
+                            {t("tasks.snooze")}
                           </button>
                         </span>
                       </div>
@@ -613,7 +629,7 @@ export default function DashboardPage(p: DashboardPageProps) {
                                 }
                                 onClick={() => void snoozeReminder(r)}
                               >
-                                Snooze
+                                {t("tasks.snooze")}
                               </button>
                               <ConfirmButton
                                 className="btn btn-ghost"

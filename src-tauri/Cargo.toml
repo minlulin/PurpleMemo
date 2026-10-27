@@ -14,7 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2.12.3", features = [] }
+# `tray-icon` is opt-in in Tauri 2 (not a default feature): it gates
+# `tauri::tray` itself. One-line manifest change for the close-to-tray plan.
+tauri = { version = "2.12.3", features = ["tray-icon"] }
 tauri-plugin-updater = "2.13.3"
 tauri-plugin-notification = "2.6.0"
 serde = { version = "1", features = ["derive"] }

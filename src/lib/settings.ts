@@ -20,6 +20,7 @@ export const SETTING_KEYS = {
   vault: "vault",
   autoLockMinutes: "auto_lock_minutes",
   notificationPreview: "notification_preview",
+  closeToTray: "close_to_tray",
   notesViewMode: "notes_view_mode",
   notesCollectionsCollapsed: "notes_collections_collapsed",
 } as const;
@@ -138,6 +139,26 @@ export function createSettingsRepo(driver: DataDriver) {
 
     async setNotificationPreview(enabled: boolean): Promise<void> {
       await this.setJSON(SETTING_KEYS.notificationPreview, enabled);
+    },
+
+    /**
+     * Whether closing the window hides Purple Memo to the system tray instead
+     * of quitting it. Default ON — the inverted sibling of the preview
+     * default: this flag guards "the reminder poll keeps running", so a
+     * missing row (every install that predates the key), a corrupt row and an
+     * unreadable row must all keep today's behaviour without a migration.
+     *
+     * `!== false` is deliberate: only an explicit JSON `false` turns it off.
+     * The Rust close handler (`close_to_tray_enabled` in `src-tauri/src/lib.rs`)
+     * parses the same raw row with the same rule — the two must never disagree
+     * about what "absent" means.
+     */
+    async getCloseToTray(): Promise<boolean> {
+      return (await this.getJSON<boolean>(SETTING_KEYS.closeToTray)) !== false;
+    },
+
+    async setCloseToTray(enabled: boolean): Promise<void> {
+      await this.setJSON(SETTING_KEYS.closeToTray, enabled);
     },
 
     /**

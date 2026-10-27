@@ -474,10 +474,13 @@ export default function NotesPage(p: NotesPageProps) {
         setSearch("");
         setActiveCollection("all");
         setShowArchived(note.archived === 1);
-        const list = await notesRepo.listNotes({ includeArchived: true });
+        const [list, cols] = await Promise.all([
+          notesRepo.listNotes({ includeArchived: true }),
+          notesRepo.listCollections(),
+        ]);
         if (cancelled || !listGuard.isCurrent(token)) return;
         setNotes(list);
-        setCollections(await notesRepo.listCollections());
+        setCollections(cols);
         setSelectedId(note.id);
       } catch (e) {
         if (!cancelled && listGuard.isCurrent(token)) setError(errText(e));
@@ -496,23 +499,28 @@ export default function NotesPage(p: NotesPageProps) {
     setLoading(true);
     setError(null);
     try {
-      const cols = await notesRepo.listCollections();
       // One filter for BOTH paths (review P2-13): the sidebar selection used to
       // be applied only when the search box was empty, so clicking a collection
       // during a search highlighted it and then showed matches from every
       // collection. Deriving it once keeps the two branches from disagreeing.
       const collectionId =
         activeCollection === "all" ? undefined : activeCollection;
-      const list =
+      const listPromise =
         search.trim().length > 0
-          ? await notesRepo.search(search, {
+          ? notesRepo.search(search, {
               includeArchived: showArchived,
               collectionId,
             })
-          : await notesRepo.listNotes({
+          : notesRepo.listNotes({
               collectionId,
               includeArchived: showArchived,
             });
+      // Parallelize the two independent reads instead of awaiting them in
+      // sequence (perf: cold load no longer waits for collections first).
+      const [cols, list] = await Promise.all([
+        notesRepo.listCollections(),
+        listPromise,
+      ]);
       if (!listGuard.isCurrent(token)) return; // superseded by a newer search
       setCollections(cols);
       setNotes(list);
@@ -527,10 +535,25 @@ export default function NotesPage(p: NotesPageProps) {
     void refresh();
   }, [refresh]);
 
-  const selected = useMemo(
-    () => notes.find((n) => n.id === selectedId) ?? null,
-    [notes, selectedId],
-  );
+  const [selected, setSelected] = useState<NoteRow | null>(null);
+  useEffect(() => {
+    if (selectedId === null) {
+      setSelected(null);
+      return;
+    }
+    let cancelled = false;
+    void notesRepo
+      .getNote(selectedId)
+      .then((row) => {
+        if (!cancelled) setSelected(row ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSelected(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
 
   const currentIndex =
     selected !== null ? notes.findIndex((n) => n.id === selected.id) : -1;

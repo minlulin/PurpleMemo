@@ -142,6 +142,9 @@ export const en = {
   "settings.language": "Language",
   "settings.languageHint":
     "Changes the interface only. Stored dates, amounts and records keep their existing formats.",
+  "settings.closeToTray": "Minimize to tray on close",
+  "settings.closeToTrayHint":
+    "Closing the window keeps Purple Memo running in the system tray, so reminders keep firing while it looks closed. Turn this off to make closing quit the app instead.",
 
   "session.remindersTitle": "Reminders",
   "session.previewTitle": "Reminder: {title}",
@@ -392,10 +395,10 @@ export const en = {
   "dashboard.journalAction": "Journal",
   "dashboard.logTransaction": "Log Transaction",
   "dashboard.todayHeading": "Today",
-  "dashboard.dueTasksHeading": "Due tasks & reminders",
-  "dashboard.dueTasksNote":
-    "Alerts appear only while Purple Memo is open and unlocked. Anything that came due while the app was closed, minimized, asleep, or locked is listed here when you return.",
-  "dashboard.nothingDue": "Nothing due. Enjoy the quiet.",
+  "dashboard.tasksRemindersHeading": "Tasks & reminders",
+  "dashboard.urgencyLegend":
+    "Green: due in more than {days} days · Yellow: due within {days} days · Red: overdue · No color: no due date",
+  "dashboard.noOpenTasks": "No open tasks",
   "dashboard.task": "Task",
   "dashboard.taskDue": "Task · due {date}",
   "dashboard.complete": "Complete",
@@ -687,6 +690,9 @@ export const my: Record<MessageKey, string> = {
   "settings.language": "ဘာသာစကား",
   "settings.languageHint":
     "အင်တာဖေ့စ်ကိုသာ ပြောင်းလဲသည်။ သိမ်းဆည်းထားသော ရက်စွဲများ၊ ပမာဏများနှင့် မှတ်တမ်းများသည် လက်ရှိပုံစံအတိုင်း ရှိနေပါမည်။",
+  "settings.closeToTray": "ပိတ်လိုက်ပါက Tray တွင် ချုံ့ထားမည်",
+  "settings.closeToTrayHint":
+    "စာမျက်နှာ ပိတ်လိုက်ပါက Purple Memo သည် စနစ် tray တွင် ဆက်လက်အလုပ်လုပ်နေဆဲဖြစ်၍ ပိတ်ထားသည့်အတိုင်းပင် သတိပေးချက်များ ဆက်လက်ပေါ်လာနိုင်ပါသည်။ ဤခလုတ်ကို ပိတ်လိုက်ပါက စာမျက်နှာ ပိတ်လိုက်တိုင်း အက်ပ်လည်း ပိတ်သွားပါမည်။",
 
   "session.remindersTitle": "သတိပေးချက်များ",
   "session.previewTitle": "သတိပေးချက် − {title}",
@@ -937,10 +943,10 @@ export const my: Record<MessageKey, string> = {
   "dashboard.journalAction": "ဒိုင်ယာရီ",
   "dashboard.logTransaction": "ငွေလွှဲမှု မှတ်တမ်းတင်မည်",
   "dashboard.todayHeading": "ယနေ့",
-  "dashboard.dueTasksHeading": "ရက်ချိန်းရှိ လုပ်ငန်းများနှင့် သတိပေးချက်များ",
-  "dashboard.dueTasksNote":
-    "သတိပေးချက်များသည် Purple Memo ဖွင့်ထားပြီး လော့ခ်ဖွင့်ထားစဉ်တွင်သာ ပေါ်လာမည်။ အက်ပ် ပိတ်ထား၊ ချုံ့ထား၊ အိပ်နေစဉ် သို့မဟုတ် လော့ခ်ချထားစဉ် ရက်ချိန်းရောက်ခဲ့သည့် အရာအားလုံးကို ပြန်လာသောအခါ ဤနေရာတွင် စာရင်းပြပါမည်။",
-  "dashboard.nothingDue": "ရက်ချိန်းရှိသမျှ မရှိပါ။ တိတ်ဆိတ်မှုကို ခံစားလိုက်ပါ။",
+  "dashboard.tasksRemindersHeading": "လုပ်ငန်းများနှင့် သတိပေးချက်များ",
+  "dashboard.urgencyLegend":
+    "အစိမ်းရောင် — {days} ရက်ထက် ကျော်လွန်သော ရက်ချိန်း · အဝါရောင် — {days} ရက်အတွင်း ရက်ချိန်း · အနီရောင် — ရက်လွန်သွားပြီ · အရောင်မပါ — ရက်ချိန်းမရှိပါ",
+  "dashboard.noOpenTasks": "ဖွင့်ထားသော လုပ်ငန်းများ မရှိပါ",
   "dashboard.task": "လုပ်ငန်း",
   "dashboard.taskDue": "လုပ်ငန်း · ရက်ချိန်း {date}",
   "dashboard.complete": "ပြီးစီးမည်",

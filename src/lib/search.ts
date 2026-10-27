@@ -48,7 +48,7 @@ export async function searchNotes<T extends Queryable>(
     params.push(opts.collectionId);
   }
   const sql = `
-    SELECT n.*
+    SELECT n.id, n.title, substr(n.content, 1, 200) AS content, n.tags, n.collection_id, n.pinned, n.archived, n.created_at, n.updated_at
     FROM notes_fts
     JOIN notes n ON n.id = notes_fts.rowid
     WHERE ${clauses.join(" AND ")}

@@ -521,8 +521,10 @@ function AppShell() {
     if (!reloadOpensEntry(reload)) return;
     lastActivity.current = performance.now();
     setUnlocked(true);
-    void trashRepo.purge().catch(() => {});
-  }, [loadSecurity]);
+    void trashRepo.purge().catch((e) => {
+      toast.error(errText(e));
+    });
+  }, [loadSecurity, toast]);
 
   // Idle auto-lock: any pointer/keyboard/scroll activity resets the
   // clock; a tick every 15 s checks the configured window (0 = never).

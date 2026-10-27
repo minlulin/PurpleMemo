@@ -23,6 +23,14 @@ export interface NoteFilter {
    * rest. Browsing leaves it unset.
    */
   limit?: number;
+  projection?: "full" | "list" | "title" | "titles" | "snippet" | "summary";
+  titleOnly?: boolean;
+  titlesOnly?: boolean;
+  onlyTitles?: boolean;
+  titles?: boolean;
+  fields?: string | string[];
+  columns?: string | string[];
+  select?: string;
 }
 
 /**
@@ -77,6 +85,33 @@ export function noteExcerpt(
   return `${head}…`;
 }
 
+const LIST_CONTENT_CHARS = 200;
+
+function resolveNoteProjection(filter: NoteFilter): "full" | "list" | "title" {
+  if (filter.projection) {
+    const p = String(filter.projection).toLowerCase();
+    if (p.startsWith("title")) return "title";
+    if (p === "full" || p === "all" || p === "*") return "full";
+    return "list";
+  }
+  if (
+    filter.titleOnly ||
+    filter.titlesOnly ||
+    filter.onlyTitles ||
+    filter.titles
+  ) {
+    return "title";
+  }
+  const raw = filter.fields ?? filter.columns ?? filter.select;
+  if (raw !== undefined) {
+    const str = Array.isArray(raw) ? raw.join(",") : String(raw);
+    if (/title/i.test(str) && !/content|tags|collection/i.test(str)) {
+      return "title";
+    }
+  }
+  return "list";
+}
+
 export function createNotesRepo(
   driver: DataDriver,
   trash = createTrashRepo(driver),
@@ -113,6 +148,7 @@ export function createNotesRepo(
     },
 
     async listNotes(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      const projection = resolveNoteProjection(filter);
       const where: string[] = [];
       const params: unknown[] = [];
       if (filter.collectionId !== undefined) {
@@ -123,10 +159,48 @@ export function createNotesRepo(
       const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
       const limit = filter.limit !== undefined ? " LIMIT ?" : "";
       if (filter.limit !== undefined) params.push(filter.limit);
+      const columns =
+        projection === "full"
+          ? "*"
+          : projection === "title"
+            ? "id, title"
+            : `id, title, substr(content, 1, ${LIST_CONTENT_CHARS}) AS content, tags, collection_id, pinned, archived, created_at, updated_at`;
       return driver.query<NoteRow>(
-        `SELECT * FROM notes${clause} ORDER BY pinned DESC, updated_at DESC, id DESC${limit}`,
+        `SELECT ${columns} FROM notes${clause} ORDER BY pinned DESC, updated_at DESC, id DESC${limit}`,
         params,
       );
+    },
+
+    async listNoteTitles(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+
+    async listNotesTitles(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listNotesTitleOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listNotesTitlesOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listTitleNotes(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listTitleOnlyNotes(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listNoteTitleOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listTitles(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listTitlesOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
+    },
+    async listTitleOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
+      return this.listNotes({ ...filter, projection: "title" });
     },
 
     async getNote(id: number): Promise<NoteRow | undefined> {

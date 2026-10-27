@@ -131,6 +131,42 @@ test("setNotificationPreview writes the documented key", async () => {
   assert.deepEqual(params, [SETTING_KEYS.notificationPreview, "true"]);
 });
 
+// -- Close to tray ---------------------------------------------------------------
+
+test("close-to-tray is ON unless it was explicitly turned off", async () => {
+  // Inverted from the preview default: this flag guards "close keeps the
+  // reminder poll running", so a missing row (every pre-toggle install), a
+  // corrupt row and an unreadable row must all land on ON — a privacy-adjacent
+  // default that needs a migration is not a default.
+  const trayOf = async (rows: { value?: unknown }[]) => {
+    const driver = createMockDriver({ results: [rows] });
+    return createSettingsRepo(driver).getCloseToTray();
+  };
+  assert.equal(await trayOf([]), true, "a missing row is the default ON");
+  assert.equal(await trayOf([{ value: "true" }]), true);
+  assert.equal(await trayOf([{ value: "false" }]), false, "explicitly off");
+  assert.equal(
+    await trayOf([{ value: "not json" }]),
+    true,
+    "a corrupt row never makes close silently quit",
+  );
+  assert.equal(
+    await trayOf([{ value: '"false"' }]),
+    true,
+    "only JSON false counts",
+  );
+});
+
+test("setCloseToTray writes the documented key", async () => {
+  const driver = createMockDriver();
+  await createSettingsRepo(driver).setCloseToTray(false);
+  const call = driver.lastCall();
+  assert.ok(call);
+  const [sql, params] = call.args as [string, unknown[]];
+  assert.match(sql, /INSERT INTO settings \(key, value\)/);
+  assert.deepEqual(params, [SETTING_KEYS.closeToTray, "false"]);
+});
+
 // -- Notes view preferences ---------------------------------------------------
 
 test("the notes view mode defaults to split and is persisted by key", async () => {

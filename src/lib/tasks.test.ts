@@ -3,10 +3,110 @@
 
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import type {
+  BatchStatement,
+  DataDriver,
+  ExecuteOutcome,
+  Queryable,
+} from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { createTasksRepo, nextDueDate, nextReminderAt } from "./tasks.ts";
 import type { TaskRow } from "./types.ts";
+
+const OFF_SHARE = {
+  running: false,
+  url: null,
+  key: null,
+  port: null,
+  publishedAt: null,
+  note: null,
+};
+
+const SQLITE_TASKS_FIXTURE = `
+CREATE TABLE tasks (
+  id         INTEGER PRIMARY KEY,
+  title      TEXT NOT NULL,
+  due_date   TEXT,
+  done       INTEGER NOT NULL DEFAULT 0,
+  repeat     TEXT NOT NULL DEFAULT 'none',
+  note       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+`;
+
+/** A `DataDriver` over real SQLite — ordering claims need real SQL. */
+function sqliteDriver(): DataDriver & { db: DatabaseSync } {
+  const db = new DatabaseSync(":memory:");
+  db.exec(SQLITE_TASKS_FIXTURE);
+  return {
+    db,
+    async query<T extends Queryable>(sql: string, params: unknown[] = []) {
+      return db.prepare(sql).all(...(params as never[])) as T[];
+    },
+    async execute(
+      sql: string,
+      params: unknown[] = [],
+    ): Promise<ExecuteOutcome> {
+      const r = db.prepare(sql).run(...(params as never[]));
+      return {
+        rowsAffected: Number(r.changes),
+        lastInsertRowid: Number(r.lastInsertRowid),
+      };
+    },
+    async batch(statements: BatchStatement[]) {
+      db.exec("BEGIN");
+      try {
+        for (const s of statements) {
+          db.prepare(s.sql).run(...(s.params as never[]));
+        }
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    },
+    async begin() {},
+    async commit() {},
+    async rollback() {},
+    async resetTxn() {},
+    async savePhoto() {
+      return "photos/2026/10/x.jpg";
+    },
+    async readPhoto() {
+      return new Uint8Array(0);
+    },
+    async readPhotoThumb() {
+      return new Uint8Array(0);
+    },
+    async savePhotoThumb() {
+      return "photos/2026/10/x.thumb.jpg";
+    },
+    async deletePhoto() {},
+    async saveBackupFile() {},
+    async saveExportFile() {},
+    async saveDbKeyFile() {},
+    async safetyBackupCopy() {
+      throw new Error("no safety copy in this test driver");
+    },
+    async shareStart() {
+      return OFF_SHARE;
+    },
+    async shareStop() {
+      return OFF_SHARE;
+    },
+    async shareStatus() {
+      return OFF_SHARE;
+    },
+    async sharePublish() {
+      return OFF_SHARE;
+    },
+    async shareArm() {
+      return "";
+    },
+  };
+}
 
 test("updateTask writes only the provided fields (no NULL wipe)", async () => {
   const driver = createMockDriver();
@@ -167,6 +267,38 @@ test("firedReminders reads the fired one-shots, ordered by time", async () => {
     "SELECT * FROM reminders WHERE fired = 1 ORDER BY remind_at",
     undefined,
   ]);
+});
+
+test("openTasks: done=0 only, overdue first, null due dates last", async () => {
+  // The dashboard's open list (plan §A.3): plain date order already yields
+  // overdue -> soon -> ok, with dateless tasks trailing.
+  const repo = createTasksRepo(sqliteDriver());
+  const overdueEarly = await repo.createTask({
+    title: "Pay rent",
+    dueDate: "2026-10-01",
+  });
+  const noDateA = await repo.createTask({ title: "Someday" });
+  const dueToday = await repo.createTask({
+    title: "Call shop",
+    dueDate: "2026-10-11",
+  });
+  const doneOverdue = await repo.createTask({
+    title: "Already done",
+    dueDate: "2026-09-01",
+  });
+  const overdueLater = await repo.createTask({
+    title: "Late bill",
+    dueDate: "2026-10-05",
+  });
+  const noDateB = await repo.createTask({ title: "Another someday" });
+  await repo.toggleTask(doneOverdue, true);
+
+  const rows = await repo.openTasks();
+  assert.deepEqual(
+    rows.map((r) => r.id),
+    [overdueEarly, overdueLater, dueToday, noDateA, noDateB],
+    "open only, overdue (oldest first) -> dated -> dateless (by id)",
+  );
 });
 
 test("Today and Tasks complete through one repo function", () => {

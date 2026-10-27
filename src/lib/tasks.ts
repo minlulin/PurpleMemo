@@ -210,6 +210,18 @@ export function createTasksRepo(
       );
     },
 
+    /**
+     * Every open task — the dashboard's list (plan §A.3). Plain date order
+     * already yields the display order for free: overdue first, then soon,
+     * then ok, then no-date last (`due_date IS NULL` sorts nulls to the end
+     * in SQLite).
+     */
+    async openTasks(): Promise<TaskRow[]> {
+      return driver.query<TaskRow>(
+        "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date IS NULL, due_date, id",
+      );
+    },
+
     // -- Reminders ---------------------------------------------------------------
     async listReminders(includeFired = false): Promise<ReminderRow[]> {
       return includeFired

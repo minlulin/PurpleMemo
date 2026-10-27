@@ -37,7 +37,7 @@ test("the repo forwards the collection filter to the FTS search (P2-13)", async 
   const unscoped = createMockDriver();
   await createNotesRepo(unscoped).search("grocery");
   const plain = first(unscoped.callsTo("query"), "fts query");
-  assert.doesNotMatch(plain.args[0] as string, /collection_id/);
+  assert.doesNotMatch(plain.args[0] as string, /collection_id =/);
 });
 
 test("noteExcerpt strips markdown syntax to plain text", () => {

@@ -124,7 +124,14 @@ const SETTINGS_ALIASES: Record<string, string[]> = {
     "english",
   ],
   lock: ["pin", "idle", "auto", "lock", "timeout", "security"],
-  notifications: ["reminder", "notification", "preview", "toast", "alert"],
+  notifications: [
+    "reminder",
+    "notification",
+    "preview",
+    "toast",
+    "alert",
+    "tray",
+  ],
   vault: ["secret", "password", "encrypt", "aes"],
   "key-export": ["key", "backup key", "encryption", "master"],
   backup: ["restore", "import", "export", "zip", "archive", "recovery"],
@@ -156,6 +163,12 @@ export default function SettingsPage(p: SettingsPageProps) {
    * and re-reading keeps the toggle truthful if an import replaced settings.
    */
   const [preview, setPreview] = useState(false);
+  /**
+   * Whether closing the window hides to the tray instead of quitting.
+   * Default ON, matching the settings repo and the Rust close handler; read
+   * on mount for the same reason as `preview`.
+   */
+  const [closeToTray, setCloseToTray] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,6 +178,13 @@ export default function SettingsPage(p: SettingsPageProps) {
         if (!cancelled) setPreview(enabled);
       })
       // A failed read leaves the toggle at the safe default (OFF).
+      .catch(() => undefined);
+    void settingsRepo
+      .getCloseToTray()
+      .then((enabled) => {
+        if (!cancelled) setCloseToTray(enabled);
+      })
+      // A failed read leaves the toggle at the default (ON).
       .catch(() => undefined);
     return () => {
       cancelled = true;
@@ -223,6 +243,16 @@ export default function SettingsPage(p: SettingsPageProps) {
     try {
       await settingsRepo.setNotificationPreview(enabled);
       setPreview(enabled);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const changeCloseToTray = async (enabled: boolean) => {
+    try {
+      await settingsRepo.setCloseToTray(enabled);
+      setCloseToTray(enabled);
+      // Rust reads the row fresh on every close, so no restart is needed.
     } catch (e) {
       setError(errText(e));
     }
@@ -958,6 +988,16 @@ export default function SettingsPage(p: SettingsPageProps) {
           notification says only that a reminder is due — never its title or
           note. When several come due at once, they share one summary alert
           either way.
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={closeToTray}
+            onChange={(e) => void changeCloseToTray(e.target.checked)}
+          />
+          <span>
+            <b>{t("settings.closeToTray")}</b> — {t("settings.closeToTrayHint")}
+          </span>
         </label>
       </section>
 

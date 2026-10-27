@@ -13,7 +13,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
+use tauri::WindowEvent;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 /// How long one boot-failure dialog may stay up before the process stops waiting
@@ -93,6 +96,10 @@ pub fn run() {
             // missing-key class without matching message text.
             if let Err(failure) = boot(app.handle()) {
                 report_boot_failure(app.handle(), &failure);
+            } else {
+                // Tray + close-to-tray only once the app actually booted: a
+                // failed boot hides the window and hands over to its dialogs.
+                start_session_chrome(app.handle());
             }
             Ok(())
         })
@@ -387,6 +394,9 @@ fn retry_boot(app: tauri::AppHandle) {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
+            // A boot that succeeded late still gets its tray — the guard in
+            // start_session_chrome keeps a first-boot success from doubling it.
+            start_session_chrome(&app);
         }
         Err(failure) => report_boot_failure(&app, &failure),
     });
@@ -414,6 +424,128 @@ fn arm_watchdog() {
         eprintln!("purple-memo: no answer to the boot-failure dialog; exiting");
         std::process::exit(1);
     });
+}
+
+/// Tray menu item ids — matched literally by the tray's menu-event handler,
+/// so a typo here is a menu item that silently does nothing.
+const TRAY_SHOW_ID: &str = "show";
+const TRAY_QUIT_ID: &str = "quit";
+
+/// Settings key behind the close-to-tray toggle. The frontend writes it
+/// (`SETTING_KEYS.closeToTray` in `src/lib/settings.ts`); Rust reads it fresh
+/// on every close, so flipping the toggle applies without a restart (§B.3).
+const CLOSE_TO_TRAY_KEY: &str = "close_to_tray";
+
+/// Install the session chrome — tray icon plus close-to-tray — exactly once.
+/// Called after a successful `boot` and again after a successful Retry, since
+/// a boot failure tears the app down before there is anything to tray.
+///
+/// The tray comes first on purpose: without a tray icon there is nowhere to
+/// Show the window from, so hiding on close would strand an invisible process.
+/// If the tray cannot be built, close keeps today's behaviour (it quits) and
+/// the reason goes to stderr.
+fn start_session_chrome(app: &tauri::AppHandle) {
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Err(reason) = install_tray(app) {
+        eprintln!("purple-memo: tray unavailable, close keeps quitting: {reason}");
+        return;
+    }
+    watch_close_to_tray(app);
+    INSTALLED.store(true, Ordering::SeqCst);
+}
+
+/// The tray icon: the existing app icon and exactly two menu items —
+/// "Show Purple Memo" (restore the window) and "Quit" (full exit). No new
+/// artwork, no other actions (plan §B.2.3 / §B.2.5).
+fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
+    let icon = app
+        .default_window_icon()
+        .ok_or_else(|| "the default window icon is missing".to_string())?
+        .clone()
+        .to_owned();
+    let show = MenuItem::with_id(app, TRAY_SHOW_ID, "Show Purple Memo", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&show, &quit]).map_err(|e| e.to_string())?;
+    TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .tooltip("Purple Memo")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            TRAY_SHOW_ID => focus_main_window(app),
+            // `exit` leaves through Tauri's exit path, not the window's
+            // CloseRequested — the tray's Quit can never be intercepted by
+            // close-to-tray and turned into a hide.
+            TRAY_QUIT_ID => app.exit(0),
+            _ => {}
+        })
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Close-to-tray (plan §B.2.1): while the toggle says so, closing the main
+/// window hides it instead of destroying it, so the process — and the
+/// reminder poll with it — keeps running.
+fn watch_close_to_tray(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            if close_to_tray_enabled(&handle) {
+                api.prevent_close();
+                if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                    let _ = window.hide();
+                }
+            }
+        }
+    });
+}
+
+/// The toggle, read fresh from the settings table on every close (§B.3) —
+/// never cached, so flipping it in Settings applies to the very next close
+/// without a restart.
+///
+/// No managed state (a failed boot), no open connection, or no row all answer
+/// "on": the default is to keep the process alive, and the paths that could
+/// not read the setting are exactly the paths where quitting silently would be
+/// the worst surprise.
+fn close_to_tray_enabled(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<db::AppState>() else {
+        return true;
+    };
+    let conn = state
+        .conn
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(conn) = conn.as_ref() else {
+        return true;
+    };
+    let raw = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [CLOSE_TO_TRAY_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    parse_close_to_tray(raw.as_deref())
+}
+
+/// The stored close-to-tray value. Default ON: a missing row (every install
+/// that predates the key) and an unreadable row both keep today's behaviour of
+/// the app staying alive — only an explicit JSON `false` restores "close
+/// quits".
+fn parse_close_to_tray(raw: Option<&str>) -> bool {
+    match raw {
+        None => true,
+        Some(text) => serde_json::from_str::<bool>(text).unwrap_or(true),
+    }
 }
 
 /// Raise and un-minimise the main window, so the copy that is already running
@@ -691,6 +823,128 @@ mod builder_order_tests {
             "single-instance registration must precede .setup( so a second \
              launch is turned away before boot: registration at {single}, \
              setup at {setup}"
+        );
+    }
+}
+
+/// Tray + close-to-tray (plan §B): the tray exists, offers exactly two
+/// actions, close is intercepted to hide instead of destroy, and a second
+/// launch brings the hidden window back. Most of this is OS-level behaviour a
+/// unit test cannot reach, so the source pins below are what fails when the
+/// wiring silently disappears; the checklist in plan §B.4 is the acceptance.
+#[cfg(test)]
+mod tray_tests {
+    const SRC: &str = include_str!("lib.rs");
+
+    /// The function body of a top-level `fn`, for source pins.
+    fn body_of(name: &str) -> &'static str {
+        let start = SRC.find(name).unwrap_or_else(|| panic!("{name} exists"));
+        let rest = &SRC[start..];
+        let end = rest.find("\nfn ").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    #[test]
+    fn the_tray_feature_flag_is_enabled() {
+        // `tauri::tray` is cfg-gated behind the opt-in `tray-icon` feature,
+        // which is NOT a default — without this line the tray does not compile.
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            manifest.contains("\"tray-icon\""),
+            "Cargo.toml must enable tauri's tray-icon feature"
+        );
+    }
+
+    #[test]
+    fn the_tray_offers_exactly_two_actions_and_uses_the_app_icon() {
+        let body = body_of("fn install_tray");
+        assert_eq!(
+            body.matches("MenuItem::with_id").count(),
+            2,
+            "exactly two menu items: Show and Quit (plan §B.2.3)"
+        );
+        assert!(body.contains("TRAY_SHOW_ID"), "Show Purple Memo");
+        assert!(body.contains("TRAY_QUIT_ID"), "Quit");
+        assert!(
+            body.contains("default_window_icon"),
+            "the tray reuses the existing app icon (plan §B.2.5)"
+        );
+        assert!(
+            body.contains("focus_main_window(app)"),
+            "Show restores the window"
+        );
+        assert!(
+            body.contains("app.exit(0)"),
+            "Quit exits the process for real — never hide"
+        );
+    }
+
+    #[test]
+    fn closing_the_window_hides_to_the_tray_instead_of_destroying_it() {
+        let body = body_of("fn watch_close_to_tray");
+        let intercepted = body
+            .find("WindowEvent::CloseRequested")
+            .expect("the close request is intercepted");
+        let prevented = body
+            .find("api.prevent_close()")
+            .expect("the close is cancelled, not processed");
+        let gated = body
+            .find("close_to_tray_enabled")
+            .expect("the toggle is consulted on every close");
+        let hidden = body
+            .find(".hide()")
+            .expect("the window is hidden rather than destroyed");
+        assert!(
+            intercepted < gated && gated < prevented && prevented < hidden,
+            "order must be: see the close -> ask the toggle -> cancel it -> \
+             hide; the gate must come first or an off-toggle close would be \
+             cancelled with nothing left to show"
+        );
+    }
+
+    #[test]
+    fn the_toggle_is_read_from_settings_on_every_close() {
+        let body = body_of("fn close_to_tray_enabled");
+        assert!(
+            body.contains("SELECT value FROM settings"),
+            "the setting is read fresh from the settings table, not cached"
+        );
+        assert!(
+            body.contains("parse_close_to_tray"),
+            "the raw row goes through the tested parser"
+        );
+    }
+
+    #[test]
+    fn close_to_tray_defaults_on_and_only_an_explicit_false_turns_it_off() {
+        use super::parse_close_to_tray;
+        // Absent row = every install that predates the key: they must all keep
+        // today's "the app stays alive" behaviour without a migration.
+        assert!(parse_close_to_tray(None), "missing row defaults to ON");
+        assert!(parse_close_to_tray(Some("true")));
+        assert!(!parse_close_to_tray(Some("false")), "explicitly off");
+        // Anything that is not JSON `false` keeps the process alive behind the
+        // tray — a corrupt row must never make close silently quit.
+        assert!(parse_close_to_tray(Some("not json")));
+        assert!(
+            parse_close_to_tray(Some("\"false\"")),
+            "only a JSON false turns it off"
+        );
+    }
+
+    #[test]
+    fn a_second_launch_restores_the_main_window() {
+        // The single-instance callback must show the hidden window (plan
+        // §B.2.4): with the app trayed, a second launch that does nothing
+        // reads as a dead launch.
+        let single = SRC
+            .find(".plugin(tauri_plugin_single_instance")
+            .expect("the single-instance plugin is registered");
+        let setup = SRC.find(".setup(").expect("the builder has a setup hook");
+        let callback = &SRC[single..setup];
+        assert!(
+            callback.contains("focus_main_window(app)"),
+            "the second-launch callback must raise and show the main window"
         );
     }
 }

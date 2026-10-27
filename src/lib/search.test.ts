@@ -82,7 +82,7 @@ test("searchNotes: no collectionId means no collection clause at all", async () 
   const driver = createMockDriver();
   await searchNotes(driver, "x");
   const sql = first(driver.callsTo("query"), "query").args[0] as string;
-  assert.doesNotMatch(sql, /collection_id/);
+  assert.doesNotMatch(sql, /collection_id =/);
   assert.deepEqual(first(driver.callsTo("query"), "query").args[1], ['"x"*']);
 });
 

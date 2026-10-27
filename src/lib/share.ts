@@ -264,7 +264,7 @@ export function createShareRepo(driver: DataDriver) {
         habits.habitProgressList(today, SHARE_LIMITS.habits),
         memories.upcoming(today, 14),
         contacts.upcomingBirthdays(14, today),
-        notes.listNotes({ limit: SHARE_LIMITS.notes }),
+        notes.listNotes({ limit: SHARE_LIMITS.notes, projection: "full" }),
         business.listReceivable(),
       ]);
 
