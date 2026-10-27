@@ -26,7 +26,7 @@ import {
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
 import { formatDateTime } from "../lib/format.ts";
-import type { MessageKey } from "../lib/i18n.ts";
+import { isMessageKeyError, type MessageKey } from "../lib/i18n.ts";
 import { journalBlock, targetKey } from "../lib/inbox.ts";
 import type { InboxRow, InboxTarget } from "../lib/types.ts";
 
@@ -105,24 +105,56 @@ export default function InboxPage(p: InboxPageProps) {
    */
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
-  /** Which row is being converted, so only its buttons lock. */
+  /**
+   * Which row is converting — the LABEL is per row; the lock itself is
+   * deliberately GLOBAL: one reload replaces every section at once, and two
+   * concurrent journal conversions could interleave their draft folds (D10).
+   * `disabled={convertingId !== null}` below is that global lock, made
+   * visible, and `archive` raises the matching pair so a Convert click can
+   * never race an Archive commit. The ref is authoritative, the state is what
+   * the buttons read.
+   */
   const convertingRef = useRef<number | null>(null);
   const [convertingId, setConvertingId] = useState<number | null>(null);
+  /** Archive in flight (D10) — same shape, so its double-click never reaches
+   *  the database twice and no Convert lands behind it. */
+  const archivingRef = useRef<number | null>(null);
+  const [archivingId, setArchivingId] = useState<number | null>(null);
+  /** Sequence token: only the newest reload may install its snapshot (D6). */
+  const reloadSeqRef = useRef(0);
+
+  /**
+   * Render a caught value: a keyed inbox refusal in the locale active right
+   * now (D11), anything else through the shared raw-text helper.
+   */
+  const errMessage = (e: unknown): string =>
+    isMessageKeyError(e) ? t(e.messageKey, e.params) : errText(e);
 
   const reload = useCallback(async () => {
+    const seq = ++reloadSeqRef.current;
+    // The list is knowingly pre-write while this runs: say so, instead of
+    // leaving the old rows sitting there as if current (D6 — the B9 second
+    // half). Two overlapping reloads (a row action and the capturesMade
+    // signal, or an "Earlier" flip) used to let the older snapshot land last.
+    setLoading(true);
     try {
       const open = await inboxRepo.listOpen();
       const done = await inboxRepo.listByStatus("converted");
       const away = showArchived ? await inboxRepo.listByStatus("archived") : [];
-      setLive(await inboxRepo.liveTargets(done));
+      const liveTargets = await inboxRepo.liveTargets(done);
+      if (seq !== reloadSeqRef.current) return; // superseded — newest wins
+      setLive(liveTargets);
       setItems(open);
       setConverted(done);
       setArchived(away);
       setError(null);
     } catch (e) {
-      setError(errText(e));
+      // Reload only reads: its failures are driver errors, never the keyed
+      // conversion refusals — so no `t` is captured here and this callback
+      // keeps its identity across renders.
+      if (seq === reloadSeqRef.current) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (seq === reloadSeqRef.current) setLoading(false);
     }
   }, [showArchived]);
 
@@ -159,7 +191,7 @@ export default function InboxPage(p: InboxPageProps) {
       await reload();
       toast.success(t("capture.saved"));
     } catch (e) {
-      setError(errText(e));
+      setError(errMessage(e));
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -168,6 +200,11 @@ export default function InboxPage(p: InboxPageProps) {
 
   const convert = async (row: InboxRow, target: InboxTarget) => {
     if (convertingRef.current !== null) return;
+    // An Archive commits status='archived', which this batch's `status =
+    // 'open'` claim then refuses — a Convert landing behind an in-flight
+    // Archive would file the user's convert intent as an archived capture
+    // (D10), and archived rows can never be converted at all.
+    if (archivingRef.current !== null) return;
     convertingRef.current = row.id;
     setConvertingId(row.id);
     setError(null);
@@ -196,7 +233,7 @@ export default function InboxPage(p: InboxPageProps) {
       );
       await reload();
     } catch (e) {
-      setError(errText(e));
+      setError(errMessage(e));
     } finally {
       convertingRef.current = null;
       setConvertingId(null);
@@ -204,12 +241,22 @@ export default function InboxPage(p: InboxPageProps) {
   };
 
   const archive = async (row: InboxRow) => {
+    // The mirror image of convert's check (D10): while a conversion is in
+    // flight this row may be about to become `converted`, which the guarded
+    // UPDATE (`WHERE status = 'open'`) would then undo by archiving it.
+    if (convertingRef.current !== null) return;
+    if (archivingRef.current !== null) return;
+    archivingRef.current = row.id;
+    setArchivingId(row.id);
     setError(null);
     try {
       await inboxRepo.archive(row.id);
       await reload();
     } catch (e) {
-      setError(errText(e));
+      setError(errMessage(e));
+    } finally {
+      archivingRef.current = null;
+      setArchivingId(null);
     }
   };
 
@@ -220,7 +267,7 @@ export default function InboxPage(p: InboxPageProps) {
       await inboxRepo.deleteItem(row.id);
       await reload();
     } catch (e) {
-      setError(errText(e));
+      setError(errMessage(e));
     }
   };
 
@@ -311,7 +358,7 @@ export default function InboxPage(p: InboxPageProps) {
                     key={target}
                     type="button"
                     className={target === "note" ? "btn btn-primary" : "btn"}
-                    disabled={convertingId !== null}
+                    disabled={convertingId !== null || archivingId !== null}
                     onClick={() => void convert(row, target)}
                   >
                     {convertingId === row.id ? t("inbox.converting") : t(label)}
@@ -320,10 +367,12 @@ export default function InboxPage(p: InboxPageProps) {
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  disabled={convertingId !== null}
+                  disabled={convertingId !== null || archivingId !== null}
                   onClick={() => void archive(row)}
                 >
-                  {t("inbox.archive")}
+                  {archivingId === row.id
+                    ? t("inbox.archiving")
+                    : t("inbox.archive")}
                 </button>
                 <ConfirmButton
                   className="btn btn-ghost"

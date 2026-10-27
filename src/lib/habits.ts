@@ -91,35 +91,19 @@ export function createHabitsRepo(driver: DataDriver) {
       return true;
     },
 
-    async listLogs(habitId: number): Promise<HabitLogRow[]> {
-      return driver.query<HabitLogRow>(
-        "SELECT * FROM habit_logs WHERE habit_id = ? ORDER BY log_date",
-        [habitId],
-      );
-    },
-
-    /** All logged dates for a habit (the streak/week/month computations). */
-    async loggedDates(habitId: number): Promise<string[]> {
-      const rows = await driver.query<{ log_date: string }>(
-        "SELECT log_date FROM habit_logs WHERE habit_id = ? AND done = 1 ORDER BY log_date",
-        [habitId],
-      );
-      return rows.map((r) => r.log_date);
-    },
-
     /**
-     * Progress for a bounded list of habits in two queries.
-     *
-     * `habitProgress` is two queries per habit, which suits a page showing one
-     * habit and not the share ticker asking for twenty: that path paid forty
-     * IPC round-trips every 30 seconds. The log read is one statement scoped to
-     * the selected ids — a streak needs the habit's whole history, so the dates
-     * themselves are not capped.
+     * Progress for a bounded list of habits in two queries — the ONLY progress
+     * entry point (D12): the per-habit variant this replaced cost two queries
+     * per habit (forty IPC round-trips for the share ticker's twenty habits,
+     * every 30 seconds) and was deleted rather than left for a caller to
+     * reintroduce — `fan-out-guard.test.ts` pins that no page calls it. The log
+     * read is one statement scoped to the selected ids — a streak needs the
+     * habit's whole history, so the dates themselves are not capped.
      *
      * Each result also carries `dates`, the habit's full done-date history
-     * (ascending, the same set `loggedDates` returns per habit): the log rows
-     * are already in hand, so callers like HabitsPage's calendar grid get them
-     * for free instead of paying one more query per habit.
+     * (ascending): the log rows are already in hand, so callers like
+     * HabitsPage's calendar grid get them for free instead of paying one more
+     * query per habit.
      */
     async habitProgressList(
       today = todayLocal(),
@@ -160,28 +144,6 @@ export function createHabitsRepo(driver: DataDriver) {
           dates,
         };
       });
-    },
-
-    /** Habit + derived progress for the habit views. */
-    async habitProgress(
-      habitId: number,
-      today = todayLocal(),
-    ): Promise<{
-      habit: HabitRow | undefined;
-      current: number;
-      best: number;
-      week: { date: string; done: boolean }[];
-    }> {
-      const [habit, dates] = await Promise.all([
-        driver.query<HabitRow>("SELECT * FROM habits WHERE id = ?", [habitId]),
-        this.loggedDates(habitId),
-      ]);
-      return {
-        habit: habit[0],
-        current: currentStreak(dates, today),
-        best: bestStreak(dates),
-        week: weekProgress(dates, today),
-      };
     },
   };
 }

@@ -59,10 +59,16 @@ export function formatDate(locale: Locale, isoDate: string): string {
 }
 
 /**
- * `yyyy-mm-ddTHH:mm` (or a plain date) -> readable date and time. The time is
- * shown in the user's local clock, which is how it was stored.
+ * `yyyy-mm-ddTHH:mm` -> readable date and time. The time is shown in the
+ * user's local clock, which is how it was stored.
+ *
+ * A plain `yyyy-mm-dd` renders as the date alone (D7): a date-only row stores
+ * no clock time, and `new Date("2026-10-27")` is a UTC parse per ECMAScript —
+ * it would invent midnight and, west of UTC, show the previous day.
  */
 export function formatDateTime(locale: Locale, isoDateTime: string): string {
+  const dateOnly = parseISODate(isoDateTime);
+  if (dateOnly !== null) return formatDate(locale, isoDateTime);
   const date = new Date(isoDateTime);
   if (Number.isNaN(date.getTime())) return isoDateTime;
   return dateFormatter(locale, true).format(date);

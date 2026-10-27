@@ -23,6 +23,7 @@ import type {
 import { createMockDriver } from "../data/mock-driver.ts";
 import { first } from "../test-utils.ts";
 import { appendJournalBlock, JOURNAL_BLOCK_SEPARATOR } from "./drafts.ts";
+import { isMessageKeyError } from "./i18n.ts";
 import {
   convertStatements,
   createInboxRepo,
@@ -456,6 +457,26 @@ test("an archived capture cannot be converted", async () => {
 test("converting a capture that no longer exists is refused", async () => {
   const repo = createInboxRepo(sqliteDriver());
   await assert.rejects(() => repo.convert(404, "note"), /no longer exists/);
+});
+
+test("refused conversions carry a translation key, not a bare sentence (D11)", async () => {
+  // The inbox page is fully localized, and these refusals are reached exactly
+  // on the stale-list and raced-click paths: the key is what the page renders,
+  // the English `message` is only the readable fallback the assertions above
+  // match on.
+  const repo = createInboxRepo(sqliteDriver());
+  const id = await repo.create("put this away");
+  await repo.archive(id);
+  await assert.rejects(
+    () => repo.convert(id, "note"),
+    (e: unknown) =>
+      isMessageKeyError(e) && e.messageKey === "inbox.convertArchived",
+  );
+  await assert.rejects(
+    () => repo.convert(404, "note"),
+    (e: unknown) =>
+      isMessageKeyError(e) && e.messageKey === "inbox.convertGone",
+  );
 });
 
 test("a converted capture survives its target being deleted", async () => {

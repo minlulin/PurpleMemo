@@ -37,6 +37,18 @@ test("date-times keep the stored local clock time", () => {
   assert.doesNotMatch(formatDateTime("my", "2026-10-20T14:05"), BURMESE_DIGITS);
 });
 
+test("a plain date never shows a clock time it does not store (D7)", () => {
+  // `new Date("2026-10-27")` is a UTC parse: it invents a time, and west of
+  // UTC it rolls the day back. Date-only rows (the inbox's `created_at`)
+  // store no clock time, so they render as the date they are.
+  assert.equal(
+    formatDateTime("en", "2026-10-27"),
+    formatDate("en", "2026-10-27"),
+  );
+  assert.doesNotMatch(formatDateTime("en", "2026-10-27"), /00:00/);
+  assert.equal(formatDateTime("en", "not-a-date"), "not-a-date");
+});
+
 test("long dates carry the weekday and keep Latin digits", () => {
   assert.equal(formatLongDate("en", "2026-10-20"), "Tuesday, October 20, 2026");
   assert.doesNotMatch(formatLongDate("my", "2026-10-20"), BURMESE_DIGITS);

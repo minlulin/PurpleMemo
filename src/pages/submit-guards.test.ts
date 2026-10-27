@@ -172,9 +172,12 @@ const GUARDS: {
     cleared: "setPayingId(null)",
     label: "Saving…",
   },
-  // Quick capture. Capture and conversion are the two writes here,
-  // and the conversion guard is per row so one row's click does not lock the
-  // list — the reason it needs an explicit `raised`.
+  // Quick capture. Capture and conversion are the two writes here. The
+  // conversion LOCK is deliberately global — one row's click locks the list's
+  // actions (D10), because one reload replaces every section at once and two
+  // concurrent journal conversions could interleave their draft folds — while
+  // the busy LABEL stays per row, so the user sees which row is working; that
+  // per-row label is why the row needs an explicit `raised`.
   {
     page: "InboxPage.tsx",
     handler: "capture",
@@ -189,6 +192,17 @@ const GUARDS: {
     cleared: "setConvertingId(null)",
     raised: "setConvertingId(row.id)",
     labelKey: "inbox.converting",
+  },
+  // Archive takes the same treatment (D10): an in-flight Archive must refuse
+  // a Convert and be refused by one — `status = 'archived'` makes the row
+  // unconvertible for good, so the race filed a convert intent as archived.
+  // It also gives Archive the in-flight feedback it never had.
+  {
+    page: "InboxPage.tsx",
+    handler: "archive",
+    busy: "archivingRef.current !== null",
+    cleared: "setArchivingId(null)",
+    raised: "setArchivingId(row.id)",
   },
   // The shell's capture dialog — the path a user actually takes, since the
   // shortcut works from every page.
@@ -392,6 +406,17 @@ const GUARDS: {
     busy: "togglingRef.current",
     cleared: "setToggling(false)",
     raised: "setToggling(true)",
+  },
+  // JournalPage's only submit (batch-4, D8): the same pinned shape every
+  // other write handler follows — it was the one page submit still protected
+  // by a disabled button alone, with no early return for a second click.
+  {
+    page: "JournalPage.tsx",
+    handler: "handleSave",
+    busy: "savingRef.current",
+    cleared: "savingRef.current = false",
+    raised: "savingRef.current = true",
+    label: "Saving…",
   },
   {
     page: "MemoriesPage.tsx",

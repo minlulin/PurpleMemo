@@ -20,10 +20,35 @@
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import { JOURNAL_BLOCK_SEPARATOR } from "./drafts.ts";
+import { type MessageKey, type MessageParams, translate } from "./i18n.ts";
 import type { InboxRow, InboxStatus, InboxTarget } from "./types.ts";
 
 /** What a capture can become. `journal` updates today's entry instead. */
 export const INBOX_TARGETS: InboxTarget[] = ["note", "task", "journal"];
+
+/**
+ * A refused inbox action, carrying a translation key instead of a
+ * pre-rendered sentence (D11). The inbox page is fully localized, and these
+ * refusals are reached precisely on the stale-list and raced-click paths —
+ * English thrown at a Burmese user is the failure being fixed. The page
+ * renders the key through `isMessageKeyError`; `message` is the readable
+ * fallback for logs, for `errText`, and for callers that only read
+ * `Error.message` (the tests among them) — the `CsvImportError` shape, except
+ * that the fallback is pinned to English rather than the active locale, so it
+ * is deterministic wherever the code runs. The sentence the page shows comes
+ * from the key anyway.
+ */
+export class InboxError extends Error {
+  readonly messageKey: MessageKey;
+  readonly params: MessageParams;
+
+  constructor(messageKey: MessageKey, params: MessageParams = {}) {
+    super(translate("en", messageKey, params));
+    this.name = "InboxError";
+    this.messageKey = messageKey;
+    this.params = params;
+  }
+}
 
 /** Characters a derived note title collapses to. */
 const TITLE_MAX_CHARS = 60;
@@ -185,7 +210,9 @@ export function createInboxRepo(driver: DataDriver) {
     async create(body: string): Promise<number> {
       const trimmed = body.trim();
       if (trimmed.length === 0) {
-        throw new Error("Type something before capturing.");
+        // One sentence for both callers: the page's own pre-check renders the
+        // same key, so the two can never drift apart.
+        throw new InboxError("capture.empty");
       }
       const r = await driver.execute(
         "INSERT INTO inbox_items (body, created_at) VALUES (?, ?)",
@@ -234,11 +261,9 @@ export function createInboxRepo(driver: DataDriver) {
      */
     async convert(id: number, target: InboxTarget): Promise<InboxConversion> {
       const before = await get(id);
-      if (!before) throw new Error("That capture no longer exists.");
+      if (!before) throw new InboxError("inbox.convertGone");
       if (before.status === "archived") {
-        throw new Error(
-          "That capture was archived, so there is nothing to convert.",
-        );
+        throw new InboxError("inbox.convertArchived");
       }
       if (before.status === "converted") {
         return {
@@ -253,9 +278,7 @@ export function createInboxRepo(driver: DataDriver) {
         after.converted_type === null ||
         after.converted_id === null
       ) {
-        throw new Error(
-          "The capture was not converted and nothing was written. Try again.",
-        );
+        throw new InboxError("inbox.convertFailed");
       }
       return { type: after.converted_type, id: after.converted_id };
     },

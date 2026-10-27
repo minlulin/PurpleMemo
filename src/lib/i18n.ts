@@ -227,7 +227,15 @@ export const en = {
     "Nothing waiting. Write something above, or press Ctrl+Shift+M from anywhere.",
   "inbox.capturedAt": "captured {date}",
   "inbox.archive": "Archive",
+  "inbox.archiving": "Archiving…",
   "inbox.converting": "Converting…",
+  // The three conversion refusals: thrown keyed from lib/inbox.ts so a
+  // raced or stale Convert click explains itself in the active locale (D11).
+  "inbox.convertGone": "That capture no longer exists.",
+  "inbox.convertArchived":
+    "That capture was archived, so there is nothing to convert.",
+  "inbox.convertFailed":
+    "The capture was not converted and nothing was written. Try again.",
   "inbox.convertedToast": "Converted to {target} #{id}.",
   "inbox.earlier": "Earlier",
   "inbox.earlierBadge": "converted & archived",
@@ -885,7 +893,13 @@ export const my: Record<MessageKey, string> = {
     "စောင့်နေသည့်အရာ မရှိပါ။ အပေါ်တွင် ချရေးပါ၊ သို့မဟုတ် မည်သည့်နေရာမှမဆို Ctrl+Shift+M ကို နှိပ်ပါ။",
   "inbox.capturedAt": "{date} တွင် ဖမ်းယူသည်",
   "inbox.archive": "စုစည်းသိမ်းမည်",
+  "inbox.archiving": "စုစည်းသိမ်းနေသည်…",
   "inbox.converting": "ပြောင်းလဲနေသည်…",
+  "inbox.convertGone": "အဆိုပါ ဖမ်းယူမှု မရှိတော့ပါ။",
+  "inbox.convertArchived":
+    "အဆိုပါ ဖမ်းယူမှုကို စုစည်းသိမ်းထားပြီးဖြစ်သောကြောင့် ပြောင်းလဲ၍ မရပါ။",
+  "inbox.convertFailed":
+    "ဖမ်းယူမှုကို ပြောင်းလဲခြင်း မပြုနိုင်ခဲ့ပါ။ ဘာမျှ မရေးသိမ်းထားပါ။ ထပ်မံကြိုးစားပါ။",
   "inbox.convertedToast": "{target} #{id} သို့ ပြောင်းလဲပြီးပါပြီ။",
   "inbox.earlier": "ယခင်က",
   "inbox.earlierBadge": "ပြောင်းလဲပြီး စုစည်းထားသည်",

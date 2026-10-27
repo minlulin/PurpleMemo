@@ -43,6 +43,14 @@ export default function JournalPage({
   const [month, setMonth] = useState(() => yearMonthOf(todayLocal()));
   const [entryDates, setEntryDates] = useState<string[]>([]);
   const [activeDate, setActiveDate] = useState(() => todayLocal());
+  /**
+   * The day the grid's "is-today" ring marks (D9 — the C2 family): state with
+   * a rollover tick, because the app leaves this page mounted across midnight
+   * and nothing else re-renders it — the ring used to sit on yesterday's cell
+   * until the first interaction. The Today button re-reads `todayLocal()` at
+   * click time, and no write depends on this value.
+   */
+  const [today, setToday] = useState(() => todayLocal());
   const [content, setContent] = useState("");
   /** The entry's stored content — `dirty` is `content !== savedContent`. */
   const [savedContent, setSavedContent] = useState("");
@@ -64,14 +72,41 @@ export default function JournalPage({
    * overwriting its entry if it had one, creating a phantom entry if not.
    */
   const loadedForRef = useRef<string | null>(null);
+  /**
+   * `handleSave` in-flight guard (D8): the ref is authoritative, `saving` is
+   * what the button reads. A double click writes the same `(date, content)`
+   * twice today — idempotent — but the convention is the invariant, and the
+   * next non-idempotent addition to this handler must inherit a guard.
+   */
+  const savingRef = useRef(false);
 
-  const refreshGrid = useCallback(async (ym: string) => {
+  /**
+   * The month the grid on screen shows (D5). Save/Delete used to refresh
+   * `yearMonthOf(date)` — the month of the date they were CLICKED on — so
+   * navigating while a save was in flight installed the edited date's month
+   * under whatever heading was showing. Handlers read this ref AFTER their
+   * awaits, so it can never be a stale render's capture.
+   */
+  const monthRef = useRef(month);
+  /** Monotonic token for the grid read: only the newest one may install (D5). */
+  const gridSeqRef = useRef(0);
+
+  const refreshGrid = useCallback(async () => {
+    const seq = ++gridSeqRef.current;
     try {
-      setEntryDates(await journalRepo.datesInMonth(ym));
+      const dates = await journalRepo.datesInMonth(monthRef.current);
+      if (seq !== gridSeqRef.current) return; // superseded — newest wins
+      setEntryDates(dates);
     } catch (e) {
-      setError(errText(e));
+      if (seq === gridSeqRef.current) setError(errText(e));
     }
   }, []);
+
+  // Effects run in declaration order, so this mirror lands before the grid
+  // effect below reads it on the same month change.
+  useEffect(() => {
+    monthRef.current = month;
+  }, [month]);
 
   const loadEntry = useCallback(
     async (date: string) => {
@@ -118,9 +153,20 @@ export default function JournalPage({
     [focusDate],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `month` is the deliberate trigger — refreshGrid reads monthRef at execution time
   useEffect(() => {
-    void refreshGrid(month);
+    void refreshGrid();
   }, [month, refreshGrid]);
+
+  // D9: nothing re-renders a parked page when the date rolls over — this tick
+  // moves the "today" ring without hijacking the day the user is editing.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = todayLocal();
+      if (now !== today) setToday(now);
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [today]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers a jump to the same journal date
   useEffect(() => {
@@ -173,6 +219,7 @@ export default function JournalPage({
   }
 
   async function handleSave(): Promise<void> {
+    if (savingRef.current) return;
     // Refuse while the day the editor was loaded for is not the day on
     // screen (D2): `activeDate` has already flipped but `content` still holds
     // the previous day's text — the window spans the whole load (two awaits)
@@ -183,6 +230,7 @@ export default function JournalPage({
     // The load generation this text belongs to: a day switch that starts
     // while the write is in flight now owns the editor.
     const seq = loadSeqRef.current;
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -204,10 +252,12 @@ export default function JournalPage({
           : clearJournalDraft(settingsRepo, date);
         await op.catch(() => undefined);
       }
-      await refreshGrid(yearMonthOf(date));
+      // The month ON SCREEN, read now — not the saved date's month (D5).
+      await refreshGrid();
     } catch (e) {
       setError(errText(e));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -223,7 +273,8 @@ export default function JournalPage({
       setEntryBase(null);
       setSavedContent("");
       setContent("");
-      await refreshGrid(yearMonthOf(date));
+      // The month ON SCREEN, read now — not the deleted date's month (D5).
+      await refreshGrid();
     } catch (e) {
       setError(errText(e));
     }
@@ -234,7 +285,6 @@ export default function JournalPage({
     [month, entryDates],
   );
   const label = monthLabel(month);
-  const today = todayLocal();
   const entrySet = useMemo(() => new Set(entryDates), [entryDates]);
   const readableActiveDate = new Date(
     `${activeDate}T00:00:00`,

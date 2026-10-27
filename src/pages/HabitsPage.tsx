@@ -20,7 +20,6 @@ import { buildMonthGrid, monthLabel } from "../lib/journal.ts";
 import type { HabitRow } from "../lib/types.ts";
 
 interface HabitProgress {
-  habit: HabitRow | undefined;
   current: number;
   best: number;
   week: { date: string; done: boolean }[];
@@ -82,7 +81,7 @@ export default function HabitsPage() {
         new Map<number, HabitProgress>(
           progs.map((p): [number, HabitProgress] => [
             p.habit.id,
-            { habit: p.habit, current: p.current, best: p.best, week: p.week },
+            { current: p.current, best: p.best, week: p.week },
           ]),
         ),
       );
