@@ -171,8 +171,8 @@ export default function HabitsPage() {
             <div>
               <h2 className="editor-title">Habits &amp; Streaks</h2>
               <p className="page-subtitle">
-                Build daily consistency with weekly check-ins and monthly
-                history
+                Build daily consistency with check-ins over the last 7 days and
+                monthly history
               </p>
             </div>
           </div>
@@ -258,7 +258,7 @@ export default function HabitsPage() {
                 </div>
 
                 <div className="habit-week-block">
-                  <span className="editor-pane-label">This week</span>
+                  <span className="editor-pane-label">Last 7 days</span>
                   <div className="habit-week-strip">
                     {(p?.week ?? []).map((d) => {
                       const dayIdx = new Date(`${d.date}T00:00:00`).getDay();
