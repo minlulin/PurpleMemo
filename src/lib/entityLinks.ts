@@ -21,6 +21,7 @@
 
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
+import { type MessageKey, type MessageParams, translate } from "./i18n.ts";
 import type {
   LinkableEntity,
   LinkableEntityType,
@@ -52,6 +53,28 @@ function endpointExistsSql(type: LinkableEntityType): string {
 
 export function isLinkableType(type: string): type is LinkableEntityType {
   return (LINKABLE_TYPES as string[]).includes(type);
+}
+
+/**
+ * A link refused because an endpoint no longer exists (G8 / D11).
+ *
+ * Carries a translation key instead of a pre-rendered English sentence, the
+ * same shape as `InboxError` and `CsvImportError`. The picker renders the key
+ * through `isMessageKeyError`, so the message reaches the user in their active
+ * locale rather than as raw English. `message` stays the readable English
+ * fallback — pinned to `en` so it is deterministic for logs, `errText`, and
+ * the tests that match on it.
+ */
+export class LinkTargetGoneError extends Error {
+  readonly messageKey: MessageKey;
+  readonly params: MessageParams;
+
+  constructor(messageKey: MessageKey, params: MessageParams = {}) {
+    super(translate("en", messageKey, params));
+    this.name = "LinkTargetGoneError";
+    this.messageKey = messageKey;
+    this.params = params;
+  }
 }
 
 /**
@@ -236,7 +259,9 @@ export function createEntityLinksRepo(driver: DataDriver) {
       [first.type, first.id, second.type, second.id],
     );
     if (existing.length > 0) return { linked: false, alreadyLinked: true };
-    throw new Error("That item no longer exists, so nothing was linked.");
+    // A missing endpoint, as a keyed refusal (G8): the raw English sentence
+    // used to surface inside the localized picker in Burmese mode.
+    throw new LinkTargetGoneError("search.unavailable");
   }
 
   /** Unlink. Never deletes an entity — only the relationship. */

@@ -791,15 +791,25 @@ test("the button that triggers each guarded handler reads the flag", () => {
     "MemoriesPage's form submit must disable while saving",
   );
   const importDialog = readPage("../components/ImportDialog.tsx");
+  // G10 folded every in-flight step into one `busy` flag, so the confirm
+  // button now disables on `busy` (which covers `phase === "running"` plus a
+  // read or template download in flight) rather than the phase alone.
   assert.match(
     importDialog,
-    /disabled=\{\s*phase === "running" \|\| preview\.valid\.length === 0\s*\}/,
-    "ImportDialog's confirm button must disable while running",
+    /disabled=\{\s*busy \|\| preview\.valid\.length === 0\s*\}/,
+    "ImportDialog's confirm button must disable while any step is in flight",
   );
   assert.match(
     importDialog,
     /disabled=\{\s*downloading \|\| phase === "running"\s*\}/,
     "ImportDialog's template button must disable while saving or running",
+  );
+  // The dialog itself locks on `busy`, so Escape/backdrop cannot dismiss it
+  // mid-read or mid-download the way the batch write already prevented.
+  assert.match(
+    importDialog,
+    /locked=\{\s*busy\s*\}/,
+    "ImportDialog must lock while any step is in flight",
   );
 });
 

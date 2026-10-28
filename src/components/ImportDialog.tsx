@@ -98,6 +98,16 @@ export function ImportDialog<T extends object>({
   const runningRef = useRef(false);
   /** Authoritative in-flight guard while the native save dialog is open. */
   const downloadingRef = useRef(false);
+  /** Synchronous guard for `pick` — `reading` is state and commits too late
+   *  to stop a second `change` before React re-renders (G10). */
+  const readingRef = useRef(false);
+
+  // Every phase that must not be dismissed or overlapped folds into one flag
+  // (G10): a template download in flight used to leave file-pick, Import and
+  // Cancel live, so a late `saveCsvTemplate` rejection could land on top of
+  // the "Import complete" screen. `downloading` now locks the whole dialog,
+  // not just the template button.
+  const busy = reading || downloading || phase === "running";
 
   /** A key-carrying refusal is rendered in the current locale; anything else
    * (a file-read failure, a database error) keeps its own text. */
@@ -105,12 +115,17 @@ export function ImportDialog<T extends object>({
     isMessageKeyError(e) ? t(e.messageKey, e.params) : errText(e);
 
   // Closing mid-write would hide an import that may already have landed; the
-  // user waits for the one batch instead.
+  // user waits for the one batch instead. Any in-flight step (read, download,
+  // write) locks the dialog, not just the batch (G10).
   const close = () => {
-    if (phase !== "running") onClose();
+    if (!busy) onClose();
   };
 
   const pick = async (file: File) => {
+    // Synchronous re-entry guard (G10): a fast second `change` before React
+    // commits `reading` would start a second read over the first.
+    if (readingRef.current) return;
+    readingRef.current = true;
     setError(null);
     setReading(true);
     try {
@@ -126,6 +141,7 @@ export function ImportDialog<T extends object>({
       setPreview(null);
       setPhase("pick");
     } finally {
+      readingRef.current = false;
       setReading(false);
     }
   };
@@ -158,7 +174,7 @@ export function ImportDialog<T extends object>({
   // `<a href="data:..." download>`, which `navigation.rs` blocks in Tauri.
   const downloadTemplate = async () => {
     if (downloadingRef.current) return;
-    if (phase === "running") return;
+    if (busy) return;
     downloadingRef.current = true;
     setDownloading(true);
     setError(null);
@@ -205,11 +221,11 @@ export function ImportDialog<T extends object>({
       labelledBy="import-dialog-title"
       onClose={close}
       className="import-dialog"
-      // Mid-batch the dialog closes only when the batch says so (G5): every
-      // control below is disabled while `running`, and a locked dialog also
+      // Mid-write the dialog closes only when the step says so (G5/G10): every
+      // control below is disabled while `busy`, and a locked dialog also
       // holds Tab inside — otherwise the focus trap saw zero stops and let
       // Tab walk out into the page behind an `aria-modal` dialog.
-      locked={phase === "running"}
+      locked={busy}
     >
       <header className="note-reader-header">
         <h2 className="editor-title" id="import-dialog-title">
@@ -237,7 +253,7 @@ export function ImportDialog<T extends object>({
                 className="visually-hidden"
                 type="file"
                 accept=".csv,text/csv"
-                disabled={reading}
+                disabled={busy}
                 // The dialog opens on the control the flow starts with (G5):
                 // without initial focus, `document.activeElement` stayed on
                 // the page's "Import CSV" button BEHIND the modal until the
@@ -251,7 +267,7 @@ export function ImportDialog<T extends object>({
               />
             </label>
             {templateButton}
-            <button type="button" className="btn btn-ghost" onClick={onClose}>
+            <button type="button" className="btn btn-ghost" onClick={close}>
               {t("common.cancel")}
             </button>
           </div>
@@ -342,7 +358,7 @@ export function ImportDialog<T extends object>({
             <button
               type="button"
               className="btn btn-ghost"
-              disabled={phase === "running"}
+              disabled={busy}
               onClick={pickAgain}
             >
               {t("import.chooseAnother")}
@@ -351,15 +367,15 @@ export function ImportDialog<T extends object>({
             <button
               type="button"
               className="btn btn-ghost"
-              disabled={phase === "running"}
-              onClick={onClose}
+              disabled={busy}
+              onClick={close}
             >
               {t("common.cancel")}
             </button>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={phase === "running" || preview.valid.length === 0}
+              disabled={busy || preview.valid.length === 0}
               onClick={() => void confirm()}
             >
               {phase === "running" ? t("import.importing") : t("import.import")}

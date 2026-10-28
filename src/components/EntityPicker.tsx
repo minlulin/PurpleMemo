@@ -16,6 +16,8 @@ import {
   pickerResults,
 } from "../lib/entityPicker.ts";
 import { errText } from "../lib/errors.ts";
+import { formatBirthday, formatDate } from "../lib/format.ts";
+import { isMessageKeyError } from "../lib/i18n.ts";
 import type {
   ContactRow,
   LinkableEntity,
@@ -23,8 +25,18 @@ import type {
   TaskRow,
 } from "../lib/types.ts";
 import { Dialog } from "./Dialog.tsx";
-import { IconSpinner } from "./icons.tsx";
-import { useT } from "./useTranslation.ts";
+import { IconClose, IconSpinner } from "./icons.tsx";
+import { useLocale, useT } from "./useTranslation.ts";
+
+/**
+ * The state word a hit carries ("Archived" / "Done") comes from the model as
+ * English (DECISION 2a). Map it to the active locale at this presentation
+ * boundary, leaving `lib/entityPicker.ts` and its tests untouched.
+ */
+const STATE_KEYS = {
+  Archived: "search.state.archived",
+  Done: "search.state.done",
+} as const;
 
 interface EntityPickerProps {
   /** The entity the relationship starts from; never offered. */
@@ -36,6 +48,7 @@ interface EntityPickerProps {
 
 export function EntityPicker(p: EntityPickerProps) {
   const t = useT();
+  const locale = useLocale();
   const [query, setQuery] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
   const [notes, setNotes] = useState<NoteRow[]>([]);
@@ -89,6 +102,48 @@ export function EntityPicker(p: EntityPickerProps) {
   );
   const hits = result.hits;
 
+  // Whether the workspace has ANY linkable row at all, independent of the
+  // query — used to tell "you have nothing to link" apart from "this search
+  // found nothing" (G8).
+  const totalRows = notes.length + tasks.length + contacts.length;
+
+  // Display-only rewrites of the English strings the model emits (DECISION
+  // 2a, G8): the state token and the "Due …"/"Birthday …" details arrive as
+  // English from `lib/entityPicker.ts` (whose tests stay untouched), and are
+  // localized at this presentation boundary. `dueById`/`birthdayById` re-derive
+  // the date from the source row so it can be formatted, since `PickerHit`
+  // carries the already-rendered English detail rather than the raw date.
+  const dueById = new Map<number, string>();
+  for (const task of tasks) {
+    if (task.due_date !== null) dueById.set(task.id, task.due_date);
+  }
+  const birthdayById = new Map<number, string>();
+  for (const contact of contacts) {
+    if (contact.birthday !== null)
+      birthdayById.set(contact.id, contact.birthday);
+  }
+  const stateLabel = (state: string | null): string => {
+    if (state === null) return "";
+    const key = STATE_KEYS[state as keyof typeof STATE_KEYS];
+    return key === undefined ? state : t(key);
+  };
+  const detailLabel = (hit: PickerHit): string | null => {
+    if (hit.detail === null) return null;
+    if (hit.entity.type === "task") {
+      const due = dueById.get(hit.entity.id);
+      return due === undefined
+        ? hit.detail
+        : `${t("linkPicker.due")} ${formatDate(locale, due)}`;
+    }
+    if (hit.entity.type === "contact") {
+      const birthday = birthdayById.get(hit.entity.id);
+      return birthday === undefined
+        ? hit.detail
+        : `${t("linkPicker.birthday")} ${formatBirthday(locale, birthday)}`;
+    }
+    return hit.detail;
+  };
+
   // The listbox is rendered only when it has options to own; `aria-expanded`
   // and `aria-controls` track exactly that condition, so the combobox never
   // claims a listbox that is not in the DOM (G2) — during loading, on a
@@ -132,7 +187,9 @@ export function EntityPicker(p: EntityPickerProps) {
       // success means "finished", not "abandoned".
       p.onClose();
     } catch (e) {
-      setError(errText(e));
+      // A keyed refusal (a vanished target, G8) renders in the active locale;
+      // anything else keeps its own text.
+      setError(isMessageKeyError(e) ? t(e.messageKey, e.params) : errText(e));
     } finally {
       choosingRef.current = false;
       setBusy(false);
@@ -143,7 +200,7 @@ export function EntityPicker(p: EntityPickerProps) {
     <Dialog labelledBy="link-picker-title" onClose={p.onClose} locked={busy}>
       <div className="modal-head">
         <h2 className="side-heading" id="link-picker-title">
-          Link to
+          {t("linkPicker.title")}
         </h2>
         <button
           type="button"
@@ -158,7 +215,7 @@ export function EntityPicker(p: EntityPickerProps) {
           disabled={busy}
           onClick={p.onClose}
         >
-          ×
+          <IconClose className="icon" />
         </button>
       </div>
       <div className="entry-form">
@@ -221,7 +278,12 @@ export function EntityPicker(p: EntityPickerProps) {
         {loading ? (
           <SkeletonRows />
         ) : hits.length === 0 ? (
-          <p className="muted">{t("linkPicker.empty")}</p>
+          // The empty message is contextual now (G8): "nothing exists" is only
+          // true when the workspace is genuinely empty. A query miss says so
+          // instead of claiming the user has no records at all.
+          <p className="muted">
+            {totalRows === 0 ? t("linkPicker.empty") : t("search.noMatches")}
+          </p>
         ) : (
           <>
             <ul
@@ -270,10 +332,10 @@ export function EntityPicker(p: EntityPickerProps) {
                           : "search.type.contact",
                     )}{" "}
                     · {hit.label}
-                    {hit.state === null ? "" : ` (${hit.state})`}
+                    {hit.state === null ? "" : ` (${stateLabel(hit.state)})`}
                   </button>
                   {hit.detail === null ? null : (
-                    <span className="row-sub">{hit.detail}</span>
+                    <span className="row-sub">{detailLabel(hit)}</span>
                   )}
                 </li>
               ))}

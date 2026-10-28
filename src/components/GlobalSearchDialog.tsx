@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { searchWorkspace } from "../data/app.ts";
-import { formatDate } from "../lib/format.ts";
+import { errText } from "../lib/errors.ts";
+import { formatBirthday, formatDate } from "../lib/format.ts";
 import {
   resultCount,
   type SearchGroup,
   type SearchResult,
+  type TotalCapReport,
 } from "../lib/globalSearch.ts";
 import type { MessageKey } from "../lib/i18n.ts";
 import {
+  isSearchable,
   SEARCH_CONTRACT,
   SEARCH_DEBOUNCE_MS,
+  SEARCH_TOTAL_CAP,
   type SearchEntitySpec,
 } from "../lib/searchContract.ts";
 import { Dialog } from "./Dialog.tsx";
@@ -51,6 +55,12 @@ export function GlobalSearchDialog({
   const [groups, setGroups] = useState<SearchGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether the total cap hid matches — a sliced trailing group or a wholly
+  // dropped group (DECISION 1a). Reported beside the return value via
+  // `TotalCapReport`, not derived from the groups: after the cap, trimmed and
+  // naturally-small groups are indistinguishable, and a dropped group leaves
+  // no trace at all.
+  const [totalCapped, setTotalCapped] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -64,10 +74,14 @@ export function GlobalSearchDialog({
 
   useEffect(() => {
     const term = query.trim();
-    if (term.length === 0) {
+    // A punctuation-only query is not searchable (G9): `globalSearch` would
+    // return `[]` without touching the DB, but the UI still flashed
+    // "Searching…" then "0 results". Stay in the idle state instead.
+    if (term.length === 0 || !isSearchable(term)) {
       setGroups([]);
       setLoading(false);
       setError(null);
+      setTotalCapped(false);
       setActiveIndex(0);
       return;
     }
@@ -76,24 +90,39 @@ export function GlobalSearchDialog({
     setGroups([]);
     setActiveIndex(0);
     setError(null);
+    setTotalCapped(false);
     setLoading(true);
+    // A reversed From/Through range matches nothing by definition and used to
+    // ship impossible bounds (`col >= since AND col <= until` with since after
+    // until) straight to SQL, reporting a silent "0 results" (G9). Treat it as
+    // an empty query instead of a search that was destined to fail, so the UI
+    // stays in its idle state rather than flashing a bogus "No matches."
+    if (since && until && since > until) {
+      setLoading(false);
+      return;
+    }
     const timer = window.setTimeout(() => {
+      // Filled by `applyTotalCap` before the promise resolves (DECISION 1a).
+      const totalCapReport: TotalCapReport = { truncated: false };
       void searchWorkspace(term, {
         types: type === "all" ? undefined : [type],
         since: since || undefined,
         until: until || undefined,
         includeInactive,
+        totalCapReport,
       })
         .then((next) => {
           if (cancelled) return;
           setGroups(next);
+          setTotalCapped(totalCapReport.truncated);
           setActiveIndex(0);
           setError(null);
         })
         .catch((reason: unknown) => {
           if (cancelled) return;
           setGroups([]);
-          setError(reason instanceof Error ? reason.message : String(reason));
+          setTotalCapped(false);
+          setError(errText(reason));
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -234,7 +263,7 @@ export function GlobalSearchDialog({
       <div className="global-search-status" aria-live="polite">
         {loading
           ? t("search.searching")
-          : query.trim() && !error
+          : isSearchable(query) && !error
             ? plural("search.results", count)
             : ""}
       </div>
@@ -276,10 +305,16 @@ export function GlobalSearchDialog({
                 </span>
                 {group.results.map((result) => {
                   const index = results.indexOf(result);
-                  const details = [
-                    result.state,
-                    result.date ? formatDate(locale, result.date) : undefined,
-                  ]
+                  // Contact birthdays may be stored as a yearless `MM-DD`
+                  // (G8/G9), which `formatDate` would render raw — so that one
+                  // group goes through the birthday-aware formatter.
+                  const shownDate =
+                    result.date === null
+                      ? undefined
+                      : result.type === "contact"
+                        ? formatBirthday(locale, result.date)
+                        : formatDate(locale, result.date);
+                  const details = [result.state, shownDate]
                     .filter(Boolean)
                     .join(" · ");
                   return (
@@ -321,8 +356,17 @@ export function GlobalSearchDialog({
           })}
         </div>
       ) : null}
-      {!loading && !error && query.trim() && count === 0 ? (
+      {!loading && !error && isSearchable(query) && count === 0 ? (
         <p className="muted">{t("search.noMatches")}</p>
+      ) : null}
+      {/* DECISION 1a: the per-group " · more available" marker only covers a
+          group over its own cap — nothing said so when the TOTAL cap sliced a
+          trailing group or dropped whole groups. Mutually exclusive with the
+          "no matches" note above: a capped search always shows results. */}
+      {!loading && !error && totalCapped ? (
+        <p className="muted">
+          {t("search.totalCapped", { cap: SEARCH_TOTAL_CAP })}
+        </p>
       ) : null}
     </Dialog>
   );

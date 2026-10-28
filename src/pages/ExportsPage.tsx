@@ -5,6 +5,7 @@ import {
   IconDownload,
   IconJournal,
   IconNotes,
+  IconSpinner,
   IconTasks,
   IconWallet,
 } from "../components/icons.tsx";
@@ -70,6 +71,10 @@ export default function ExportsPage() {
   const busyRef = useRef(false);
 
   const toggle = (key: ExportGroup) => {
+    // Clear the "choose at least one group" refusal the moment the selection
+    // changes (G14): re-checking a group used to leave the stale red alert on
+    // screen until Export was clicked a second time.
+    setError(null);
     setSelection((current) => ({ ...current, [key]: !current[key] }));
   };
 
@@ -83,13 +88,20 @@ export default function ExportsPage() {
     busyRef.current = true;
     setBusy(true);
     try {
-      const today = todayLocal();
+      const defaultDay = todayLocal();
       const path = await save({
         title: "Save Purple Memo readable export",
-        defaultPath: `purple-memo-readable-${today}.zip`,
+        defaultPath: `purple-memo-readable-${defaultDay}.zip`,
         filters: [{ name: "ZIP archive", extensions: ["zip"] }],
       });
       if (path === null) return;
+      // ONE clock for the whole export (G14). `today` used to be read before
+      // `await save(...)` (which can sit open across midnight) while
+      // `exportedAt` was read after, so `README.txt`'s "Generated:" and the
+      // loan states in `finance/loans.csv` (both graded against the day)
+      // could disagree by a day. `deriveLoanState` grades against `today`, so
+      // the day is read here, beside `exportedAt`, not before the dialog.
+      const today = todayLocal();
       const exportedAt = localISODateTime(new Date());
       const { bytes, counts, fileCount } = await exportsRepo.build(
         selection,
@@ -97,8 +109,17 @@ export default function ExportsPage() {
         exportedAt,
       );
       await exportsRepo.save(path, bytes);
+      // Finance reported as its own count (G6): it used to be omitted, so a
+      // Finance-only export announced "0 notes, 0 journal entries, 0 tasks,
+      // 0 contacts" even after writing hundreds of finance rows.
+      const financeRows =
+        counts.income +
+        counts.expenses +
+        counts.loans +
+        counts.jobs +
+        counts.payables;
       toast.success(
-        `Readable export saved to ${path} - ${fileCount} files (${counts.notes} notes, ${counts.journal} journal entries, ${counts.tasks} tasks, ${counts.contacts} contacts).`,
+        `Readable export saved to ${path} - ${fileCount} files (${counts.notes} notes, ${counts.journal} journal entries, ${financeRows} finance rows, ${counts.tasks} tasks, ${counts.contacts} contacts).`,
       );
     } catch (e) {
       setError(errText(e));
@@ -172,7 +193,17 @@ export default function ExportsPage() {
             disabled={busy}
             onClick={() => void doExport()}
           >
-            {busy ? "Building archive..." : "Export readable ZIP"}
+            {/* G6: `.btn-loading` sets `color: transparent` so a spinner
+                replaces the label without changing the footprint. Without a
+                spinner here the button rendered as a blank purple rectangle
+                for the whole export. */}
+            {busy ? (
+              <>
+                <IconSpinner className="icon" /> Building archive...
+              </>
+            ) : (
+              "Export readable ZIP"
+            )}
           </button>
           <span className="muted">
             One UTF-8 ZIP file. CSV uses RFC 4180 quoting and CRLF; Markdown and

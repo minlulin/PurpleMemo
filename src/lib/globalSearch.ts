@@ -58,6 +58,21 @@ export interface SearchGroup {
   capped: boolean;
 }
 
+/**
+ * A side channel reporting whether the total cap hid anything (DECISION 1a).
+ *
+ * The trimmed groups are indistinguishable from naturally-small ones once
+ * `applyTotalCap` returns — that is the gap: the dialog used to say
+ * "40 results" with no hint that a trailing group was sliced or entire groups
+ * were dropped. The flag travels beside the return value rather than inside it,
+ * so `applyTotalCap`'s pinned return shape (and test) stays untouched; the
+ * dialog folds it into a footer note.
+ */
+export interface TotalCapReport {
+  /** True when fewer results came back than were matched. */
+  truncated: boolean;
+}
+
 export interface SearchOptions {
   /** Hide archived/completed rows unless this is true. */
   includeInactive?: boolean;
@@ -70,6 +85,11 @@ export interface SearchOptions {
   totalCap?: number;
   /** Injectable clock, so "last 30 days" is testable. */
   today?: string;
+  /**
+   * Receives "did the total cap trim anything?" (DECISION 1a). Filled during
+   * the call, before it resolves.
+   */
+  totalCapReport?: TotalCapReport;
 }
 
 const EXCERPT_CHARS = 140;
@@ -252,7 +272,11 @@ export async function globalSearch(
       capped,
     });
   }
-  return applyTotalCap(groups, options.totalCap ?? SEARCH_TOTAL_CAP);
+  return applyTotalCap(
+    groups,
+    options.totalCap ?? SEARCH_TOTAL_CAP,
+    options.totalCapReport,
+  );
 }
 
 /**
@@ -260,10 +284,17 @@ export async function globalSearch(
  *
  * Groups that end up empty are dropped rather than shown as headings with
  * nothing under them.
+ *
+ * Pass a `report` to learn whether this trimmed anything (DECISION 1a): the
+ * return value alone cannot say, because a sliced trailing group and a
+ * naturally small one look identical once returned — and a wholly dropped
+ * group leaves no trace at all. Optional, so existing callers and the pinned
+ * behaviour test are unaffected.
  */
 export function applyTotalCap(
   groups: SearchGroup[],
   totalCap: number,
+  report?: TotalCapReport,
 ): SearchGroup[] {
   const out: SearchGroup[] = [];
   let left = totalCap;
@@ -272,6 +303,11 @@ export function applyTotalCap(
     const results = group.results.slice(0, left);
     left -= results.length;
     if (results.length > 0) out.push({ ...group, results });
+  }
+  // "Fewer out than in" covers both ways the cap hides a match: slicing the
+  // trailing group, and dropping a later non-empty group entirely.
+  if (report !== undefined) {
+    report.truncated = resultCount(out) < resultCount(groups);
   }
   return out;
 }

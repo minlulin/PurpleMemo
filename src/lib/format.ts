@@ -114,6 +114,45 @@ export function formatLongDate(locale: Locale, isoDate: string): string {
   return formatter.format(date);
 }
 
+const monthDayFormatters = new Map<Locale, Intl.DateTimeFormat>();
+
+/** `MM-DD` -> "Oct 20" (localized), for a yearless contact birthday. */
+function monthDayFormatter(locale: Locale): Intl.DateTimeFormat {
+  const cached = monthDayFormatters.get(locale);
+  if (cached !== undefined) return cached;
+  const formatter = new Intl.DateTimeFormat(locale, {
+    calendar: "gregory",
+    numberingSystem: "latn",
+    month: "short",
+    day: "numeric",
+  });
+  monthDayFormatters.set(locale, formatter);
+  return formatter;
+}
+
+/**
+ * A stored date that may be full (`yyyy-mm-dd`) or a yearless birthday
+ * (`MM-DD`).
+ *
+ * `formatDate` only understands the full form, so a month-day birthday came
+ * through raw as "10-20" in both locales (G8). The leap-day year 2024 is used
+ * purely as a calendar to render the month and day — no year is shown, and a
+ * Feb 29 birthday stays valid. Malformed input is returned unchanged.
+ */
+export function formatBirthday(locale: Locale, birthday: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(birthday)) return formatDate(locale, birthday);
+  if (!/^\d{2}-\d{2}$/.test(birthday)) return birthday;
+  const leapDate = new Date(`2024-${birthday}T00:00:00`);
+  if (
+    Number.isNaN(leapDate.getTime()) ||
+    leapDate.getMonth() + 1 !== Number(birthday.slice(0, 2)) ||
+    leapDate.getDate() !== Number(birthday.slice(3, 5))
+  ) {
+    return birthday;
+  }
+  return monthDayFormatter(locale).format(leapDate);
+}
+
 const weekdayFormatters = new Map<Locale, Intl.DateTimeFormat>();
 
 /** `yyyy-mm-dd` -> the narrow weekday glyph (one letter in English). */

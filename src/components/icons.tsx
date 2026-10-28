@@ -57,7 +57,10 @@ export function IconInbox(props: IconProps) {
     // biome-ignore lint/a11y/noSvgWithoutTitle: decorative, aria-hidden
     <svg {...base(props)}>
       <path d="M12 3v8" />
-      <path d="m8.5 7.5 3.5-3.5 3.5 3.5" />
+      {/* Arrowhead at the stem's LOWER end, pointing down into the tray
+          (G13): it used to sit at (12, 4) — an upward "upload" arrow leaving
+          the tray, contradicting the JSDoc above. */}
+      <path d="m8.5 7.5 3.5 3.5 3.5-3.5" />
       <path d="M4 13h4l1.5 3h5L16 13h4" />
       <path d="M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
     </svg>

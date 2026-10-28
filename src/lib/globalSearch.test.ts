@@ -21,6 +21,7 @@ import {
   globalSearch,
   resultCount,
   type SearchGroup,
+  type TotalCapReport,
 } from "./globalSearch.ts";
 import {
   isSearchable,
@@ -652,6 +653,53 @@ test("the total cap trims from the end and drops emptied groups", () => {
   // A cap of zero shows nothing rather than empty headings.
   assert.deepEqual(applyTotalCap([group("note", 3)], 0), []);
   assert.equal(SEARCH_TOTAL_CAP > 0, true);
+});
+
+// DECISION 1a: the dialog-level truncation signal. The test above pins that
+// `applyTotalCap`'s RETURN stays as designed; this one pins the additive
+// side-channel that tells the dialog whether the cap hid anything — the
+// return value alone cannot, since a sliced group and a naturally-small one
+// are identical once returned, and a dropped group leaves no trace.
+test("the total cap reports truncation through the additive flag", () => {
+  const group = (type: string, n: number): SearchGroup => ({
+    type: type as SearchGroup["type"],
+    label: type,
+    capped: false,
+    results: Array.from({ length: n }, (_, i) => ({
+      type: type as SearchGroup["type"],
+      label: type,
+      id: i + 1,
+      dateKey: null,
+      title: `${type} ${i}`,
+      excerpt: null,
+      date: null,
+      state: null,
+      entity: null,
+      parentId: null,
+    })),
+  });
+  // A sliced trailing group AND a dropped group — both count as truncation.
+  const sliced: TotalCapReport = { truncated: false };
+  applyTotalCap(
+    [group("note", 10), group("task", 10), group("contact", 10)],
+    15,
+    sliced,
+  );
+  assert.equal(sliced.truncated, true);
+  // Results that fit the cap exactly are not truncation.
+  const exact: TotalCapReport = { truncated: false };
+  applyTotalCap([group("note", 15)], 15, exact);
+  assert.equal(exact.truncated, false);
+  // A cap of zero with matches to show hides everything, so it reports.
+  const none: TotalCapReport = { truncated: false };
+  applyTotalCap([group("note", 3)], 0, none);
+  assert.equal(none.truncated, true);
+  // An empty input is not truncation either.
+  const empty: TotalCapReport = { truncated: false };
+  applyTotalCap([], SEARCH_TOTAL_CAP, empty);
+  assert.equal(empty.truncated, false);
+  // Callers that pass no report see no behaviour change at all.
+  assert.equal(applyTotalCap([group("note", 3)], 1).length, 1);
 });
 
 test("no value is ever interpolated into the SQL", () => {

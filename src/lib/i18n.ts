@@ -129,6 +129,9 @@ export const en = {
   "search.resultsAria": "Search results",
   "search.moreAvailable": " · more available",
   "search.noMatches": "No matches.",
+  "search.totalCapped":
+    "Some matches are hidden by the {cap}-result limit. Narrow the search to see them.",
+  "search.unavailable": "That item is unavailable (it was deleted).",
   "search.type.note": "Note",
   "search.type.task": "Task",
   "search.type.contact": "Contact",
@@ -512,6 +515,9 @@ export const en = {
   "reset.status.failed": "Failed",
   "reset.status.notAttempted": "Not attempted",
 
+  "search.state.archived": "Archived",
+  "search.state.done": "Done",
+
   "linkPicker.title": "Link to",
   "linkPicker.close": "Close the link picker",
   "linkPicker.searchLabel": "Search",
@@ -522,6 +528,8 @@ export const en = {
   "linkPicker.listAria": "Things you can link to",
   "linkPicker.capped":
     "Showing {shown} of {matched} matches. Narrow the search, or include archived and completed items.",
+  "linkPicker.due": "Due",
+  "linkPicker.birthday": "Birthday",
   "linkPicker.linking": "Linking…",
   "linkPicker.loading": "Loading your notes, tasks and contacts…",
 
@@ -796,6 +804,9 @@ export const my: Record<MessageKey, string> = {
   "search.resultsAria": "ရှာဖွေမှု ရလဒ်များ",
   "search.moreAvailable": " · နောက်ထပ်ရှိသည်",
   "search.noMatches": "ကိုက်ညီမှု မရှိပါ။",
+  "search.totalCapped":
+    "ရလဒ် {cap} ခု ကန့်သတ်ချက်ကြောင့် တစ်ချို့ ကိုက်ညီမှုများ ဖျောက်ထားသည်။ မြင်ရစေရန် ရှာဖွေမှုကို ကျဉ်းမြောင်းပါ။",
+  "search.unavailable": "ထိုအရာ မရနိုင်တော့ပါ (ဖျက်လိုက်ခြင်း)။",
   "search.type.note": "မှတ်စု",
   "search.type.task": "လုပ်ငန်း",
   "search.type.contact": "ဆက်သွယ်ရန်",
@@ -1177,6 +1188,8 @@ export const my: Record<MessageKey, string> = {
   "reset.status.notAttempted": "မကြိုးစားရသေးပါ",
 
   "linkPicker.title": "ချိတ်ဆက်မည့်အရာ",
+  "search.state.archived": "မော်ကွန်းတင်ထားသည်",
+  "search.state.done": "ပြီးစီးပြီ",
   "linkPicker.close": "ချိတ်ဆက်မှု ရွေးချယ်ကွက်ကို ပိတ်မည်",
   "linkPicker.searchLabel": "ရှာဖွေမည်",
   "linkPicker.searchAria": "မှတ်စုများ၊ လုပ်ငန်းများနှင့် ဆက်သွယ်ရန်များ ရှာဖွေမည်",
@@ -1189,6 +1202,8 @@ export const my: Record<MessageKey, string> = {
     "ကိုက်ညီမှု {matched} ခုအနက် {shown} ခု ပြနေသည်။ ရှာဖွေမှုကို ကျဉ်းမြောင်းစေပါ၊ သို့မဟုတ် မော်ကွန်းတင်ထားသော၊ ပြီးစီးသော အရာများ ပါဝင်စေပါ။",
   "linkPicker.linking": "ချိတ်ဆက်နေသည်…",
   "linkPicker.loading": "သင့်မှတ်စုများ၊ လုပ်ငန်းများနှင့် ဆက်သွယ်ရန်များကို ဖွင့်နေသည်…",
+  "linkPicker.due": "ရက်စွဲ",
+  "linkPicker.birthday": "မွေးနေ့",
 
   "links.relatedAria": "ဆက်စပ်အရာများ",
   "links.related": "ဆက်စပ်မှု",

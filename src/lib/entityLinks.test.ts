@@ -29,6 +29,7 @@ import {
   linkIsCanonical,
   linkIsSelfReferential,
 } from "./entityLinks.ts";
+import { isMessageKeyError } from "./i18n.ts";
 import type { LinkableEntity } from "./types.ts";
 
 const SQLITE_FIXTURE = `
@@ -314,19 +315,29 @@ test("a ghost endpoint is refused, and nothing is written", async () => {
   const driver = sqliteDriver();
   seed(driver.db);
   const repo = createEntityLinksRepo(driver);
-  // The end that does not exist is first, second, and a linkable type with no
-  // rows at all.
+  // The refusal is a keyed error (D11 / G8), not a bare English sentence, so
+  // the picker can render it in the active locale. Its `message` is the
+  // readable English fallback — pinned here so a silent wording change is a
+  // test failure, not a surprise in the logs.
   await assert.rejects(
     () => repo.createLink(note(99), task(1)),
-    /no longer exists/,
+    (e: unknown) => {
+      assert.equal(isMessageKeyError(e), true);
+      assert.equal(
+        (e as { messageKey: string }).messageKey,
+        "search.unavailable",
+      );
+      assert.match((e as Error).message, /unavailable/);
+      return true;
+    },
   );
   await assert.rejects(
     () => repo.createLink(note(1), task(99)),
-    /no longer exists/,
+    (e: unknown) => isMessageKeyError(e),
   );
   await assert.rejects(
     () => repo.createLink(note(1), { type: "contact", id: 42 }),
-    /no longer exists/,
+    (e: unknown) => isMessageKeyError(e),
   );
   assert.equal(rows(driver.db, "SELECT count(*) AS n FROM links")[0]?.n, 0);
 });
