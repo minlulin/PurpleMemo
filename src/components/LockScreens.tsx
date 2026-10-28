@@ -4,7 +4,7 @@
 // in the settings table; the fallback stores the same kind of hash for the
 // answer. There is NO online recovery and the UI says so plainly
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { settingsRepo } from "../data/app.ts";
 import {
   LOCK_RETRY_DELAY_MS,
@@ -65,7 +65,14 @@ function PinDots({ length }: { length: number }) {
 }
 
 /** First-run flow: PIN + security question, both required. */
-export function SetupScreen({ onDone }: { onDone: () => void }) {
+export function SetupScreen({
+  onDone,
+}: {
+  /** Entering the workspace is async (the shell re-reads its security state
+   *  first); `submit` awaits it so a rejected entry surfaces here instead of
+   *  as a floating rejection (G4). */
+  onDone: () => Promise<void> | void;
+}) {
   const t = useT();
   const [draft, setDraft] = useState({
     pin: "",
@@ -114,7 +121,10 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
         },
         { key: SETTING_KEYS.securityAnswerHash, value: answerHash },
       ]);
-      onDone();
+      // Awaited (G4): the shell's entry re-reads security state before it
+      // unlocks, and a failure there is an error on THIS form, not a
+      // silently-dropped promise.
+      await onDone();
     } catch (e) {
       setError(errText(e));
       setBusy(false);
@@ -248,7 +258,13 @@ interface LockScreenProps {
    * never a route back to first-run setup.
    */
   answerHash: PinHash | null;
-  onUnlock: () => void;
+  /**
+   * Entering the workspace is async (the shell re-reads its security state
+   * before unlocking). Both submit paths await it, so a rejected entry lands
+   * in their `catch` and shows an error instead of floating — and `busy`
+   * stays raised until it settles (G4).
+   */
+  onUnlock: () => Promise<void> | void;
 }
 
 /**
@@ -323,6 +339,31 @@ export function LockScreen(p: LockScreenProps) {
    *  only ever be a second copy to fall out of step. */
   const failuresRef = useRef(0);
   const [cooling, setCooling] = useState(false);
+  /**
+   * The synchronous half of the submit guard (G4). `busy` and `cooling` are
+   * React state and do not commit until after the current task, so a fast
+   * double-Enter used to launch two concurrent 600k-iteration PBKDF2
+   * derivations — and, past the free attempts, two overlapping cooldown
+   * timers, where the first wakeup cleared `cooling` before the second
+   * penalty had elapsed. A ref is read and written synchronously, so the
+   * second press is refused before any work starts. One ref for both submit
+   * paths: they both write `pin_hash`, so they must not overlap each other
+   * either. (`SetupScreen.submit` pins the same shape — review P2-11.)
+   */
+  const submittingRef = useRef(false);
+  /** The running cooldown timer, so unmount can cancel it (G4): `noteFailure`
+   *  awaits it, and a leftover timer would resolve into state writes on an
+   *  unmounted screen. */
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (cooldownTimerRef.current !== null) {
+        clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const noteFailure = async () => {
     const next = failuresRef.current + 1;
@@ -334,7 +375,12 @@ export function LockScreen(p: LockScreenProps) {
       setError(
         t("lock.error.tooMany", { seconds: LOCK_RETRY_DELAY_MS / 1000 }),
       );
-      await new Promise((r) => setTimeout(r, waitMs));
+      await new Promise<void>((resolve) => {
+        cooldownTimerRef.current = setTimeout(() => {
+          cooldownTimerRef.current = null;
+          resolve();
+        }, waitMs);
+      });
       // A success cannot land while cooling (both submitters return early),
       // so unconditionally clearing here never wipes a newer state.
       setCooling(false);
@@ -343,6 +389,9 @@ export function LockScreen(p: LockScreenProps) {
   };
 
   const unlockWithPin = async () => {
+    // The synchronous guard first, then the cooldown (G4): `busy` is state
+    // and commits too late to stop a double press.
+    if (submittingRef.current) return;
     if (cooling) return;
     setShaking(false);
     // Fail closed: with no hash to verify against there is no correct answer,
@@ -351,24 +400,37 @@ export function LockScreen(p: LockScreenProps) {
       setError(t("lock.unreadable.corrupt"));
       return;
     }
+    submittingRef.current = true;
     setBusy(true);
+    let wrong = false;
     try {
       if (await verifyPin(pin, p.pinHash)) {
         failuresRef.current = 0;
-        p.onUnlock();
+        await p.onUnlock();
       } else {
+        wrong = true;
         setError(t("lock.error.wrongPin"));
         setPin("");
-        await noteFailure();
       }
     } catch (e) {
       setError(errText(e));
     } finally {
       setBusy(false);
+      submittingRef.current = false;
     }
+    // Deliberately OUTSIDE the try/finally (G4): `busy` is released before
+    // the cooldown sleep, so the submit button can actually render
+    // `cooling ? "Wait…" : …`. Held across the sleep it stayed `true` for
+    // the whole 5-second penalty and "Wait…" was unreachable behind
+    // `busy ? "Checking…" : …`. Re-entry during the sleep is refused by the
+    // `cooling` check above — set synchronously before this first await.
+    if (wrong) await noteFailure();
   };
 
   const resetPin = async () => {
+    // Same synchronous guard as `unlockWithPin` (G4): both paths write
+    // `pin_hash`, so they share one ref.
+    if (submittingRef.current) return;
     if (cooling) return;
     setShaking(false);
     // Destructured so the verification below needs no cast. `pinResetBlocked`
@@ -379,9 +441,21 @@ export function LockScreen(p: LockScreenProps) {
       setError(resetProblemText(t, "no-answer"));
       return;
     }
+    // A blank answer never reaches PBKDF2 (G11): setup refuses whitespace-only
+    // answers, so no stored hash can ever match "", and running the
+    // 600k-iteration derive anyway would burn a retry attempt toward the
+    // cooldown for what is a refusal, not a failed guess. Same sentence the
+    // setup form gives for the same field, and checked before the busy flag
+    // so nothing is raised for it.
+    if (draft.answer.trim().length === 0) {
+      setError(t("lock.error.answerRequired"));
+      return;
+    }
     // The whole rule lives in `pinResetBlocked` (pure, tested): a malformed
     // new PIN never reaches the write, and neither does an unacknowledged
-    // reset — the answer alone must not replace the PIN.
+    // reset — the answer alone must not replace the PIN. It also re-validates
+    // the answer hash's shape and iteration floor, so a downgraded row from a
+    // crafted backup fails closed here rather than in `verifyAnswer` (G1).
     const blocked = pinResetBlocked({
       answerHash,
       acknowledged: ack,
@@ -392,23 +466,28 @@ export function LockScreen(p: LockScreenProps) {
       setError(resetProblemText(t, blocked));
       return;
     }
+    submittingRef.current = true;
     setBusy(true);
+    let wrong = false;
     try {
-      if (!(await verifyAnswer(draft.answer, answerHash))) {
+      if (await verifyAnswer(draft.answer, answerHash)) {
+        await settingsRepo.setManyJSON([
+          { key: SETTING_KEYS.pinHash, value: await hashPin(draft.pin) },
+        ]);
+        failuresRef.current = 0;
+        await p.onUnlock();
+      } else {
+        wrong = true;
         setError(t("lock.error.wrongAnswer"));
-        await noteFailure();
-        return;
       }
-      await settingsRepo.setManyJSON([
-        { key: SETTING_KEYS.pinHash, value: await hashPin(draft.pin) },
-      ]);
-      failuresRef.current = 0;
-      p.onUnlock();
     } catch (e) {
       setError(errText(e));
     } finally {
       setBusy(false);
+      submittingRef.current = false;
     }
+    // Outside the try/finally for the same reason as `unlockWithPin` (G4).
+    if (wrong) await noteFailure();
   };
 
   if (mode === "pin") {
@@ -469,6 +548,10 @@ export function LockScreen(p: LockScreenProps) {
             <button
               type="button"
               className="btn btn-ghost"
+              // Disabled mid-flight and mid-cooldown (G4): switching forms
+              // used to wipe the "too many attempts" alert while the submit
+              // stayed disabled with no explanation.
+              disabled={busy || cooling}
               onClick={() => {
                 if (p.answerHash === null) {
                   setError(t("lock.error.noAnswer"));
@@ -478,6 +561,10 @@ export function LockScreen(p: LockScreenProps) {
                 setError(null);
                 setShaking(false);
                 setAck(false);
+                // The PIN typed here is not carried into the recovery form
+                // (G4): it is the other secret, on a screen the answer alone
+                // can submit.
+                setPin("");
               }}
             >
               {t("lock.forgot")}
@@ -576,11 +663,20 @@ export function LockScreen(p: LockScreenProps) {
           <button
             type="button"
             className="btn"
+            // Same rule as "Forgot PIN?" (G4): no mode switch may wipe the
+            // cooldown alert or abandon an in-flight verify.
+            disabled={busy || cooling}
             onClick={() => {
               setMode("pin");
               setError(null);
               setShaking(false);
               setAck(false);
+              // The recovery draft is wiped the moment the form is left
+              // (G11): the answer field is `type="text"`, so a draft that
+              // survived "Back" would be on screen in cleartext the next time
+              // "Forgot PIN?" is clicked — and the new PINs would silently
+              // carry over with it.
+              setDraft({ answer: "", pin: "", confirm: "" });
             }}
           >
             {t("common.back")}

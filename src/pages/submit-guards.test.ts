@@ -558,6 +558,28 @@ const GUARDS: {
     cleared: "submittingRef.current = false",
     raised: "submittingRef.current = true",
   },
+  // The lock screen's two submit paths (batch-6, G4). Neither used to check
+  // a ref or even `busy` — only the `cooling` state, which commits too late —
+  // so a fast double-Enter launched two concurrent 600k-iteration PBKDF2
+  // derivations and, past the free attempts, two overlapping cooldown timers
+  // where the first wakeup cleared the second's penalty early. One shared ref:
+  // both paths write `pin_hash`, so they must not overlap each other either.
+  {
+    page: "../components/LockScreens.tsx",
+    handler: "unlockWithPin",
+    busy: "submittingRef.current",
+    cleared: "submittingRef.current = false",
+    raised: "submittingRef.current = true",
+    labelKey: "common.checking",
+  },
+  {
+    page: "../components/LockScreens.tsx",
+    handler: "resetPin",
+    busy: "submittingRef.current",
+    cleared: "submittingRef.current = false",
+    raised: "submittingRef.current = true",
+    labelKey: "common.checking",
+  },
   // CSV import dialog: duplicate policy is "always insert as new", so a fast
   // second click on Confirm before React re-renders would insert the whole CSV
   // batch twice; and clicking Download template while the native save dialog is

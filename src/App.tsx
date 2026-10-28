@@ -433,11 +433,11 @@ function AppShell() {
       // hung `invoke` used to leave the user on the skeleton for the life of
       // the process, with no error and no way forward. Timing out turns that
       // into the error screen, which is both honest and retryable.
-      const [pinRaw, answerHash, question, theme, minutes, locale] =
+      const [pinRaw, answerRaw, question, theme, minutes, locale] =
         await Promise.race([
           Promise.all([
             settingsRepo.getRaw(SETTING_KEYS.pinHash),
-            settingsRepo.getJSON<PinHash>(SETTING_KEYS.securityAnswerHash),
+            settingsRepo.getRaw(SETTING_KEYS.securityAnswerHash),
             settingsRepo.getJSON<string>(SETTING_KEYS.securityQuestion),
             settingsRepo.getTheme(),
             settingsRepo.getAutoLockMinutes(),
@@ -453,11 +453,20 @@ function AppShell() {
       // `error: null` here is the ONLY place that error is cleared, so a
       // failed reload can never be forgotten by a later unrelated state
       // update (review P2-2).
+      //
+      // The answer hash is classified exactly like the PIN (G1): `getJSON`
+      // would collapse corrupt JSON to `null` and pass any parseable value
+      // ({}, 42, `{ iterations: 1 }`) straight through as a `PinHash`, so a
+      // downgraded or malformed row from a crafted backup would reach
+      // `verifyAnswer` as trusted material. Absent and unreadable both
+      // normalise to `null` — recovery unavailable, lock screen fails closed —
+      // and `pinResetBlocked` re-checks the shape before any write.
+      const answerState = classifyPin(answerRaw);
       setBoot({
         ready: true,
         error: null,
         pin: classifyPin(pinRaw),
-        answerHash,
+        answerHash: answerState.kind === "stored" ? answerState.hash : null,
         question:
           typeof question === "string" && question.length > 0
             ? question
@@ -708,7 +717,10 @@ function AppShell() {
     // verifying the old one, so it is reachable ONLY when no PIN has ever
     // been stored. `classifyPin` is what makes that checkable.
     if (stage === "setup") {
-      return <SetupScreen onDone={() => void enterWorkspace()} />;
+      // Passed directly, not wrapped in `void` (G4): the screen awaits the
+      // returned promise so a failed entry surfaces as an error on the form
+      // instead of a dropped promise.
+      return <SetupScreen onDone={enterWorkspace} />;
     }
     if (stage === "locked" && boot.pin.kind === "unreadable") {
       return <LockedScreen reason={boot.pin.reason} />;
@@ -718,7 +730,7 @@ function AppShell() {
         pinHash={boot.pin.kind === "stored" ? boot.pin.hash : undefined}
         question={boot.question}
         answerHash={boot.answerHash}
-        onUnlock={() => void enterWorkspace()}
+        onUnlock={enterWorkspace}
       />
     );
   }

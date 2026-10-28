@@ -382,6 +382,44 @@ test("pinResetBlocked: a missing answer hash fails closed, ack or not", () => {
   }
 });
 
+test("pinResetBlocked: a malformed or downgraded answer hash is unavailable (G1)", () => {
+  // `classifyPin` refuses these shapes for `pin_hash`; the answer hash is the
+  // same trust root (it REPLACES the PIN), so it gets the same rule. A
+  // crafted backup or tampered row must fail closed here — as "recovery
+  // unavailable" — instead of reaching `verifyAnswer` as trusted material or,
+  // worse, honouring a 1-iteration PBKDF2 count as a valid oracle.
+  const unusable: unknown[] = [
+    42, // any parseable JSON used to pass through `getJSON` as a `PinHash`
+    "c2FsdA==",
+    {},
+    { salt: "***", hash: "x" }, // no iterations at all
+    { salt: "***", hash: "x", iterations: 1.5 }, // not an integer
+    { salt: "", hash: "x", iterations: 600_000 }, // empty salt
+    { salt: "***", hash: "", iterations: 600_000 }, // empty hash
+    { ...HASH, iterations: MIN_PIN_HASH_ITERATIONS - 1 }, // downgrade
+  ];
+  for (const answerHash of unusable) {
+    assert.equal(
+      pinResetBlocked({ ...RESET, answerHash }),
+      "no-answer",
+      JSON.stringify(answerHash),
+    );
+    assert.equal(
+      pinResetBlocked({ ...RESET, answerHash, acknowledged: false }),
+      "no-answer",
+      "the fallback is unavailable regardless of the acknowledgement",
+    );
+  }
+  // The floor itself is believed; only what falls below it is refused.
+  assert.equal(
+    pinResetBlocked({
+      ...RESET,
+      answerHash: { ...HASH, iterations: MIN_PIN_HASH_ITERATIONS },
+    }),
+    null,
+  );
+});
+
 test("pinResetBlocked: PIN rules still apply once acknowledged", () => {
   const short = "short"; // 5 chars < MIN_PIN_LENGTH (6)
   assert.equal(

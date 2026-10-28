@@ -51,6 +51,11 @@ export type PinResetBlock =
  * everything — it fails closed — then the new-PIN rules, then the
  * acknowledgement, which is the gate on the write itself. A refusal here is
  * not a failed attempt and must not count against the retry throttle.
+ *
+ * "Unavailable" means more than absent (G1): the hash must also pass the same
+ * shape and iteration-floor checks `classifyPin` applies to `pin_hash`, so a
+ * malformed or downgraded `security_answer_hash` (a crafted backup, a tampered
+ * row) cannot be verified against at all.
  */
 export function pinResetBlocked(input: {
   answerHash: unknown;
@@ -58,7 +63,13 @@ export function pinResetBlocked(input: {
   pin: string;
   confirm: string;
 }): PinResetBlock | null {
-  if (input.answerHash === null || input.answerHash === undefined) {
+  // The hash is validated, not merely present (G1): `null`/`undefined` is the
+  // absent row, but any value the classifier would refuse — wrong shape, or a
+  // PBKDF2 count below the floor a downgrade attack would love to have honoured
+  // — is just as unavailable, and must fail closed here rather than reach
+  // `verifyAnswer` as trusted material. Every caller gets the same rule.
+  if (!isPinHashShape(input.answerHash)) return "no-answer";
+  if (input.answerHash.iterations < MIN_PIN_HASH_ITERATIONS) {
     return "no-answer";
   }
   if (input.pin.length < MIN_PIN_LENGTH) return "short-pin";
