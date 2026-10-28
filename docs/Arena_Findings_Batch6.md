@@ -866,6 +866,36 @@ In `src/lib/globalSearch.ts:247`, `group.capped` is set only when an individual 
 
 ---
 
+## Resolutions — owner decisions, 2026-10-28
+
+The two decisions above are settled as follows. The original wording is
+preserved; these resolutions are the fix wave's authority.
+
+1. **Total-cap truncation indicator: option (a) — dialog-level indicator.**
+   `applyTotalCap` and its test stay unchanged: the library function
+   works as designed and pinned; the gap is presentation only, and a
+   dialog-level note also covers wholly-dropped groups, which per-group
+   capped flags cannot show. The dialog gets the signal via an additive
+   flag, not a return-shape change.
+
+2. **English state/detail strings: option (a) — translate at the
+   presentation boundary.** Map state tokens (`"Archived"`, `"Done"`,
+   `"Paid"`) and untitled fallbacks via `t()` and format dates via
+   `formatDate(locale, ...)` inside `GlobalSearchDialog.tsx` and
+   `EntityPicker.tsx`; library contracts and tests stay unchanged. This
+   follows the D11 MessageKeyError precedent and avoids a model-type
+   refactor for a cosmetic issue.
+
+**Fix-wave note (verification, not a finding).** The fix wave runs in
+three commits, in order: commit 1 = G1+G4+G11 (LockScreen); commit 2 =
+G2+G3+G5+G7+G12 (dialog focus/guards/ARIA — note: `Dialog` has no
+`locked` prop today, so the wave must add it first); commit 3 =
+G6+G8+G9+G10+G13+G14 + DECISION 1(a) + DECISION 2(a) (import/export/
+search correctness). Commits 2–3 share EntityPicker/GlobalSearchDialog/
+ImportDialog, so they run in this order.
+
+---
+
 ## Checked and Found Clean
 
 1. **`src/components/LockScreens.tsx` — first-run gate, unreadable-PIN lockdown, atomic setup write, and P3-12 ref counter:**
