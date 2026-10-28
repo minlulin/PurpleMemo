@@ -257,6 +257,7 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
         // with `db::DB_CLOSED_MESSAGE` once it is `None`.
         conn: Mutex::new(Some(conn)),
         txn_open: AtomicBool::new(false),
+        reset_terminal: AtomicBool::new(false),
         data_dir,
     });
     // One lifecycle barrier for the whole process (E1/E2/E5): managed as a
@@ -627,6 +628,16 @@ fn close_to_tray_enabled(app: &tauri::AppHandle) -> bool {
     let Some(state) = app.try_state::<db::AppState>() else {
         return true;
     };
+    // D6: a reset-terminal session bypasses the tray entirely. After a
+    // reset the connection below is closed, so without this check the
+    // default-on rule would hide the terminal screen instead of exiting
+    // — and the next launch would merely raise the hidden window rather
+    // than starting fresh, making the "close and start it yourself"
+    // guidance false. Scoped to this flag only; the toggle path below
+    // is untouched.
+    if state.reset_terminal.load(Ordering::SeqCst) {
+        return false;
+    }
     let conn = state
         .conn
         .lock()
@@ -1036,6 +1047,22 @@ mod tray_tests {
         assert!(
             body.contains("parse_close_to_tray"),
             "the raw row goes through the tested parser"
+        );
+    }
+
+    #[test]
+    fn a_reset_terminal_session_bypasses_close_to_tray() {
+        let body = body_of("fn close_to_tray_enabled");
+        let flag = body
+            .find("reset_terminal")
+            .expect("the terminal flag is consulted (D6)");
+        let toggle = body
+            .find("parse_close_to_tray")
+            .expect("the normal toggle path still exists");
+        assert!(
+            flag < toggle,
+            "the terminal check must come before the default-on toggle, \
+             or a closed DB would hide the terminal screen instead of exiting"
         );
     }
 

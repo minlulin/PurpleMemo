@@ -729,6 +729,14 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
                 &db_state.data_dir,
                 db::delete_db_key,
             );
+            // D6: the engine ran — complete or not, this session is now
+            // terminal (the reset result screen): closing the window must
+            // exit the process, not hide to tray, so the next launch is a
+            // genuine fresh start. Set here, after the engine — NOT on
+            // command entry: a reset aborted before the engine (an
+            // unrecordable marker) leaves the app running normally and
+            // must keep close-to-tray.
+            db_state.reset_terminal.store(true, Ordering::SeqCst);
             if outcome.complete {
                 // E3: the run reported `complete`, so the record of it goes
                 // away too. Best effort, deliberately — same reasoning as
@@ -770,6 +778,7 @@ mod tests {
         let state = crate::db::AppState {
             conn: std::sync::Mutex::new(None),
             txn_open: std::sync::atomic::AtomicBool::new(false),
+            reset_terminal: std::sync::atomic::AtomicBool::new(false),
             data_dir: std::path::PathBuf::from("unused"),
         };
         let error = match lock_conn(&state) {
@@ -789,6 +798,7 @@ mod tests {
         let state = crate::db::AppState {
             conn: std::sync::Mutex::new(Some(conn)),
             txn_open: std::sync::atomic::AtomicBool::new(false),
+            reset_terminal: std::sync::atomic::AtomicBool::new(false),
             data_dir: std::path::PathBuf::from("unused"),
         };
         let guard = lock_conn(&state).expect("an open connection must be available");
@@ -865,6 +875,35 @@ mod tests {
         assert!(
             body_of("factory_reset").contains("raise_reset()"),
             "factory_reset must raise the barrier before deleting anything (E1)"
+        );
+    }
+
+    /// D6: the terminal flag is set by the engine's return, not by command
+    /// entry — a reset aborted before the engine (unrecordable marker)
+    /// leaves the app running normally and must keep close-to-tray. A
+    /// source pin because the ORDER is the invariant.
+    #[test]
+    fn factory_reset_marks_the_session_terminal_after_the_engine_runs() {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("pub async fn factory_reset(")
+            .expect("factory_reset exists");
+        let end = src[start..]
+            .find("#[tauri::command]")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        let engine = body.find("run_factory_reset(").expect("the engine runs");
+        let mark = body
+            .find("reset_terminal")
+            .expect("the engine's return marks the session terminal (D6)");
+        assert!(
+            engine < mark,
+            "the flag must be set after the engine runs, never on entry"
+        );
+        assert!(
+            body[mark..].contains(".store(true"),
+            "the flag is set, not merely read"
         );
     }
 

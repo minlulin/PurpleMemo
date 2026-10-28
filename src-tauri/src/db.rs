@@ -45,6 +45,13 @@ pub struct AppState {
     pub conn: Mutex<Option<Connection>>,
     pub txn_open: AtomicBool,
     pub data_dir: PathBuf,
+    /// D6: set once a factory-reset engine run finishes. From then on the
+    /// session is terminal — the reset result screen — and closing the
+    /// window must exit the process instead of hiding to tray, so the
+    /// next launch is a genuine fresh start. Set on no other path, and a
+    /// fresh boot constructs a fresh `AppState`, so a retried boot starts
+    /// with it clear.
+    pub reset_terminal: AtomicBool,
 }
 
 /// The error every DB command returns once the connection has been taken by
@@ -3486,6 +3493,7 @@ mod factory_reset_seam_tests {
         let state = AppState {
             conn: Mutex::new(Some(conn)),
             txn_open: AtomicBool::new(false),
+            reset_terminal: AtomicBool::new(false),
             data_dir: dir.0.clone(),
         };
 
@@ -3514,6 +3522,7 @@ mod factory_reset_seam_tests {
         let state = AppState {
             conn: Mutex::new(Some(conn)),
             txn_open: AtomicBool::new(true),
+            reset_terminal: AtomicBool::new(false),
             data_dir: dir.0.clone(),
         };
         // Open a real manual transaction behind the flag's back, exactly like

@@ -359,6 +359,15 @@ impl ShareState {
     /// fully off, which the reset engine reports as "already absent" rather
     /// than as an error.
     ///
+    /// Stop for a factory reset: bounded by design (Batch 5 DECISION 2,
+    /// kept). This reaps the running server and clears any armed consent
+    /// token, but it does NOT drain in-flight share workers: responses
+    /// already in flight are ciphertext for already-keyed clients, the
+    /// snapshot is cleared before the stop flag so unanswered workers
+    /// fall to the 503 path instead of served data, and waiting out a
+    /// stalled client could hang the reset itself. The lifecycle barrier
+    /// (E2) is what keeps anything new from binding afterwards.
+    ///
     /// The consent token matters even with the server stopped: a live token
     /// outlives a stop and could reopen the listener, which after a reset
     /// would serve a database that no longer exists.
