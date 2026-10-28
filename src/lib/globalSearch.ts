@@ -156,14 +156,23 @@ export function buildSearchQuery(
     params.push(spec.inactive.value);
   }
   if (options.since !== undefined && spec.date !== null) {
+    // A range clause only matches a FULL `yyyy-mm-dd` value (G9 remainder):
+    // a yearless contact birthday (`MM-DD`) would otherwise compare
+    // lexicographically against the bound — silently below any `YYYY-…`
+    // since bound. A yearless value is not a `yyyy-mm-dd` date, so it cannot
+    // satisfy the clause's documented contract and is excluded instead. The
+    // length guard is a no-op for every other spec, whose date columns are
+    // always full dates.
     clauses.push(
-      `${alias}${spec.date} IS NOT NULL AND ${alias}${spec.date} >= ?`,
+      `${alias}${spec.date} IS NOT NULL AND length(${alias}${spec.date}) = 10 AND ${alias}${spec.date} >= ?`,
     );
     params.push(options.since);
   }
   if (options.until !== undefined && spec.date !== null) {
+    // Same full-date guard: `MM-DD` sorts below every `YYYY-…` bound, so an
+    // until-only range used to pass EVERY yearless birthday unchallenged.
     clauses.push(
-      `${alias}${spec.date} IS NOT NULL AND ${alias}${spec.date} <= ?`,
+      `${alias}${spec.date} IS NOT NULL AND length(${alias}${spec.date}) = 10 AND ${alias}${spec.date} <= ?`,
     );
     params.push(options.until);
   }

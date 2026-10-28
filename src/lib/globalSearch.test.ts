@@ -560,6 +560,85 @@ test("a date filter bounds by the contract's date column", async () => {
   );
 });
 
+// G9 remainder: a yearless birthday (`MM-DD`) is not a `yyyy-mm-dd` date, so
+// it cannot satisfy the range clause's documented contract — it is excluded
+// while a range is active rather than compared lexicographically (where it
+// fell below every `since` bound and passed every `until` bound).
+test("a yearless birthday is excluded while a since bound is active", async () => {
+  const driver = sqliteDriver();
+  seed(driver.db);
+  driver.db
+    .prepare(
+      "INSERT INTO contacts (id, name, address, birthday, notes, created_at) VALUES (3, 'Cousin Leap', '', '02-29', '', 'x'), (4, 'Cousin Full', '', '2024-02-29', '', 'x')",
+    )
+    .run();
+  const groups = await globalSearch(driver, "cousin", { since: "2000-01-01" });
+  const titles = (groups.find((g) => g.type === "contact")?.results ?? []).map(
+    (r) => r.title,
+  );
+  assert.equal(
+    titles.includes("Cousin Full"),
+    true,
+    "a full-date birthday inside the bound is kept",
+  );
+  assert.equal(
+    titles.includes("Cousin Leap"),
+    false,
+    "a yearless birthday cannot satisfy the since clause",
+  );
+});
+
+test("a yearless birthday is excluded while only an until bound is active", async () => {
+  const driver = sqliteDriver();
+  seed(driver.db);
+  driver.db
+    .prepare(
+      "INSERT INTO contacts (id, name, address, birthday, notes, created_at) VALUES (3, 'Cousin Leap', '', '02-29', '', 'x'), (4, 'Cousin Full', '', '2024-02-29', '', 'x')",
+    )
+    .run();
+  const groups = await globalSearch(driver, "cousin", { until: "2030-12-31" });
+  const titles = (groups.find((g) => g.type === "contact")?.results ?? []).map(
+    (r) => r.title,
+  );
+  assert.equal(
+    titles.includes("Cousin Full"),
+    true,
+    "a full-date birthday inside the bound is kept",
+  );
+  assert.equal(
+    titles.includes("Cousin Leap"),
+    false,
+    "an until bound must not pass a yearless birthday unchallenged",
+  );
+});
+
+test("yearless birthdays are returned when no date range is set", async () => {
+  const driver = sqliteDriver();
+  seed(driver.db);
+  driver.db
+    .prepare(
+      "INSERT INTO contacts (id, name, address, birthday, notes, created_at) VALUES (3, 'Cousin Leap', '', '02-29', '', 'x'), (4, 'Cousin Full', '', '2024-02-29', '', 'x')",
+    )
+    .run();
+  const groups = await globalSearch(driver, "cousin");
+  const contacts = groups.find((g) => g.type === "contact")?.results ?? [];
+  const leap = contacts.find((r) => r.title === "Cousin Leap");
+  assert.equal(
+    leap !== undefined,
+    true,
+    "with no range, the yearless birthday is still returned",
+  );
+  assert.equal(
+    leap?.date,
+    "02-29",
+    "the raw value is untouched for formatBirthday to render",
+  );
+  assert.equal(
+    contacts.find((r) => r.title === "Cousin Full")?.date,
+    "2024-02-29",
+  );
+});
+
 test("results carry enough to open the exact row", async () => {
   const driver = sqliteDriver();
   seed(driver.db);
