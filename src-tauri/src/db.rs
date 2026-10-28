@@ -209,12 +209,40 @@ pub fn store_db_key(key: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to store DB key in credential store: {e}"))
 }
 
+/// Escape a filesystem path so it is safe to embed in ONE audit-log line
+/// (E14).
+///
+/// On filesystems that allow them, a chosen filename can contain newlines or
+/// other control characters; written verbatim, one key path would render as
+/// several timestamped-looking lines and make the disclosure history
+/// misleading to whoever reads it later. Backslash escapes make the record
+/// unambiguous as well as unbreakable: a literal `\n` in a filename renders
+/// as `\\n` and can never be confused with an escaped newline, at the cost of
+/// showing Windows paths with doubled separators. The path itself is kept —
+/// escaped, never truncated — and there is no parameter here through which
+/// key material could be threaded.
+fn escape_log_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            // Backslash FIRST, for the reason in the doc above.
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The audit line for one key restore. Pure, and deliberately
 /// takes the key nowhere — same structural property as
 /// [`key_export_audit_line`]: the signature has no parameter through which key
-/// material could be threaded.
+/// material could be threaded. The path is escaped (E14) so one chosen file
+/// can never split the line it is recorded on.
 pub fn key_restore_audit_line(source: &str) -> String {
-    format!("key restored from file: {source}")
+    format!("key restored from file: {}", escape_log_path(source))
 }
 
 /// Read a picked file's contents as an exported key candidate: trim the
@@ -233,13 +261,16 @@ pub fn parse_exported_key_file_contents(raw: &str) -> Result<String, String> {
 /// Restore the DB key from an exported key file — the missing half of the
 /// key-export path.
 ///
-/// Order is the safety property: validate the candidate, prove it opens the
-/// existing database through the normal open path (its `sqlite_master` probe
-/// makes a wrong key fail safe), and only after a successful open let
-/// `store_key` write it into the OS credential store, then record the audit
-/// line. A wrong key or a malformed file therefore restores *nothing* — the
-/// store is untouched and the mint guard is never involved; nothing is ever
-/// minted over an existing database.
+/// Order is the safety property: validate the candidate, re-check that a
+/// nonempty database still exists at the target, prove it opens with the
+/// NON-CREATING open ([`open_encrypted_db_existing`]; its `sqlite_master`
+/// probe makes a wrong key fail safe and can never manufacture the file it
+/// is evidence about), and only after a successful open let `store_key`
+/// write it into the OS credential store, then record the audit line. A
+/// wrong key, a malformed file, or a target that vanished while the dialog
+/// was open therefore restores *nothing* — the store is untouched and the
+/// mint guard is never involved; nothing is ever minted over an existing
+/// database.
 ///
 /// `store_key` is injected: the production caller writes to the real keyring
 /// via [`store_db_key`]; tests supply a closure so no test ever touches one.
@@ -252,10 +283,23 @@ pub fn restore_db_key_from_file(
         .map_err(|e| format!("could not read {}: {e}", key_file.display()))?;
     let key = parse_exported_key_file_contents(&raw)
         .map_err(|e| format!("{}: {e}", key_file.display()))?;
-    // Prove the key opens the database BEFORE anything is stored: the open
-    // path verifies via sqlite_master, so a wrong key fails here with the
+    // E11: the dialog can sit open while the target changes. A missing or
+    // zero-length file must REFUSE here — a creating open would otherwise
+    // initialize an empty database under the candidate key, the probe would
+    // then "prove" a key that opens nothing, and the store would be written
+    // with it. Recovery verifies an EXISTING database or nothing at all;
+    // first-run creation belongs to `boot` alone.
+    if !db_file_exists(db_path) {
+        return Err(format!(
+            "{} is no longer an existing database (it was moved, deleted, or replaced while this dialog was open) — check it and try again",
+            db_path.display()
+        ));
+    }
+    // Prove the key opens the database BEFORE anything is stored — with the
+    // NON-CREATING open, so this proof can never manufacture the file it is
+    // supposed to be evidence about. A wrong key fails here with the
     // credential store still empty.
-    drop(open_encrypted_db(db_path, &key)?);
+    drop(open_encrypted_db_existing(db_path, &key)?);
     store_key(&key)?;
     // Only record a restore that actually happened — never the key itself.
     crate::note_key_restore(&key_file.display().to_string());
@@ -266,10 +310,42 @@ pub fn restore_db_key_from_file(
 /// effort: a store that will not delete leaves the same situation the guard
 /// above prevents on the next run (a database with no key), which at least
 /// fails with an actionable message instead of silently re-keying anything.
+///
+/// The caller must first undo a database *this attempt created* — see
+/// [`remove_abandoned_new_db`]: discarding the key while the freshly created
+/// file stays would strand a database whose only key is gone (E9).
 pub fn discard_minted_key() {
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
         let _ = entry.delete_credential();
     }
+}
+
+/// Undo a first run that failed after creating its database (E9).
+///
+/// Called only from the boot failure path, and only when
+/// [`db_file_exists`] said no nonempty database existed before this attempt —
+/// so every byte this removes was created by the attempt that is now failing.
+/// Leaving the file behind would strand it: the freshly minted key is about
+/// to be discarded, and a nonempty database with no key refuses every later
+/// boot with a key-restore offer for a database the user never had.
+///
+/// The sidecars are removed first and the main file last, so a partial
+/// failure can only mean "the main file is still there" — which is the safe
+/// direction: the caller keeps the key when this returns `false` (never
+/// discard a key whose database might survive), and the file/key pair stays
+/// openable for the retry. Returns true only when all three files are
+/// confirmed gone.
+pub fn remove_abandoned_new_db(data_dir: &Path) -> bool {
+    let paths = db_file_paths(data_dir);
+    // `db_file_paths` is [main, wal, shm]; walk it backwards (shm, wal, main).
+    for path in paths.iter().rev() {
+        if let Err(e) = std::fs::remove_file(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return false;
+            }
+        }
+    }
+    paths.iter().all(|path| !path.exists())
 }
 
 /// The audit line for one key export. Pure, and deliberately takes the
@@ -282,7 +358,21 @@ pub fn discard_minted_key() {
 /// other program), so a file write is currently the only kind of disclosure —
 /// which is why this takes a destination and nothing else.
 pub fn key_export_audit_line(destination: &str) -> String {
-    format!("key file written: {destination}")
+    format!("key file written: {}", escape_log_path(destination))
+}
+
+/// The audit line for a key file that SURVIVED a failed rename (E10).
+///
+/// The temp holds the complete plaintext master key outside the credential
+/// store — a disclosure that really happened, just not the one that was asked
+/// for — so it gets its own line naming where the key now sits. Paths only,
+/// escaped (E14); the signature has no channel for key material.
+pub fn key_export_retained_audit_line(retained: &str, destination: &str) -> String {
+    format!(
+        "key file retained: {} (the write to {} failed)",
+        escape_log_path(retained),
+        escape_log_path(destination)
+    )
 }
 
 /// Write the DB key to `path`, and record that it happened
@@ -339,6 +429,21 @@ pub fn save_db_key_file_with_key(path: &Path, key: &str) -> Result<(), String> {
     write_key_file(path, key)
 }
 
+/// [`save_db_key_file_with_key`] with the rename injected as well (E10): the
+/// test drives the late-rename failure that leaves the complete key in the
+/// retained temp, and pins both the actionable error and the fact that the
+/// file really is still there.
+#[cfg(test)]
+pub fn save_db_key_file_with_rename(
+    path: &Path,
+    key: &str,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    key_file_destination(path)?;
+    validate_stored_key(key)?;
+    write_key_file_seamed(path, key, rename)
+}
+
 /// Check that `path` can be a key destination, without touching the keyring.
 fn key_file_destination(path: &Path) -> Result<(), String> {
     if path.is_dir() {
@@ -361,6 +466,19 @@ fn key_file_destination(path: &Path) -> Result<(), String> {
 }
 
 fn write_key_file(path: &Path, key: &str) -> Result<(), String> {
+    write_key_file_seamed(path, key, |from, to| std::fs::rename(from, to))
+}
+
+/// [`write_key_file`] with the rename injected so a test can force the LATE
+/// failure — after the temp file already holds the complete key — which the
+/// filesystem will not reliably produce on demand (the destination is
+/// validated as a non-directory up front, so "rename onto a directory" is
+/// closed off).
+fn write_key_file_seamed(
+    path: &Path,
+    key: &str,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     use std::io::Write;
     let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
         return Err(format!("{} has no directory to write into", path.display()));
@@ -422,9 +540,18 @@ fn write_key_file(path: &Path, key: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(format!("could not write {}: {e}", path.display()));
     }
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
+    if let Err(e) = rename(&tmp_path, path) {
         // Keep the temp file: it holds the only copy of a key that is still in
         // the credential store, and deleting it would throw away the user's work.
+        //
+        // E10: that retained temp IS a completed plaintext key file sitting
+        // outside the credential store — a disclosure that really happened,
+        // just not the one that was asked for. The error below names it for
+        // the user; the audit line records it for everyone who reads
+        // `key-export.log` afterwards, because "only record a disclosure that
+        // actually happened" must cover this one too. Paths only, escaped
+        // (E14) — no key material reaches the line.
+        crate::note_key_retained(&tmp_path.display().to_string(), &path.display().to_string());
         return Err(format!(
             "could not write {} ({e}); the key is still at {}",
             path.display(),
@@ -477,11 +604,7 @@ pub fn open_encrypted_db(path: &Path, key_hex: &str) -> Result<Connection, Strin
         return Err("DB key must be 64 hex characters (256 bits)".to_string());
     }
     let conn = Connection::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    // SQLCipher raw-key form: PRAGMA key = "x'<hex>'".
-    conn.execute_batch(&format!("PRAGMA key = \"x'{key_hex}'\";"))
-        .map_err(|e| format!("failed to set DB key: {e}"))?;
-    conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-        .map_err(|e| format!("DB key verification failed (wrong key or corrupt file): {e}"))?;
+    set_key_and_verify(&conn, key_hex)?;
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| format!("failed to enable WAL: {e}"))?;
     conn.pragma_update(None, "foreign_keys", "ON")
@@ -495,6 +618,44 @@ pub fn open_encrypted_db(path: &Path, key_hex: &str) -> Result<Connection, Strin
     // conflict surfaces as an error rather than a hang.
     conn.busy_timeout(std::time::Duration::from_secs(BUSY_TIMEOUT_SECS))
         .map_err(|e| format!("failed to set busy timeout: {e}"))?;
+    Ok(conn)
+}
+
+/// Key first, then **verify before use** by reading `sqlite_master` — the
+/// shared core of both opens. A wrong key fails here, before any schema work.
+fn set_key_and_verify(conn: &Connection, key_hex: &str) -> Result<(), String> {
+    // SQLCipher raw-key form: PRAGMA key = "x'<hex>'".
+    conn.execute_batch(&format!("PRAGMA key = \"x'{key_hex}'\";"))
+        .map_err(|e| format!("failed to set DB key: {e}"))?;
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+        .map_err(|e| format!("DB key verification failed (wrong key or corrupt file): {e}"))?;
+    Ok(())
+}
+
+/// [`open_encrypted_db`] for a database that must ALREADY exist (E11).
+///
+/// The key-restore flow proves a candidate key against the database before
+/// storing it — and that proof is worthless if the open itself can
+/// *create* the target: if the database was moved, deleted, or replaced with
+/// an empty file while the restore dialog sat open, an ordinary creating open
+/// initializes an empty SQLCipher database under **any** well-shaped candidate
+/// key, the `sqlite_master` probe then happily answers for the empty file, and
+/// the flow stores a key that opens nothing. So this variant never creates:
+/// the connection is opened read-write but WITHOUT `SQLITE_OPEN_CREATE`, so a
+/// missing target is a hard open error instead of a fresh database.
+///
+/// Callers must additionally re-check [`db_file_exists`] *before* calling, to
+/// keep a zero-length file from reaching the probe — SQLite treats an empty
+/// file as a legitimate brand-new database, which would pass verification for
+/// any key. The pair of checks is what makes recovery verify an existing
+/// database or nothing at all; first-run creation stays in `boot`.
+pub fn open_encrypted_db_existing(path: &Path, key_hex: &str) -> Result<Connection, String> {
+    if !is_key_hex(key_hex) {
+        return Err("DB key must be 64 hex characters (256 bits)".to_string());
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    set_key_and_verify(&conn, key_hex)?;
     Ok(conn)
 }
 
@@ -1248,6 +1409,59 @@ mod tests {
     }
 
     #[test]
+    fn restore_refuses_a_database_that_vanished_instead_of_recreating_it() {
+        // E11: the restore dialog can sit open while the database is moved,
+        // deleted, or emptied. The old CREATING open would then initialize an
+        // empty database under the candidate key, the sqlite_master probe
+        // would "prove" that empty file against ANY well-formed key, and the
+        // flow would store it — recovery appearing to succeed into an empty
+        // workspace behind the wrong key. Fail closed instead: nothing
+        // created, nothing stored.
+        let dir = TempDir::new("restore-vanished");
+        let key = mint_key_hex().expect("mint key");
+        let key_file = dir.0.join("key.txt");
+        std::fs::write(&key_file, format!("{key}\n")).expect("write key file");
+        let db = dir.0.join(DB_FILE_NAME);
+        let store_calls = std::cell::Cell::new(0u32);
+
+        // Case 1: the database is gone entirely.
+        let error = restore_db_key_from_file(&db, &key_file, |_| {
+            store_calls.set(store_calls.get() + 1);
+            Ok(())
+        })
+        .expect_err("a vanished database must refuse");
+        assert!(
+            error.contains("no longer an existing database"),
+            "names the real situation: {error}"
+        );
+        assert!(
+            !db.exists(),
+            "the check must not have created anything (E11)"
+        );
+
+        // Case 2: the database exists but is empty — SQLite would treat the
+        // zero-length file as a brand-new database and the probe would pass
+        // for any candidate key, so it must be refused before the open too.
+        std::fs::write(&db, b"").expect("plant an empty file");
+        restore_db_key_from_file(&db, &key_file, |_| {
+            store_calls.set(store_calls.get() + 1);
+            Ok(())
+        })
+        .expect_err("an empty file must refuse as well");
+
+        assert_eq!(
+            store_calls.get(),
+            0,
+            "the credential store must never be written for a target that is not a database"
+        );
+        assert_eq!(
+            std::fs::metadata(&db).expect("metadata").len(),
+            0,
+            "the empty file must be untouched — no initialization may happen"
+        );
+    }
+
+    #[test]
     fn the_key_restore_audit_line_has_no_channel_for_key_material() {
         let key = mint_key_hex().expect("mint key");
         let line = key_restore_audit_line("/home/me/purple-memo-db-key.txt");
@@ -1260,6 +1474,60 @@ mod tests {
         assert!(
             line.to_lowercase().contains("key restored"),
             "says what happened: {line}"
+        );
+    }
+
+    #[test]
+    fn a_key_path_cannot_split_or_forge_the_audit_line_it_is_recorded_on() {
+        // E14: on a filesystem that allows them, a chosen filename can carry
+        // newlines and control characters. Written verbatim, ONE key path
+        // would render as several timestamped-looking lines and make the
+        // disclosure history say something that never happened. Every audit
+        // line that embeds a path must stay exactly one line, with the path
+        // preserved as a visible escape rather than dropped.
+        let forged = "/home/me/keys/innocent.txt\n2026-10-28T00:00:00Z key file written: /attacker/pick.txt\r\n\t";
+        for line in [
+            key_export_audit_line(forged),
+            key_restore_audit_line(forged),
+            key_export_retained_audit_line(forged, forged),
+        ] {
+            assert!(!line.contains('\n'), "one path, one line: {line:?}");
+            assert!(!line.contains('\r'), "no carriage return either: {line:?}");
+            assert!(
+                line.contains("\\n"),
+                "the newline survives as a visible escape, not a break: {line:?}"
+            );
+            assert!(
+                line.contains("attacker/pick.txt"),
+                "the forged content stays visible as escaped text: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_escaped_key_path_is_unambiguous() {
+        // Escaping the backslash FIRST is what keeps the two cases apart: a
+        // real newline renders as `\n`, while a literal backslash-n in a
+        // filename renders as `\\n`. Without the doubling the two would be
+        // indistinguishable and the record would still be forgeable by
+        // reading. Windows separators are doubled as the cost — deliberate.
+        let real_newline = key_export_audit_line("C:\\keys\nstolen.txt");
+        let literal_backslash_n = key_export_audit_line(r"C:\keys\nstolen.txt");
+        assert!(
+            real_newline.contains(r"keys\nstolen"),
+            "a real newline is the two-char escape: {real_newline}"
+        );
+        assert!(
+            literal_backslash_n.contains(r"keys\\nstolen"),
+            "a literal backslash-n keeps its doubled backslash: {literal_backslash_n}"
+        );
+        assert_ne!(
+            real_newline, literal_backslash_n,
+            "the two inputs must never render identically"
+        );
+        assert!(
+            literal_backslash_n.contains(r"C:\\keys"),
+            "windows separators are doubled: {literal_backslash_n}"
         );
     }
 
@@ -1450,6 +1718,73 @@ mod tests {
             std::fs::read_to_string(&out).expect("read back"),
             format!("{key}\n"),
             "the export must land in the destination, not in a temp"
+        );
+    }
+
+    #[test]
+    fn a_late_rename_failure_keeps_the_complete_key_and_says_where_it_is() {
+        // E10, behavioural half: the temp file is fully written and synced
+        // before the rename, so a failure THERE leaves a complete plaintext
+        // key on disk. The error must keep naming it (the user's way out),
+        // the bytes must really be the key (not a partial write), and the
+        // destination — never created — must stay untouched.
+        let dir = TempDir::new("key-late-rename");
+        let out = dir.0.join("key.txt");
+        let key = mint_key_hex().expect("mint key");
+        let error = save_db_key_file_with_rename(&out, &key, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated late rename failure",
+            ))
+        })
+        .expect_err("the rename failure must surface");
+
+        assert!(
+            error.contains("the key is still at"),
+            "the error keeps pointing at the retained file: {error}"
+        );
+        assert!(!out.exists(), "the destination was never created");
+
+        let temps: Vec<String> = std::fs::read_dir(&dir.0)
+            .expect("read temp dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".purple-memo-tmp"))
+            .collect();
+        assert_eq!(temps.len(), 1, "exactly one retained temp: {temps:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join(&temps[0])).expect("read temp"),
+            format!("{key}\n"),
+            "the retained temp holds the COMPLETE key — that is why it survives"
+        );
+    }
+
+    #[test]
+    fn a_retained_key_file_gets_an_audit_line() {
+        // E10, record half: only a successful rename used to record anything,
+        // so a completed key file left behind by a late failure existed with
+        // no entry in `key-export.log`. The note sits inside the rename-error
+        // branch — pinned from source, like the other ordering invariants
+        // here; the audit write itself is `append_audit_line`, which the
+        // suite deliberately does not drive (best-effort, needs the data dir).
+        let src = include_str!("db.rs");
+        let start = src
+            .find("if let Err(e) = rename(&tmp_path, path)")
+            .expect("the late rename branch exists");
+        let end = src[start..]
+            .find("crate::note_key_export(")
+            .map(|i| start + i)
+            .expect("the success-side note bounds the branch");
+        let branch = &src[start..end];
+        let note = branch
+            .find("crate::note_key_retained(")
+            .expect("a retained key file must be recorded in the audit trail (E10)");
+        let reported = branch
+            .find("the key is still at")
+            .expect("the error still names the retained path");
+        assert!(
+            note < reported,
+            "recorded before the error returns: {note} vs {reported}"
         );
     }
 

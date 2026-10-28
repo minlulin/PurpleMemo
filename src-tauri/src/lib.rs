@@ -165,11 +165,43 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("failed to create data dir {}: {e}", data_dir.display()))?;
     remember_data_dir(&data_dir);
+    // E3: an interrupted factory reset is finished BEFORE any key work. This
+    // is the whole point of the marker: a crash after the database was
+    // deleted but before the key was must not fall through to the ordinary
+    // first-run path, which would mint a fresh database under the old key
+    // while the old photos and safety copies still existed. On success the
+    // app continues into a genuine first run; on failure the marker stays,
+    // the user gets the blocked components in the dialog, and Retry runs this
+    // same pass again.
+    if reset::reset_in_progress(&data_dir) {
+        let outcome =
+            reset::finish_interrupted_reset(reset::fault_injection(), &data_dir, db::delete_db_key);
+        if !outcome.complete {
+            return Err(format!(
+                "a factory reset started in an earlier session was interrupted and could not \
+                 be finished ({}); nothing further was touched — close whatever is using \
+                 the app's data folder and press Retry",
+                reset::blocked_summary(&outcome)
+            )
+            .into());
+        }
+        eprintln!("purple-memo: finished a factory reset that an earlier session left incomplete");
+    }
     let db_path = data_dir.join(db::DB_FILE_NAME);
+    // E9: record whether a real database exists BEFORE this attempt opens
+    // it. The mint guard only lets a fresh key this far when there is no
+    // database, so `false` means the open below is about to create the file —
+    // and if initialization then fails, the file is provably new and
+    // uncommitted, which is what makes removing it (rather than stranding it
+    // without its key) the safe move.
+    let database_preexisted = db::db_file_exists(&db_path);
     let key = db::load_or_mint_db_key(&db_path)?;
     // A key this process minted is only correct if the database it opens with
-    // it verifies. If the very first run fails anyway, take the key back out
-    // rather than leave an unopenable key in the credential store's only slot.
+    // it verifies. If the very first run fails anyway, undo what the attempt
+    // created and then take the key back out — in that order (E9): discarding
+    // the key first would leave a nonempty database whose only key is gone,
+    // and every later boot would offer a key restore for a database the user
+    // never had.
     let opened = db::open_encrypted_db(&db_path, &key.hex).and_then(|conn| {
         db::init_schema(&conn)?;
         Ok(conn)
@@ -178,7 +210,28 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
         Ok(conn) => conn,
         Err(e) => {
             if key.freshly_minted {
-                db::discard_minted_key();
+                if database_preexisted {
+                    // Unreachable under today's contract: `load_or_mint_db_key`
+                    // refuses a nonempty database before it ever mints, so a
+                    // freshly minted key implies no database existed. Kept as
+                    // the explicit E9 precondition rather than an assumption:
+                    // if the mint guard's contract ever changes, this path
+                    // must fall back to the old behaviour (discard the key,
+                    // touch no file) and never delete a database it cannot
+                    // prove it created.
+                    db::discard_minted_key();
+                } else if db::remove_abandoned_new_db(&data_dir) {
+                    db::discard_minted_key();
+                } else {
+                    // The provably-new files could not all be removed (the
+                    // main file survives, sidecars may be gone). Keep the
+                    // key: a file/key pair still opens on the retry, whereas
+                    // discarding now is exactly the stranded state E9 names.
+                    eprintln!(
+                        "purple-memo: could not undo a failed first-run database \
+                         ({e}); keeping its minted key so the pair stays recoverable"
+                    );
+                }
             }
             return Err(e.into());
         }
@@ -696,6 +749,23 @@ pub(crate) fn note_key_restore(source: &str) {
     append_audit_line(KEY_EXPORT_LOG, &db::key_restore_audit_line(source));
 }
 
+/// Append one retained-key-file record to `key-export.log` (E10).
+///
+/// A failed rename leaves the COMPLETE plaintext key on disk at a temp path:
+/// a real disclosure that never got an audit line, because only the
+/// successful rename used to record anything. This closes that gap — the
+/// record names where the key now sits, so a retained temp can never be
+/// overlooked by someone reading the disclosure history. Same structural
+/// property as its siblings: [`db::key_export_retained_audit_line`] takes
+/// paths only, and escapes them (E14), so there is no parameter through which
+/// key material could be threaded.
+pub(crate) fn note_key_retained(retained: &str, destination: &str) {
+    append_audit_line(
+        KEY_EXPORT_LOG,
+        &db::key_export_retained_audit_line(retained, destination),
+    );
+}
+
 /// Append one LAN-share disclosure to `share.log`.
 ///
 /// Starting the share server puts a read-only view of the user's money and
@@ -1101,5 +1171,75 @@ mod boot_failure_tests {
             Some(("keyring".into(), i64::MAX))
         );
         assert_eq!(parse_injection_spec("   "), None);
+    }
+
+    /// The body of `boot`, bounded by the next free function — the seam the
+    /// two ordering pins below read. `boot` itself takes an `AppHandle`, so
+    /// the ordering it must keep is pinned from source, the same way
+    /// `commands.rs` pins its writer gate and `safety_copy.rs` its lock scope.
+    fn boot_body() -> &'static str {
+        let src = include_str!("lib.rs");
+        let start = src
+            .find("fn boot(app: &tauri::AppHandle)")
+            .expect("boot exists");
+        let end = src[start..]
+            .find("fn injected_boot_failure(")
+            .map(|i| start + i)
+            .expect("injected_boot_failure bounds the body");
+        &src[start..end]
+    }
+
+    /// E3: the interrupted-reset recovery must run before the boot loads or
+    /// mints any key. Reversed, the first run after a crash would mint a
+    /// fresh database under the old key while the old photos still existed —
+    /// precisely the defect.
+    #[test]
+    fn boot_recovers_an_interrupted_reset_before_it_touches_any_key() {
+        let body = boot_body();
+        let marker = body
+            .find("reset_in_progress")
+            .expect("boot consults the durable reset marker (E3)");
+        let finish = body
+            .find("finish_interrupted_reset")
+            .expect("and finishes the interrupted run");
+        let mint = body
+            .find("load_or_mint_db_key")
+            .expect("before any key is loaded or minted");
+        assert!(
+            marker < finish && finish < mint,
+            "recovery must precede key work: {marker} {finish} {mint}"
+        );
+    }
+
+    /// E9: whether a database preexisted is measured before the open that
+    /// can create one; a failure of that first run undoes the provably-new
+    /// file BEFORE the freshly minted key is discarded, and only under the
+    /// `database_preexisted` guard — an existing database is never removed.
+    #[test]
+    fn a_failed_first_run_undoes_its_own_database_before_discarding_the_key() {
+        let body = boot_body();
+        let preexisting = body
+            .find("database_preexisted")
+            .expect("boot records whether a database existed first (E9)");
+        let open = body
+            .find("open_encrypted_db")
+            .expect("the open is the step that can create the file");
+        assert!(
+            preexisting < open,
+            "measured before the open: {preexisting} vs {open}"
+        );
+        let cleanup = body
+            .find("remove_abandoned_new_db")
+            .expect("the provably-new file is undone (E9)");
+        // Discard AFTER the cleanup call — the branch where the file was
+        // removed. (The first `discard_minted_key` in source is the
+        // pre-existing-database branch, which legitimately precedes it.)
+        let _discard_after_cleanup = body[cleanup..]
+            .find("discard_minted_key")
+            .expect("the minted key is discarded once the cleanup ran");
+        assert!(
+            body.contains("if database_preexisted"),
+            "the cleanup must stay behind its guard: an existing database is never removed"
+        );
     }
 }

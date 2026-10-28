@@ -17,6 +17,13 @@
 //! * `logs` — `key-export.log`, `share.log`, `boot-error.log`,
 //! * `keyring_key` — the OS credential-store key, deleted **last**.
 //!
+//! A durable marker file (E3) brackets the whole run: `mark_reset_started`
+//! must succeed **before** the first component deletes anything, and the
+//! marker is cleared only once the outcome reports `complete`. A session that
+//! dies mid-run therefore leaves proof on disk, and the next boot's
+//! [`finish_interrupted_reset`] finishes the job before ordinary first-run
+//! initialization can mistake the leftovers for a fresh start.
+//!
 //! Two ordering invariants, both owner decisions:
 //!
 //! 1. **Key last.** The credential-store key is deleted only after the
@@ -38,7 +45,7 @@
 //! manual recovery testing; release builds read no such variable, so a
 //! shipped app can never be sabotaged by an environment it inherited.
 
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 use serde::Serialize;
@@ -177,6 +184,143 @@ pub fn fault_injection() -> impl FnMut(ResetComponent) -> bool {
 /// environment.
 pub fn parse_reset_fail_spec(spec: &str) -> Vec<ResetComponent> {
     spec.split(',').filter_map(ResetComponent::parse).collect()
+}
+
+// ---------------------------------------------------------------------------
+// The durable reset marker (E3).
+//
+// The reset engine reports its outcome only in memory, and the database is
+// removed before the photos, the backups, the logs and the key. A crash
+// between those steps used to leave the app-data dir indistinguishable from
+// first run on the next start: with the old key still in the credential
+// store the boot would happily create a fresh database under it while the old
+// photos and safety copies survived — exactly the residual state E3 describes.
+//
+// The marker closes that hole with one file: written (and synced) before the
+// first deletion, cleared only on `complete`. The next boot sees it before it
+// touches any key and finishes the job.
+// ---------------------------------------------------------------------------
+
+/// The marker file in the app-data dir. Deliberately NOT one of the reset
+/// components' own targets — it must outlive every partial run so the next
+/// session can see it, and only [`clear_reset_marker`] on a `complete` outcome
+/// removes it.
+pub const RESET_MARKER_FILE: &str = "reset-in-progress";
+
+/// The marker's entire content: one fixed sentinel line. The fixed content
+/// is what lets [`reset_in_progress`] reject an unrelated file that happens
+/// to carry the name, instead of "recovering" a reset nobody started.
+const RESET_MARKER_CONTENT: &[u8] = b"purple-memo factory reset started\n";
+
+/// Record that a factory reset is starting — the precondition for the first
+/// deletion. Fails loudly when the marker cannot be made durable: a reset
+/// that cannot be recorded cannot be recovered, so the caller must cancel
+/// before deleting anything rather than start an unrecordable run.
+pub fn mark_reset_started(data_dir: &Path) -> Result<(), String> {
+    let marker = data_dir.join(RESET_MARKER_FILE);
+    write_durable(&marker, RESET_MARKER_CONTENT).map_err(|e| {
+        format!(
+            "could not record the reset in {}: {e} — nothing was deleted; \
+             a reset only starts once it can be recovered",
+            marker.display()
+        )
+    })
+}
+
+/// Whether an earlier session started a reset that never reported `complete`.
+///
+/// A missing, unreadable, or foreign-content file all answer `false`: the
+/// check must never refuse ordinary first-run boot on a hunch.
+pub fn reset_in_progress(data_dir: &Path) -> bool {
+    std::fs::read(data_dir.join(RESET_MARKER_FILE))
+        .map(|bytes| bytes == RESET_MARKER_CONTENT)
+        .unwrap_or(false)
+}
+
+/// Remove the marker after a `complete` outcome. Absent is success (the same
+/// rule as every component), so this is idempotent.
+pub fn clear_reset_marker(data_dir: &Path) -> Result<(), String> {
+    let marker = data_dir.join(RESET_MARKER_FILE);
+    match std::fs::remove_file(&marker) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("could not remove {}: {e}", marker.display())),
+    }
+}
+
+/// Write `bytes` to `path` durably: a synced temp sibling, then an atomic
+/// rename over the target — the same protocol `file_write` uses for exports.
+///
+/// The rename is not decoration: the retry path calls this while a valid
+/// marker from an earlier attempt may already be on disk, and an in-place
+/// truncate-then-write would open a crash window in which the deletions are
+/// recorded nowhere. With the rename the marker is always either the old
+/// complete sentinel or the new one, never partial or absent.
+fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    // Closure, not a block: `?` inside a block would leave this function
+    // before the temp could be cleaned up below.
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Finish a factory reset that an earlier session started but did not report
+/// `complete` — the E3 recovery, run by `boot` before it loads or mints any
+/// key (so a database can never be created under the old key while the old
+/// photos still exist).
+///
+/// The seams are an earlier session's run re-expressed for a process that has
+/// not opened anything yet: no LAN server exists this early in boot
+/// (`Ok(false)` = already absent), and there is no managed connection to take
+/// (`Ok(())` — the files are simply still on disk). `fail` is injected so
+/// tests can pin the failure behaviour without the debug env-var switch;
+/// `boot` passes [`fault_injection`].
+///
+/// Clears the marker when the outcome is `complete`. On failure the marker
+/// stays — the next start (or the Retry dialog) runs this again, because the
+/// deletions are idempotent and the user's confirmed intent still stands.
+pub fn finish_interrupted_reset(
+    fail: impl FnMut(ResetComponent) -> bool,
+    data_dir: &Path,
+    delete_key: impl FnMut() -> Result<bool, String>,
+) -> ResetOutcome {
+    let outcome = run_factory_reset(fail, || Ok(false), || Ok(()), data_dir, delete_key);
+    if outcome.complete {
+        // Best effort, deliberately: a marker that cannot be removed makes
+        // the next start re-run this pass over an already-empty app-data dir,
+        // which is harmless and retries the removal — while failing the boot
+        // on it would brick the app behind a file it was not allowed to
+        // delete. `eprintln` keeps the anomaly visible either way.
+        if let Err(e) = clear_reset_marker(data_dir) {
+            eprintln!("purple-memo: {e} — the reset was finished; the leftover marker is retried on the next start");
+        }
+    }
+    outcome
+}
+
+/// The components that blocked `complete`, as one line for the boot-failure
+/// dialog: name and detail for each, so the user is told which file to free
+/// or close before pressing Retry.
+pub fn blocked_summary(outcome: &ResetOutcome) -> String {
+    outcome
+        .components
+        .iter()
+        .filter(|c| matches!(c.status, ResetStatus::Failed | ResetStatus::NotAttempted))
+        .map(|c| format!("{}: {}", c.name, c.detail.as_deref().unwrap_or("failed")))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The factory-reset engine: run every component in order
@@ -475,6 +619,114 @@ mod tests {
         for component in outcome.components.iter().map(|c| (c.name, c.status)) {
             assert_eq!(component.1, ResetStatus::AlreadyAbsent, "{:?}", component.0);
         }
+    }
+
+    // -- The durable marker (E3) -------------------------------------------
+
+    #[test]
+    fn the_reset_marker_round_trips_and_rejects_foreign_content() {
+        let dir = TempDir::new("marker");
+        assert!(!reset_in_progress(&dir.0), "no marker at first");
+
+        mark_reset_started(&dir.0).expect("write");
+        assert!(reset_in_progress(&dir.0), "recorded");
+        // A retry re-records over an existing marker — and must not be able
+        // to leave a half-written one behind, which is why the write is
+        // temp-plus-rename (pinned indirectly: rewrite works, content valid).
+        mark_reset_started(&dir.0).expect("rewrite");
+        assert!(reset_in_progress(&dir.0), "still recorded after a retry");
+        // The temp sibling must not linger next to the marker.
+        assert!(
+            !dir.0.join(RESET_MARKER_FILE).with_extension("tmp").exists(),
+            "the synced temp is renamed away, not left behind"
+        );
+
+        // A file that merely carries the name is not a marker: an unrelated
+        // `reset-in-progress` must not trigger a recovery pass (E3).
+        std::fs::write(dir.0.join(RESET_MARKER_FILE), b"something else\n")
+            .expect("plant foreign content");
+        assert!(
+            !reset_in_progress(&dir.0),
+            "the content guard keeps junk from reading as a reset"
+        );
+
+        clear_reset_marker(&dir.0).expect("clear");
+        assert!(!reset_in_progress(&dir.0));
+        clear_reset_marker(&dir.0)
+            .expect("clearing an already-absent marker is success, like every component");
+    }
+
+    #[test]
+    fn an_unrecordable_reset_never_reports_success() {
+        // `mark_reset_started` is the command's precondition: if the marker
+        // cannot be written the reset must not start. A missing data dir is
+        // the portable way to make the write fail.
+        let dir = TempDir::new("marker-fail");
+        let missing = dir.0.join("does-not-exist");
+        let error = mark_reset_started(&missing).expect_err("must refuse");
+        assert!(
+            error.contains(RESET_MARKER_FILE),
+            "names the marker: {error}"
+        );
+        assert!(
+            error.contains("nothing was deleted"),
+            "must say the reset never started: {error}"
+        );
+        assert!(!reset_in_progress(&missing));
+    }
+
+    #[test]
+    fn finish_interrupted_reset_completes_what_an_earlier_session_started() {
+        let dir = TempDir::new("finish");
+        seed(&dir.0);
+        mark_reset_started(&dir.0).expect("plant marker");
+        let key_deleted = Cell::new(false);
+
+        let outcome = finish_interrupted_reset(
+            |_| false,
+            &dir.0,
+            || {
+                key_deleted.set(true);
+                Ok(true)
+            },
+        );
+
+        assert!(
+            outcome.complete,
+            "the leftovers are all removable: {outcome:?}"
+        );
+        assert_listed_state_is_gone(&dir.0);
+        assert!(key_deleted.get(), "the key goes last, but goes");
+        assert!(
+            !reset_in_progress(&dir.0),
+            "and the marker goes with the completed outcome"
+        );
+        assert!(
+            dir.0.join("unrelated.txt").exists(),
+            "recovery removes the listed surface, not the whole directory"
+        );
+    }
+
+    #[test]
+    fn finish_interrupted_reset_keeps_the_marker_while_a_component_blocks() {
+        let dir = TempDir::new("finish-fail");
+        seed(&dir.0);
+        mark_reset_started(&dir.0).expect("plant marker");
+
+        let outcome =
+            finish_interrupted_reset(|c| c == ResetComponent::Photos, &dir.0, || Ok(true));
+
+        assert!(!outcome.complete, "a failed photos tree blocks completion");
+        assert_eq!(
+            status_of(&outcome, ResetComponent::Photos),
+            ResetStatus::Failed
+        );
+        assert!(
+            reset_in_progress(&dir.0),
+            "the next start must be able to finish this (E3)"
+        );
+        let summary = blocked_summary(&outcome);
+        assert!(summary.contains("photos"), "the dialog names it: {summary}");
     }
 
     #[test]

@@ -652,6 +652,14 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             let lifecycle = handle
                 .try_state::<Arc<Lifecycle>>()
                 .ok_or_else(|| "lifecycle state is not available — restart the app".to_string())?;
+            // E3: record the reset durably BEFORE anything is deleted — and
+            // before the barrier, so a marker that cannot be written aborts
+            // the reset while the app still runs normally (nothing was
+            // deleted, nothing is refused). A session that dies mid-run then
+            // leaves this marker behind, and the next boot's recovery pass
+            // finishes the job before first-run initialization can mistake
+            // the leftovers for a fresh start.
+            crate::reset::mark_reset_started(&db_state.data_dir)?;
             // E1: raise the barrier BEFORE the engine runs. This refuses every
             // writer that arrives from now on (including post-reset photo
             // commands, for the rest of the process) and waits out the photo
@@ -659,13 +667,25 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             // write back into what `run_factory_reset` is about to delete,
             // and `complete: true` cannot be followed by reappearing files.
             lifecycle.raise_reset();
-            Ok(crate::reset::run_factory_reset(
+            let outcome = crate::reset::run_factory_reset(
                 crate::reset::fault_injection(),
                 || share.stop_for_reset(),
                 || db::close_connection_for_reset(&db_state),
                 &db_state.data_dir,
                 db::delete_db_key,
-            ))
+            );
+            if outcome.complete {
+                // E3: the run reported `complete`, so the record of it goes
+                // away too. Best effort, deliberately — same reasoning as
+                // `finish_interrupted_reset`: a marker that cannot be removed
+                // makes the next start re-run a now-harmless recovery pass
+                // that retries the removal, while failing the reset here
+                // would report a deletion that actually succeeded as failed.
+                if let Err(e) = crate::reset::clear_reset_marker(&db_state.data_dir) {
+                    eprintln!("purple-memo: {e} — the reset completed; the leftover marker is retried on the next start");
+                }
+            }
+            Ok(outcome)
         })
         .await
         .map_err(|e| format!("factory reset task failed: {e}"))?;
@@ -790,6 +810,44 @@ mod tests {
         assert!(
             body_of("factory_reset").contains("raise_reset()"),
             "factory_reset must raise the barrier before deleting anything (E1)"
+        );
+    }
+
+    /// E3: the durable marker brackets the engine — recorded before the
+    /// barrier and the first deletion, cleared only after a `complete`
+    /// outcome. A source pin because the ORDER is the invariant: recorded
+    /// too late recreates the crash window E3 describes, cleared too early
+    /// loses the recovery record.
+    #[test]
+    fn factory_reset_records_recovery_state_around_the_engine() {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("pub async fn factory_reset(")
+            .expect("factory_reset is the entry point");
+        let end = src[start..]
+            .find("pub fn app_restart(")
+            .map(|i| start + i)
+            .expect("app_restart bounds the body");
+        let body = &src[start..end];
+        let mark = body
+            .find("mark_reset_started")
+            .expect("the reset is recorded before it starts (E3)");
+        let raise = body
+            .find("raise_reset()")
+            .expect("the barrier is raised (E1)");
+        let run = body
+            .find("run_factory_reset(")
+            .expect("the engine runs after both");
+        let clear = body
+            .find("clear_reset_marker")
+            .expect("the record is cleared after (E3)");
+        assert!(
+            mark < raise && raise < run && run < clear,
+            "record -> raise -> run -> clear: {mark} {raise} {run} {clear}"
+        );
+        assert!(
+            body.contains("if outcome.complete"),
+            "the marker survives an incomplete outcome so the next start can finish it"
         );
     }
 }
