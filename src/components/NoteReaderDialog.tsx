@@ -49,8 +49,23 @@ export function NoteReaderDialog({
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The scrollable reading viewport, so each note can start at the top. */
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const prevBtnRef = useRef<HTMLButtonElement | null>(null);
+  const nextBtnRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * Which nav BUTTON was just activated, so the effect below can rescue its
+   * focus when it disables itself at a list boundary (G12). Deliberately not
+   * set by the ArrowLeft/ArrowRight path: there the focus is elsewhere (the
+   * header Close button), so nothing drops — and yanking focus to a nav
+   * button after a keypress the user made elsewhere would be a hijack.
+   */
+  const navIntentRef = useRef<"prev" | "next" | null>(null);
 
-  const tags = useMemo(() => parseTags(note.tags), [note.tags]);
+  // Deduplicated (G12): `parseTags` splits on commas without deduping, and
+  // the live editor path can feed "work, work" straight in — duplicate React
+  // keys on the chips below.
+  const tags = useMemo(() => [...new Set(parseTags(note.tags))], [note.tags]);
 
   const words = useMemo(
     () => countWords(note.content, locale),
@@ -62,6 +77,11 @@ export function NoteReaderDialog({
   // biome-ignore lint/correctness/useExhaustiveDependencies: note.id resets the per-note copied state
   useEffect(() => {
     setCopied(false);
+    // Each note starts at the top (G12): `.note-reader-body` is the dialog's
+    // scrollable viewport and Prev/Next keep this component MOUNTED, so
+    // without the reset a new note opened at the previous note's scroll
+    // depth — partway down, or at the bottom of a long note.
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
     return () => {
       if (copyTimerRef.current !== null) {
         clearTimeout(copyTimerRef.current);
@@ -69,6 +89,19 @@ export function NoteReaderDialog({
       }
     };
   }, [note.id]);
+
+  // A boundary nav button disables itself after the step, and the browser
+  // drops its focus onto `<body>` — outside the modal, where Space scrolls
+  // the page behind (G12). Hand focus to the opposite direction button: that
+  // is the control the user is heading for next, and it is enabled — the
+  // step just came from there. Runs on the adjacency FLIP, which is exactly
+  // when the button disables itself.
+  useEffect(() => {
+    const intent = navIntentRef.current;
+    navIntentRef.current = null;
+    if (intent === "next" && !hasNext) prevBtnRef.current?.focus();
+    if (intent === "prev" && !hasPrev) nextBtnRef.current?.focus();
+  }, [hasPrev, hasNext]);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -107,9 +140,14 @@ export function NoteReaderDialog({
       }
       if (e.key === "ArrowLeft" && hasPrev && onPrev) {
         e.preventDefault();
+        // Keyboard nav does not own the nav buttons' focus, so drop any
+        // stale button intent — the rescue effect must not yank focus to a
+        // button the user didn't press (G12).
+        navIntentRef.current = null;
         onPrev();
       } else if (e.key === "ArrowRight" && hasNext && onNext) {
         e.preventDefault();
+        navIntentRef.current = null;
         onNext();
       }
     };
@@ -167,7 +205,7 @@ export function NoteReaderDialog({
         </button>
       </div>
 
-      <div className="note-reader-body markdown">
+      <div className="note-reader-body markdown" ref={bodyRef}>
         {note.content.trim().length === 0 ? (
           <p className="empty-state">{t("notes.previewEmpty")}</p>
         ) : (
@@ -182,8 +220,12 @@ export function NoteReaderDialog({
           <button
             type="button"
             className="btn"
+            ref={prevBtnRef}
             disabled={!hasPrev}
-            onClick={onPrev}
+            onClick={() => {
+              navIntentRef.current = "prev";
+              onPrev?.();
+            }}
             title={t("notes.prevNote")}
           >
             <IconArrowLeft className="icon" /> {t("notes.prevNote")}
@@ -191,8 +233,12 @@ export function NoteReaderDialog({
           <button
             type="button"
             className="btn"
+            ref={nextBtnRef}
             disabled={!hasNext}
-            onClick={onNext}
+            onClick={() => {
+              navIntentRef.current = "next";
+              onNext?.();
+            }}
             title={t("notes.nextNote")}
           >
             {t("notes.nextNote")} <IconArrowRight className="icon" />

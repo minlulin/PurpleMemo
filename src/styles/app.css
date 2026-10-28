@@ -3641,7 +3641,10 @@ tbody .week-row {
   border: 0;
 }
 
-.global-search-group legend {
+/* The group label inside the results listbox. A `<span>`, not `<legend>`:
+ * the group is a `div[role="group"]` — `<fieldset>`+`<legend>` is invalid
+ * ownership inside `role="listbox"` (G7). */
+.global-search-group-legend {
   display: block;
   inline-size: 100%;
   margin: 0;

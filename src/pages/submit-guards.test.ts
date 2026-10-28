@@ -580,6 +580,20 @@ const GUARDS: {
     raised: "submittingRef.current = true",
     labelKey: "common.checking",
   },
+  // The link picker (batch-6, G3). `busy` is state and commits too late to
+  // stop a double-Enter, and across the `LinksSection.link` seam its own ref
+  // guard made the second call resolve instantly — closing the picker while
+  // the first call's `createLink` write was still in flight, so a rejection
+  // was dropped with no error anywhere. The dialog is also `locked={busy}`
+  // while this flag is up, so Escape/backdrop cannot dismiss it either.
+  {
+    page: "../components/EntityPicker.tsx",
+    handler: "choose",
+    busy: "choosingRef.current",
+    cleared: "choosingRef.current = false",
+    raised: "choosingRef.current = true",
+    labelKey: "linkPicker.linking",
+  },
   // CSV import dialog: duplicate policy is "always insert as new", so a fast
   // second click on Confirm before React re-renders would insert the whole CSV
   // batch twice; and clicking Download template while the native save dialog is

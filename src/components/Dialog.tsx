@@ -15,6 +15,14 @@ interface DialogProps {
   children: ReactNode;
   /** Extra class on the `.modal-content` card. */
   className?: string;
+  /**
+   * While true, every close path the dialog owns — Escape, the backdrop
+   * button, anything routed through `close` — returns early (G3). A caller
+   * with a write in flight cannot be dismissed out from under it; the
+   * caller's own SUCCESS path may still call `onClose` directly, because
+   * that close means "finished", not "abandoned".
+   */
+  locked?: boolean;
 }
 
 const FOCUSABLE =
@@ -25,6 +33,7 @@ export function Dialog({
   onClose,
   children,
   className,
+  locked = false,
 }: DialogProps) {
   const t = useT();
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -32,16 +41,34 @@ export function Dialog({
   const triggerRef = useRef<HTMLElement | null>(null);
 
   const close = useCallback(() => {
+    // A locked dialog ignores its own close controls (G3): Escape and the
+    // backdrop must not unmount a dialog while its write is in flight.
+    if (locked) return;
     onClose();
-    triggerRef.current?.focus();
-  }, [onClose]);
+  }, [locked, onClose]);
 
+  // The opener is captured ONCE, on mount (G5). It used to live in the
+  // `[close]` effect below, and `close` depends on `onClose` — which every
+  // caller passes as a fresh inline closure. Each re-render (picking a file,
+  // stepping to the next note, any AppShell re-render) re-ran the capture and
+  // overwrote the stored opener with an element INSIDE the dialog, so focus
+  // restoration pointed at the wrong thing or at nothing.
+  //
+  // Restored in the CLEANUP, not in `close` (G5): unmount is the one moment
+  // every close path shares — Escape, backdrop, `×`, Cancel, Done — including
+  // the explicit buttons that call `onClose` directly and never went through
+  // `close` at all, which used to leave `document.activeElement` on `<body>`.
   useEffect(() => {
     triggerRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    return () => {
+      triggerRef.current?.focus();
+    };
+  }, []);
 
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         close();
@@ -55,7 +82,19 @@ export function Dialog({
       ).filter((el) => !el.hasAttribute("disabled"));
       const first = stops[0];
       const last = stops[stops.length - 1];
-      if (!first || !last) return;
+      if (!first || !last) {
+        // Nothing focusable left INSIDE the dialog (G5): every control may be
+        // disabled — CSV Import does exactly that while its batch runs.
+        // `aria-modal` promises focus cannot leave, so hold it on the
+        // container itself rather than letting Tab walk out into the page
+        // behind. (`el.hasAttribute("disabled")` above already ignores the
+        // container's own `tabIndex={-1}`.)
+        e.preventDefault();
+        if (!dialog.contains(document.activeElement)) {
+          dialog.focus();
+        }
+        return;
+      }
       // Focus that has left the dialog entirely comes back before anything is
       // allowed to wrap (review P3-33). Clicking non-focusable text inside the
       // modal moves `activeElement` to `body`, so neither of the wraps below
@@ -94,6 +133,10 @@ export function Dialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
+        // Focusable only programmatically (never a Tab stop), so the trap
+        // above can hold focus here when the dialog has no enabled control
+        // left (G5).
+        tabIndex={-1}
         ref={contentRef}
       >
         {children}

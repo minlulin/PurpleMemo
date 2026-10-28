@@ -205,6 +205,11 @@ export function ImportDialog<T extends object>({
       labelledBy="import-dialog-title"
       onClose={close}
       className="import-dialog"
+      // Mid-batch the dialog closes only when the batch says so (G5): every
+      // control below is disabled while `running`, and a locked dialog also
+      // holds Tab inside — otherwise the focus trap saw zero stops and let
+      // Tab walk out into the page behind an `aria-modal` dialog.
+      locked={phase === "running"}
     >
       <header className="note-reader-header">
         <h2 className="editor-title" id="import-dialog-title">
@@ -233,6 +238,11 @@ export function ImportDialog<T extends object>({
                 type="file"
                 accept=".csv,text/csv"
                 disabled={reading}
+                // The dialog opens on the control the flow starts with (G5):
+                // without initial focus, `document.activeElement` stayed on
+                // the page's "Import CSV" button BEHIND the modal until the
+                // user pressed Tab.
+                autoFocus
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   e.target.value = "";

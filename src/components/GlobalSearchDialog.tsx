@@ -158,7 +158,11 @@ export function GlobalSearchDialog({
           aria-expanded={results.length > 0}
           value={query}
           placeholder={t("search.placeholder")}
-          aria-controls="global-search-results"
+          // Only while the listbox is rendered (G7), so the reference never
+          // dangles on an empty query or a zero-match search.
+          aria-controls={
+            results.length > 0 ? "global-search-results" : undefined
+          }
           aria-activedescendant={
             results.length > 0
               ? `global-search-result-${activeIndex}`
@@ -239,57 +243,87 @@ export function GlobalSearchDialog({
           {t("search.failed", { error })}
         </p>
       ) : null}
-      <div
-        className="global-search-results"
-        id="global-search-results"
-        role="listbox"
-        aria-label={t("search.resultsAria")}
-      >
-        {groups.map((group) => (
-          <fieldset className="global-search-group" key={group.type}>
-            <legend>
-              {t(SEARCH_TYPE_LABELS[group.type])}
-              {group.capped ? t("search.moreAvailable") : ""}
-            </legend>
-            {group.results.map((result) => {
-              const index = results.indexOf(result);
-              const details = [
-                result.state,
-                result.date ? formatDate(locale, result.date) : undefined,
-              ]
-                .filter(Boolean)
-                .join(" · ");
-              return (
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={index === activeIndex}
-                  className={
-                    index === activeIndex
-                      ? "global-search-result is-active"
-                      : "global-search-result"
-                  }
-                  id={`global-search-result-${index}`}
-                  key={`${group.type}-${result.id ?? result.dateKey}`}
-                  onMouseMove={() => setActiveIndex(index)}
-                  onClick={() => onOpen(result)}
-                >
-                  <span className="global-search-result-main">
-                    <strong>{result.title}</strong>
-                    {result.excerpt ? <span>{result.excerpt}</span> : null}
-                  </span>
-                  {details ? (
-                    <span className="global-search-result-meta">{details}</span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </fieldset>
-        ))}
-        {!loading && !error && query.trim() && count === 0 ? (
-          <p className="muted">{t("search.noMatches")}</p>
-        ) : null}
-      </div>
+      {/* Rendered only when it has options to own (G7): an empty listbox is
+          invalid ARIA, and the zero-match sentence belongs OUTSIDE it — a `<p>`
+          is not an `option` and several screen readers announce non-option
+          content inside `role="listbox"` as part of the list. */}
+      {results.length > 0 ? (
+        <div
+          className="global-search-results"
+          id="global-search-results"
+          role="listbox"
+          aria-label={t("search.resultsAria")}
+        >
+          {groups.map((group) => {
+            const headingId = `global-search-group-${group.type}`;
+            return (
+              // `role="group"` is what a listbox may own alongside its
+              // options (G7): it labels the options grouped under it.
+              // `<fieldset>`+`<legend>` — biome's suggested alternative —
+              // is invalid ownership inside `role="listbox"`: the legend is
+              // not an option, so assistive tech read the group names as
+              // orphaned content instead of labelling the options.
+              // biome-ignore lint/a11y/useSemanticElements: a fieldset here is precisely the G7 bug — noNoninteractiveElementToInteractiveRole rejects that alternative inside a listbox
+              <div
+                className="global-search-group"
+                role="group"
+                aria-labelledby={headingId}
+                key={group.type}
+              >
+                <span className="global-search-group-legend" id={headingId}>
+                  {t(SEARCH_TYPE_LABELS[group.type])}
+                  {group.capped ? t("search.moreAvailable") : ""}
+                </span>
+                {group.results.map((result) => {
+                  const index = results.indexOf(result);
+                  const details = [
+                    result.state,
+                    result.date ? formatDate(locale, result.date) : undefined,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <button
+                      type="button"
+                      role="option"
+                      // Out of the Tab ring (G7): selection belongs to the
+                      // combobox's arrow keys, and up to 40 option tab stops
+                      // desynced DOM focus from `activeIndex` — Tab landed on
+                      // row #k while `aria-activedescendant` still pointed at
+                      // #0, and Enter activated a different row than the
+                      // highlight.
+                      tabIndex={-1}
+                      aria-selected={index === activeIndex}
+                      className={
+                        index === activeIndex
+                          ? "global-search-result is-active"
+                          : "global-search-result"
+                      }
+                      id={`global-search-result-${index}`}
+                      key={`${group.type}-${result.id ?? result.dateKey}`}
+                      onMouseMove={() => setActiveIndex(index)}
+                      onClick={() => onOpen(result)}
+                    >
+                      <span className="global-search-result-main">
+                        <strong>{result.title}</strong>
+                        {result.excerpt ? <span>{result.excerpt}</span> : null}
+                      </span>
+                      {details ? (
+                        <span className="global-search-result-meta">
+                          {details}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {!loading && !error && query.trim() && count === 0 ? (
+        <p className="muted">{t("search.noMatches")}</p>
+      ) : null}
     </Dialog>
   );
 }
