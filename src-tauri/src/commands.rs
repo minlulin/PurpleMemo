@@ -60,6 +60,12 @@ const SOURCE_HEADER: &str = "x-photo-source";
 /// Absent means "an ordinary app write", which the lifecycle refuses while
 /// an import or reset owns the data.
 const LEASE_HEADER: &str = "x-import-lease";
+/// E6: the per-photo ceiling, identical to `MAX_BACKUP_PHOTO_BYTES` in
+/// `src/lib/backup.ts` — a photo the importer would refuse on restore must
+/// never be accepted at save time, or the app writes backups it cannot read
+/// back. Pinned against the TS constant by `ipc.test.ts`, because the two
+/// limits living in two languages is exactly how they drift apart.
+const MAX_SAVED_PHOTO_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The body is returned owned so callers can move it into a
 /// `spawn_blocking` closure: an `async` command future must be `'static`,
@@ -292,12 +298,22 @@ pub fn db_reset_txn(
 ) -> CmdResult<()> {
     let _ticket = lifecycle.admit(None)?;
     // Fail closed like every other DB command once the connection is taken
-    // "every DB command refuses after a reset" is one rule, and
+    // — "every DB command refuses after a reset" is one rule, and
     // clearing a transaction flag without a connection is meaningless.
+    //
+    // E12: the whole reconciliation runs UNDER this lock. The flag is what
+    // every other command consults to mean "a manual transaction is open",
+    // so it may only change while this guard excludes them — and it may only
+    // clear when SQLite agrees the transaction is gone (`reconcile_open_txn`
+    // checks autocommit and ROLLBACKs for real). On failure the `?` returns
+    // BEFORE the store: the flag stays set, later writes keep refusing, and
+    // the app demands a restart instead of reporting a cleared state that
+    // still holds an open transaction.
     {
-        let _guard = lock_conn(&state)?;
+        let conn = lock_conn(&state)?;
+        db::reconcile_open_txn(&conn)?;
+        state.txn_open.store(false, Ordering::SeqCst);
     }
-    state.txn_open.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -319,6 +335,20 @@ pub async fn photo_save(app: tauri::AppHandle, request: Request<'_>) -> CmdResul
     let ext = header_str(&request, EXT_HEADER)?.to_string();
     let lease = lease_from_header(&request)?;
     let bytes = raw_body(&request)?;
+    // E6: refuse at the door what the importer would refuse at restore. The
+    // gallery picker reads the chosen file without a limit, so this command
+    // is the one choke point every original bytes pass through — and the
+    // refusal happens before any hashing, writing, or barrier ticket.
+    if bytes.len() as u64 > MAX_SAVED_PHOTO_BYTES {
+        return Err(format!(
+            "this photo is {:.1} MiB — Purple Memo accepts a single photo up to \
+             {:.0} MiB, because a larger one would make every backup containing \
+             it unrestorable. Compress or resize the image and try again; \
+             nothing was saved.",
+            bytes.len() as f64 / (1024.0 * 1024.0),
+            MAX_SAVED_PHOTO_BYTES as f64 / (1024.0 * 1024.0),
+        ));
+    }
     // Admit BEFORE the date lookup and hold the ticket across the blocking
     // write (E1): a save admitted before `raise_reset` is drained before the
     // reset deletes `photos/`, and one arriving after it is refused instead
@@ -497,10 +527,35 @@ pub async fn backup_safety_copy(app: tauri::AppHandle, label: String) -> CmdResu
             // any other command can take the mutex and write again.
             let dest = {
                 let conn = lock_conn(&state)?;
-                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                // E4: read the checkpoint's RESULT, not just its exit status.
+                // `execute_batch` steps the pragma's row and throws it away, and
+                // SQLite happily answers a successful statement with busy=1 and
+                // committed frames still in the WAL — the copy would then be a
+                // stale main file while the caller believed the flush happened.
+                // The three columns are busy, pages-in-log, pages-checkpointed.
+                let (busy, log_pages, checkpointed) = conn
+                    .query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    })
                     .map_err(|e| {
                         format!("could not flush the database before the safety copy: {e}")
                     })?;
+                if busy != 0 {
+                    // Fail closed: an incomplete checkpoint aborts the import at
+                    // the snapshot boundary — the copy would miss committed rows,
+                    // and the destructive phase must never run against it.
+                    return Err(format!(
+                        "the database flush before the safety copy did not complete \
+                         (checkpoint busy, {checkpointed} of {log_pages} WAL pages flushed) — \
+                         the copy would be stale, so the import was cancelled before \
+                         anything was replaced; close any other program using this \
+                         app's data folder and try again"
+                    ));
+                }
                 crate::safety_copy::copy_database_for_import(&state.data_dir, &label)?
             };
             // Outside the lock: the photo tree (~110 MiB) and README.txt.
@@ -848,6 +903,37 @@ mod tests {
         assert!(
             body.contains("if outcome.complete"),
             "the marker survives an incomplete outcome so the next start can finish it"
+        );
+    }
+
+    /// E12: the break-glass reset asks SQLite first, under the connection
+    /// lock, and only then clears the flag — with `?` between the two, so a
+    /// failed rollback returns while the flag still says "transaction open"
+    /// and every later write refuses (restart required) instead of joining
+    /// an abandoned transaction.
+    #[test]
+    fn db_reset_txn_reconciles_under_the_lock_before_clearing_the_flag() {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("fn db_reset_txn(")
+            .expect("the break-glass command exists");
+        let end = src[start..]
+            .find("#[tauri::command]")
+            .map(|i| start + i)
+            .expect("the next command bounds the body");
+        let body = &src[start..end];
+        let lock = body
+            .find("lock_conn")
+            .expect("everything runs under the lock");
+        let reconcile = body
+            .find("reconcile_open_txn(&conn)?")
+            .expect("SQLite is asked, with `?` gating the store (E12)");
+        let store = body
+            .find("txn_open.store")
+            .expect("only then is the flag cleared");
+        assert!(
+            lock < reconcile && reconcile < store,
+            "lock -> reconcile -> store: {lock} {reconcile} {store}"
         );
     }
 }

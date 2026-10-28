@@ -7,6 +7,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { MAX_BACKUP_PHOTO_BYTES } from "../lib/backup.ts";
 import {
   BACKUP_PATH_HEADER,
   EXPORT_PATH_HEADER,
@@ -94,6 +95,25 @@ test("the raw-photo headers are the same strings on both sides", () => {
   assert.ok(
     commandsSrc.includes(`const LEASE_HEADER: &str = "${PHOTO_LEASE_HEADER}"`),
     "LEASE_HEADER must stay in sync with driver.ts (E5)",
+  );
+});
+
+test("the save-time photo limit is the importer's per-photo limit (E6)", () => {
+  // A photo accepted by `photo_save` must be one `parseBackupZip` accepts on
+  // restore — two constants in two languages are exactly how the app ends up
+  // writing backups it refuses to read back.
+  const rust = /MAX_SAVED_PHOTO_BYTES: u64 = (\d+) \* 1024 \* 1024/.exec(
+    commandsSrc,
+  );
+  assert.ok(rust, "commands.rs must declare MAX_SAVED_PHOTO_BYTES (E6)");
+  assert.equal(
+    Number(rust[1]) * 1024 * 1024,
+    MAX_BACKUP_PHOTO_BYTES,
+    "the Rust save-time limit must equal the importer's per-photo limit",
+  );
+  assert.ok(
+    commandsSrc.includes("bytes.len() as u64 > MAX_SAVED_PHOTO_BYTES"),
+    "photo_save must actually enforce the limit before writing",
   );
 });
 

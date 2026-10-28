@@ -190,6 +190,7 @@ test("exportBudget: sums stored sizes and refuses one archive above the cap", ()
     photos: 3,
     ok: true,
     limit: 10,
+    largest: 5,
   });
   // Exactly at the cap is allowed; one byte over is not.
   assert.equal(exportBudget([{ size_bytes: 10 }], 10).ok, true);
@@ -204,12 +205,62 @@ test("exportBudget: sums stored sizes and refuses one archive above the cap", ()
   );
 });
 
-test("readBackupData refuses an oversized library BEFORE reading any photo bytes", async () => {
+test("exportBudget: refuses a single photo over the importer's per-photo limit (E6)", () => {
+  // The total can be tiny and still be un-exportable: inspection rejects any
+  // one photo above MAX_BACKUP_PHOTO_BYTES on restore, so an export that
+  // included it would write a backup this app refuses to read back — and it
+  // must be caught from the stored sizes, before any bytes are pulled.
+  const overPhoto = exportBudget(
+    [{ size_bytes: MAX_BACKUP_PHOTO_BYTES + 1 }, { size_bytes: 1 }],
+    MAX_EXPORT_PHOTO_BYTES,
+  );
+  assert.equal(
+    overPhoto.ok,
+    false,
+    "well inside the total cap, one byte over the per-photo cap",
+  );
+  assert.equal(overPhoto.largest, MAX_BACKUP_PHOTO_BYTES + 1);
+  // Exactly at the cap is still fine, same as the total's inclusive bound.
+  assert.equal(
+    exportBudget(
+      [{ size_bytes: MAX_BACKUP_PHOTO_BYTES }],
+      MAX_EXPORT_PHOTO_BYTES,
+    ).ok,
+    true,
+  );
+});
+
+test("readBackupData refuses an oversized single photo BEFORE reading any photo bytes (E6)", async () => {
   const tableResults: Queryable[][] = BACKUP_TABLES.map(() => []);
   tableResults.push([
-    { rel_path: "photos/2026/10/aaa.jpg", size_bytes: MAX_EXPORT_PHOTO_BYTES },
-    { rel_path: "photos/2026/10/bbb.jpg", size_bytes: 1 },
+    {
+      rel_path: "photos/2026/10/big.jpg",
+      size_bytes: MAX_BACKUP_PHOTO_BYTES + 1,
+    },
   ]);
+  const driver = createMockDriver({ results: tableResults });
+  await assert.rejects(
+    () => readBackupData(driver),
+    /over the \d+ MiB a single backup photo may be/i,
+  );
+  assert.deepEqual(
+    driver.callsTo("readPhoto"),
+    [],
+    "the per-photo refusal must fire before the library is read through IPC",
+  );
+});
+
+test("readBackupData refuses an oversized library BEFORE reading any photo bytes", async () => {
+  const tableResults: Queryable[][] = BACKUP_TABLES.map(() => []);
+  // Every row sits exactly AT the per-photo cap (so the E6 single-photo check
+  // stays quiet) while five of them blow the whole-library cap — this refusal
+  // is about the total, and only the total.
+  tableResults.push(
+    Array.from({ length: 5 }, (_, i) => ({
+      rel_path: `photos/2026/10/p${i}.jpg`,
+      size_bytes: MAX_BACKUP_PHOTO_BYTES,
+    })),
+  );
   const driver = createMockDriver({ results: tableResults });
   await assert.rejects(
     () => readBackupData(driver),

@@ -71,6 +71,22 @@ const KEYRING_HINT: &str = " Hint: your OS credential store looks unavailable �
 /// recovered session can never be ended by a watchdog that outlived its dialog.
 static WATCHDOG_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// Serializes watchdog RETIREMENT against the watchdog's own exit decision
+/// (E13). Both sides take this lock, so "generation changed after the last
+/// check but before the exit" — the window in which a recovered app was
+/// killed with the misleading "no answer" message — is closed: the two
+/// decisions are totally ordered. Whoever gets the lock first decides, and
+/// the other side sees that decision instead of racing it.
+static WATCHDOG_EXIT: Mutex<()> = Mutex::new(());
+
+/// Retire every armed watchdog. Called the moment a wait state ends and when
+/// the app recovers; the bump happens under [`WATCHDOG_EXIT`] so it can never
+/// slip between the watchdog's final check and its exit.
+fn retire_watchdog() {
+    let _guard = WATCHDOG_EXIT.lock().unwrap_or_else(|e| e.into_inner());
+    WATCHDOG_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
 pub fn run() {
     tauri::Builder::default()
         // MUST stay first. A second launch is turned away before this app
@@ -339,7 +355,7 @@ fn report_boot_failure(app: &tauri::AppHandle, failure: &db::KeyLoadError) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
-    arm_watchdog();
+    arm_watchdog("the boot-failure dialog");
     if failure.is_missing_key_for_existing_db() {
         offer_key_restore(app.clone(), full);
     } else {
@@ -397,21 +413,29 @@ fn offer_key_restore(app: tauri::AppHandle, full: String) {
 /// nothing and lands back on the standard Retry/Quit dialog — never a dead
 /// end, and never a store write.
 fn pick_key_file_and_restore(app: tauri::AppHandle, failure_message: String) {
+    // The user answered the dialog — the clock now measures the PICKER, not
+    // the answered dialog (E13): without this bump the old watchdog could
+    // fire while someone is still looking through their files.
+    arm_watchdog("the key file picker");
     app.dialog()
         .file()
         .set_title("Choose your exported Purple Memo key file")
         .pick_file(move |picked| {
+            // The picker was answered — the clock now measures the restore
+            // attempt itself (E13), and whichever dialog or retry follows
+            // will re-arm for its own state.
+            arm_watchdog("the key restore attempt");
             let Some(key_file) = picked.and_then(|handle| handle.into_path().ok()) else {
                 // Picker cancelled (or the path could not be converted):
                 // restore nothing, give the standard choices back.
-                arm_watchdog();
+                arm_watchdog("the boot-failure dialog");
                 show_retry_or_quit(app, format!("{failure_message}{RETRY_GUIDANCE}"));
                 return;
             };
             match restore_key_from_file(&key_file) {
                 Ok(()) => retry_boot(app),
                 Err(reason) => {
-                    arm_watchdog();
+                    arm_watchdog("the boot-failure dialog");
                     show_retry_or_quit(
                         app,
                         format!(
@@ -444,12 +468,19 @@ fn restore_key_from_file(key_file: &std::path::Path) -> Result<(), String> {
 /// managed" and would otherwise stay on its error screen. On failure the dialog
 /// is shown again.
 fn retry_boot(app: tauri::AppHandle) {
+    // The answer arrived — the clock now measures the retry attempt (E13).
+    // Re-arming here (rather than only on the next failure) is what keeps a
+    // slow-but-recoverable boot from being killed by the timer that was set
+    // for the dialog the user already dismissed.
+    arm_watchdog("the retry attempt");
     std::thread::spawn(move || match boot(&app) {
         Ok(()) => {
             // Retire every watchdog armed for a dialog in this session before
             // touching anything else: the app is healthy now and must not be
-            // ended by a timer that was set for a failure that is over.
-            WATCHDOG_GENERATION.fetch_add(1, Ordering::SeqCst);
+            // ended by a timer that was set for a failure that is over. Under
+            // the shared lock (E13), so the retirement cannot land between a
+            // watchdog's final check and its exit.
+            retire_watchdog();
             note_boot_recovery();
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.reload();
@@ -464,15 +495,19 @@ fn retry_boot(app: tauri::AppHandle) {
     });
 }
 
-/// Arm a watchdog for the dialog that was just shown.
+/// Arm a watchdog for the wait state that just began, named by
+/// `waiting_for` (E13).
 ///
-/// The dialog lives in this process, so the process has to outlive it — but a
-/// process with a hidden window and no dialog on screen is a zombie nobody can
-/// answer. If a dialog never renders (no display, broken portal, dialog backend
-/// failure), this is what ends the wait. Every new dialog re-arms, and a
-/// successful retry retires the lot, so the timer only ever measures time spent
-/// waiting on the current dialog.
-fn arm_watchdog() {
+/// The dialogs, the file picker, and a retry attempt all live in this
+/// process, so the process has to outlive them — but a process with a hidden
+/// window and no wait in progress is a zombie nobody can answer. Every new
+/// state re-arms (bumping the generation stands the previous watchdog down),
+/// a successful retry retires the lot, and the timer therefore only ever
+/// measures time spent waiting on the state its label names — an answer
+/// immediately moves the clock to the next state instead of letting the old
+/// timer fire mid-retry or mid-picker with a message about a dialog nobody
+/// is looking at.
+fn arm_watchdog(waiting_for: &'static str) {
     let generation = WATCHDOG_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         let mut waited = Duration::ZERO;
@@ -483,7 +518,17 @@ fn arm_watchdog() {
                 return;
             }
         }
-        eprintln!("purple-memo: no answer to the boot-failure dialog; exiting");
+        // The final decision runs under the same lock retirement bumps
+        // (E13): a retirement is either already visible to the load above —
+        // then we stand down — or it waits here while we exit. It can no
+        // longer land between the check and the exit, which is how a
+        // successfully recovered app used to be killed with a message about
+        // an answer the user had already given.
+        let _guard = WATCHDOG_EXIT.lock().unwrap_or_else(|e| e.into_inner());
+        if WATCHDOG_GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        eprintln!("purple-memo: no answer while waiting for {waiting_for}; exiting");
         std::process::exit(1);
     });
 }
@@ -1240,6 +1285,74 @@ mod boot_failure_tests {
         assert!(
             body.contains("if database_preexisted"),
             "the cleanup must stay behind its guard: an existing database is never removed"
+        );
+    }
+
+    /// E13: the watchdog is scoped to one NAMED wait state at a time — every
+    /// answer re-arms for the next state instead of letting the old timer
+    /// keep counting — and its final exit decision shares a lock with
+    /// retirement, so it can no longer fire in the window between the last
+    /// generation check and the exit (how a recovered app used to be killed
+    /// with a message about an answer nobody still owed).
+    #[test]
+    fn the_watchdog_is_state_scoped_and_its_exit_is_synchronized() {
+        let src = include_str!("lib.rs");
+
+        // The exit decision: under the shared lock, re-checking the
+        // generation there, and naming the state it gave up on.
+        let start = src.find("fn arm_watchdog(").expect("the watchdog exists");
+        let end = src[start..]
+            .find("\nfn ")
+            .map(|i| start + i)
+            .expect("bounds the body");
+        let body = &src[start..end];
+        let lock = body
+            .find("WATCHDOG_EXIT")
+            .expect("the final decision takes the shared lock (E13)");
+        assert!(
+            body[lock..].contains("WATCHDOG_GENERATION.load"),
+            "and re-checks the generation under it"
+        );
+        assert!(
+            body.contains("{waiting_for}"),
+            "the exit message names the state it was waiting on"
+        );
+
+        // Retirement takes the same lock before it bumps.
+        let retire = src.find("fn retire_watchdog()").expect("retirement exists");
+        let r_lock = src[retire..]
+            .find("WATCHDOG_EXIT")
+            .expect("retirement locks too");
+        let r_bump = src[retire..]
+            .find("fetch_add")
+            .expect("and bumps the generation");
+        assert!(r_lock < r_bump, "lock before bump: {r_lock} vs {r_bump}");
+
+        // Every entry point arms its own labelled state, and no unlabelled
+        // arm is left behind — an anonymous arm is the E13 bug. The needle
+        // is assembled so this assertion cannot match its own source.
+        let unlabelled = format!("{}();", "arm_watchdog");
+        assert!(
+            !src.contains(&unlabelled),
+            "every arm_watchdog call must name its wait state"
+        );
+        for (site, state) in [
+            ("fn retry_boot(", "the retry attempt"),
+            ("fn pick_key_file_and_restore(", "the key file picker"),
+        ] {
+            let from = src.find(site).expect("the entry point exists");
+            let to = src[from..]
+                .find("\nfn ")
+                .map(|i| from + i)
+                .unwrap_or(src.len());
+            assert!(
+                src[from..to].contains(state),
+                "{site} must arm a watchdog for its own state (E13)"
+            );
+        }
+        assert!(
+            src.contains("retire_watchdog();"),
+            "a successful recovery retires under the shared lock"
         );
     }
 }

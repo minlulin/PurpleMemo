@@ -21,6 +21,19 @@
 //! writes into it mid-import. Photos are copied as a tree because the import
 //! unlinks the ones it does not re-create.
 //!
+//! Two guarantees the copy gives its caller, both (E7/E8):
+//!
+//! * **Durable before it returns.** Every file written here is synced to the
+//!   device, so `Ok` means *survives a crash*, not *handed to the OS* — the
+//!   import's destructive phase must not start on a copy that a power cut
+//!   could dissolve.
+//! * **One symlink policy at every level.** The photo root is inspected
+//!   without following, and a link anywhere in the tree refuses the copy
+//!   outright. A link is never followed into (external bytes would poison
+//!   the copy) and never silently skipped (a skipped descendant is a photo
+//!   the import would delete without an undo). Factory reset likewise
+//!   removes links without following them — see `reset.rs`.
+//!
 //! Restoring one is a manual operation (stop the app, replace the database and
 //! `photos/` in app-data): restoring in-app would itself need a pre-restore
 //! copy, and a half-implemented version of that is worse than a documented
@@ -76,7 +89,9 @@ pub fn folder_name(label: &str) -> String {
 /// The caller (commands::backup_safety_copy) runs this while holding the
 /// connection lock with the WAL already checkpointed, so the flush and the
 /// copy are one locked step: no other command can write to the database
-/// file mid-copy.
+/// file mid-copy. The copied file is then synced to the device (E7) before
+/// this returns — the caller treats `Ok` as "the undo copy exists", and the
+/// destructive phase must not start on bytes the OS has merely accepted.
 ///
 /// Refuses when there is no database to copy — a "safety copy" that silently
 /// copied nothing would be worse than the error, because the caller's whole
@@ -93,8 +108,9 @@ pub fn copy_database_for_import(data_dir: &Path, label: &str) -> Result<PathBuf,
     let db_name = db_path
         .file_name()
         .ok_or_else(|| "database file has no name".to_string())?;
-    fs::copy(&db_path, dest.join(db_name))
-        .map_err(|e| format!("copy {}: {e}", db_path.display()))?;
+    let copied = dest.join(db_name);
+    fs::copy(&db_path, &copied).map_err(|e| format!("copy {}: {e}", db_path.display()))?;
+    sync_file(&copied)?;
     Ok(dest)
 }
 
@@ -104,13 +120,84 @@ pub fn copy_database_for_import(data_dir: &Path, label: &str) -> Result<PathBuf,
 /// Runs OUTSIDE the connection lock: the tree can be ~110 MiB,
 /// and holding the database mutex across it would stall every DB command for
 /// the duration of the copy. Nothing in this step touches the database file.
+///
+/// The photo root is inspected with `symlink_metadata` first (E8): a linked
+/// root is refused outright rather than followed out of the app-data dir —
+/// a copy that walked into an external tree would either smuggle foreign
+/// files into the undo copy or, worse, be trusted as complete when it was not.
 pub fn copy_photos_for_import(data_dir: &Path, dest: &Path) -> Result<(), String> {
     let photos = data_dir.join(PHOTOS_DIR);
-    if photos.is_dir() {
-        copy_tree(&photos, &dest.join(PHOTOS_DIR))?;
+    match fs::symlink_metadata(&photos) {
+        Ok(meta) => {
+            if is_link_like(meta.file_type(), &meta) {
+                return Err(link_refusal(&photos));
+            }
+            if meta.is_dir() {
+                copy_tree(&photos, &dest.join(PHOTOS_DIR))?;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("could not inspect {}: {e}", photos.display())),
     }
     write_readme(dest)?;
     Ok(())
+}
+
+/// Flush one copied file's bytes down to the device (E7).
+///
+/// `fs::copy` only hands bytes to the OS: without this, "the safety copy
+/// succeeded" means *handed over*, not *survives a crash*, and the import's
+/// destructive phase would not be gated on a durable copy. Opened read-write
+/// because `sync_all` needs write access on Windows (`FlushFileBuffers`
+/// refuses a read-only handle), while `fsync` would not. Directory entries
+/// themselves are covered by the filesystems the app ships on — NTFS, APFS
+/// and ext4 all journal link metadata — once the file's data is flushed;
+/// this is the same protocol `file_write` already uses for exports, and a
+/// failure here cancels the import like any other copy failure.
+fn sync_file(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| format!("could not flush {}: {e}", path.display()))
+}
+
+/// True for any entry that is not a plain file or a plain directory (E8): a
+/// symlink on every platform, and on Windows any other reparse point —
+/// notably directory junctions, which Rust's `FileType::is_symlink` does NOT
+/// report (they are `IO_REPARSE_TAG_MOUNT_POINT`) but which enumerate with
+/// the directory attribute, so a walk that trusted `is_dir()` alone would
+/// follow one straight out of the app-data dir.
+fn is_link_like(file_type: fs::FileType, meta: &fs::Metadata) -> bool {
+    if file_type.is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+/// The one refusal both link checks return (E8) — one policy, one wording,
+/// always fail-closed before the destructive phase.
+fn link_refusal(path: &Path) -> String {
+    format!(
+        "{} is a link (symlink or junction) — the safety copy refuses to \
+         follow links out of the photo tree, because a copy built on them \
+         cannot be trusted to hold the original. Replace the link with a \
+         real folder and try again — import cancelled before anything was \
+         replaced",
+        path.display()
+    )
 }
 
 /// Create `base`, or the first free `base-2`, `base-3`, … so a second import in
@@ -140,8 +227,13 @@ fn unique_dir(base: &Path) -> Result<PathBuf, String> {
     Err(format!("could not find a free name for {name}"))
 }
 
-/// Recursive copy. Symlinks are skipped — not followed and not copied — so a
-/// copy can never pull in bytes from outside the photo tree.
+/// Recursive copy under the one symlink policy (E8): a link at ANY level
+/// refuses the copy instead of being silently skipped — a skipped descendant
+/// is a photo the live library could read but the undo copy would not hold,
+/// and the import is about to delete the original. Anything that is not a
+/// plain file or directory refuses too, so a special file is never copied by
+/// accident. Every file that IS copied is flushed before the walk returns
+/// (E7).
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     fs::create_dir_all(to).map_err(|e| format!("create {}: {e}", to.display()))?;
     let entries = fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))?;
@@ -152,15 +244,29 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
         let file_type = entry
             .file_type()
             .map_err(|e| format!("stat {}: {e}", source.display()))?;
+        // Link check BEFORE the directory branch: a Windows junction carries
+        // the directory attribute, so `is_dir()` alone would walk into it.
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("stat {}: {e}", source.display()))?;
+        if is_link_like(file_type, &meta) {
+            return Err(link_refusal(&source));
+        }
         if file_type.is_dir() {
             copy_tree(&source, &target)?;
         } else if file_type.is_file() {
             fs::copy(&source, &target).map_err(|e| format!("copy {}: {e}", source.display()))?;
-        } else if file_type.is_symlink() {
-            // Skipped entirely — not followed, not copied: a symlinked photo
-            // directory is not something this app creates, and following it
-            // would copy arbitrary files.
-            continue;
+            sync_file(target)?;
+        } else {
+            // Not a link, not a plain file — a fifo, device, or other special
+            // entry. Refuse rather than silently omit it: the import this
+            // copy exists for is about to delete the original tree.
+            return Err(format!(
+                "{} is not a regular file — the safety copy only copies plain \
+                 files and directories; import cancelled before anything was \
+                 replaced",
+                source.display()
+            ));
         }
     }
     Ok(())
@@ -182,7 +288,9 @@ fn write_readme(dest: &Path) -> Result<(), String> {
                 and the photos/ folder in the app-data directory with the ones here.\n\
                 Keep this folder's copies until the import has been checked.\n";
     fs::write(dest.join("README.txt"), text)
-        .map_err(|e| format!("write {}: {e}", dest.join("README.txt").display()))
+        .map_err(|e| format!("write {}: {e}", dest.join("README.txt").display()))?;
+    sync_file(dest.join("README.txt"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -265,6 +373,137 @@ mod tests {
         assert_eq!(
             fs::read(second.join(crate::db::DB_FILE_NAME)).expect("second db"),
             b"after-first"
+        );
+    }
+
+    // -- E7: the copy is durable before it reports success ----------------
+
+    #[test]
+    fn a_file_that_cannot_be_flushed_is_an_error_naming_it() {
+        // The flush is part of the copy's contract: if it cannot happen, the
+        // caller must learn about it — a silently unflushed "successful"
+        // copy is exactly the E7 gap.
+        let root = TempDir::new("sync-fail");
+        let missing = root.0.join("never-written.bin");
+        let error = sync_file(missing).expect_err("no file, no flush");
+        assert!(
+            error.contains("could not flush"),
+            "names the operation: {error}"
+        );
+    }
+
+    #[test]
+    fn every_writer_in_the_copy_flushes_what_it_wrote() {
+        // E7 source pin: all three writers — database file, photo tree,
+        // README — must sync their output, so `Ok` from any of them means
+        // *durable*, not *handed to the OS*.
+        let src = include_str!("safety_copy.rs");
+        for (function, call) in [
+            ("copy_database_for_import", "sync_file(&copied)"),
+            ("copy_tree", "sync_file(target)"),
+            ("write_readme", "sync_file(dest.join(\"README.txt\"))"),
+        ] {
+            let marker = format!("fn {function}(");
+            let start = src.find(&marker).expect("the writer exists");
+            let rest = &src[start..];
+            // rustfmt closes every function at column 0, so the first `\n}`
+            // ends this one; inner blocks are indented.
+            let end = rest.find("\n}").map(|i| i + 2).unwrap_or(rest.len());
+            assert!(
+                rest[..end].contains(call),
+                "{function} must flush the file it wrote (E7): missing {call}"
+            );
+        }
+    }
+
+    // -- E8: one symlink policy at every level ----------------------------
+
+    /// Plant a link without privileges: a real symlink on unix, a directory
+    /// junction on Windows (`mklink /J` needs none) — and a junction is
+    /// precisely the entry Rust's `is_symlink()` does not report while it
+    /// still enumerates as a directory, which is what the policy check must
+    /// catch.
+    fn plant_link(link: &Path, target: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).expect("create the symlink");
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .status()
+                .expect("run mklink");
+            assert!(status.success(), "mklink /J must create the junction");
+        }
+    }
+
+    #[test]
+    fn a_linked_photos_root_refuses_the_copy_instead_of_following_it() {
+        // E8: a linked root used to be followed (`is_dir` traverses it), so
+        // the undo copy could pull in an external tree — or, once reset
+        // removed only the link, leave the originals outside app-data while
+        // the app believed they were gone. Refuse before the destructive
+        // phase instead.
+        let root = TempDir::new("linked-root");
+        let data = seed_app_data(&root.0);
+        let outside = root.0.join("outside");
+        fs::create_dir_all(&outside).expect("outside dir");
+        fs::write(outside.join("secret.jpg"), b"external").expect("external photo");
+        let photos = data.join(PHOTOS_DIR);
+        fs::remove_dir_all(&photos).expect("clear the real photos dir");
+        plant_link(&photos, &outside);
+
+        let dest = copy_database_for_import(&data, "2026-10-20").expect("db step");
+        let error =
+            copy_photos_for_import(&data, &dest).expect_err("a linked root must refuse the copy");
+        assert!(error.contains("link"), "names the policy: {error}");
+        assert!(
+            error.contains("import cancelled"),
+            "fail-closed, and says so: {error}"
+        );
+        assert!(
+            !dest.join(PHOTOS_DIR).join("secret.jpg").exists(),
+            "nothing outside the photo tree may be copied"
+        );
+        assert!(
+            outside.join("secret.jpg").exists(),
+            "the external target is never touched"
+        );
+    }
+
+    #[test]
+    fn a_link_inside_the_photo_tree_refuses_the_copy_too() {
+        // The same policy one level down (E8): the old walk silently
+        // SKIPPED links, which meant a photo the live library could read
+        // would be missing from the very copy that justifies deleting it.
+        let root = TempDir::new("linked-inner");
+        let data = seed_app_data(&root.0);
+        let outside = root.0.join("outside");
+        fs::create_dir_all(&outside).expect("outside dir");
+        fs::write(outside.join("secret.jpg"), b"external").expect("external photo");
+        // Built from components, not a literal with forward slashes: `cmd`
+        // would parse `/2026` as a switch when mklink receives the path.
+        let nested = data
+            .join(PHOTOS_DIR)
+            .join("2026")
+            .join("10")
+            .join("linked-dir");
+        plant_link(&nested, &outside);
+
+        let dest = copy_database_for_import(&data, "2026-10-20").expect("db step");
+        let error =
+            copy_photos_for_import(&data, &dest).expect_err("a nested link must refuse the copy");
+        assert!(error.contains("link"), "names the policy: {error}");
+        assert!(error.contains("import cancelled"), "{error}");
+        assert!(
+            !dest
+                .join(PHOTOS_DIR)
+                .join("2026/10/linked-dir/secret.jpg")
+                .exists(),
+            "the walk must stop before following anything out of the tree"
         );
     }
 

@@ -801,6 +801,37 @@ pub fn db_file_paths(data_dir: &Path) -> Vec<PathBuf> {
     vec![main, wal, shm]
 }
 
+/// Reconcile the break-glass transaction reset with SQLite's REAL state (E12).
+///
+/// `db_reset_txn` is the last resort after COMMIT and ROLLBACK both failed.
+/// Clearing the app's `txn_open` flag alone left SQLite's transaction open:
+/// later batches then failed to BEGIN, and single writes joined the
+/// abandoned transaction despite the flag saying otherwise — uncommitted
+/// rows silently lost when the connection closed while the app reported a
+/// clean state.
+///
+/// So this asks SQLite (`is_autocommit`) instead of trusting the flag, under
+/// the connection lock the caller holds:
+///
+/// * no real transaction → the flag was merely stale, safe to clear;
+/// * a real transaction → an explicit `ROLLBACK`, which is the break-glass
+///   step the flag-clearing pretended to be;
+/// * rollback fails → an error naming a restart, and the caller must NOT
+///   clear the flag: every later write keeps refusing instead of entering a
+///   transaction the app pretends is over.
+pub fn reconcile_open_txn(conn: &Connection) -> Result<(), String> {
+    if conn.is_autocommit() {
+        return Ok(());
+    }
+    conn.execute_batch("ROLLBACK;").map_err(|e| {
+        format!(
+            "could not roll back the open transaction: {e} — the transaction \
+             state was NOT cleared; restart the app before writing again"
+        )
+    })?;
+    Ok(())
+}
+
 /// Delete the DB encryption key from the OS credential store — factory reset
 /// only.
 ///
@@ -2999,6 +3030,50 @@ mod tests {
         assert!(err.contains("not allowed"), "unexpected error: {err}");
         assert!(begin_tx(&conn).is_err(), "manual txn still open");
         rollback_tx(&conn).expect("cleanup rollback");
+    }
+
+    // -- E12: the break-glass reconcile ----------------------------------
+
+    #[test]
+    fn reconcile_rolls_back_a_real_transaction_for_real() {
+        // E12: `db_reset_txn` used to clear only the flag, leaving SQLite's
+        // transaction open — later writes would join it and vanish on close.
+        // The reconcile must actually end the transaction SQLite's side.
+        let (_dir, conn) = open_baseline("reconcile-open");
+        conn.execute_batch("CREATE TABLE t (v TEXT NOT NULL)")
+            .expect("scratch table");
+        begin_tx(&conn).expect("begin");
+        conn.execute("INSERT INTO t(v) VALUES ('abandoned')", [])
+            .expect("uncommitted row");
+        assert!(!conn.is_autocommit(), "a transaction really is open");
+
+        reconcile_open_txn(&conn).expect("the rollback is the break-glass step");
+
+        assert!(
+            conn.is_autocommit(),
+            "SQLite agrees the transaction is over"
+        );
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM t"),
+            0,
+            "the abandoned rows are discarded, not silently kept"
+        );
+        // And the connection is usable again — the state the flag promised.
+        begin_tx(&conn).expect("a fresh transaction after the reconcile");
+        rollback_tx(&conn).expect("cleanup");
+    }
+
+    #[test]
+    fn reconcile_is_a_noop_when_no_transaction_is_open() {
+        // The flag can be stale in the other direction (already committed,
+        // never cleared): reconciling must succeed without doing anything.
+        let (_dir, conn) = open_baseline("reconcile-idle");
+        assert!(conn.is_autocommit());
+        reconcile_open_txn(&conn).expect("idempotent");
+        reconcile_open_txn(&conn).expect("and still idempotent");
+        conn.execute("INSERT INTO settings (key, value) VALUES ('k', 'v')", [])
+            .expect("ordinary writes still work");
+        assert!(conn.is_autocommit(), "autocommit writes commit as ever");
     }
 
     // -- The statement guard --------------------------------

@@ -187,10 +187,18 @@ export interface ExportBudget {
   /** Bytes of the photos this export would read into the archive. */
   bytes: number;
   photos: number;
-  /** False when the library is too large for one importable archive. */
+  /**
+   * False when the library cannot produce an importable archive: either the
+   * photos exceed the total cap, or a SINGLE photo exceeds
+   * [`MAX_BACKUP_PHOTO_BYTES`] — inspection refuses those on restore, so an
+   * export that included one would write a backup this app cannot read back
+   * (E6).
+   */
   ok: boolean;
   /** The cap `bytes` was measured against. */
   limit: number;
+  /** The largest single photo, so the caller can name it in the refusal. */
+  largest: number;
 }
 
 /**
@@ -198,17 +206,32 @@ export interface ExportBudget {
  * every `photos` row, so the answer needs no bytes to be read — which is the
  * point: a refused export must not first pull the whole library through IPC.
  * A row with a nonsense size counts as zero rather than poisoning the sum.
+ *
+ * The per-photo check (E6) is deliberately part of `ok`: it is decided from
+ * the same stored sizes, before a single byte is read or a destination file
+ * is touched — the moment to refuse an oversized library is BEFORE the
+ * export replaces the previous backup with an unrestorable one.
  */
 export function exportBudget(
   rows: { size_bytes: number }[],
   limit: number = MAX_EXPORT_PHOTO_BYTES,
 ): ExportBudget {
   let bytes = 0;
+  let largest = 0;
   for (const row of rows) {
     const size = Number(row.size_bytes);
-    if (Number.isFinite(size) && size > 0) bytes += size;
+    if (Number.isFinite(size) && size > 0) {
+      bytes += size;
+      if (size > largest) largest = size;
+    }
   }
-  return { bytes, photos: rows.length, ok: bytes <= limit, limit };
+  return {
+    bytes,
+    photos: rows.length,
+    ok: bytes <= limit && largest <= MAX_BACKUP_PHOTO_BYTES,
+    limit,
+    largest,
+  };
 }
 
 /** Read every data table + photo bytes into a storable backup. */
@@ -225,6 +248,14 @@ export async function readBackupData(
   }>("SELECT rel_path, size_bytes FROM photos ORDER BY id");
   const budget = exportBudget(photoRows);
   if (!budget.ok) {
+    if (budget.largest > MAX_BACKUP_PHOTO_BYTES) {
+      // E6: name the offending photo rather than the total — the total may
+      // be perfectly fine, and the user needs to know which single file makes
+      // the archive un-restorable. Nothing was read, nothing was written.
+      throw new Error(
+        `One photo in this library is ${budget.largest} bytes — over the ${mib(MAX_BACKUP_PHOTO_BYTES)} MiB a single backup photo may be, so any backup containing it would be refused on restore. Delete or replace that photo and export again; the library was not touched and no backup file was written.`,
+      );
+    }
     throw new Error(
       `This library holds about ${mib(budget.bytes)} MiB of photos, more than the ${mib(budget.limit)} MiB one backup can hold. Delete some photos (or export after removing the largest ones) and try again — the library was not touched.`,
     );
