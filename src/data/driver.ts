@@ -14,6 +14,14 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export const PHOTO_EXT_HEADER = "x-photo-ext";
 export const PHOTO_SOURCE_HEADER = "x-photo-source";
+/**
+ * Carries the import lease on the RAW photo writers (E5). A raw body IS the
+ * whole request, so these commands have no argument channel for the lease —
+ * same reason the metadata beside it rides in a header. Absent means "an
+ * ordinary app write", which Rust refuses while an import or a factory reset
+ * owns the data. Pinned against `commands.rs` by `ipc.test.ts`.
+ */
+export const PHOTO_LEASE_HEADER = "x-import-lease";
 export const BACKUP_PATH_HEADER = "x-backup-path";
 export const EXPORT_PATH_HEADER = "x-export-path";
 
@@ -76,8 +84,19 @@ export interface ShareInfo {
 /** The full driver surface — implemented by Tauri IPC and by test mocks. */
 export interface DataDriver {
   query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
-  execute(sql: string, params?: unknown[]): Promise<ExecuteOutcome>;
-  batch(statements: BatchStatement[]): Promise<void>;
+  /**
+   * One write. `lease` is the import exclusion window's lease (E5): while a
+   * window is open only calls carrying it reach the database — ordinary
+   * callers, quick capture above all, are refused in Rust. It is `undefined`
+   * in ordinary operation, which is what every non-import call passes.
+   */
+  execute(
+    sql: string,
+    params?: unknown[],
+    lease?: number,
+  ): Promise<ExecuteOutcome>;
+  /** Multi-statement write; `lease` as in [`DataDriver.execute`]. */
+  batch(statements: BatchStatement[], lease?: number): Promise<void>;
   begin(): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
@@ -95,7 +114,11 @@ export interface DataDriver {
    * array of byte numbers. Headers must be ASCII, which photo paths are
    * (strict `photos/<yyyy>/<mm>/<sha256>.<ext>` grammar).
    */
-  savePhoto(bytes: Uint8Array, ext: string): Promise<string>;
+  /**
+   * Save photo bytes; `lease` as in [`DataDriver.execute`] — the lease rides
+   * in a header because a raw body is the whole request (E5).
+   */
+  savePhoto(bytes: Uint8Array, ext: string, lease?: number): Promise<string>;
   readPhoto(relPath: string): Promise<Uint8Array>;
   /**
    * The thumbnail of a photo, addressed by the SOURCE photo's path — the
@@ -104,8 +127,13 @@ export interface DataDriver {
    * one and `savePhotoThumb` it".
    */
   readPhotoThumb(sourceRelPath: string): Promise<Uint8Array>;
-  savePhotoThumb(sourceRelPath: string, bytes: Uint8Array): Promise<string>;
-  deletePhoto(relPath: string): Promise<void>;
+  savePhotoThumb(
+    sourceRelPath: string,
+    bytes: Uint8Array,
+    lease?: number,
+  ): Promise<string>;
+  /** Delete a photo; `lease` as in [`DataDriver.execute`] (E5). */
+  deletePhoto(relPath: string, lease?: number): Promise<void>;
   /**
    * Write the DB encryption key to a file the user chose
    *
@@ -139,6 +167,24 @@ export interface DataDriver {
    * encrypted, so this needs no password and cannot leak plaintext.
    */
   safetyBackupCopy(label: string): Promise<string>;
+  /**
+   * Claim (or attach to) the import exclusion window and return its lease
+   * (E5). The window opens at the safety copy; this returns the SAME lease
+   * when it is already open, so one window spans the snapshot boundary
+   * through FK restore.
+   *
+   * Optional on the interface deliberately: only the import flow needs it,
+   * so the test drivers that never import leave it out and the call site
+   * uses `?.()`. The production driver always implements it; the returned
+   * lease is threaded into the write calls and handed to `endImportLease`
+   * when the import finishes or fails.
+   */
+  beginImportLease?(): Promise<number>;
+  /**
+   * Release the import window. A late or foreign lease is refused in Rust —
+   * it can never open the door for someone else's write.
+   */
+  endImportLease?(lease: number): Promise<void>;
   /** Start the LAN snapshot server. Idempotent while running. */
   shareStart(consentToken: string): Promise<ShareInfo>;
   shareStop(): Promise<ShareInfo>;
@@ -157,25 +203,38 @@ export interface DataDriver {
 export function createTauriDriver(): DataDriver {
   return {
     query: (sql, params) => invoke("db_query", { sql, params }),
-    execute: (sql, params) => invoke("db_execute", { sql, params }),
-    batch: (statements) => invoke("db_batch", { statements }),
+    execute: (sql, params, lease) =>
+      invoke("db_execute", { sql, params, lease }),
+    batch: (statements, lease) => invoke("db_batch", { statements, lease }),
     begin: () => invoke("db_begin"),
     commit: () => invoke("db_commit"),
     rollback: () => invoke("db_rollback"),
     resetTxn: () => invoke("db_reset_txn"),
-    savePhoto: (bytes, ext) =>
-      invoke("photo_save", bytes, { headers: { [PHOTO_EXT_HEADER]: ext } }),
+    savePhoto: (bytes, ext, lease) =>
+      invoke("photo_save", bytes, {
+        headers: {
+          [PHOTO_EXT_HEADER]: ext,
+          ...(lease === undefined
+            ? {}
+            : { [PHOTO_LEASE_HEADER]: String(lease) }),
+        },
+      }),
     readPhoto: async (relPath) =>
       new Uint8Array(await invoke<ArrayBuffer>("photo_read", { relPath })),
     readPhotoThumb: async (sourceRelPath) =>
       new Uint8Array(
         await invoke<ArrayBuffer>("photo_read_thumb", { sourceRelPath }),
       ),
-    savePhotoThumb: (sourceRelPath, bytes) =>
+    savePhotoThumb: (sourceRelPath, bytes, lease) =>
       invoke("photo_save_thumb", bytes, {
-        headers: { [PHOTO_SOURCE_HEADER]: sourceRelPath },
+        headers: {
+          [PHOTO_SOURCE_HEADER]: sourceRelPath,
+          ...(lease === undefined
+            ? {}
+            : { [PHOTO_LEASE_HEADER]: String(lease) }),
+        },
       }),
-    deletePhoto: (relPath) => invoke("photo_delete", { relPath }),
+    deletePhoto: (relPath, lease) => invoke("photo_delete", { relPath, lease }),
     saveDbKeyFile: (path) => invoke("db_key_save", { path }),
     saveBackupFile: (path, bytes) =>
       invoke("backup_save_file", bytes, {
@@ -185,9 +244,11 @@ export function createTauriDriver(): DataDriver {
       invoke("export_save_file", bytes, {
         headers: { [EXPORT_PATH_HEADER]: encodeHeaderPath(path) },
       }),
-    // Pre-import safety copy.
+    // Pre-import safety copy — opens the import exclusion window (E5).
     safetyBackupCopy: (label) => invoke("backup_safety_copy", { label }),
-    // P5 share controls — 23 commands total now, still one driver.
+    beginImportLease: () => invoke("backup_import_begin"),
+    endImportLease: (lease) => invoke("backup_import_end", { lease }),
+    // P5 share controls — 25 commands total now, still one driver.
     shareStart: (consentToken) => invoke("share_start", { consentToken }),
     shareArm: () => invoke("share_arm"),
     shareStop: () => invoke("share_stop"),

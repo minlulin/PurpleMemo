@@ -24,6 +24,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+use crate::lifecycle::Lifecycle;
+
 /// The page inlined into the binary — the phone never loads a file from disk.
 const SHARE_PAGE: &str = include_str!("../share/share.html");
 
@@ -160,6 +162,14 @@ struct Running {
 pub struct ShareState {
     inner: Mutex<Option<Running>>,
     consent: Mutex<Option<Consent>>,
+    /// The shared lifecycle barrier (E2). `arm`, `start`/`start_on` and
+    /// `publish` consult it so a listener can never come up after
+    /// `stop_for_reset` passed, nor into an import's exclusion window.
+    /// `Default` hands tests their own fresh instance in `Phase::Normal`;
+    /// production injects the same `Arc` the DB and photo commands admit
+    /// through (see `lib::boot`), which is what makes the mutual exclusion
+    /// real rather than per-state.
+    lifecycle: Arc<Lifecycle>,
 }
 
 /// A one-shot proof that the user confirmed the consent prompt.
@@ -183,8 +193,23 @@ const NO_CONSENT: &str =
     "sharing must be confirmed first: call share_arm, then share_start with the token it returns";
 
 impl ShareState {
+    /// Test constructor: a private lifecycle in `Phase::Normal`, which is
+    /// what lets the tests in this module exercise share behaviour without a
+    /// reset. Production goes through [`Self::with_lifecycle`].
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Production constructor: share the ONE barrier the rest of the backend
+    /// uses (E2). The mutual exclusion is only real if `start` consults the
+    /// same `Arc` `factory_reset` raises — a private barrier would be two
+    /// states pretending to be one.
+    pub fn with_lifecycle(lifecycle: Arc<Lifecycle>) -> Self {
+        Self {
+            lifecycle,
+            ..Self::default()
+        }
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<Running>>, String> {
@@ -207,6 +232,10 @@ impl ShareState {
     ///
     /// Issuing is not consent: only `start` consumes the token, and only once.
     pub fn arm(&self) -> Result<String, String> {
+        // No token may be minted while a reset or import owns the data (E2):
+        // an armed token is a start waiting to happen, and `stop_for_reset`
+        // already clears the ones that existed.
+        self.lifecycle.ensure_share_allowed()?;
         let token = random_hex(CONSENT_TOKEN_BYTES)?;
         let mut guard = self.consent_lock()?;
         *guard = Some(Consent {
@@ -242,6 +271,12 @@ impl ShareState {
     /// Idempotent while running: a second call returns the live link (and still
     /// needs a fresh token, because the caller asked to share again).
     pub fn start(&self, consent_token: &str) -> Result<ShareInfo, String> {
+        // Fail BEFORE spending the one-shot token (E2): a reset that already
+        // raised the barrier must not be followed by a bind, and burning
+        // consent on a refused start would only make the user confirm again
+        // for nothing. This is the fast path — the guarantee is the re-check
+        // under the server lock in [`Self::start_on`].
+        self.lifecycle.ensure_share_allowed()?;
         self.take_consent(consent_token)?;
         self.start_on("0.0.0.0")
     }
@@ -250,6 +285,16 @@ impl ShareState {
     /// consent token first; tests bind loopback via a token of their own.
     fn start_on(&self, bind: &str) -> Result<ShareInfo, String> {
         let mut guard = self.lock()?;
+        // Re-check under the server lock (E2) — the guarantee, not the fast
+        // path. `start` consumed consent before this lock, so a reset raised
+        // in that gap used to be followed by a listener binding AFTER
+        // `stop_for_reset` released this very lock, with no later check to
+        // stop it. Because `factory_reset` raises the barrier before its
+        // engine stops anything, every interleaving now ends one of two ways:
+        // this check passed before the barrier (so `stop_for_reset` runs
+        // afterwards and stops the server), or the barrier was raised first
+        // (so this refuses and nothing binds).
+        self.lifecycle.ensure_share_allowed()?;
         if let Some(r) = guard.as_ref() {
             if !r.server_is_gone() {
                 return Ok(r.info(None));
@@ -350,7 +395,13 @@ impl ShareState {
     /// Store the snapshot the LAN server will serve. Rejects anything that is
     /// not a snapshot payload, so the served bytes are always app-produced.
     /// A call while sharing is off stores nothing and reports `running: false`.
+    ///
+    /// Refuses while a reset or import owns the data (E2): a snapshot staged
+    /// after `stop_for_reset` would be one `start` away from being served,
+    /// and the share audit log must not be re-created after deletion. This
+    /// is a refusal, not the off-sharing no-op below — something is wrong.
     pub fn publish(&self, json: &str) -> Result<ShareInfo, String> {
+        self.lifecycle.ensure_share_allowed()?;
         let snapshot = parse_snapshot(json)?;
         let guard = self.lock()?;
         match guard.as_ref() {
@@ -996,6 +1047,67 @@ mod tests {
             !running.stop_for_reset().expect("stop again"),
             "idempotent after stopping a server too"
         );
+    }
+
+    #[test]
+    fn a_raised_reset_barrier_refuses_arm_start_and_publish() {
+        // E2: reset and the share are mutually exclusive through the shared
+        // lifecycle. The token is armed BEFORE the barrier, which is the
+        // interesting ordering — the barrier must stop the start, before the
+        // consent is burned, so the refusal is attributable to the reset.
+        let state = ShareState::new();
+        let token = state.arm().expect("arm while Normal");
+
+        state.lifecycle.raise_reset();
+
+        let err = state
+            .start(&token)
+            .expect_err("no listener may come up after the barrier");
+        assert!(err.contains("restart"), "must say what to do: {err}");
+        assert!(
+            state.take_consent(&token).is_ok(),
+            "the barrier refuses BEFORE taking consent — a refused start must \
+             not burn the token, or the refusal site becomes unattributable"
+        );
+        state
+            .arm()
+            .expect_err("and no fresh token may be minted behind the barrier");
+        let staged = state.publish(&payload("2026-10-20T00:00:00Z"));
+        assert!(
+            staged.is_err(),
+            "no publication after the barrier: {staged:?}"
+        );
+
+        // The under-lock re-check is where the guarantee lives: `start_on`
+        // is what a token-consuming `start` eventually reaches, and it must
+        // refuse on its own — a start admitted before `stop_for_reset`
+        // cannot bind after it.
+        state
+            .start_on("127.0.0.1")
+            .expect_err("no bind after the barrier, under the server lock");
+        assert!(
+            !state.status().expect("status").running,
+            "still nothing serving"
+        );
+    }
+
+    #[test]
+    fn an_import_window_also_refuses_the_share() {
+        // E5/E2: the import exclusion window and the listener are exclusive
+        // too — `confirmImport` stops sharing first, and nothing may re-open
+        // it from underneath the window.
+        let state = ShareState::new();
+        let lease = state.lifecycle.begin_import().expect("open window");
+
+        state.arm().expect_err("no arming mid-import");
+        state
+            .start_on("127.0.0.1")
+            .expect_err("no listener mid-import");
+
+        state.lifecycle.end_import(lease).expect("close window");
+        state
+            .arm()
+            .expect("and sharing works again after the import");
     }
 
     // -- The audit trail ------------------------------------------

@@ -8,6 +8,13 @@
 // `importBackup` that runs first has already deleted the rows the copy was
 // meant to protect; a `saveSafetyCopy` whose rejection is swallowed is a
 // warning nobody reads.
+//
+// The second rule (E5): the copy and the replacement are ONE exclusion
+// window. The lifecycle opens it at the safety copy in Rust; the frontend
+// half is that `importBackup` claims the lease before its first write, every
+// write carries it, and a `finally` releases it — so no ordinary writer can
+// commit behind the snapshot on a slow import, and a failed import cannot
+// leave the app write-blocked.
 
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -15,6 +22,10 @@ import { test } from "node:test";
 
 const SOURCE = readFileSync(
   new URL("./SettingsPage.tsx", import.meta.url),
+  "utf8",
+);
+const BACKUP_SOURCE = readFileSync(
+  new URL("../lib/backup.ts", import.meta.url),
   "utf8",
 );
 
@@ -65,4 +76,39 @@ test("the import tells the user where the previous data went", () => {
   const body = handlerSource(SOURCE, "confirmImport");
   assert.match(body, /toast\.success\(/);
   assert.match(body, /path: safetyCopy/);
+});
+
+test("the import claims its exclusion lease before writing and releases it in finally", () => {
+  // E5, frontend half: the lease is claimed before the first write — when
+  // the safety copy has already opened the window, this attaches to the same
+  // lease — and released in a `finally`, so a failed import closes the window
+  // too instead of leaving the app write-blocked until a restart.
+  const claim = BACKUP_SOURCE.indexOf("await driver.beginImportLease?.()");
+  const apply = BACKUP_SOURCE.indexOf(
+    "applyBackup(driver, parseBackupZip(bytes), lease)",
+  );
+  assert.notEqual(claim, -1, "importBackup must claim the window");
+  assert.notEqual(apply, -1, "importBackup must apply with the lease");
+  assert.ok(claim < apply, "the window must be claimed before the first write");
+  assert.match(
+    BACKUP_SOURCE,
+    /finally \{\s*if \(lease !== undefined\) \{\s*await driver\.endImportLease\?\.\(lease\)\?\.catch/,
+    "the window must be released in a finally, swallowing only the release error",
+  );
+});
+
+test("every destructive import write carries the lease", () => {
+  // The FK-off batch is the replacement itself; photo save/delete rewrite the
+  // tree. Each must pass the lease, or Rust refuses its own import write
+  // while the window is open — fail-closed, but a broken import all the same.
+  for (const pattern of [
+    /driver\.execute\("PRAGMA foreign_keys = OFF", undefined, lease\)/,
+    /driver\.batch\(statements, lease\)/,
+    // `\s*` because the FK restore is a fluent chain whose `await driver`\n    // wraps onto its own line in the source.
+    /driver\s*\.execute\("PRAGMA foreign_keys = ON", undefined, lease\)/,
+    /driver\.savePhoto\(entry\.bytes, ext, lease\)/,
+    /driver\.deletePhoto\(path, lease\)/,
+  ]) {
+    assert.match(BACKUP_SOURCE, pattern, `missing lease: ${pattern}`);
+  }
 });

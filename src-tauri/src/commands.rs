@@ -3,12 +3,21 @@
 //! `photo_read`, `photo_read_thumb`, `photo_save_thumb`, `photo_delete`,
 //! `db_key_save` (write the key to a file the user chose),
 //! `backup_save_file` (write the backup archive to a file the user chose),
-//! plus the P5 share controls — `share_arm`, `share_start`, `share_stop`,
+//! `backup_safety_copy` (open the import exclusion window and take the copy),
+//! `backup_import_begin`/`backup_import_end` (claim and release the window's
+//! lease), plus the P5 share controls — `share_arm`, `share_start`, `share_stop`,
 //! `share_status`, `share_publish`. The share commands touch no SQL: they
 //! only control the listener and the snapshot bytes the desktop published.
 //! The reset engine adds `factory_reset` (which reports per-component
 //! outcomes) and `app_restart` (a thin wrapper over Tauri's restart, called by
 //! the frontend only after a complete reset).
+//!
+//! Every WRITER — DB execute/batch/manual-txn, photo save/thumb/delete and the
+//! safety copy — first passes through the [`crate::lifecycle`] barrier and
+//! holds a ticket for its duration (E1/E5); `factory_reset` raises that
+//! barrier and drains the tickets before it deletes anything, and share
+//! start/arm/publish consult it too (E2). `db_query` and the photo reads are
+//! not writers and do not admit.
 //!
 //! Every command serializes through the single mutex-protected connection
 //! (— no pooling). UI pages never call these directly; they go through
@@ -25,7 +34,7 @@
 
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
-use std::sync::MutexGuard;
+use std::sync::{Arc, MutexGuard};
 
 use rusqlite::Connection;
 use serde_json::Value as JsonValue;
@@ -34,6 +43,7 @@ use tauri::{Manager, State};
 
 use crate::db::{self, AppState, BatchStatement, ExecuteOutcome, JsonObj};
 use crate::file_write;
+use crate::lifecycle::Lifecycle;
 use crate::photos;
 use crate::share::{ShareInfo, ShareState};
 
@@ -44,6 +54,12 @@ const EXT_HEADER: &str = "x-photo-ext";
 /// Request header carrying the SOURCE photo path on a raw `photo_save_thumb`
 /// body — the thumbnail path itself is always derived in `photos.rs`.
 const SOURCE_HEADER: &str = "x-photo-source";
+/// Request header carrying the import lease on the raw photo writers (E5).
+/// A raw body IS the whole request, so these commands have no argument
+/// channel for it — same reason the metadata beside it rides in a header.
+/// Absent means "an ordinary app write", which the lifecycle refuses while
+/// an import or reset owns the data.
+const LEASE_HEADER: &str = "x-import-lease";
 
 /// The body is returned owned so callers can move it into a
 /// `spawn_blocking` closure: an `async` command future must be `'static`,
@@ -63,6 +79,31 @@ fn header_str<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<&'a str> {
         .ok_or_else(|| format!("missing {name} header"))?
         .to_str()
         .map_err(|_| format!("{name} header is not valid ASCII"))
+}
+
+/// Present-and-valid header value, or `None` when the header is absent —
+/// for metadata that is optional by contract (the import lease).
+fn header_str_opt<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<Option<&'a str>> {
+    match request.headers().get(name) {
+        None => Ok(None),
+        Some(value) => {
+            Ok(Some(value.to_str().map_err(|_| {
+                format!("{name} header is not valid ASCII")
+            })?))
+        }
+    }
+}
+
+/// The import lease off [`LEASE_HEADER`]: `None` for an ordinary write.
+fn lease_from_header(request: &Request<'_>) -> CmdResult<Option<u64>> {
+    match header_str_opt(request, LEASE_HEADER)? {
+        None => Ok(None),
+        Some(text) => {
+            Ok(Some(text.parse::<u64>().map_err(|_| {
+                format!("{LEASE_HEADER} header must be a lease number")
+            })?))
+        }
+    }
 }
 
 /// The managed connection, guarded against use after factory reset took it.
@@ -130,9 +171,16 @@ pub fn db_query(
 #[tauri::command]
 pub fn db_execute(
     state: State<'_, AppState>,
+    lifecycle: State<'_, Arc<Lifecycle>>,
     sql: String,
     params: Option<Vec<JsonValue>>,
+    lease: Option<u64>,
 ) -> CmdResult<ExecuteOutcome> {
+    // Admit first, and declare the ticket BEFORE the connection guard: the
+    // ticket then drops after it, so when `begin_import`'s drain returns no
+    // admitted writer can still hold the connection — which is what lets the
+    // safety copy know its snapshot has no writer landing behind it (E5).
+    let _ticket = lifecycle.admit(lease)?;
     let conn = lock_conn(&state)?;
     db::execute(&conn, &sql, params.as_deref().unwrap_or(&[]))
 }
@@ -144,8 +192,17 @@ pub fn db_execute(
 /// sync command would freeze the window for seconds-to-minutes. The
 /// manual-transaction refusal is checked before dispatch, unchanged.
 #[tauri::command]
-pub async fn db_batch(app: tauri::AppHandle, statements: Vec<BatchStatement>) -> CmdResult<()> {
+pub async fn db_batch(
+    app: tauri::AppHandle,
+    statements: Vec<BatchStatement>,
+    lease: Option<u64>,
+) -> CmdResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Admitted on the blocking thread, before anything is locked — a
+        // reset or import raise that gets here first refuses the batch
+        // instead of it racing the replacement (E1/E5).
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let _ticket = lifecycle.admit(lease)?;
         let state = app.state::<AppState>();
         // The flag is checked under the connection lock, exactly as the sync
         // form did — `db_begin` takes the same lock, so the two cannot race.
@@ -174,7 +231,8 @@ pub async fn db_batch(app: tauri::AppHandle, statements: Vec<BatchStatement>) ->
 /// BEGIN one the flag never saw. `db::tests::db_query_cannot_commit_or_begin_around_the_txn_flag`
 /// is the regression that keeps it that way.
 #[tauri::command]
-pub fn db_begin(state: State<'_, AppState>) -> CmdResult<()> {
+pub fn db_begin(state: State<'_, AppState>, lifecycle: State<'_, Arc<Lifecycle>>) -> CmdResult<()> {
+    let _ticket = lifecycle.admit(None)?;
     let conn = lock_conn(&state)?;
     if state.txn_open.swap(true, Ordering::SeqCst) {
         return Err("a transaction is already open".to_string());
@@ -190,7 +248,11 @@ pub fn db_begin(state: State<'_, AppState>) -> CmdResult<()> {
 /// caller may still call [`db_rollback`]. If rollback also fails, call
 /// [`db_reset_txn`] to clear the flag; the uncommitted rows are lost.
 #[tauri::command]
-pub fn db_commit(state: State<'_, AppState>) -> CmdResult<()> {
+pub fn db_commit(
+    state: State<'_, AppState>,
+    lifecycle: State<'_, Arc<Lifecycle>>,
+) -> CmdResult<()> {
+    let _ticket = lifecycle.admit(None)?;
     let conn = lock_conn(&state)?;
     if !state.txn_open.load(Ordering::SeqCst) {
         return Err("no open transaction to commit".to_string());
@@ -202,7 +264,11 @@ pub fn db_commit(state: State<'_, AppState>) -> CmdResult<()> {
 
 /// Roll back the manual transaction.
 #[tauri::command]
-pub fn db_rollback(state: State<'_, AppState>) -> CmdResult<()> {
+pub fn db_rollback(
+    state: State<'_, AppState>,
+    lifecycle: State<'_, Arc<Lifecycle>>,
+) -> CmdResult<()> {
+    let _ticket = lifecycle.admit(None)?;
     let conn = lock_conn(&state)?;
     if !state.txn_open.load(Ordering::SeqCst) {
         return Err("no open transaction to roll back".to_string());
@@ -220,7 +286,11 @@ pub fn db_rollback(state: State<'_, AppState>) -> CmdResult<()> {
 /// from the last `db_begin` are gone; the caller is responsible for
 /// re-reading and reconciling state.
 #[tauri::command]
-pub fn db_reset_txn(state: State<'_, AppState>) -> CmdResult<()> {
+pub fn db_reset_txn(
+    state: State<'_, AppState>,
+    lifecycle: State<'_, Arc<Lifecycle>>,
+) -> CmdResult<()> {
+    let _ticket = lifecycle.admit(None)?;
     // Fail closed like every other DB command once the connection is taken
     // "every DB command refuses after a reset" is one rule, and
     // clearing a transaction flag without a connection is meaningless.
@@ -247,7 +317,14 @@ pub fn db_reset_txn(state: State<'_, AppState>) -> CmdResult<()> {
 #[tauri::command]
 pub async fn photo_save(app: tauri::AppHandle, request: Request<'_>) -> CmdResult<String> {
     let ext = header_str(&request, EXT_HEADER)?.to_string();
+    let lease = lease_from_header(&request)?;
     let bytes = raw_body(&request)?;
+    // Admit BEFORE the date lookup and hold the ticket across the blocking
+    // write (E1): a save admitted before `raise_reset` is drained before the
+    // reset deletes `photos/`, and one arriving after it is refused instead
+    // of recreating the tree the reset just removed.
+    let lifecycle = app.state::<Arc<Lifecycle>>();
+    let _ticket = lifecycle.admit(lease)?;
     let year_month: String = {
         let state = app.state::<AppState>();
         let conn = lock_conn(&state)?;
@@ -296,7 +373,12 @@ pub fn photo_read_thumb(
 #[tauri::command]
 pub async fn photo_save_thumb(app: tauri::AppHandle, request: Request<'_>) -> CmdResult<String> {
     let source = header_str(&request, SOURCE_HEADER)?.to_string();
+    let lease = lease_from_header(&request)?;
     let bytes = raw_body(&request)?;
+    // Same barrier as `photo_save` (E1) — this command used to check nothing
+    // at all and was callable after the connection had been taken.
+    let lifecycle = app.state::<Arc<Lifecycle>>();
+    let _ticket = lifecycle.admit(lease)?;
     let state = app.state::<AppState>();
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || photos::save_thumb(&data_dir, &source, &bytes))
@@ -308,7 +390,15 @@ pub async fn photo_save_thumb(app: tauri::AppHandle, request: Request<'_>) -> Cm
 /// The derived thumbnail is deleted with it; DB rows referencing the photo are
 /// the feature layer's concern (P3e).
 #[tauri::command]
-pub fn photo_delete(state: State<'_, AppState>, rel_path: String) -> CmdResult<()> {
+pub fn photo_delete(
+    state: State<'_, AppState>,
+    lifecycle: State<'_, Arc<Lifecycle>>,
+    rel_path: String,
+    lease: Option<u64>,
+) -> CmdResult<()> {
+    // An import deletes the photos its archive no longer references; anyone
+    // else is refused while a window or reset owns the data (E1/E5).
+    let _ticket = lifecycle.admit(lease)?;
     photos::delete_photo(&state.data_dir, &rel_path)
 }
 
@@ -375,27 +465,101 @@ pub async fn backup_save_file(request: Request<'_>) -> CmdResult<()> {
 /// a blocking thread because a photo library can be ~110 MiB and a
 /// synchronous command would freeze the window.
 ///
+/// This command is also where the import exclusion window OPENS (E5):
+/// `begin_import` flips the lifecycle to `Importing` and drains every writer
+/// admitted earlier, so the checkpoint below is the snapshot boundary —
+/// nothing else can commit behind it, in the DB or the photo tree, until the
+/// frontend's import releases the lease (`backup_import_end`). The copy's
+/// own work is admitted with that lease, and a failure closes the window
+/// again so a cancelled import never leaves the app write-blocked.
+///
 /// A failure is an error, never a warning: the caller aborts the import when
 /// this fails, because the whole point is that the data is about to be gone.
 #[tauri::command]
 pub async fn backup_safety_copy(app: tauri::AppHandle, label: String) -> CmdResult<String> {
     let dest = tauri::async_runtime::spawn_blocking(move || -> CmdResult<std::path::PathBuf> {
-        let state = app.state::<AppState>();
-        // The locked step: flush the WAL, then copy the database file, before
-        // any other command can take the mutex and write again.
-        let dest = {
-            let conn = lock_conn(&state)?;
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .map_err(|e| format!("could not flush the database before the safety copy: {e}"))?;
-            crate::safety_copy::copy_database_for_import(&state.data_dir, &label)?
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let lease = lifecycle.begin_import()?;
+        // RAII release: the window closes on EVERY exit from the copy — an
+        // error return or a panic unwinding through this frame — unless the
+        // copy succeeded, when it stays open for the import to attach to.
+        // A plain `if is_err` would miss the panic case, and a window left
+        // open writes-refuses the session until a restart (E5).
+        let mut window = ImportWindowGuard {
+            lifecycle: lifecycle.inner().clone(),
+            lease,
+            armed: true,
         };
-        // Outside the lock: the photo tree (~110 MiB) and README.txt.
-        crate::safety_copy::copy_photos_for_import(&state.data_dir, &dest)?;
-        Ok(dest)
+        let copied = (|| -> CmdResult<std::path::PathBuf> {
+            let _ticket = lifecycle.admit(Some(lease))?;
+            let state = app.state::<AppState>();
+            // The locked step: flush the WAL, then copy the database file, before
+            // any other command can take the mutex and write again.
+            let dest = {
+                let conn = lock_conn(&state)?;
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                    .map_err(|e| {
+                        format!("could not flush the database before the safety copy: {e}")
+                    })?;
+                crate::safety_copy::copy_database_for_import(&state.data_dir, &label)?
+            };
+            // Outside the lock: the photo tree (~110 MiB) and README.txt.
+            crate::safety_copy::copy_photos_for_import(&state.data_dir, &dest)?;
+            Ok(dest)
+        })();
+        if copied.is_ok() {
+            // The window is the import's to keep — it attaches to this lease
+            // next — so disarm the guard. On failure (and on panic, in
+            // `Drop`) the guard hands the window back instead of leaving
+            // ordinary writes refused for the rest of the session.
+            window.armed = false;
+        }
+        copied
     })
     .await
     .map_err(|e| format!("safety copy task failed: {e}"))??;
     Ok(dest.to_string_lossy().to_string())
+}
+
+/// Closes the import exclusion window on drop, unless disarmed after a
+/// successful copy — see [`backup_safety_copy`]. Best effort: a reset that
+/// preempted the copy has already moved the phase on and needs no release
+/// (and [`Lifecycle::end_import`] would refuse the stale lease anyway).
+struct ImportWindowGuard {
+    lifecycle: Arc<Lifecycle>,
+    lease: u64,
+    armed: bool,
+}
+
+impl Drop for ImportWindowGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.lifecycle.end_import(self.lease);
+        }
+    }
+}
+
+/// Claim (or attach to) the import exclusion window and return its lease.
+///
+/// Called by the confirmed import before its first write. The window may
+/// already be open — `backup_safety_copy` opened it at the snapshot
+/// boundary — in which case this returns the SAME lease: one window from
+/// the copy through `backup_import_end`, not two. Refuses while a factory
+/// reset owns the data.
+#[tauri::command]
+pub fn backup_import_begin(lifecycle: State<'_, Arc<Lifecycle>>) -> CmdResult<u64> {
+    lifecycle.begin_import()
+}
+
+/// Release the import exclusion window with the lease it was opened with.
+///
+/// A late or foreign lease is refused rather than opening the door for
+/// someone else's write; the frontend calls this in a `finally`, after FK
+/// enforcement is restored, so the window closes on success and failure
+/// alike.
+#[tauri::command]
+pub fn backup_import_end(lifecycle: State<'_, Arc<Lifecycle>>, lease: u64) -> CmdResult<()> {
+    lifecycle.end_import(lease)
 }
 
 #[tauri::command]
@@ -485,6 +649,16 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             let db_state = handle
                 .try_state::<AppState>()
                 .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+            let lifecycle = handle
+                .try_state::<Arc<Lifecycle>>()
+                .ok_or_else(|| "lifecycle state is not available — restart the app".to_string())?;
+            // E1: raise the barrier BEFORE the engine runs. This refuses every
+            // writer that arrives from now on (including post-reset photo
+            // commands, for the rest of the process) and waits out the photo
+            // and safety-copy workers already in flight — so nothing can
+            // write back into what `run_factory_reset` is about to delete,
+            // and `complete: true` cannot be followed by reappearing files.
+            lifecycle.raise_reset();
             Ok(crate::reset::run_factory_reset(
                 crate::reset::fault_injection(),
                 || share.stop_for_reset(),
@@ -564,5 +738,58 @@ mod tests {
         // The mutex is poisoned; recovery yields the inner value.
         let val = mutex.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(*val, 42);
+    }
+
+    /// E1/E5: the barrier only holds if EVERY writer goes through it — a
+    /// command that writes while bypassing `admit` could land inside the
+    /// reset's deletion or behind the import's snapshot. A source pin, the
+    /// same shape `safety_copy` uses for the locked step: it cannot prove the
+    /// barrier works (that is `lifecycle::tests`), but it stops a writer from
+    /// being added — or an existing one quietly unwired — without one.
+    #[test]
+    fn every_writer_command_admits_through_the_lifecycle() {
+        let src = include_str!("commands.rs");
+        let body_of = |name: &str| -> String {
+            let start = src
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("{name} not found — renamed?"));
+            // The next command annotation bounds the body; `factory_reset` is
+            // followed by `app_restart`, which is annotated too.
+            let end = src[start..]
+                .find("#[tauri::command]")
+                .map(|i| start + i)
+                .unwrap_or(src.len());
+            src[start..end].to_string()
+        };
+
+        for name in [
+            "db_execute",
+            "db_batch",
+            "db_begin",
+            "db_commit",
+            "db_rollback",
+            "db_reset_txn",
+            "photo_save",
+            "photo_save_thumb",
+            "photo_delete",
+        ] {
+            assert!(
+                body_of(name).contains("admit("),
+                "{name} must admit through the lifecycle barrier"
+            );
+        }
+        let copy = body_of("backup_safety_copy");
+        assert!(
+            copy.contains("begin_import("),
+            "the safety copy opens the import exclusion window (E5)"
+        );
+        assert!(
+            copy.contains("admit(Some(lease))"),
+            "the copy's own work is admitted with the window's lease"
+        );
+        assert!(
+            body_of("factory_reset").contains("raise_reset()"),
+            "factory_reset must raise the barrier before deleting anything (E1)"
+        );
     }
 }

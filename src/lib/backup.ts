@@ -666,10 +666,18 @@ function insertStatement(table: string, row: Row): BatchStatement {
  * the imported rows; FK is off only around that batch (table order is then
  * irrelevant) and restored in a finally, so a failed import rolls back and
  * never leaves the connection in FK-off mode.
+ *
+ * `lease` is the import exclusion window's lease (E5): every write below
+ * carries it, so while the window is open no OTHER writer — a quick capture,
+ * a gallery save — can commit behind the safety copy's snapshot. The window
+ * itself is claimed and released by [`createBackupRepo`]'s `importBackup`,
+ * which spans this whole function. Test drivers without the lease methods
+ * pass `undefined` and have no barrier to cross.
  */
 export async function applyBackup(
   driver: DataDriver,
   parsed: ParsedBackup,
+  lease?: number,
 ): Promise<BackupApplyResult> {
   const oldPaths = (
     await driver.query<{ rel_path: string }>("SELECT rel_path FROM photos")
@@ -701,7 +709,7 @@ export async function applyBackup(
           `Backup is missing the file for ${relPath} — import cancelled.`,
         );
       }
-      const saved = await driver.savePhoto(entry.bytes, ext);
+      const saved = await driver.savePhoto(entry.bytes, ext, lease);
       if (!oldPathSet.has(saved)) created.add(saved);
       // Backup metadata is untrusted; derive every content field from the
       // bytes even when the stored path already matches.
@@ -717,7 +725,7 @@ export async function applyBackup(
       photos: photoRows,
     };
 
-    await driver.execute("PRAGMA foreign_keys = OFF");
+    await driver.execute("PRAGMA foreign_keys = OFF", undefined, lease);
     try {
       const statements: BatchStatement[] = BACKUP_TABLES.map((table) => ({
         sql: `DELETE FROM ${table}`,
@@ -746,7 +754,7 @@ export async function applyBackup(
         sql: "INSERT INTO settings (key, value) SELECT 'import-fk-check', NULL WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)",
       });
       try {
-        await driver.batch(statements);
+        await driver.batch(statements, lease);
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
         const failed = /batch statement (\d+) failed/.exec(text);
@@ -758,20 +766,22 @@ export async function applyBackup(
         throw error;
       }
     } finally {
-      await driver.execute("PRAGMA foreign_keys = ON").catch(() => {
-        // Best-effort: FK restore failing (e.g. the connection died during
-        // the batch) is logged here but must not mask the batch error — or
-        // the import success — the caller needs to see, and must not leave
-        // the session silently FK-off. Swallowing it in `.catch` keeps the
-        // original rejection from `batch` propagating out of this `finally`.
-        console.error(
-          "[backup] failed to restore foreign_keys = ON after import",
-        );
-      });
+      await driver
+        .execute("PRAGMA foreign_keys = ON", undefined, lease)
+        .catch(() => {
+          // Best-effort: FK restore failing (e.g. the connection died during
+          // the batch) is logged here but must not mask the batch error — or
+          // the import success — the caller needs to see, and must not leave
+          // the session silently FK-off. Swallowing it in `.catch` keeps the
+          // original rejection from `batch` propagating out of this `finally`.
+          console.error(
+            "[backup] failed to restore foreign_keys = ON after import",
+          );
+        });
     }
   } catch (error) {
     for (const path of created)
-      await driver.deletePhoto(path).catch(() => undefined);
+      await driver.deletePhoto(path, lease).catch(() => undefined);
     throw error;
   }
 
@@ -788,7 +798,7 @@ export async function applyBackup(
   // leave unreferenced photo files behind", not "import is atomic".
   for (const path of oldPaths) {
     if (kept.has(path)) continue;
-    await driver.deletePhoto(path).catch(() => undefined);
+    await driver.deletePhoto(path, lease).catch(() => undefined);
   }
   return { tables: BACKUP_TABLES.length, rows, photos: photoCount };
 }
@@ -906,7 +916,21 @@ export function createBackupRepo(driver: DataDriver) {
      * bytes that get validated are exactly the bytes that get written.
      */
     async importBackup(bytes: Uint8Array): Promise<BackupApplyResult> {
-      return applyBackup(driver, parseBackupZip(bytes));
+      // The import exclusion window (E5): claim it BEFORE the first write so
+      // every write below carries the lease, and release it in `finally` so
+      // the window closes whether the import commits, fails, or throws while
+      // parsing. When the safety copy already opened the window, this
+      // attaches to the SAME lease — one window from the snapshot boundary
+      // through FK restore. `undefined` on test drivers without the lease
+      // methods: they have no barrier to hold.
+      const lease = await driver.beginImportLease?.();
+      try {
+        return await applyBackup(driver, parseBackupZip(bytes), lease);
+      } finally {
+        if (lease !== undefined) {
+          await driver.endImportLease?.(lease)?.catch(() => undefined);
+        }
+      }
     },
   };
 }

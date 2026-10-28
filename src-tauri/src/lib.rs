@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod file_write;
+mod lifecycle;
 mod navigation;
 mod photos;
 mod reset;
@@ -10,7 +11,7 @@ mod share;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
@@ -119,6 +120,8 @@ pub fn run() {
             commands::db_key_save,
             commands::backup_save_file,
             commands::backup_safety_copy,
+            commands::backup_import_begin,
+            commands::backup_import_end,
             commands::export_save_file,
             commands::share_arm,
             commands::share_start,
@@ -187,9 +190,15 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
         txn_open: AtomicBool::new(false),
         data_dir,
     });
+    // One lifecycle barrier for the whole process (E1/E2/E5): managed as a
+    // shared Arc so the share state consults the same instance the DB/photo
+    // commands admit through and `factory_reset` raises. Re-managed together
+    // on the retry path, like `AppState` above, so the pairing cannot skew.
+    let lifecycle = Arc::new(lifecycle::Lifecycle::new());
+    app.manage(lifecycle.clone());
     // LAN sharing starts OFF — it is opt-in per session and must never be
     // re-enabled silently by a restart.
-    app.manage(share::ShareState::new());
+    app.manage(share::ShareState::with_lifecycle(lifecycle));
     Ok(())
 }
 

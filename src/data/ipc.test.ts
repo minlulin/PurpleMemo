@@ -12,6 +12,7 @@ import {
   EXPORT_PATH_HEADER,
   encodeHeaderPath,
   PHOTO_EXT_HEADER,
+  PHOTO_LEASE_HEADER,
   PHOTO_SOURCE_HEADER,
 } from "./driver.ts";
 
@@ -41,14 +42,15 @@ function invokedCommands(): string[] {
 
 test("every command the driver invokes is registered in Rust", () => {
   const commands = invokedCommands();
-  // The exact surface: 21 commands, plus
-  // `factory_reset` and `app_restart` (23). Bump deliberately, with the
+  // The exact surface: 23 commands, plus `factory_reset` and
+  // `app_restart`, plus the import-lease pair (`backup_import_begin` /
+  // `backup_import_end`, E5) — 25. Bump deliberately, with the
   // change that adds the command — the count is what catches a command
   // dropped from BOTH sides at once.
   assert.equal(
     commands.length,
-    23,
-    `expected the full 23-command surface, got ${commands.length}`,
+    25,
+    `expected the full 25-command surface, got ${commands.length}`,
   );
   for (const command of commands) {
     assert.ok(
@@ -69,7 +71,11 @@ test("every command the driver invokes is registered in Rust", () => {
 });
 
 test("the raw-photo headers are the same strings on both sides", () => {
-  for (const header of [PHOTO_EXT_HEADER, PHOTO_SOURCE_HEADER]) {
+  for (const header of [
+    PHOTO_EXT_HEADER,
+    PHOTO_SOURCE_HEADER,
+    PHOTO_LEASE_HEADER,
+  ]) {
     assert.ok(
       commandsSrc.includes(`"${header}"`),
       `commands.rs does not mention the ${header} header`,
@@ -84,6 +90,10 @@ test("the raw-photo headers are the same strings on both sides", () => {
       `const SOURCE_HEADER: &str = "${PHOTO_SOURCE_HEADER}"`,
     ),
     "SOURCE_HEADER must stay in sync with driver.ts",
+  );
+  assert.ok(
+    commandsSrc.includes(`const LEASE_HEADER: &str = "${PHOTO_LEASE_HEADER}"`),
+    "LEASE_HEADER must stay in sync with driver.ts (E5)",
   );
 });
 
