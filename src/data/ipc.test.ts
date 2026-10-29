@@ -398,6 +398,29 @@ test("the LAN share cannot be started without a consent token", () => {
   );
 });
 
+test("share_stop carries the lock flag, and only the lock path sets it (D2a)", () => {
+  // The lock's stop is a different stop: it revokes an armed consent token
+  // and supersedes one an in-flight `share_start` has already spent, so no
+  // listener can bind behind the lock screen. An ordinary stop must NOT do
+  // that — a Rust test pins that a token survives it — so the distinction has
+  // to survive the IPC boundary intact, in both directions.
+  assert.match(
+    commandsSrc,
+    /#\[tauri::command\(rename_all = "camelCase"\)\]\s*pub fn share_stop\(state: State<'_, ShareState>, for_lock: Option<bool>\)/,
+    "share_stop must take for_lock and expose it camelCase",
+  );
+  assert.match(
+    commandsSrc,
+    /if for_lock\.unwrap_or\(false\)\s*\{\s*state\.stop_for_lock\(\)/,
+    "the flag must reach ShareState::stop_for_lock, not be ignored",
+  );
+  assert.match(
+    driverSrc,
+    /shareStop: \(forLock\) => invoke\("share_stop", \{ forLock: forLock === true \}\)/,
+    "the driver sends the flag the caller meant, through one invoke site",
+  );
+});
+
 test("the window label Rust focuses is the window Tauri actually creates", () => {
   // `focus_main_window` looks the window up by label. A rename in
   // tauri.conf.json would leave the second launch silently doing nothing —

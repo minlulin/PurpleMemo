@@ -203,8 +203,10 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       armCounter += 1;
       return `consent-${armCounter}`;
     },
-    async shareStop(): Promise<ShareInfo> {
-      record("shareStop", []);
+    async shareStop(forLock?: boolean): Promise<ShareInfo> {
+      // Recorded as the flag the caller actually meant, so a test can tell a
+      // lock's stop from an ordinary one without knowing about `undefined`.
+      record("shareStop", [forLock === true]);
       share = {
         running: false,
         url: null,

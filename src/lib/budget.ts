@@ -52,6 +52,18 @@ export interface DayEntry {
   created_at: string;
 }
 
+/**
+ * One day's money in and out, aggregated rather than listed (I3).
+ *
+ * The same two numbers `dayMoneyTotals` derives from a day's {@link DayEntry}
+ * rows — for a caller that only ever publishes them, the rows themselves are
+ * the waste.
+ */
+export interface DayTotals {
+  incomeCents: number;
+  expenseCents: number;
+}
+
 export interface CategoryTotal {
   category_id: number;
   total_cents: number;
@@ -692,6 +704,35 @@ export function createBudgetRepo(driver: DataDriver) {
 
     async deleteExpenseEntry(id: number): Promise<void> {
       await driver.execute("DELETE FROM expense_entries WHERE id = ?", [id]);
+    },
+
+    /**
+     * Both entry totals for one day, summed in SQL — one statement, always
+     * one row (I3).
+     *
+     * `listDayEntries` returns every row of the day, which is what the Budget
+     * page's list needs and what the 30-second LAN share publisher must not do:
+     * the snapshot publishes two numbers, so the cost of that read used to
+     * grow with the day's activity while its answer never changed size. This
+     * is that sum pushed to the database; the rows stay where a list is
+     * actually drawn.
+     */
+    async dayTotals(entryDate: string): Promise<DayTotals> {
+      const rows = await driver.query<{
+        income_cents: number;
+        expense_cents: number;
+      }>(
+        `SELECT (SELECT COALESCE(SUM(amount_cents), 0) FROM income_entries  WHERE entry_date = ?)
+                    AS income_cents,
+                (SELECT COALESCE(SUM(amount_cents), 0) FROM expense_entries WHERE entry_date = ?)
+                    AS expense_cents`,
+        [entryDate, entryDate],
+      );
+      const row = rows[0];
+      return {
+        incomeCents: row?.income_cents ?? 0,
+        expenseCents: row?.expense_cents ?? 0,
+      };
     },
 
     /** Both entry kinds for one day — the daily list view. */

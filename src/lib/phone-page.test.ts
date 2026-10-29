@@ -37,7 +37,7 @@ function sampleSnapshot() {
   return buildShareSnapshot({
     today: "2026-10-20",
     generatedAt: "2026-10-20T09:30",
-    dayEntries: [],
+    dayTotals: { incomeCents: 0, expenseCents: 0 },
     walletBalances: [{ name: "Cash", balanceCents: 12_345 }],
     receivableCents: 0,
     dueTasks: [],

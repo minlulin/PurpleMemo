@@ -657,9 +657,23 @@ pub fn share_start(state: State<'_, ShareState>, consent_token: String) -> CmdRe
 }
 
 /// Turn the LAN share off and close the listener. Idempotent.
-#[tauri::command]
-pub fn share_stop(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
-    state.stop()
+///
+/// `for_lock` is the lock path (D2a): the shell passes it when the session
+/// locks, which additionally revokes an armed consent token and supersedes
+/// one an in-flight `share_start` has already spent, so no listener can come
+/// up behind the lock screen. Leaving it off is the ordinary stop, whose
+/// token semantics a Rust test pins — stopping is not a reason to make the
+/// user confirm a prompt they may still have on screen.
+///
+/// `rename_all` keeps the Rust name snake_case while the driver sends
+/// `forLock`, same as `consentToken` on [`share_start`].
+#[tauri::command(rename_all = "camelCase")]
+pub fn share_stop(state: State<'_, ShareState>, for_lock: Option<bool>) -> CmdResult<ShareInfo> {
+    if for_lock.unwrap_or(false) {
+        state.stop_for_lock()
+    } else {
+        state.stop()
+    }
 }
 
 /// Current share state — also reports a server that stopped unexpectedly.

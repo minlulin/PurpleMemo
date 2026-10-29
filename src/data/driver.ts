@@ -187,7 +187,16 @@ export interface DataDriver {
   endImportLease?(lease: number): Promise<void>;
   /** Start the LAN snapshot server. Idempotent while running. */
   shareStart(consentToken: string): Promise<ShareInfo>;
-  shareStop(): Promise<ShareInfo>;
+  /**
+   * Stop the LAN listener. Idempotent.
+   *
+   * `forLock` is the lock path (D2a): it additionally revokes an armed
+   * consent token and supersedes one that an in-flight `shareStart` has
+   * already spent, so no listener can bind behind the lock screen. Ordinary
+   * callers omit it and keep the ordinary semantics — a stop is not a reason
+   * to make the user confirm a prompt they may still have on screen.
+   */
+  shareStop(forLock?: boolean): Promise<ShareInfo>;
   shareStatus(): Promise<ShareInfo>;
   /** Publish a freshly built snapshot payload for the LAN server to serve. */
   sharePublish(snapshotJson: string): Promise<ShareInfo>;
@@ -251,7 +260,9 @@ export function createTauriDriver(): DataDriver {
     // P5 share controls — 25 commands total now, still one driver.
     shareStart: (consentToken) => invoke("share_start", { consentToken }),
     shareArm: () => invoke("share_arm"),
-    shareStop: () => invoke("share_stop"),
+    // One `invoke` site, so the command surface this file is pinned against
+    // still lists `share_stop` once.
+    shareStop: (forLock) => invoke("share_stop", { forLock: forLock === true }),
     shareStatus: () => invoke("share_status"),
     sharePublish: (snapshotJson) => invoke("share_publish", { snapshotJson }),
   };

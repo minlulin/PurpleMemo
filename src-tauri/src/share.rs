@@ -15,7 +15,7 @@
 
 use std::io::Cursor;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -162,6 +162,15 @@ struct Running {
 pub struct ShareState {
     inner: Mutex<Option<Running>>,
     consent: Mutex<Option<Consent>>,
+    /// The lock epoch (D2a), bumped by [`Self::stop_for_lock`].
+    ///
+    /// An armed token records the epoch it was armed in, and `start` compares
+    /// it against this under the server lock before binding — so a start that
+    /// was already in flight when the shell locked can no longer bind
+    /// `0.0.0.0` behind the lock screen. Ordinary `stop` deliberately does NOT
+    /// bump it: stopping is not a reason to throw away a confirmation the user
+    /// may still have on screen, which is behaviour a Rust test pins.
+    lock_epoch: AtomicU64,
     /// The shared lifecycle barrier (E2). `arm`, `start`/`start_on` and
     /// `publish` consult it so a listener can never come up after
     /// `stop_for_reset` passed, nor into an import's exclusion window.
@@ -180,6 +189,8 @@ pub struct ShareState {
 struct Consent {
     token: String,
     granted: Instant,
+    /// The [`ShareState::lock_epoch`] this token was armed in (D2a).
+    epoch: u64,
 }
 
 /// How long a consent token stays usable. The user is confirming a dialog that
@@ -191,6 +202,12 @@ const CONSENT_TTL: Duration = Duration::from_secs(120);
 /// do, because the UI is the only thing that can obtain one.
 const NO_CONSENT: &str =
     "sharing must be confirmed first: call share_arm, then share_start with the token it returns";
+
+/// Refusal when a lock superseded the consent this start was carrying (D2a).
+/// Says what happened *and* what to do, because the caller is the UI and the
+/// user's confirmation is gone — not invalid, just spent before the lock.
+const LOCKED_DURING_START: &str =
+    "sharing ended when the app locked before this start finished: unlock and confirm sharing again to start the listener";
 
 impl ShareState {
     /// Test constructor: a private lifecycle in `Phase::Normal`, which is
@@ -241,17 +258,23 @@ impl ShareState {
         *guard = Some(Consent {
             token: token.clone(),
             granted: Instant::now(),
+            // Read inside the consent lock, so arming and a lock's revocation
+            // cannot interleave into a token stamped with the wrong epoch
+            // (D2a).
+            epoch: self.lock_epoch.load(Ordering::SeqCst),
         });
         Ok(token)
     }
 
-    /// Take the consent token if it matches and is still fresh.
+    /// Take the consent token if it matches and is still fresh, returning the
+    /// lock epoch it was armed in (D2a) so [`Self::start_with_epoch`] can
+    /// re-check it under the server lock.
     ///
     /// The token is cleared on *every* attempt, matched or not. That is the
     /// security-relevant choice: a mismatch burns the real token, so probing for
     /// a valid one costs an arming per guess instead of yielding an oracle. The
     /// cost to a legitimate user is one extra tap on "confirm".
-    fn take_consent(&self, presented: &str) -> Result<(), String> {
+    fn take_consent(&self, presented: &str) -> Result<u64, String> {
         let mut guard = self.consent_lock()?;
         let Some(consent) = guard.take() else {
             return Err(NO_CONSENT.to_string());
@@ -262,7 +285,7 @@ impl ShareState {
         if !constant_time_eq(presented, &consent.token) {
             return Err(NO_CONSENT.to_string());
         }
-        Ok(())
+        Ok(consent.epoch)
     }
 
     /// Start sharing, binding every interface so the phone can reach it.
@@ -275,26 +298,41 @@ impl ShareState {
         // raised the barrier must not be followed by a bind, and burning
         // consent on a refused start would only make the user confirm again
         // for nothing. This is the fast path — the guarantee is the re-check
-        // under the server lock in [`Self::start_on`].
+        // under the server lock in [`Self::start_with_epoch`].
         self.lifecycle.ensure_share_allowed()?;
-        self.take_consent(consent_token)?;
-        self.start_on("0.0.0.0")
+        let epoch = self.take_consent(consent_token)?;
+        self.start_with_epoch("0.0.0.0", epoch)
     }
 
-    /// Testable bind: production goes through [`Self::start`], which takes the
-    /// consent token first; tests bind loopback via a token of their own.
+    /// Testable bind without spending consent: tests bind loopback through
+    /// this, carrying whatever epoch the state is in right now.
+    #[cfg(test)]
     fn start_on(&self, bind: &str) -> Result<ShareInfo, String> {
+        self.start_with_epoch(bind, self.lock_epoch.load(Ordering::SeqCst))
+    }
+
+    /// Bind, re-checking both barriers under the server lock.
+    ///
+    /// `epoch` is the one the consent token was armed in, so this is where a
+    /// lock that landed between `take_consent` and here is seen (D2a) — the
+    /// same window, and the same fix shape, as the E2 lifecycle re-check
+    /// beside it. The fast path in [`Self::start`] cannot do this: it does
+    /// not know the epoch until the token is spent.
+    fn start_with_epoch(&self, bind: &str, epoch: u64) -> Result<ShareInfo, String> {
         let mut guard = self.lock()?;
-        // Re-check under the server lock (E2) — the guarantee, not the fast
-        // path. `start` consumed consent before this lock, so a reset raised
-        // in that gap used to be followed by a listener binding AFTER
-        // `stop_for_reset` released this very lock, with no later check to
-        // stop it. Because `factory_reset` raises the barrier before its
-        // engine stops anything, every interleaving now ends one of two ways:
-        // this check passed before the barrier (so `stop_for_reset` runs
-        // afterwards and stops the server), or the barrier was raised first
+        // Re-check under the server lock (E2 + D2a) — the guarantee, not the
+        // fast path. `start` consumed consent before this lock, so a reset or
+        // a lock raised in that gap used to be followed by a listener binding
+        // AFTER `stop_for_reset` (or `stop_for_lock`) released this very
+        // lock, with no later check to stop it. Because both raise their
+        // barrier before they stop anything, every interleaving now ends one
+        // of two ways: this check passed before the barrier (so the stop runs
+        // afterwards and reaps the server it binds), or the barrier was first
         // (so this refuses and nothing binds).
         self.lifecycle.ensure_share_allowed()?;
+        if self.lock_epoch.load(Ordering::SeqCst) != epoch {
+            return Err(LOCKED_DURING_START.to_string());
+        }
         if let Some(r) = guard.as_ref() {
             if !r.server_is_gone() {
                 return Ok(r.info(None));
@@ -351,6 +389,38 @@ impl ShareState {
             }
             None => Ok(ShareInfo::stopped(None)),
         }
+    }
+
+    /// Stop for a lock (D2a): revoke the consent token, supersede every token
+    /// armed before this moment, then reap the listener. Idempotent.
+    ///
+    /// `lockSession`'s first rule is that locking ends sharing, and an
+    /// ordinary [`Self::stop`] only half-kept it: it removed whatever was
+    /// serving *now*, while a start already in flight — consent spent, waiting
+    /// for the server lock — would go on to bind `0.0.0.0` a moment after the
+    /// shell locked. Nothing in Rust knew the shell had locked, so the token
+    /// outlived the screen that promised the listener would not.
+    ///
+    /// The order is what makes it hold. Consent and epoch are taken together,
+    /// under the consent lock, *before* the listener is touched: from that
+    /// point on every start is either carrying a superseded epoch (refused by
+    /// [`Self::start_with_epoch`] under the server lock) or has no token to
+    /// present (refused by [`Self::take_consent`]), so neither can bind while
+    /// this reaps. Arming stays possible — a token armed after the bump is
+    /// stamped with the new epoch — because the lock is a barrier for what
+    /// was already underway, not a shutdown of the share itself.
+    pub fn stop_for_lock(&self) -> Result<ShareInfo, String> {
+        {
+            let mut consent = self.consent_lock()?;
+            consent.take();
+            self.lock_epoch.fetch_add(1, Ordering::SeqCst);
+        }
+        let mut guard = self.lock()?;
+        if let Some(running) = guard.take() {
+            reap(running);
+            crate::note_share_event(ShareEvent::Stopped(None));
+        }
+        Ok(ShareInfo::stopped(None))
     }
 
     /// Stop the server AND clear any outstanding consent token — factory reset
@@ -1055,6 +1125,67 @@ mod tests {
         assert!(
             !running.stop_for_reset().expect("stop again"),
             "idempotent after stopping a server too"
+        );
+    }
+
+    #[test]
+    fn the_lock_revokes_a_token_while_an_ordinary_stop_leaves_it_alive() {
+        // D2a: the two stops differ by exactly one thing — the token. A stop
+        // is not a reason to make the user confirm a prompt they may still
+        // have on screen; a lock is the user walking away from a screen that
+        // says sharing is off. Ordinary semantics stay pinned (above).
+        let ordinary = ShareState::new();
+        let token = ordinary.arm().expect("arm");
+        ordinary.stop().expect("ordinary stop");
+        assert!(
+            ordinary.take_consent(&token).is_ok(),
+            "an ordinary stop leaves the armed token usable"
+        );
+
+        let locked = ShareState::new();
+        let token = locked.arm().expect("arm");
+        assert!(
+            !locked.stop_for_lock().expect("lock stop").running,
+            "the lock's stop reports the same stopped state"
+        );
+        assert!(
+            locked.take_consent(&token).is_err(),
+            "the lock revokes what was armed before it"
+        );
+        assert!(
+            locked
+                .take_consent(&locked.arm().expect("arm after the lock"))
+                .is_ok(),
+            "the lock is a barrier for what was underway, not a shutdown — \
+             a token armed after it starts a fresh epoch and works"
+        );
+        // Idempotent, like every other stop.
+        assert!(
+            !locked.stop_for_lock().expect("second lock stop").running,
+            "locking twice stops nothing twice"
+        );
+    }
+
+    #[test]
+    fn a_lock_between_consent_and_bind_refuses_the_start() {
+        // The interleaving D2a exists for: `start` has already spent its
+        // token, so revoking consent cannot help, and it has not yet taken the
+        // server lock. The epoch the token was armed in is re-checked under
+        // that lock, so what follows the lock is a refusal — not a bind on
+        // `0.0.0.0` behind a lock screen that says sharing is off.
+        let state = ShareState::new();
+        let token = state.arm().expect("arm");
+        let epoch = state.take_consent(&token).expect("consent spent");
+
+        state.stop_for_lock().expect("the shell locks here");
+
+        let err = state
+            .start_with_epoch("127.0.0.1", epoch)
+            .expect_err("no listener may bind behind the lock screen");
+        assert!(err.contains("locked"), "must say what happened: {err}");
+        assert!(
+            !state.status().expect("status").running,
+            "nothing was bound"
         );
     }
 

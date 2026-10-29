@@ -605,7 +605,11 @@ function AppShell() {
     shareStopEpoch.current = epoch;
     lockSession({
       lockVault: () => vaultRepo.lockVault(),
-      stopSharing: () => shareRepo.stop(),
+      // The lock's stop, not an ordinary one (D2a): it revokes a consent
+      // token the user armed before locking and supersedes one an in-flight
+      // start has already spent, so no listener can bind a moment after the
+      // shell decided sharing ends here.
+      stopSharing: () => shareRepo.stopForLock(),
       onLocked: () => {
         unlockedRef.current = false;
         setUnlocked(false);

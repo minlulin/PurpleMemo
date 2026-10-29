@@ -74,11 +74,26 @@ export function createMemoriesRepo(
       await trash.trashEntity("memory", id);
     },
 
-    /** Entries within `days` ahead of today (Upcoming, default 14). */
-    async upcoming(today = todayLocal(), days = 14): Promise<MemoryRow[]> {
+    /**
+     * Entries within `days` ahead of today (Upcoming, default 14).
+     *
+     * `limit` caps the read in SQL for the share ticker (I3), which publishes
+     * at most twenty of them — the date window alone does not bound this: a
+     * busy fortnight could hand it every memory in the library. The order is
+     * already the published order, so the first rows are unchanged.
+     */
+    async upcoming(
+      today = todayLocal(),
+      days = 14,
+      limit?: number,
+    ): Promise<MemoryRow[]> {
       return driver.query<MemoryRow>(
-        "SELECT * FROM memories WHERE memory_date > ? AND memory_date <= ? ORDER BY memory_date",
-        [today, addDays(today, days)],
+        `SELECT * FROM memories WHERE memory_date > ? AND memory_date <= ? ORDER BY memory_date${
+          limit !== undefined ? " LIMIT ?" : ""
+        }`,
+        limit !== undefined
+          ? [today, addDays(today, days), limit]
+          : [today, addDays(today, days)],
       );
     },
 

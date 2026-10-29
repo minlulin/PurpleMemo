@@ -375,6 +375,57 @@ export function createBusinessRepo(driver: DataDriver) {
       }));
     },
 
+    /**
+     * The whole open receivable figure in one aggregate (I3).
+     *
+     * `listReceivable` returns every open job with its remaining balance —
+     * rows the Receivable view draws and the LAN share publisher then threw
+     * away to publish one number, a read that grew with the job history every
+     * 30 seconds. Same arithmetic here: the per-row `Math.max(0, …)` becomes
+     * `CASE`, so a job paid past its total still contributes nothing.
+     */
+    async receivableTotal(): Promise<number> {
+      const rows = await driver.query<{ total_cents: number }>(
+        `SELECT COALESCE(SUM(CASE WHEN j.total_cents - j.paid_cents > 0
+                                 THEN j.total_cents - j.paid_cents ELSE 0 END), 0)
+                    AS total_cents
+           FROM jobs j
+          WHERE j.status = 'open'`,
+      );
+      return rows[0]?.total_cents ?? 0;
+    },
+
+    /**
+     * Open jobs whose warranty ends within `days` of `today`, soonest end
+     * first, capped in SQL (I3).
+     *
+     * The share publishes at most twenty of these, so
+     * loading every open job to filter them in JavaScript was the ticker read
+     * that grew with the whole job history. The predicate is
+     * `warrantyEndDate` — `job_date + warranty_days`, absent when the warranty
+     * is missing or non-positive — written as SQLite date arithmetic, and the
+     * caller still runs `expiringWarranties` over whatever comes back: the
+     * JavaScript check stays the exact one, and this query only has to be no
+     * narrower than it.
+     */
+    async warrantiesExpiring(
+      today: string,
+      days: number,
+      limit: number,
+    ): Promise<JobRow[]> {
+      const end = `date(job_date, '+' || warranty_days || ' days')`;
+      return driver.query<JobRow>(
+        `SELECT * FROM jobs
+          WHERE status = 'open'
+            AND warranty_days > 0
+            AND ${end} >= ?
+            AND ${end} <= ?
+          ORDER BY ${end}, job_date, id
+          LIMIT ?`,
+        [today, addDays(today, days), limit],
+      );
+    },
+
     /** Paid/closed jobs — the read-only History view. */
     async listHistory(): Promise<JobRow[]> {
       return driver.query<JobRow>(

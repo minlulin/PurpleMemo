@@ -2,7 +2,7 @@
 // flag, order), tags, birthdays (full date or month-day).
 
 import type { DataDriver } from "../data/driver.ts";
-import { todayLocal } from "./dates.ts";
+import { addDays, todayLocal } from "./dates.ts";
 import { formatDate } from "./format.ts";
 import type { Locale } from "./i18n.ts";
 import { createTrashRepo } from "./trash.ts";
@@ -355,13 +355,44 @@ export function createContactsRepo(
     },
 
     // -- Birthdays -----------------------------------------------------------------
-    /** Contacts whose birthday falls within `days` of today. */
+    /**
+     * Contacts whose birthday falls within `days` of today.
+     *
+     * The month-day window is applied in SQL (I3): the share publisher asked
+     * for this every 30 seconds and it used to read `SELECT * FROM contacts`
+     * — the whole address book — to answer with at most twenty names.
+     * `substr(birthday, -5)` normalises both stored shapes (`MM-DD` and
+     * `yyyy-MM-dd`) to the month-day the range compares, and the range wraps
+     * the year when the window reaches into next January.
+     *
+     * The window is a **superset** of {@link upcomingBirthday}: the exact,
+     * year-aware predicate still runs here over the rows that come back, so a
+     * leap-day or malformed date the calendar arithmetic cannot place is
+     * dropped rather than published. `ORDER BY name` matches `listContacts`,
+     * which is what kept this list's order stable before it had a query of its
+     * own.
+     */
     async upcomingBirthdays(
       days = 14,
       today = todayLocal(),
+      limit?: number,
     ): Promise<ContactRow[]> {
-      const all = await this.listContacts();
-      return all.filter(
+      const startMmdd = today.slice(5);
+      const endMmdd = addDays(today, days).slice(5);
+      const mmdd = "substr(birthday, -5)";
+      const window =
+        startMmdd <= endMmdd
+          ? `${mmdd} >= ? AND ${mmdd} <= ?`
+          : `(${mmdd} >= ? OR ${mmdd} <= ?)`;
+      const rows = await driver.query<ContactRow>(
+        `SELECT * FROM contacts
+          WHERE birthday IS NOT NULL AND ${window}
+          ORDER BY name${limit !== undefined ? " LIMIT ?" : ""}`,
+        limit !== undefined
+          ? [startMmdd, endMmdd, limit]
+          : [startMmdd, endMmdd],
+      );
+      return rows.filter(
         (c) => c.birthday !== null && upcomingBirthday(c.birthday, today, days),
       );
     },

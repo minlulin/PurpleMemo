@@ -223,11 +223,20 @@ export function createTasksRepo(
       await trash.trashEntity("task", id);
     },
 
-    /** Open tasks due on/before today — the dashboard's due list. */
-    async dueTasks(today = todayLocal()): Promise<TaskRow[]> {
+    /**
+     * Open tasks due on/before today — the dashboard's due list.
+     *
+     * `limit` caps the read in SQL for a caller that publishes a bounded list
+     * (the LAN share ticker, I3); the dashboard's own list leaves it unset and
+     * still sees every due task. The order is already the display order, so a
+     * capped read keeps the same first rows the uncapped one would.
+     */
+    async dueTasks(today = todayLocal(), limit?: number): Promise<TaskRow[]> {
       return driver.query<TaskRow>(
-        "SELECT * FROM tasks WHERE done = 0 AND due_date IS NOT NULL AND due_date <= ? ORDER BY due_date, id",
-        [today],
+        `SELECT * FROM tasks WHERE done = 0 AND due_date IS NOT NULL AND due_date <= ? ORDER BY due_date, id${
+          limit !== undefined ? " LIMIT ?" : ""
+        }`,
+        limit !== undefined ? [today, limit] : [today],
       );
     },
 
@@ -285,11 +294,20 @@ export function createTasksRepo(
       await driver.execute("DELETE FROM reminders WHERE id = ?", [id]);
     },
 
-    /** Reminders due now — the notification poll. */
-    async dueReminders(now: string): Promise<ReminderRow[]> {
+    /**
+     * Reminders due now — the notification poll.
+     *
+     * The poll must see every one of them (a missed reminder is the bug it
+     * exists to prevent), so `limit` is only for the share ticker, which
+     * publishes a bounded list and otherwise transferred every overdue
+     * reminder every 30 seconds (I3).
+     */
+    async dueReminders(now: string, limit?: number): Promise<ReminderRow[]> {
       return driver.query<ReminderRow>(
-        "SELECT * FROM reminders WHERE fired = 0 AND remind_at <= ? ORDER BY remind_at",
-        [now],
+        `SELECT * FROM reminders WHERE fired = 0 AND remind_at <= ? ORDER BY remind_at${
+          limit !== undefined ? " LIMIT ?" : ""
+        }`,
+        limit !== undefined ? [now, limit] : [now],
       );
     },
 
