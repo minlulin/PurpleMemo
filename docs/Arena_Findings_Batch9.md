@@ -246,3 +246,69 @@
 - **Schema-to-`types.ts` column parity across all 27 `*Row` interfaces (`types.ts`, `schema.rs`):** Every column name, scalar type (`number` vs `string`), nullability (`| null`), and string-literal union (`RecurringFrequency`, `JobStatus`, `LoanDirection`, `TaskRow["repeat"]`, `InboxTarget`, `InboxStatus`, `LinkableEntityType`, `LinkRow["kind"]`, `ReminderRow["repeat"]`, `ContactChannelKind`, `PhotoRefEntity`) in `src/lib/types.ts` agrees with `BASELINE_SQL` and `MIGRATION_1_2`..`MIGRATION_4_5` in `src-tauri/src/schema.rs`. All `SELECT *` repository queries match their declared `*Row` interfaces (only the non-`*` partial projections in `J1` diverge).
 - **`createKeyedMutex` internal promise-chain mechanics (`mutex.ts:12–40`, `mutex.test.ts`):** Same-key callers serialize strictly in arrival order, distinct keys run concurrently without head-of-line blocking, synchronous throws and asynchronous rejections inside `fn()` settle the internal gate cleanly without poisoning subsequent waiters (`.then(() => undefined, () => undefined)` at `:25–28`), and `if (tails.get(key) === mine) tails.delete(key)` (`:35`) cleans up idle keys without evicting a queued successor's tail.
 - **Terminal `ResetResultScreen` isolation & Batch 7/8 fix-wave verification (`driver.ts`, `navigation.ts`, `App.tsx`, `reset-gate.test.ts`):** `PageKey` (`navigation.ts:16–34`) contains no reset route; `resetAttempt` lives in top-level `App.tsx` state (`:311`), gates `workspaceLive` off (`:667`), outranks `shellStage` (`:791–792`), and follows Batch 7 Decision 1 + `H3`/`H6`/`H8` pins (`reset-gate.test.ts`). Batch 8 fixes (`I1`–`I4`, `D1(a)`, `D2(a)` `shareStop(true)` lock epoch, and `3c0add5` G9 search date guard) are intact with no regressions.
+
+## Resolutions (decided by Muus, delegated by the owner 2026-10-29)
+
+The DECISION items above are genuine behaviour choices. Both are settled
+here; the original DECISION wording is preserved above.
+
+- **Decision 1 — option (1): align `mock-driver.ts` with Rust's path
+  grammar.** `savePhoto` computes a real SHA-256 (or deterministic 64-hex
+  content hash) and returns `photos/<yyyy>/<mm>/<64-hex>.<ext>` with ext
+  validated; `thumbPath` returns `<dir><hash>.thumb.jpg`, rejecting
+  malformed paths the way `photos::validate_rel_path` does; the six
+  pinned path strings in `mock-driver.test.ts` and `backup.test.ts` are
+  updated. Rationale: J4's entire thesis is that mock/real divergence
+  hides bugs — keeping a knowingly-wrong path grammar while fixing the
+  other fidelity gaps would be incoherent, and `backup.test.ts`
+  monkey-patching `savePhoto` to test a real SHA-256 path is already
+  evidence the stub gets in the way. The stale pre-P3-16 JSDoc is fixed
+  as part of it.
+- **Decision 2 — option (2): keep the 25-command surface as mandated.**
+  Rationale: `commands.rs` records the surface as intentionally retained
+  ("mandated"), and the mandate's origin is not established — removing it
+  is the riskier change. Instead fix the misleading contracts (J7): the
+  `resetTxn()` JSDoc gets the post-E12 ROLLBACK-gated truth, and
+  `DataDriver.begin` documents the interleaving hazard explicitly
+  (`AppState.conn` is not held across IPC awaits, so concurrent
+  `execute` writes join an open manual transaction). Removal stays a
+  clean follow-up once the mandate is understood.
+
+## Fix-wave note (5 commits, order 1→2→3→4→5)
+
+- Commit 1 = J1 (projection types: narrow `NoteTitleRow`/snippet types
+  in `types.ts`; type `listNoteTitles` + remove the dead title-only
+  aliases in `notes.ts`; `projection: "full"` in `EntityPicker.tsx`;
+  `useState<NoteTitleRow[]>` in `GalleryPage.tsx`; narrow the
+  `PayableRow` cast in `business.ts`; tests).
+- Commit 2 = J2 + J7 + D2(2) (`driver.ts` contract: `encodeHeaderPath`
+  escapes `0x20`, photo headers validated/percent-encoded before
+  `Headers`; `resetTxn()` JSDoc corrected to the post-E12 truth;
+  `safetyBackupCopy` documents its `Phase::Importing` side effect;
+  `begin` documents the interleave hazard; `contactsRepo.addChannel`
+  stops the cross-IPC `last_insert_rowid()` race; `file_write.rs` test
+  helper + `ipc.test.ts` updated).
+- Commit 3 = J3 (mutex coverage: `job:${id}` in `deleteJob`,
+  `payable:${id}` in `deletePayable`, `recurring:${id}` in
+  `updateRecurring`/`deleteRecurring`/`setRecurringActive`; a
+  repository-level `KeyedMutex` for `createTrashRepo` serializing
+  `trashEntity`/`restore`/`removePermanently`/`purge`, with an unlocked
+  internal `purgeUnlocked()` for the re-entrant callers).
+- Commit 4 = J4 + D1(1) (mock fidelity: lease threading +
+  `beginImportLease`/`endImportLease` + `Importing`-phase refusal;
+  one-shot armed consent tokens cleared on `shareStart` and
+  `shareStop(true)`; `parse_snapshot` validation + no-op stopped
+  `sharePublish`; thumbnails in a `Map` keyed by `sourceRelPath`;
+  `txnOpen` tracking; `MockScript.error` widened to `Error | string`;
+  SHA-256 photo paths + `.thumb.jpg` per D1(1); update the six pinned
+  path assertions).
+- Commit 5 = J5 + J6 + J8 (composition: `createShareRepo(driver, repos?)`
+  accepting `app.ts` singletons; `vaultRepo.lockVault()` wired into the
+  `importBackup` path regardless of caller; `errText` taught
+  `MessageKeyError` + non-`"[object Object]"` + non-empty fallback with
+  a new `src/lib/errors.test.ts`; `navigation.ts` either routed through
+  `entityTarget` or pruned to `App.tsx`'s actual state model with
+  `navigation.test.ts`; `types.ts` header comment corrected).
+
+Commits 1 and 5 share `types.ts`, commits 1 and 3 share `business.ts`
+(order 1→3→5 as listed). `npm run verify` green before each commit.
