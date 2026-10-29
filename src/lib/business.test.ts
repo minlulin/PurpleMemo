@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
@@ -600,6 +601,23 @@ test("updatePayable: the amount may still change while it is unpaid", async () =
   const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
   assert.match(sql, /amount_cents = \?/);
   assert.deepEqual(params, [50_000, 9]);
+});
+
+test("updatePayable: the paid-guard reads one column, typed to the projection (J1)", async () => {
+  const driver = createMockDriver({ results: [[{ paid: 0 }]] });
+  await createBusinessRepo(driver).updatePayable(9, { amountCents: 50_000 });
+  const guard = first(driver.callsTo("query"), "paid-guard read");
+  assert.equal(guard.args[0], "SELECT paid FROM payables WHERE id = ?");
+  assert.deepEqual(guard.args[1], [9]);
+  // The row is a ONE-column projection, and the cast must say so (a source
+  // pin: `rows[0]?.paid` compiles under either type, so tsc cannot catch a
+  // regression to the full-row cast that left seven columns undefined).
+  const src = readFileSync(new URL("./business.ts", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /query<Pick<PayableRow, "paid">>/,
+    "the guard must read `paid` as a one-column projection, not a full PayableRow",
+  );
 });
 
 test("updatePayable: a non-positive amount is refused", async () => {

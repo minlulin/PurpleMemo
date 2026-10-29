@@ -5,7 +5,12 @@ import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import { searchNotes } from "./search.ts";
 import { createTrashRepo } from "./trash.ts";
-import type { CollectionRow, NoteRow } from "./types.ts";
+import type {
+  CollectionRow,
+  NoteListRow,
+  NoteRow,
+  NoteTitleRow,
+} from "./types.ts";
 
 export interface NoteInput {
   title: string;
@@ -23,14 +28,14 @@ export interface NoteFilter {
    * rest. Browsing leaves it unset.
    */
   limit?: number;
-  projection?: "full" | "list" | "title" | "titles" | "snippet" | "summary";
-  titleOnly?: boolean;
-  titlesOnly?: boolean;
-  onlyTitles?: boolean;
-  titles?: boolean;
-  fields?: string | string[];
-  columns?: string | string[];
-  select?: string;
+  /**
+   * Column set — which decides the row TYPE as much as the SQL (J1): `"full"`
+   * selects every column and the whole body; `"list"` (the default) selects
+   * every column but truncates `content` in SQL to a preview prefix — enough
+   * to excerpt. The two-column `"title"` projection lives on its own typed
+   * method, `listNoteTitles`, which answers {@link NoteTitleRow}.
+   */
+  projection?: "full" | "list";
 }
 
 /**
@@ -87,29 +92,35 @@ export function noteExcerpt(
 
 const LIST_CONTENT_CHARS = 200;
 
-function resolveNoteProjection(filter: NoteFilter): "full" | "list" | "title" {
-  if (filter.projection) {
-    const p = String(filter.projection).toLowerCase();
-    if (p.startsWith("title")) return "title";
-    if (p === "full" || p === "all" || p === "*") return "full";
-    return "list";
+/**
+ * The one place the browse SELECT is assembled, so the three projections
+ * cannot drift apart: same WHERE, same ORDER BY, same optional cap — only the
+ * column list differs, and it alone decides the row type each caller gets (J1).
+ */
+function noteListQuery(
+  filter: NoteFilter,
+  projection: "full" | "list" | "title",
+): { sql: string; params: unknown[] } {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (filter.collectionId !== undefined) {
+    where.push("collection_id = ?");
+    params.push(filter.collectionId);
   }
-  if (
-    filter.titleOnly ||
-    filter.titlesOnly ||
-    filter.onlyTitles ||
-    filter.titles
-  ) {
-    return "title";
-  }
-  const raw = filter.fields ?? filter.columns ?? filter.select;
-  if (raw !== undefined) {
-    const str = Array.isArray(raw) ? raw.join(",") : String(raw);
-    if (/title/i.test(str) && !/content|tags|collection/i.test(str)) {
-      return "title";
-    }
-  }
-  return "list";
+  if (!filter.includeArchived) where.push("archived = 0");
+  const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
+  const limit = filter.limit !== undefined ? " LIMIT ?" : "";
+  if (filter.limit !== undefined) params.push(filter.limit);
+  const columns =
+    projection === "full"
+      ? "*"
+      : projection === "title"
+        ? "id, title"
+        : `id, title, substr(content, 1, ${LIST_CONTENT_CHARS}) AS content, tags, collection_id, pinned, archived, created_at, updated_at`;
+  return {
+    sql: `SELECT ${columns} FROM notes${clause} ORDER BY pinned DESC, updated_at DESC, id DESC${limit}`,
+    params,
+  };
 }
 
 export function createNotesRepo(
@@ -147,60 +158,31 @@ export function createNotesRepo(
       ]);
     },
 
-    async listNotes(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      const projection = resolveNoteProjection(filter);
-      const where: string[] = [];
-      const params: unknown[] = [];
-      if (filter.collectionId !== undefined) {
-        where.push("collection_id = ?");
-        params.push(filter.collectionId);
-      }
-      if (!filter.includeArchived) where.push("archived = 0");
-      const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
-      const limit = filter.limit !== undefined ? " LIMIT ?" : "";
-      if (filter.limit !== undefined) params.push(filter.limit);
-      const columns =
-        projection === "full"
-          ? "*"
-          : projection === "title"
-            ? "id, title"
-            : `id, title, substr(content, 1, ${LIST_CONTENT_CHARS}) AS content, tags, collection_id, pinned, archived, created_at, updated_at`;
-      return driver.query<NoteRow>(
-        `SELECT ${columns} FROM notes${clause} ORDER BY pinned DESC, updated_at DESC, id DESC${limit}`,
-        params,
+    /**
+     * The browse list, answering complete rows. The default `"list"`
+     * projection hands back a 200-char `content` PREVIEW, excerpted straight
+     * from the row; ask for `"full"` when the body itself is needed — an
+     * in-memory search over `content`, an editor. The two-column
+     * `"title"` projection is deliberately NOT reachable here: it answers a
+     * narrower type, so it lives on `listNoteTitles` (J1).
+     */
+    async listNotes(filter: NoteFilter = {}): Promise<NoteListRow[]> {
+      const { sql, params } = noteListQuery(
+        filter,
+        filter.projection ?? "list",
       );
+      return driver.query<NoteListRow>(sql, params);
     },
 
-    async listNoteTitles(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-
-    async listNotesTitles(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listNotesTitleOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listNotesTitlesOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listTitleNotes(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listTitleOnlyNotes(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listNoteTitleOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listTitles(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listTitlesOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
-    },
-    async listTitleOnly(filter: NoteFilter = {}): Promise<NoteRow[]> {
-      return this.listNotes({ ...filter, projection: "title" });
+    /**
+     * The `id, title` projection, for the picker lists that render a label
+     * and nothing else. Typed {@link NoteTitleRow} — the other seven
+     * `NoteRow` columns are ABSENT at runtime, and this type is what makes
+     * reading one a compile error instead of a `TypeError` (J1).
+     */
+    async listNoteTitles(filter: NoteFilter = {}): Promise<NoteTitleRow[]> {
+      const { sql, params } = noteListQuery(filter, "title");
+      return driver.query<NoteTitleRow>(sql, params);
     },
 
     async getNote(id: number): Promise<NoteRow | undefined> {

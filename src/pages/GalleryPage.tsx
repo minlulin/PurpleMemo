@@ -39,7 +39,7 @@ import { makeThumbnail } from "../lib/thumbs.ts";
 import type {
   JobRow,
   MemoryRow,
-  NoteRow,
+  NoteTitleRow,
   PhotoRefEntity,
   PhotoRefRow,
   PhotoRow,
@@ -78,7 +78,7 @@ export default function GalleryPage() {
   const fullReqRef = useRef(0);
   const [selected, setSelected] = useState<PhotoRow | null>(null);
   const [selectedRefs, setSelectedRefs] = useState<PhotoRefRow[]>([]);
-  const [notes, setNotes] = useState<NoteRow[]>([]);
+  const [notes, setNotes] = useState<NoteTitleRow[]>([]);
   const [memories, setMemories] = useState<MemoryRow[]>([]);
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [linkDraft, setLinkDraft] = useState<{
@@ -112,7 +112,8 @@ export default function GalleryPage() {
   const loadPickerLists = useCallback(async (isCancelled?: () => boolean) => {
     try {
       const [ns, ms, js] = await Promise.all([
-        // title-only query: notesRepo.listNotes({ projection: "title" })
+        // id + title only — `listNoteTitles` answers `NoteTitleRow[]`, so the
+        // dropdown can never read a column this projection omits (J1).
         notesRepo.listNoteTitles(),
         memoriesRepo.listMemories(),
         businessRepo.listJobs(),

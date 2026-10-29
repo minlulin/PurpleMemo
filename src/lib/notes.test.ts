@@ -2,6 +2,7 @@
 // Runs under `node --test` with Node's type-stripping — no JSX, `.ts` imports only.
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
@@ -12,7 +13,7 @@ import type {
   Queryable,
 } from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
-import { first } from "../test-utils.ts";
+import { at, first } from "../test-utils.ts";
 import { createNotesRepo, EXCERPT_MAX_CHARS, noteExcerpt } from "./notes.ts";
 
 test("the repo forwards the collection filter to the FTS search (P2-13)", async () => {
@@ -236,5 +237,117 @@ test("a deleted collection's name stops matching in note search (P3-4)", async (
     matches("Retired"),
     0,
     "the deleted collection's name must be retired from notes_fts.folder",
+  );
+});
+
+// -- Projection typing (J1) ---------------------------------------------------
+// `driver.query<T>` is an unchecked cast, so the row TYPE a projection
+// answers is a contract pinned here from both ends: the SQL the repo builds
+// (mock driver) and the columns SQLite actually returns (real DB). The old
+// surface typed every projection `NoteRow`, so a two-column title row read as
+// a full row lost seven columns to `undefined` — and the default list
+// projection's 200-char `content` prefix reached the link picker, whose
+// in-memory search silently missed every hit past character 200.
+
+test("listNoteTitles selects id+title only, and its rows carry nothing else (J1)", async () => {
+  const mock = createMockDriver();
+  const notes = createNotesRepo(mock);
+  await notes.listNoteTitles({ collectionId: 4, limit: 20 });
+  const call = first(mock.callsTo("query"), "title read");
+  assert.equal(
+    call.args[0],
+    "SELECT id, title FROM notes WHERE collection_id = ? AND archived = 0 ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?",
+    "the title projection must select exactly id, title, through the same filter surface",
+  );
+  assert.deepEqual(call.args[1], [4, 20]);
+
+  // Against real SQLite the row really IS two columns. (`node:sqlite`
+  // answers null-prototype rows, so compare through plain-object spreads —
+  // the pin is about WHICH columns exist, not about prototypes.)
+  const real = createNotesRepo(sqliteDriver());
+  await real.createNote({ title: "Groceries", content: "milk, eggs" });
+  const rows = await real.listNoteTitles();
+  assert.deepEqual(
+    rows.map((r) => ({ ...r })),
+    [{ id: 1, title: "Groceries" }],
+  );
+});
+
+test("the default projection previews content; 'full' asks for the body (J1)", async () => {
+  const mock = createMockDriver();
+  const notes = createNotesRepo(mock);
+
+  await notes.listNotes({ includeArchived: true });
+  const listCall = first(mock.callsTo("query"), "list read");
+  assert.match(
+    listCall.args[0] as string,
+    /substr\(content, 1, 200\) AS content/,
+    "the default 'list' projection must stay the 200-char preview",
+  );
+
+  await notes.listNotes({ includeArchived: true, projection: "full" });
+  const fullCall = at(mock.callsTo("query"), 1, "full read");
+  assert.equal(
+    fullCall.args[0],
+    "SELECT * FROM notes ORDER BY pinned DESC, updated_at DESC, id DESC",
+    "projection 'full' must select every column, untruncated",
+  );
+});
+
+test("listNoteTitles is typed NoteTitleRow[], and the nine dead title aliases are gone (J1)", async () => {
+  // A source pin, because tsc alone cannot catch the regression:
+  // `NoteRow[]` is ASSIGNABLE to `NoteTitleRow[]`, so widening the return
+  // type would still compile everywhere while putting the seven absent
+  // columns back on the row.
+  const src = readFileSync(new URL("./notes.ts", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /listNoteTitles\(filter: NoteFilter = \{\}\): Promise<NoteTitleRow\[\]>/,
+    "listNoteTitles must answer NoteTitleRow[], never the full NoteRow",
+  );
+
+  const repo = createNotesRepo(createMockDriver()) as unknown as Record<
+    string,
+    unknown
+  >;
+  for (const dead of [
+    "listNotesTitles",
+    "listNotesTitleOnly",
+    "listNotesTitlesOnly",
+    "listTitleNotes",
+    "listTitleOnlyNotes",
+    "listNoteTitleOnly",
+    "listTitles",
+    "listTitlesOnly",
+    "listTitleOnly",
+  ]) {
+    assert.equal(
+      repo[dead],
+      undefined,
+      `${dead} must be gone: listNoteTitles is the one title-only entry`,
+    );
+  }
+  assert.equal(typeof repo.listNoteTitles, "function");
+});
+
+test("the picker searches FULL bodies; the gallery list is NoteTitleRow[] (J1)", () => {
+  const picker = readFileSync(
+    new URL("../components/EntityPicker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    picker,
+    /listNotes\(\{ includeArchived: true, projection: "full" \}\)/,
+    "EntityPicker matches note.content in memory — the list projection's 200-char prefix hid every hit past it",
+  );
+
+  const gallery = readFileSync(
+    new URL("../pages/GalleryPage.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    gallery,
+    /useState<NoteTitleRow\[\]>\(\[\]\)/,
+    "the gallery's picker list holds id+title rows; typing them NoteRow[] made seven absent columns look readable",
   );
 });

@@ -20,6 +20,23 @@ export interface NoteRow {
   updated_at: string;
 }
 
+/**
+ * The `"title"` projection (`listNoteTitles`): SQL selects only `id, title`,
+ * so the other seven `NoteRow` columns are ABSENT at runtime — reading
+ * `row.content` off one is a `TypeError`. Typed separately so the compiler
+ * refuses exactly that (J1).
+ */
+export type NoteTitleRow = Pick<NoteRow, "id" | "title">;
+
+/**
+ * The `"list"` projection (`listNotes`' default): every column, but `content`
+ * is cut by SQL to a 200-character prefix — enough for the 140-char excerpt
+ * every list view renders, never the stored body. Structurally a `NoteRow`
+ * (the type system cannot express "truncated"), so this alias names the
+ * contract instead: read a body through `getNote`, never off a list row (J1).
+ */
+export type NoteListRow = NoteRow;
+
 export interface JournalEntryRow {
   id: number;
   entry_date: string; // yyyy-mm-dd, UNIQUE — one entry per calendar day

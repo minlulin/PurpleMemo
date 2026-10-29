@@ -564,7 +564,9 @@ export function createBusinessRepo(driver: DataDriver) {
           if (fields.amountCents <= 0) {
             throw new Error("A payable amount must be greater than zero.");
           }
-          const rows = await driver.query<PayableRow>(
+          // Only the guard column is selected — typed to the projection, not
+          // the full 8-column row (J1).
+          const rows = await driver.query<Pick<PayableRow, "paid">>(
             "SELECT paid FROM payables WHERE id = ?",
             [id],
           );

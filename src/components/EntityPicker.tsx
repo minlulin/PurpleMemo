@@ -72,7 +72,10 @@ export function EntityPicker(p: EntityPickerProps) {
     (async () => {
       try {
         const [noteRows, taskRows, contactRows] = await Promise.all([
-          notesRepo.listNotes({ includeArchived: true }),
+          // "full", not the default "list" projection: the picker matches the
+          // query against `note.content` IN MEMORY, so the list projection's
+          // 200-char SQL prefix would hide every hit past it (J1).
+          notesRepo.listNotes({ includeArchived: true, projection: "full" }),
           tasksRepo.listTasks(true),
           contactsRepo.listContacts(),
         ]);
