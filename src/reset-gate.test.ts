@@ -12,8 +12,11 @@
 //      screen, which renders solely when `shouldRestart` (complete: true) —
 //      a blocked reset NEVER restarts (owner decision);
 //   3. the shell holds the finished attempt in top-level state and the
-//      terminal screen outranks every workspace stage — after any attempt
-//      there is no path back into the workspace.
+//      terminal screen outranks every workspace stage while it does — with
+//      the workspace's pollers, idle lock and shortcuts gated off behind it.
+//      "Retry reset" deliberately drops the attempt and returns to Settings'
+//      Danger zone (owner decision D1); it is not a second path to the
+//      engine, and it is never a restart.
 //
 // `lib/reset.test.ts` pins the pure decisions; this file pins the wiring that
 // `node --test` cannot mount.
@@ -218,14 +221,62 @@ test("appRestart() appears only behind the complete-check", () => {
 test("the shell holds the attempt in top-level state; the terminal screen outranks the workspace", () => {
   // Top-level state, not navigation state the user could reverse.
   assert.match(SHELL, /useState<ResetAttempt \| null>\(null\)/);
-  assert.match(SHELL, /onResetFinished=\{setResetAttempt\}/);
-  // Rendered BEFORE the boot/lock stage branches: after any attempt the
-  // database connection is closed, so no workspace screen may render again.
+  // Through the shell's handler, not the raw setter: holding the attempt is
+  // where the vault keys are dropped and the shell's modals closed (H3), and
+  // where a throw is probed against the still-live database before it may be
+  // terminal at all (H6).
+  assert.match(SHELL, /onResetFinished=\{handleResetFinished\}/);
+  // Rendered BEFORE the boot/lock stage branches, so while an attempt is held
+  // no workspace screen can render — H3 gates the workspace off behind it.
   const screen = SHELL.indexOf("if (resetAttempt !== null)");
   const booting = SHELL.indexOf('if (stage === "booting")');
   assert.ok(screen !== -1 && booting !== -1 && screen < booting);
-  // "Retry reset" drops the outcome and returns to the workspace's
-  // acknowledgement state — not to a restart.
-  assert.match(SHELL, /onRetry=\{\(\) => setResetAttempt\(null\)\}/);
+  // "Retry reset" drops the attempt and returns to Settings' Danger zone over
+  // the (possibly closed) database — D1's decision, kept out of the result
+  // screen so the ack + ConfirmButton gate stays single-sited — and it is not
+  // a restart.
+  assert.match(SHELL, /onRetry=\{retryReset\}/);
+  const retry = handlerSource(SHELL, "retryReset");
+  assert.match(
+    retry,
+    /setResetAttempt\(null\);\s*setPage\("settings"\);/,
+    "the retry must drop the attempt and land on Settings' Danger zone",
+  );
   assert.doesNotMatch(SHELL, /appRestart/);
+});
+
+test("a throw only reaches the terminal screen when the database is gone (H6)", () => {
+  const body = handlerSource(SHELL, "handleResetFinished");
+  // The probe runs first and only for a throw-shaped attempt: an engine
+  // report always closed the database, while an abort where a read still
+  // answers deleted and closed nothing (H6) — so evicting the user onto a
+  // screen that claims a closed connection would be false, and its "close
+  // Purple Memo" advice would hide the window to the tray instead of quitting.
+  const gate = body.indexOf('attempt.kind === "ipc-error"');
+  const probe = body.indexOf("await databaseStillOpen()");
+  const hold = body.indexOf("setResetAttempt(attempt)");
+  assert.notEqual(gate, -1, "the probe must be gated on a thrown attempt");
+  assert.notEqual(
+    probe,
+    -1,
+    "the shell must probe the database before holding the attempt",
+  );
+  assert.ok(gate < probe, "the kind check must come before the probe");
+  assert.ok(
+    probe < hold,
+    "the attempt may only be held once the probe has failed",
+  );
+  // The session survives the abort: the vault lock sits on the other side of
+  // the probe, so an abort that deleted nothing keeps its keys usable.
+  assert.ok(
+    body.indexOf("vaultRepo.lockVault()") > probe,
+    "the vault may only be locked when the attempt is actually held",
+  );
+  // And every workspace effect keys off the held attempt for as long as one
+  // is held (H3) — pollers, idle auto-lock and the global shortcuts.
+  assert.match(
+    SHELL,
+    /const workspaceLive = unlocked && resetAttempt === null;/,
+    "the workspace must be gated off while the terminal screen owns the window",
+  );
 });

@@ -179,6 +179,14 @@ function rejectAfter(ms: number): Promise<never> {
 }
 
 /**
+ * Budget for the post-reset database probe (H6). Short on purpose: a probe
+ * that answers does so in one local IPC round-trip, and one that hangs should
+ * fall back to today's behaviour (hold the attempt, show the terminal screen)
+ * rather than stall the reset result for the 10 s the boot read allows.
+ */
+export const RESET_DB_PROBE_TIMEOUT_MS = 3_000;
+
+/**
  * Reminder notification loop. Lives in the app shell — not in
  * TasksPage — so navigating to another section never stops the polling, and
  * pauses while locked so notifications never surface over the lock
@@ -507,6 +515,87 @@ function AppShell() {
   }, [loadSecurity]);
 
   /**
+   * Whether the engine's database is still reachable (H6).
+   *
+   * `factoryReset()` throws both BEFORE the engine closed anything — it could
+   * not record the reset marker, so the row it returns says "nothing was
+   * deleted" — and AFTER: a worker panic with the connection already gone.
+   * The two arrive here as the same `ipc-error`, and only the second one has a
+   * closed database. A read that answers proves the first, so the probe is the
+   * missing signal: the engine's own error paths run either before the close
+   * or after it, never "deleted everything but left the connection open".
+   *
+   * Bounded and fail-closed: a probe that hangs or fails reads as "closed",
+   * which is exactly the behaviour the app had before this existed — hold the
+   * attempt and show the terminal screen.
+   */
+  const databaseStillOpen = async (): Promise<boolean> => {
+    try {
+      await Promise.race([
+        settingsRepo.getRaw(SETTING_KEYS.pinHash),
+        rejectAfter(RESET_DB_PROBE_TIMEOUT_MS),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * D1's "Retry reset": drop the attempt and go back to Settings → Danger
+   * zone — the workspace re-arms the moment the attempt is gone (the gates
+   * below key off it), and the page is forced so a stale `page` cannot drop
+   * the user onto a dead screen over a database the engine may have closed.
+   * Deliberately not a second path to `factoryReset()`: the ack checkbox and
+   * the two-step ConfirmButton stay single-sited in SettingsPage, and this is
+   * never a restart.
+   */
+  const retryReset = () => {
+    setResetAttempt(null);
+    setPage("settings");
+  };
+
+  /**
+   * Where every finished factory-reset attempt lands — SettingsPage's only
+   * path onto the terminal screen.
+   *
+   * Two decisions ride here rather than in the page:
+   *
+   * - **A throw is terminal only when the database is actually gone (H6).**
+   *   If a read still answers, the engine aborted before it closed or deleted
+   *   anything, so the session is intact: the user stays where they are, the
+   *   vault keys stay usable, and the engine's own reason is shown where they
+   *   still stand — beside the button they will press again. Evicting them
+   *   onto a screen that asserts "the database connection is closed" would be
+   *   false, and its "close Purple Memo and start it yourself" would hide the
+   *   window to the tray instead of quitting (H6).
+   * - **Holding the attempt ends the workspace behind it (H3).** Vault keys
+   *   are dropped and the shell's modals closed the moment the screen takes
+   *   over: a completed wipe must not leave CryptoKeys in renderer memory,
+   *   and a blocked one must not leave a Ctrl+K dialog armed behind the
+   *   result screen.
+   */
+  const handleResetFinished = async (attempt: ResetAttempt) => {
+    if (attempt.kind === "ipc-error" && (await databaseStillOpen())) {
+      toast.error(attempt.error);
+      return;
+    }
+    setCaptureOpen(false);
+    setSearchOpen(false);
+    setShortcutsOpen(false);
+    // Best-effort, for the reason `lockSession` catches it: the cache is
+    // memory, and the terminal screen must appear whether or not clearing
+    // it worked.
+    try {
+      vaultRepo.lockVault();
+    } catch {
+      // Nothing is left decryptable by this failing; the attempt still has
+      // to be held.
+    }
+    setResetAttempt(attempt);
+  };
+
+  /**
    * Lock now: drops the vault keys too (auto-lock bounds) and ends
    * any active LAN session. The rules live in `lockSession`, which
    * is tested — including that the shell locks even if a step fails.
@@ -565,6 +654,14 @@ function AppShell() {
     });
   }, [loadSecurity, toast]);
 
+  // While the terminal reset screen holds an attempt, this is not a
+  // workspace session any more (H3): no poller may keep reading the database
+  // the engine closed, no idle timer may `lockNow()` underneath the result
+  // screen — which would strand "Retry reset" on the lock screen — and no
+  // shortcut may arm a modal that is not on screen. Dropping the attempt (the
+  // Retry button) re-arms all of it, which is the whole of D1's return path.
+  const workspaceLive = unlocked && resetAttempt === null;
+
   // Idle auto-lock: any pointer/keyboard/scroll activity resets the
   // clock; a tick every 15 s checks the configured window (0 = never).
   //
@@ -574,7 +671,7 @@ function AppShell() {
   // new listeners are passive: they never call `preventDefault`, and scrolling
   // must not wait on a lock-timer bookkeeping write.
   useEffect(() => {
-    if (!unlocked) return;
+    if (!workspaceLive) return;
     lastActivity.current = performance.now();
     const markActive = () => {
       lastActivity.current = performance.now();
@@ -597,16 +694,16 @@ function AppShell() {
       window.removeEventListener("touchmove", markActive);
       clearInterval(timer);
     };
-  }, [unlocked, boot.autoLockMinutes, lockNow]);
+  }, [workspaceLive, boot.autoLockMinutes, lockNow]);
 
   useReminderPoll(
     setNotifyNote,
-    unlocked,
+    workspaceLive,
     onReminderFired,
     reminderMessages,
     notificationsBlocked,
   );
-  useSharePublisher(setNotifyNote, unlocked);
+  useSharePublisher(setNotifyNote, workspaceLive);
 
   // The overlay lists shortcuts by reading `data-shortcut` off the controls
   // themselves, so the help can never drift from what the app actually binds.
@@ -634,7 +731,7 @@ function AppShell() {
   // sends, so the capture shortcut silently never fired on Windows — the label
   // said Ctrl+Shift+M and the handler wanted Ctrl+Cmd+Shift+M.
   useEffect(() => {
-    if (!unlocked) return;
+    if (!workspaceLive) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing =
@@ -668,7 +765,7 @@ function AppShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [unlocked, lockNow, openCapture]);
+  }, [workspaceLive, lockNow, openCapture]);
 
   // Every branch below comes from `shellStage`, so the order in which the
   // shell prefers screens — a failed security read ahead of every lock screen,
@@ -688,12 +785,7 @@ function AppShell() {
   // "Retry reset" on that screen returns here with the outcome dropped and
   // the workspace remounted at Settings, acknowledgement freshly unticked.
   if (resetAttempt !== null) {
-    return (
-      <ResetResultScreen
-        attempt={resetAttempt}
-        onRetry={() => setResetAttempt(null)}
-      />
-    );
+    return <ResetResultScreen attempt={resetAttempt} onRetry={retryReset} />;
   }
 
   if (stage === "booting") {
@@ -917,7 +1009,7 @@ function AppShell() {
               autoLockMinutes={boot.autoLockMinutes}
               onChanged={() => void loadSecurity()}
               onNavigate={navigate}
-              onResetFinished={setResetAttempt}
+              onResetFinished={handleResetFinished}
             />
           ) : page === "habits" ? (
             <HabitsPage />

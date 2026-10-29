@@ -614,6 +614,19 @@ const GUARDS: {
     raised: "downloadingRef.current = true",
     labelKey: "import.savingTemplate",
   },
+  // The terminal reset screen's Restart (batch-7, H8). `disabled={restarting}`
+  // only lands once React commits, so a fast double-click or double-Enter
+  // fired two concurrent `app_restart` requests before the state caught up —
+  // one process-restart IPC per press. The synchronous ref is the guard; the
+  // state is only the button's disabled half.
+  {
+    page: "../components/ResetScreen.tsx",
+    handler: "restart",
+    busy: "restartingRef.current",
+    cleared: "restartingRef.current = false",
+    raised: "restartingRef.current = true",
+    labelKey: "reset.restart",
+  },
 ];
 
 test("every money-submit handler refuses a second submit while one is in flight", () => {

@@ -195,7 +195,13 @@ export interface ShareTickPorts {
   publish: () => Promise<unknown>;
   /** The in-app note channel, shared with the reminder poll. */
   onNote: (note: string) => void;
-  /** True once the shell unmounted or locked — see  */
+  /**
+   * True once the shell unmounted or locked — see {@link lockSession}, whose
+   * first rule is that locking ends the session's other work too. The shell
+   * flips this the moment it locks, so a tick already in flight stops before
+   * it publishes: the status poller is paused while locked because a publish
+   * over the lock screen would keep feeding the phone.
+   */
   isCancelled: () => boolean;
 }
 

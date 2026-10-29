@@ -12,7 +12,16 @@ export const SALT_BYTES = 16;
  * below actually produces, instead of a second copy that could drift.
  */
 export const PBKDF2_DIGEST_BYTES = 32;
-const IV_BYTES = 12;
+/**
+ * AES-256-GCM nonce length in bytes (96 bits). One is minted fresh for every
+ * write — a repeated nonce would break the cipher, not just the record.
+ */
+export const IV_BYTES = 12;
+/**
+ * AES-256-GCM's authentication tag, appended to every ciphertext. A stored
+ * payload shorter than this is a truncated row, not something to open.
+ */
+export const GCM_TAG_BYTES = 16;
 
 // ---------------------------------------------------------------------------
 // base64 helpers (browser + Node, no Buffer dependency)
@@ -186,11 +195,6 @@ export async function verifyAnswer(
 // Vault — separate password; per-item salt + IV; no recovery
 // ---------------------------------------------------------------------------
 
-export interface VaultKey {
-  key: CryptoKey;
-  salt: string; // base64 password salt (stored in settings)
-}
-
 /**
  * How many PBKDF2 iterations back the vault key cache's password tag
  * (review P3-19).
@@ -212,6 +216,24 @@ export interface VaultKey {
 export const VAULT_TAG_ITERATIONS = 100_000;
 
 /**
+ * Decode a stored vault salt, refusing one too short to be a real salt (H5).
+ *
+ * A 0-byte salt still “works”: PBKDF2 stretches the password with no salt at
+ * all, so every wrong guess costs the same precomputable digest — precisely
+ * the property a per-item salt exists to prevent. Anything below `SALT_BYTES`
+ * is a broken or tampered row, not a key to derive.
+ */
+function vaultSaltBytes(saltB64: string): Uint8Array {
+  const salt = b64ToBytes(saltB64);
+  if (salt.byteLength < SALT_BYTES) {
+    throw new Error(
+      `stored vault salt is ${salt.byteLength} bytes, below the ${SALT_BYTES}-byte minimum — the stored data is corrupt`,
+    );
+  }
+  return salt;
+}
+
+/**
  * A slow, password-specific tag for the vault key cache — see
  * {@link VAULT_TAG_ITERATIONS}.
  *
@@ -222,7 +244,7 @@ export async function deriveVaultTag(
   password: string,
   saltB64: string,
 ): Promise<string> {
-  const salt = b64ToBytes(saltB64);
+  const salt = vaultSaltBytes(saltB64);
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(password),
@@ -243,12 +265,15 @@ export async function deriveVaultTag(
   return bytesToB64(new Uint8Array(bits));
 }
 
-/** Derive a vault key from a password + the setup salt. */
+/**
+ * Derive a vault key from a password + the item's own salt (per-item, stored
+ * on its `vault_items` row — there is no vault-wide salt in `settings`).
+ */
 export async function deriveVaultKey(
   password: string,
   saltB64: string,
 ): Promise<CryptoKey> {
-  return deriveAesGcmKey(password, b64ToBytes(saltB64), PBKDF2_ITERATIONS);
+  return deriveAesGcmKey(password, vaultSaltBytes(saltB64), PBKDF2_ITERATIONS);
 }
 
 // ---------------------------------------------------------------------------
@@ -257,9 +282,10 @@ export async function deriveVaultKey(
 
 /**
  * PBKDF2-SHA256 -> AES-256-GCM, the one derivation shape both callers want:
- * the vault (its setup salt) and the encrypted backup container (a fresh salt
- * per export). The password is encoded as UTF-8 exactly as typed — no trimming,
- * no Unicode normalization — so what the user typed is what is stretched.
+ * the vault (an item's own per-item salt) and the encrypted backup container
+ * (a fresh salt per export). The password is encoded as UTF-8 exactly as typed
+ * — no trimming, no Unicode normalization — so what the user typed is what is
+ * stretched.
  */
 export async function deriveAesGcmKey(
   password: string,
@@ -313,9 +339,15 @@ export async function encryptBytesWithKey(
 }
 
 /**
- * AES-256-GCM open. Throws `OperationError` when the tag does not verify —
- * wrong key, modified header, or tampered ciphertext; callers translate that
- * into the one message they may honestly show.
+ * AES-256-GCM open.
+ *
+ * Two distinct failure shapes, and keeping them distinct is the whole point
+ * (H5): a structurally impossible input — an IV that is not `IV_BYTES`, a
+ * ciphertext shorter than its own tag — is rejected here with a plain `Error`
+ * naming the corruption, BEFORE WebCrypto gets to fold it into a bare
+ * `OperationError`. `OperationError` from this function therefore means
+ * exactly one thing, the tag did not verify, and callers may translate that
+ * into the one message they can honestly show ("wrong password").
  */
 export async function decryptBytesWithKey(
   key: CryptoKey,
@@ -323,6 +355,16 @@ export async function decryptBytesWithKey(
   ciphertext: Uint8Array,
   additionalData?: Uint8Array,
 ): Promise<Uint8Array> {
+  if (iv.byteLength !== IV_BYTES) {
+    throw new Error(
+      `stored IV is ${iv.byteLength} bytes, not ${IV_BYTES} — the stored data is corrupt`,
+    );
+  }
+  if (ciphertext.byteLength < GCM_TAG_BYTES) {
+    throw new Error(
+      `stored ciphertext is ${ciphertext.byteLength} bytes, shorter than its ${GCM_TAG_BYTES}-byte authentication tag — the stored data is corrupt`,
+    );
+  }
   const opened = await crypto.subtle.decrypt(
     {
       name: "AES-GCM",
@@ -333,13 +375,6 @@ export async function decryptBytesWithKey(
     ciphertext as BufferSource,
   );
   return new Uint8Array(opened);
-}
-
-/** Create a fresh vault: new password salt + derived key (the key is never stored). */
-export async function createVaultKey(password: string): Promise<VaultKey> {
-  const salt = randomBytes(SALT_BYTES);
-  const key = await deriveVaultKey(password, bytesToB64(salt));
-  return { key, salt: bytesToB64(salt) };
 }
 
 export interface VaultCipher {

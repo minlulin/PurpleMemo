@@ -8,6 +8,7 @@ import type { BatchStatement } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import {
+  bytesToB64,
   deriveVaultTag,
   PBKDF2_ITERATIONS,
   randomSaltB64,
@@ -243,6 +244,45 @@ test("corrupt stored ciphertext is NOT reported as a wrong password", async () =
     !(err instanceof WrongPasswordError),
     "corruption must not masquerade as a mistyped password",
   );
+});
+
+test("a structurally broken row reads as corruption, never a wrong password (H5)", async () => {
+  // The tag check is the ONLY thing allowed to say "wrong password": it is
+  // the one failure that means "this key did not open this ciphertext". An IV
+  // that is not 12 bytes, or a ciphertext cut below its own 16-byte tag, can
+  // never verify either — but the reason is a damaged row, and telling the
+  // user they mistyped the password would send them hunting for a typo that
+  // was never there. `crypto.ts` refuses both before WebCrypto can fold them
+  // into an OperationError, and the message names the corruption.
+  const damage: [string, (row: VaultItemRow) => VaultItemRow][] = [
+    ["empty IV", (row) => ({ ...row, iv: "" })],
+    ["9-byte IV", (row) => ({ ...row, iv: bytesToB64(new Uint8Array(9)) })],
+    [
+      "3-byte ciphertext",
+      (row) => ({ ...row, ciphertext: bytesToB64(new Uint8Array(3)) }),
+    ],
+  ];
+  for (const [name, breakRow] of damage) {
+    const driver = createMockDriver();
+    const vault = createVaultRepo(driver);
+    const id = await vault.addItem("email", "s3cret", "correct-horse");
+    const row = rowFromInsert(driver, id);
+    driver.pushResults([[breakRow(row)], [{ salt: row.salt }]]);
+    const err = await vault
+      .getItem(id, "correct-horse")
+      .then(() => null)
+      .catch((e: unknown) => e);
+    assert.ok(err instanceof Error, `${name}: it must still fail`);
+    assert.ok(
+      !(err instanceof WrongPasswordError),
+      `${name}: corruption must not masquerade as a mistyped password`,
+    );
+    assert.match(
+      err.message,
+      /corrupt/i,
+      `${name}: the refusal must name the corruption`,
+    );
+  }
 });
 
 test("setupVault refuses a second setup — the marker is written once", async () => {

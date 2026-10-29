@@ -5,14 +5,17 @@ import { at } from "../test-utils.ts";
 import {
   b64ToBytes,
   bytesToB64,
-  createVaultKey,
   decryptWithKey,
   deriveVaultKey,
+  deriveVaultTag,
   encryptWithKey,
+  GCM_TAG_BYTES,
   hashAnswer,
   hashPin,
+  IV_BYTES,
   normalizeAnswer,
   PBKDF2_ITERATIONS,
+  randomSaltB64,
   verifyAnswer,
   verifyPin,
 } from "./crypto.ts";
@@ -91,7 +94,10 @@ test("PINs stay exact — no normalization at verify time", async () => {
 });
 
 test("vault key derivation is deterministic for password+salt", async () => {
-  const { key, salt } = await createVaultKey("vault-pass");
+  // The shape the vault itself uses: one fresh per-item salt, the key derived
+  // from it (there is no vault-wide salt anywhere — see `vault.ts`).
+  const salt = randomSaltB64();
+  const key = await deriveVaultKey("vault-pass", salt);
   const again = await deriveVaultKey("vault-pass", salt);
   const cipher = await encryptWithKey(key, "secret note");
   const plain = await decryptWithKey(again, cipher);
@@ -99,7 +105,7 @@ test("vault key derivation is deterministic for password+salt", async () => {
 });
 
 test("vault items encrypt with per-item IVs — same plaintext differs", async () => {
-  const { key } = await createVaultKey("pw");
+  const key = await deriveVaultKey("pw", randomSaltB64());
   const a = await encryptWithKey(key, "same text");
   const b = await encryptWithKey(key, "same text");
   assert.notEqual(a.iv, b.iv);
@@ -109,14 +115,15 @@ test("vault items encrypt with per-item IVs — same plaintext differs", async (
 });
 
 test("vault decryption fails on a wrong password (no recovery)", async () => {
-  const { key, salt } = await createVaultKey("right");
+  const salt = randomSaltB64();
+  const key = await deriveVaultKey("right", salt);
   const cipher = await encryptWithKey(key, "secret");
   const wrongKey = await deriveVaultKey("wrong", salt);
   await assert.rejects(decryptWithKey(wrongKey, cipher));
 });
 
 test("vault decryption fails on tampered ciphertext (GCM auth tag)", async () => {
-  const { key } = await createVaultKey("pw");
+  const key = await deriveVaultKey("pw", randomSaltB64());
   const cipher = await encryptWithKey(key, "secret");
   const tamperedBytes = b64ToBytes(cipher.ciphertext);
   tamperedBytes[0] = at(tamperedBytes, 0, "tamperedBytes") ^ 0xff;
@@ -126,4 +133,63 @@ test("vault decryption fails on tampered ciphertext (GCM auth tag)", async () =>
       iv: cipher.iv,
     }),
   );
+});
+
+test("a structurally impossible cipher is refused as corruption (H5)", async () => {
+  // `OperationError` is the ONE signal callers translate into "wrong
+  // password", so an input that could never verify — a 0-byte or 9-byte IV,
+  // a ciphertext shorter than its own tag — must be rejected BEFORE
+  // WebCrypto folds it into that same error and tells the user they mistyped
+  // a password that was right.
+  const key = await deriveVaultKey("pw", randomSaltB64());
+  const cipher = await encryptWithKey(key, "secret note");
+  const broken: [string, { ciphertext: string; iv: string }][] = [
+    ["empty IV", { ...cipher, iv: "" }],
+    ["9-byte IV", { ...cipher, iv: bytesToB64(new Uint8Array(9)) }],
+    ["16-byte IV", { ...cipher, iv: bytesToB64(new Uint8Array(16)) }],
+    [
+      "3-byte ciphertext",
+      { ...cipher, ciphertext: bytesToB64(new Uint8Array(3)) },
+    ],
+  ];
+  for (const [name, value] of broken) {
+    const error = await decryptWithKey(key, value).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    assert.ok(error instanceof Error, `${name}: must be refused`);
+    assert.notEqual(
+      error.name,
+      "OperationError",
+      `${name}: corruption must not read as a tag failure`,
+    );
+    assert.match(error.message, /corrupt/i, `${name}: refusal must name it`);
+  }
+  // The constants every stored row was written with, and a healthy cipher
+  // still opens.
+  assert.equal(IV_BYTES, 12);
+  assert.equal(GCM_TAG_BYTES, 16);
+  assert.equal(await decryptWithKey(key, cipher), "secret note");
+});
+
+test("a vault salt below the 16-byte minimum is refused (H5)", async () => {
+  // A 0-byte salt still "works" — PBKDF2 stretches the password with no salt
+  // at all, so every wrong guess costs the same precomputable digest, which
+  // is exactly what a per-item salt exists to prevent. Short salt = broken
+  // row, never a key to derive.
+  for (const salt of [
+    "",
+    bytesToB64(new Uint8Array(8)),
+    bytesToB64(new Uint8Array(15)),
+  ]) {
+    await assert.rejects(deriveVaultKey("pw", salt), /corrupt/);
+    await assert.rejects(deriveVaultTag("pw", salt), /corrupt/);
+  }
+  // Whitespace never reaches the derivation at all: it is not canonical
+  // base64, so it is refused at the decoder.
+  await assert.rejects(deriveVaultTag("pw", "   "));
+  // A real salt still derives, for both the key and the cache tag.
+  const salt = randomSaltB64();
+  assert.ok((await deriveVaultTag("pw", salt)).length > 0);
+  assert.ok((await deriveVaultKey("pw", salt)) instanceof CryptoKey);
 });

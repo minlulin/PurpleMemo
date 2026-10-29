@@ -44,7 +44,17 @@ export function resetAttemptFromOutcome(
   return { kind: "outcome", outcome };
 }
 
-/** Wrap a thrown reset as an attempt. Never success, by construction. */
+/**
+ * Wrap a thrown reset as an attempt. Never success, by construction.
+ *
+ * Not necessarily terminal either (H6): the engine throws both BEFORE it has
+ * closed the database — it could not record the reset marker, so nothing was
+ * deleted — and after, from a worker panic with the connection already gone,
+ * and the two are indistinguishable from here. The shell probes which case it
+ * is before holding the attempt (see `App.tsx`'s `handleResetFinished`),
+ * because this screen's copy asserts a closed connection that only the second
+ * case actually has.
+ */
 export function resetAttemptFromError(error: string): ResetAttempt {
   return { kind: "ipc-error", error };
 }
@@ -130,14 +140,25 @@ export function outcomeRows(attempt: ResetAttempt): ResetDisplayRow[] {
 }
 
 /**
+ * The statuses that make a report row read as a problem rather than a
+ * completion — the ONE definition of "blocked" (H10). The result list styles
+ * each badge with this and {@link hasBlockedComponent} aggregates it, so the
+ * per-row colour and the overall verdict cannot drift apart the way a copy of
+ * the set inside the screen could.
+ */
+export function isBlockedStatusKey(statusKey: MessageKey): boolean {
+  return (
+    statusKey === "reset.status.failed" ||
+    statusKey === "reset.status.notAttempted"
+  );
+}
+
+/**
  * Whether the report lists any component the user must act on — i.e. the
- * engine said something failed or never ran. Drives the failure styling of the
- * result list; it never drives a restart (see {@link shouldRestart}).
+ * engine said something failed or never ran. The aggregate form of
+ * {@link isBlockedStatusKey}; it never drives a restart (see
+ * {@link shouldRestart}).
  */
 export function hasBlockedComponent(attempt: ResetAttempt): boolean {
-  return outcomeRows(attempt).some(
-    (row) =>
-      row.statusKey === "reset.status.failed" ||
-      row.statusKey === "reset.status.notAttempted",
-  );
+  return outcomeRows(attempt).some((row) => isBlockedStatusKey(row.statusKey));
 }

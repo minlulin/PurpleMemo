@@ -14,6 +14,7 @@ import {
   randomSaltB64,
 } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
+import { errText } from "./errors.ts";
 import type { VaultItemRow } from "./types.ts";
 
 /** Settings marker — its presence means the vault password has been set up. */
@@ -48,10 +49,13 @@ export class WrongPasswordError extends Error {
  * may honestly call a wrong password.
  *
  * Only `OperationError` qualifies — that is what WebCrypto raises when the
- * auth tag does not verify, i.e. "this key did not open this ciphertext". A
- * malformed base64 field raises `InvalidCharacterError` instead, which is
- * stored-data corruption, not a mistyped password, and must not be reported as
- * one.
+ * auth tag does not verify, i.e. "this key did not open this ciphertext".
+ * Everything else is a structurally broken row: an undecodable field, an IV
+ * that is not 12 bytes, a ciphertext cut shorter than its own tag. `crypto.ts`
+ * refuses those with a plain error before WebCrypto can blur them into an
+ * `OperationError` (H5), and they are named as corruption here — telling the
+ * user they mistyped their password would send them looking in the wrong
+ * place.
  */
 async function decryptItem(
   key: CryptoKey,
@@ -63,7 +67,9 @@ async function decryptItem(
     if (e instanceof Error && e.name === "OperationError") {
       throw new WrongPasswordError();
     }
-    throw e;
+    throw new Error(
+      `Stored vault entry is corrupt and cannot be decrypted: ${errText(e)}`,
+    );
   }
 }
 
