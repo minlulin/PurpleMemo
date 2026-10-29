@@ -141,6 +141,34 @@ test("stopSharingWithRetry reports the last failure exactly once", async () => {
   );
 });
 
+test("a cancelled teardown neither retries nor reports (the stale-retry rule)", async () => {
+  // The H4 scenario: lock #1's backoff is still sleeping when the shell
+  // unlocks and the user starts a NEW LAN share. The next attempt must never
+  // run — it would stop the share that was just started — and walking away is
+  // not itself a failure to show: the owner that cancelled the teardown has
+  // taken share state over and decides what, if anything, the user is told.
+  let attempts = 0;
+  let cancelled = false;
+  const failures: unknown[] = [];
+  const stopped = await stopSharingWithRetry(
+    async () => {
+      attempts += 1;
+      throw new Error("listener busy");
+    },
+    {
+      retryDelaysMs: [0, 0],
+      wait: async () => {
+        cancelled = true; // the shell unlocked while backing off
+      },
+      onFailed: (e) => failures.push(e),
+      isCancelled: () => cancelled,
+    },
+  );
+  assert.equal(stopped, false, "no claim about a listener it no longer owns");
+  assert.equal(attempts, 1, "no further stop after the cancellation");
+  assert.deepEqual(failures, [], "the retired teardown reports nothing");
+});
+
 test("a stop that never answers is bounded and counted as a failure", async () => {
   // The plausible hang: `share_stop` joins a worker blocked writing to a
   // stalled client. Without the per-attempt timeout the lock's teardown would
@@ -208,6 +236,44 @@ test("the lock does not wait on a hung listener", async () => {
   assert.equal(locked, true, "locking is synchronous");
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(notes.length, 1);
+});
+
+test("a teardown the shell retired is neither retried nor reported", async () => {
+  // The ports are the shell's only handle on the background loop: once
+  // `isCancelled` answers true (an unlock, or a newer lock superseding this
+  // one), the retry that would have torn down a freshly started share must not
+  // run, and the walk-away must not surface as a failure notice either.
+  let unlocked = false;
+  let attempts = 0;
+  const notes: unknown[] = [];
+  lockSession({
+    lockVault: () => undefined,
+    stopSharing: async () => {
+      attempts += 1;
+      throw new Error("worker wedged");
+    },
+    onLocked: () => {
+      unlocked = false;
+    },
+    onShareStopFailed: (e) => notes.push(e),
+    retryDelaysMs: [0, 0],
+    wait: async () => {
+      unlocked = true; // the user unlocked while the teardown backed off
+    },
+    isCancelled: () => unlocked,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(
+    attempts,
+    1,
+    "the retry that would stop a newly started share never runs",
+  );
+  assert.equal(
+    notes.length,
+    0,
+    "a teardown the shell walked away from is not a failure to show",
+  );
 });
 
 test("the retry schedule is bounded and leaves the lock responsive", () => {
@@ -448,6 +514,80 @@ test("the reminder ticker reports a denied permission instead of dropping remind
   assert.deepEqual(events, ["denied"], "no notification is attempted");
 });
 
+test("a denial stays a denial on every later tick — the rows are never consumed", async () => {
+  // The H1 regression: the old ticker recorded only "a prompt happened", so
+  // tick 2 skipped the check, called `notify()` (dropped by the OS) and marked
+  // or re-armed every due reminder 30 seconds after telling the user that
+  // blocked notifications leave due reminders listed in Tasks.
+  let asks = 0;
+  const { tick, events } = reminderTick({
+    due: async () => [reminderRow()],
+    requestPermission: async () => {
+      asks += 1;
+      return false;
+    },
+  });
+  await tick();
+  await tick();
+  await tick();
+  assert.deepEqual(
+    events,
+    ["denied"],
+    "one notice, and still no notify, no mark and no reschedule",
+  );
+  assert.equal(
+    asks,
+    3,
+    "permission is re-checked, so enabling it in OS settings is picked up",
+  );
+});
+
+test("a thrown permission prompt is contained and asked again, not assumed granted", async () => {
+  // The old code moved its `requested` flag BEFORE the await, so a transient
+  // rejection left the ticker permanently past the permission check.
+  let asks = 0;
+  const { tick, events } = reminderTick({
+    due: async () => [reminderRow()],
+    requestPermission: async () => {
+      asks += 1;
+      if (asks === 1) throw new Error("prompt service unavailable");
+      return true;
+    },
+  });
+  await tick();
+  assert.deepEqual(
+    events,
+    [],
+    "no notification and no write on an unanswered prompt",
+  );
+  await tick();
+  assert.equal(asks, 2, "the unanswered question is asked again");
+  assert.deepEqual(events, ["notify:Reminder: Water the plants", "fired:1"]);
+});
+
+test("the reminder ticker reports nothing when the shell locks during a denied prompt", async () => {
+  // The other half of the lock-during-permission race: the dialog resolves
+  // false AFTER the lock. The denial notice must not be raised from behind the
+  // lock screen — cancellation is checked before it, not after.
+  let cancelled = false;
+  let answer: ((granted: boolean) => void) | undefined;
+  const permission = new Promise<boolean>((resolve) => {
+    answer = resolve;
+  });
+  const { tick, events } = reminderTick({
+    due: async () => [reminderRow()],
+    requestPermission: () => permission,
+    isCancelled: () => cancelled,
+  });
+  const pending = tick();
+  await Promise.resolve();
+  await Promise.resolve();
+  cancelled = true;
+  answer?.(false);
+  await pending;
+  assert.deepEqual(events, [], "no notice, notification or write after lock");
+});
+
 test("the reminder ticker does not stack ticks while one is in flight", async () => {
   let release: (() => void) | undefined;
   const { tick, events } = reminderTick({
@@ -492,6 +632,30 @@ test("the reminder ticker stops when the shell locks during permission", async (
   grantPermission?.(true);
   await pending;
   assert.deepEqual(events, [], "no notification or write after lock");
+});
+
+test("the ticker does not signal a re-read once the shell locked mid-write", async () => {
+  // `onFired` runs after the write loop, so a lock landing while the marks are
+  // in flight must suppress it: the poll is paused and nothing should poke a
+  // listener from behind the lock screen.
+  let cancelled = false;
+  const { tick, events } = reminderTick({
+    due: async () => [reminderRow()],
+    markFired: async (id) => {
+      events.push(`fired:${id}`);
+      cancelled = true; // the lock lands while this write is in flight
+    },
+    onFired: () => {
+      events.push("onFired");
+    },
+    isCancelled: () => cancelled,
+  });
+  await tick();
+  assert.deepEqual(
+    events,
+    ["notify:Reminder: Water the plants", "fired:1"],
+    "the write happened, the re-read signal did not",
+  );
 });
 
 test("the reminder ticker stops when the shell locks during preview lookup", async () => {

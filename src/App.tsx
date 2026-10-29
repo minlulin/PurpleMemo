@@ -345,6 +345,20 @@ function AppShell() {
     [openEntity],
   );
   const [notifyNote, setNotifyNote] = useState<string | null>(null);
+  /**
+   * A synchronous mirror of `unlocked`. The LAN teardown scheduled by
+   * `lockNow` runs detached in the background — through locks, unlocks and
+   * re-renders — so it cannot learn that the shell moved on from React state;
+   * it reads this ref instead (H4).
+   */
+  const unlockedRef = useRef(false);
+  /**
+   * Generation counter for the LAN teardown: every lock takes the current
+   * number, so a retry loop still sleeping from an earlier lock is recognised
+   * as stale the moment a newer one starts, instead of waking up and stopping
+   * a share that was started after it (H4).
+   */
+  const shareStopEpoch = useRef(0);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [shortcutRows, setShortcutRows] = useState<
     { keys: string; label: string }[]
@@ -498,17 +512,34 @@ function AppShell() {
    * is tested — including that the shell locks even if a step fails.
    */
   const lockNow = useCallback(() => {
+    const epoch = shareStopEpoch.current + 1;
+    shareStopEpoch.current = epoch;
     lockSession({
       lockVault: () => vaultRepo.lockVault(),
       stopSharing: () => shareRepo.stop(),
-      onLocked: () => setUnlocked(false),
-      // A listener that survived every retry is still publishing to the LAN.
-      // The lock screen has already come up and the status poller
-      // is paused, so the note is the only channel left that says so; it stays
-      // on the dashboard until the user turns sharing off in Settings.
-      onShareStopFailed: () => setNotifyNote(shareStopFailed),
+      onLocked: () => {
+        unlockedRef.current = false;
+        setUnlocked(false);
+      },
+      // A listener that survived every retry is still publishing to the LAN,
+      // and the status poller is paused while locked. `notifyNote` renders only
+      // on the Dashboard and Tasks pages — never on the lock screen where this
+      // lands — so it is ALSO raised as a toast: `ToastProvider` wraps the
+      // whole shell, including the lock screen, and says it out loud the moment
+      // it happens. The note stays behind for the unlocked workspace.
+      onShareStopFailed: () => {
+        setNotifyNote(shareStopFailed);
+        toast.error(shareStopFailed);
+      },
+      // This teardown belongs to this lock. Once the shell unlocks — or a newer
+      // lock supersedes it — it retires silently: a retry still sleeping from
+      // the previous session must never wake up and stop a LAN share the user
+      // has just started (H4). Only the attempt already in flight (bounded by
+      // `SHARE_STOP_TIMEOUT_MS`) can still land after the flip.
+      isCancelled: () =>
+        unlockedRef.current || shareStopEpoch.current !== epoch,
     });
-  }, [shareStopFailed]);
+  }, [shareStopFailed, toast]);
 
   /**
    * Entering the shell always re-reads the security state first,
@@ -527,6 +558,7 @@ function AppShell() {
     const reload = await loadSecurity();
     if (!reloadOpensEntry(reload)) return;
     lastActivity.current = performance.now();
+    unlockedRef.current = true;
     setUnlocked(true);
     void trashRepo.purge().catch((e) => {
       toast.error(errText(e));

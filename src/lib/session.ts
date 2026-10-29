@@ -29,6 +29,14 @@ export interface LockPorts {
    * should not have to invent a handler.
    */
   onShareStopFailed?: (error: unknown) => void;
+  /**
+   * Take the background teardown back. The retry schedule runs detached for up
+   * to a minute, far past the lock that started it, so the shell uses this to
+   * retire an outlived teardown: once the shell unlocks (or a newer lock
+   * supersedes it), the loop stops instead of waking up later and stopping a
+   * LAN share the user has since started.
+   */
+  isCancelled?: () => boolean;
   /** Delay before each retry, in order; the first attempt is immediate. */
   retryDelaysMs?: readonly number[];
   /** Per-attempt budget: a listener that never answers counts as failed. */
@@ -80,6 +88,14 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
  * the rule the audit found missing: the old teardown swallowed the result, and
  * the status poller is paused while locked, so a listener that failed to stop
  * kept serving the dashboard with nothing on screen to say so.
+ *
+ * `isCancelled` lets the caller that scheduled the teardown take it back
+ * (H4). This loop runs detached across unlock — its backoff is measured in
+ * tens of seconds — so without an abort a retry still sleeping from an earlier
+ * lock can wake up and tear down a share that was started after it. A
+ * cancelled teardown returns `false` — *not known to be down*, rather than
+ * "stopped" — and stays silent: the owner that cancelled it has taken share
+ * state over and decides what, if anything, the user is told.
  */
 export async function stopSharingWithRetry(
   stopSharing: () => Promise<unknown>,
@@ -88,6 +104,7 @@ export async function stopSharingWithRetry(
     stopTimeoutMs?: number;
     wait?: (ms: number) => Promise<void>;
     onFailed?: (error: unknown) => void;
+    isCancelled?: () => boolean;
   } = {},
 ): Promise<boolean> {
   const delays = opts.retryDelaysMs ?? SHARE_STOP_RETRY_DELAYS_MS;
@@ -95,8 +112,10 @@ export async function stopSharingWithRetry(
   const wait =
     opts.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let lastError: unknown = new Error("sharing was never stopped");
+  const cancelled = () => opts.isCancelled?.() === true;
   // One immediate attempt, then one per configured delay.
   for (let attempt = 0; attempt <= delays.length; attempt++) {
+    if (cancelled()) return false;
     try {
       await withTimeout(stopSharing(), timeoutMs);
       return true;
@@ -104,8 +123,15 @@ export async function stopSharingWithRetry(
       lastError = error;
     }
     const delay = delays[attempt];
-    if (delay !== undefined) await wait(delay);
+    if (delay !== undefined) {
+      // Checked before backing off, not only after: a 30 s sleep spent on a
+      // teardown nobody is waiting for is 30 s in which the next attempt can
+      // land on a freshly started share.
+      if (cancelled()) return false;
+      await wait(delay);
+    }
   }
+  if (cancelled()) return false;
   try {
     opts.onFailed?.(lastError);
   } catch {
@@ -115,7 +141,7 @@ export async function stopSharingWithRetry(
 }
 
 /**
- * Lock now. Three rules, each pinned by a test:
+ * Lock now. Four rules, each pinned by a test:
  *
  * 1. **Locking ends sharing**. The phone link must die with the
  *    session: a lock that leaves the LAN server running keeps publishing the
@@ -128,6 +154,10 @@ export async function stopSharingWithRetry(
  *    short retry schedule and a per-attempt timeout, and only after every
  *    attempt fails does `onShareStopFailed` run. A listener that
  *    did not stop is a serving confidentiality problem, not a cosmetic one.
+ * 4. **The teardown belongs to this lock.** Its retries run detached for up to
+ *    a minute, so `isCancelled` is how the shell retires one that has been
+ *    outlived — by an unlock, or by a newer lock — before it can stop a share
+ *    that was started after it.
  */
 export function lockSession(ports: LockPorts): void {
   try {
@@ -149,6 +179,7 @@ export function lockSession(ports: LockPorts): void {
     stopTimeoutMs: ports.stopTimeoutMs,
     wait: ports.wait,
     onFailed: ports.onShareStopFailed,
+    isCancelled: ports.isCancelled,
   });
 }
 
@@ -239,7 +270,11 @@ export interface ReminderTickPorts {
   due: (now: string) => Promise<ReminderRow[]>;
   markFired: (id: number) => Promise<void>;
   reschedule: (id: number, remindAt: string) => Promise<void>;
-  /** Ask the OS for notification permission; false when denied. */
+  /**
+   * Ask the OS for notification permission; false when denied. Called again on
+   * each tick while permission is not granted (so an enablement in OS settings
+   * is picked up within one poll) and never once it has been granted.
+   */
   requestPermission: () => Promise<boolean>;
   /**
    * Whether the notification may carry the reminder's text. Read fresh on every tick, so a Settings toggle
@@ -250,6 +285,10 @@ export interface ReminderTickPorts {
   notify: (input: { title: string; body: string }) => void;
   /** Notification copy in the active language; English when omitted. */
   messages?: ReminderMessages;
+  /**
+   * Report a denial — at most once per ticker, and never after the shell
+   * locked. The due reminders stay in the database untouched.
+   */
   onPermissionDenied: () => void;
   /**
    * Called once per tick that actually fired at least one reminder (review
@@ -269,12 +308,19 @@ export interface ReminderTickPorts {
  *
  * Four rules that the component used to hold on its own:
  *
- * * **Permission is asked once per session**, and a denial is reported once
- *   instead of silently dropping every reminder.
+ * * **Permission is tracked, not assumed.** The answer is cached only once it
+ *   has actually arrived: while permission is not granted the ticker asks
+ *   again each tick (so enabling notifications in OS settings is picked up
+ *   within one poll), reports the denial once instead of silently dropping
+ *   every reminder, and returns before any notification or write — due
+ *   reminders genuinely stay listed in Tasks. A prompt that throws is
+ *   contained by the catch below and leaves the state unanswered, so the next
+ *   tick asks again rather than firing on an answer it never got.
  * * **Ticks never stack.** A tick that is still awaiting its query makes the
  *   next one a no-op, so a slow database cannot multiply notifications.
  * * **Nothing fires after the shell unmounts or locks** — the poll is paused
- *   while locked, so notifications never surface over the lock screen.
+ *   while locked, so notifications never surface over the lock screen, and
+ *   neither do the denial notice or the re-read signal.
  * * **Notification text is opt-in, and bursts coalesce**. With previews off — the default — a single due reminder raises
  *   "Reminder due" and no reminder text reaches the OS. A tick that finds more
  *   than one (the unlock-after-downtime burst) raises one summary instead of a
@@ -287,7 +333,14 @@ export function createReminderTicker(
   ports: ReminderTickPorts,
 ): () => Promise<void> {
   let inFlight = false;
-  let requested = false;
+  /**
+   * What the OS has answered so far. "unknown" until the first prompt
+   * resolves; a throw never reaches here, so an unanswered question stays
+   * "unknown" and is asked again on the next tick.
+   */
+  let permission: "unknown" | "granted" | "denied" = "unknown";
+  /** A denial is news once, not once every 30 seconds. */
+  let denialReported = false;
   return async () => {
     if (inFlight) return;
     inFlight = true;
@@ -295,10 +348,20 @@ export function createReminderTicker(
       const now = ports.now();
       const due = await ports.due(now);
       if (due.length === 0 || ports.isCancelled()) return;
-      if (!requested) {
-        requested = true;
-        if (!(await ports.requestPermission())) {
-          ports.onPermissionDenied();
+      if (permission !== "granted") {
+        const granted = await ports.requestPermission();
+        // The state moves only after the answer is in, and the cancellation
+        // check comes before the notice: a prompt left open while the user
+        // locks must not raise anything from behind the lock screen.
+        permission = granted ? "granted" : "denied";
+        if (ports.isCancelled()) return;
+        if (!granted) {
+          // Reported once, then every tick returns here: marking the rows now
+          // would consume the reminders the user never got told about.
+          if (!denialReported) {
+            denialReported = true;
+            ports.onPermissionDenied();
+          }
           return;
         }
       }
@@ -343,8 +406,10 @@ export function createReminderTicker(
           );
         }
       }
-      // After the writes, so a listener that re-reads sees the marked rows.
-      ports.onFired?.();
+      // After the writes, so a listener that re-reads sees the marked rows —
+      // and only while the shell still stands: a lock that lands mid-loop must
+      // not poke a listener from behind the lock screen.
+      if (!ports.isCancelled()) ports.onFired?.();
     } catch {
       // See above — a broken reminder row must not take the app down.
     } finally {
