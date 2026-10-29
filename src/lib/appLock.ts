@@ -3,7 +3,12 @@
 // configurable idle window (default 10 minutes), and a security-question
 // fallback that allows setting a new PIN. There is NO online recovery.
 
-import type { PinHash } from "./crypto.ts";
+import {
+  b64ToBytes,
+  PBKDF2_DIGEST_BYTES,
+  type PinHash,
+  SALT_BYTES,
+} from "./crypto.ts";
 
 export const MIN_PIN_LENGTH = 6;
 export const DEFAULT_AUTO_LOCK_MINUTES = 10;
@@ -53,9 +58,9 @@ export type PinResetBlock =
  * not a failed attempt and must not count against the retry throttle.
  *
  * "Unavailable" means more than absent (G1): the hash must also pass the same
- * shape and iteration-floor checks `classifyPin` applies to `pin_hash`, so a
- * malformed or downgraded `security_answer_hash` (a crafted backup, a tampered
- * row) cannot be verified against at all.
+ * shape, base64, byte-length and iteration-range checks `classifyPin` applies
+ * to `pin_hash`, so a malformed or downgraded `security_answer_hash` (a
+ * crafted backup, a tampered row) cannot be verified against at all.
  */
 export function pinResetBlocked(input: {
   answerHash: unknown;
@@ -63,15 +68,15 @@ export function pinResetBlocked(input: {
   pin: string;
   confirm: string;
 }): PinResetBlock | null {
-  // The hash is validated, not merely present (G1): `null`/`undefined` is the
-  // absent row, but any value the classifier would refuse — wrong shape, or a
-  // PBKDF2 count below the floor a downgrade attack would love to have honoured
-  // — is just as unavailable, and must fail closed here rather than reach
-  // `verifyAnswer` as trusted material. Every caller gets the same rule.
-  if (!isPinHashShape(input.answerHash)) return "no-answer";
-  if (input.answerHash.iterations < MIN_PIN_HASH_ITERATIONS) {
-    return "no-answer";
-  }
+  // The hash is validated, not merely present (G1/H2): `null`/`undefined` is
+  // the absent row, but any value the classifier would refuse — wrong shape,
+  // non-canonical or wrong-length base64, a PBKDF2 count below the floor a
+  // downgrade attack would love to have honoured, or one above the ceiling
+  // that would stall every attempt — is just as unavailable, and must fail
+  // closed here rather than reach `verifyAnswer` as trusted material. One
+  // helper, shared with `lockGate`, so the screen that OFFERS the fallback can
+  // never disagree with the check that GRANTS it.
+  if (!isValidStoredPinHash(input.answerHash)) return "no-answer";
   if (input.pin.length < MIN_PIN_LENGTH) return "short-pin";
   if (input.pin !== input.confirm) return "mismatch";
   if (!input.acknowledged) return "unacknowledged";
@@ -133,16 +138,72 @@ export type PinUnreadable = "corrupt" | "malformed" | "weak-iterations";
  */
 export const MIN_PIN_HASH_ITERATIONS = 100_000;
 
+/**
+ * The floor's partner: a stored hash may not claim more than this many PBKDF2
+ * iterations (H2).
+ *
+ * The app has only ever written `PBKDF2_ITERATIONS` (600k), so this leaves
+ * room for a future KDF bump while keeping the count plausible — and beyond
+ * it the row is not "stronger", it is broken. Two concrete failures it closes:
+ * a count above 2^32 − 1 makes `crypto.subtle.deriveBits` throw a WebIDL
+ * `TypeError` straight into the caller's `catch` (skipping `noteFailure()` and
+ * rendering raw runtime text on the lock screen), and even an in-range 32-bit
+ * count stalls every unlock attempt for minutes.
+ */
+export const MAX_PIN_HASH_ITERATIONS = 10_000_000;
+
+/**
+ * Decoded byte length of a base64 string, or `null` when it is not canonical
+ * base64 at all. One try/catch rather than a validity check followed by a
+ * decode: `b64ToBytes` itself refuses anything non-canonical, so a caller that
+ * only wants a length cannot end up skipping that refusal.
+ */
+function decodedLength(value: string): number | null {
+  try {
+    return b64ToBytes(value).length;
+  } catch {
+    return null;
+  }
+}
+
 function isPinHashShape(value: unknown): value is PinHash {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Partial<PinHash>;
+  if (
+    typeof v.salt !== "string" ||
+    typeof v.hash !== "string" ||
+    typeof v.iterations !== "number" ||
+    !Number.isInteger(v.iterations)
+  ) {
+    return false;
+  }
+  // Exact DECODED lengths, not merely non-empty strings (H2, D2): `atob`
+  // silently drops whitespace, so a salt of `"   "` used to pass here and
+  // PBKDF2 ran with a 0-byte (unsalted) salt — and a wrong-length digest can
+  // never equal the 32 bytes `verifyPin` derives, which would send the user to
+  // a lock screen where every answer is "Wrong PIN" and no recovery is offered.
   return (
-    typeof v.salt === "string" &&
-    v.salt.length > 0 &&
-    typeof v.hash === "string" &&
-    v.hash.length > 0 &&
-    typeof v.iterations === "number" &&
-    Number.isInteger(v.iterations)
+    decodedLength(v.salt) === SALT_BYTES &&
+    decodedLength(v.hash) === PBKDF2_DIGEST_BYTES
+  );
+}
+
+/**
+ * The one answer to “may this stored hash be verified against?”: the shape,
+ * base64 and byte-length rules above, plus a PBKDF2 count this app could
+ * actually have written.
+ *
+ * Shared by `pinResetBlocked` (which refuses the forgotten-PIN fallback on
+ * submit) and `lockGate` (which decides whether to offer it at all). Without
+ * the shared helper the two can disagree: `lockGate` would promise a recovery
+ * button that `pinResetBlocked` then rejects — or offer unlock against a hash
+ * that can never verify (H2).
+ */
+function isValidStoredPinHash(value: unknown): value is PinHash {
+  return (
+    isPinHashShape(value) &&
+    value.iterations >= MIN_PIN_HASH_ITERATIONS &&
+    value.iterations <= MAX_PIN_HASH_ITERATIONS
   );
 }
 
@@ -166,6 +227,12 @@ export function classifyPin(raw: string | undefined): PinState {
   if (parsed.iterations < MIN_PIN_HASH_ITERATIONS) {
     return { kind: "unreadable", reason: "weak-iterations" };
   }
+  // Past the ceiling the row is not "stronger", it is implausible — and
+  // honouring it would freeze the unlock UI (see the constant). Malformed,
+  // not weak: this is not a count this app could ever have written.
+  if (parsed.iterations > MAX_PIN_HASH_ITERATIONS) {
+    return { kind: "unreadable", reason: "malformed" };
+  }
   return { kind: "stored", hash: parsed };
 }
 
@@ -177,7 +244,10 @@ export function classifyPin(raw: string | undefined): PinState {
 export const UNREADABLE_PIN_REASON: Record<PinUnreadable, string> = {
   corrupt: "corrupt (not valid JSON)",
   malformed: "in an unexpected shape",
-  "weak-iterations": `hashed with too few iterations (below ${MIN_PIN_HASH_ITERATIONS.toLocaleString()})`,
+  // `en-US` explicitly: this is English copy, and an implicit host locale
+  // formats the floor as "100.000" (de-DE) or "100 000" (fr-FR) inside an
+  // English sentence — mixed-script text that also fails the test (H9).
+  "weak-iterations": `hashed with too few iterations (below ${MIN_PIN_HASH_ITERATIONS.toLocaleString("en-US")})`,
 };
 
 export function lockGate(pin: PinState, answerHash: unknown): LockGate {
@@ -187,7 +257,11 @@ export function lockGate(pin: PinState, answerHash: unknown): LockGate {
   // existing PIN with no verification; offering unlock would have nothing to
   // verify against.
   if (pin.kind === "unreadable") return "locked";
-  return answerHash === null || answerHash === undefined ? "pin-only" : "pin";
+  // The fallback is offered only for a hash that could actually verify — the
+  // same helper `pinResetBlocked` refuses on submit (H2), so the lock screen
+  // can never promise a recovery path that fails closed when taken, and a
+  // malformed answer row does not leave “Forgot PIN?” armed.
+  return isValidStoredPinHash(answerHash) ? "pin" : "pin-only";
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +362,10 @@ export function reloadOpensEntry(reload: SecurityReload): boolean {
 export const SECURITY_TRUST_ROOT_KEYS: readonly string[] = [
   "pin_hash",
   "security_answer_hash",
+  // The prompt text itself: the shell caches it beside the hash to show on the
+  // lock screen, so a write that changes the question ALONE must also trigger
+  // the reload — otherwise the next lock asks a stale question (H9).
+  "security_question",
 ];
 
 /**

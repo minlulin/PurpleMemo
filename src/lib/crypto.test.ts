@@ -26,6 +26,35 @@ test("base64 helpers roundtrip arbitrary bytes", () => {
   assert.deepEqual([...b64ToBytes(bytesToB64(bytes))], [...bytes]);
 });
 
+test("b64ToBytes refuses anything that is not canonical base64 (H2)", () => {
+  // `atob`'s forgiving algorithm DROPS ASCII whitespace, so "   " used to
+  // decode to zero bytes — a salt that leaves PBKDF2 running UNSALTED — and it
+  // accepts a missing pad, so several distinct strings decoded to the same
+  // bytes. The refusal has `atob`'s own error name, so callers that recognise
+  // a decode failure by name keep working, but the message says what is wrong.
+  const bad = [
+    "   ", // whitespace only: zero bytes, not a salt
+    "AAEC Aw=", // embedded whitespace (and the pad it hides)
+    "***", // not the base64 alphabet
+    "AAECAwQFBgcICQoLDA0ODw", // padding stripped
+    "AAAA====", // over-padded
+    "AAECAw=Q", // pad in the middle
+    "A", // length is not a multiple of 4
+  ];
+  for (const value of bad) {
+    assert.throws(
+      () => b64ToBytes(value),
+      { name: "InvalidCharacterError" },
+      JSON.stringify(value),
+    );
+  }
+  // Canonical input still decodes — including the empty string, which really
+  // is the encoding of zero bytes (a too-short value is caught by the
+  // byte-length check at the call site, not by the decoder).
+  assert.equal(b64ToBytes("").length, 0);
+  assert.equal(b64ToBytes(bytesToB64(new Uint8Array(16))).length, 16);
+});
+
 test("hashPin/verifyPin roundtrip; wrong PIN fails", async () => {
   const stored = await hashPin("123456");
   assert.equal(stored.iterations, PBKDF2_ITERATIONS);

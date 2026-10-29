@@ -9,6 +9,7 @@ import {
   type LockGate,
   lockGate,
   lockRetryDelayMs,
+  MAX_PIN_HASH_ITERATIONS,
   MIN_PIN_HASH_ITERATIONS,
   MIN_PIN_LENGTH,
   type PinResetBlock,
@@ -28,7 +29,14 @@ import {
 // import whose settings table lacks one of the two keys — must never route to
 // the setup screen, because setup overwrites the PIN without proving the old
 // one. That is a full lock bypass.
-const HASH = { salt: "c2FsdA==", hash: "aGFzaA==", iterations: 600_000 };
+// A real-shaped row: 16-byte salt and 32-byte PBKDF2 digest, exactly what
+// `hashPin` writes. Byte lengths are part of the contract now (D2), so the
+// old 4-byte synthetic strings would — correctly — classify as malformed.
+const HASH = {
+  salt: "AAECAwQFBgcICQoLDA0ODw==", // 0x00..0x0f
+  hash: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", // 0x00..0x1f
+  iterations: 600_000,
+};
 const STORED: PinState = { kind: "stored", hash: HASH };
 const ABSENT: PinState = { kind: "absent" };
 
@@ -128,6 +136,89 @@ test("classifyPin: a tampered iteration count is refused, not honoured", () => {
   assert.equal(lockGate(ok, HASH), "pin");
 });
 
+test("classifyPin: base64 that cannot hold a real salt+digest is malformed (H2)", () => {
+  // Every value below used to classify as `stored`, which put the user on the
+  // unlock screen: `b64ToBytes` then threw inside the submit handler — past
+  // `noteFailure()` — or PBKDF2 ran with a 0-byte salt. The classifier is
+  // where that must fail, so the shell routes to LockedScreen instead.
+  const unusable: unknown[] = [
+    // `atob` DROPS ASCII whitespace, so this used to decode to zero bytes.
+    { salt: "   ", hash: HASH.hash, iterations: 600_000 },
+    // Not the base64 alphabet at all.
+    { salt: "***", hash: "x", iterations: 600_000 },
+    // Valid base64, wrong lengths: 4 bytes where 16 (and 32) are required.
+    { salt: "c2FsdA==", hash: HASH.hash, iterations: 600_000 },
+    { salt: HASH.salt, hash: "aGFzaA==", iterations: 600_000 },
+    // Canonical alphabet, but the padding is missing / misplaced.
+    { salt: HASH.salt.slice(0, -1), hash: HASH.hash, iterations: 600_000 },
+    { salt: "AAECAw=Q", hash: HASH.hash, iterations: 600_000 },
+  ];
+  for (const value of unusable) {
+    const state = classifyPin(JSON.stringify(value));
+    assert.deepEqual(
+      state,
+      { kind: "unreadable", reason: "malformed" },
+      JSON.stringify(value),
+    );
+    assert.equal(lockGate(state, HASH), "locked", "never first-run setup");
+  }
+  // The untouched fixture still classifies as stored — the checks are not
+  // so strict that a real row fails.
+  assert.equal(classifyPin(JSON.stringify(HASH)).kind, "stored");
+});
+
+test("classifyPin: an implausible iteration count is malformed, not honoured (H2)", () => {
+  // Above 2^32 − 1 `deriveBits` throws a WebIDL `TypeError` at submit time,
+  // past `noteFailure()`; an in-range 32-bit count stalls every unlock for
+  // minutes. The app has only ever written 600k, so anything above the ceiling
+  // is a broken row, not a stronger one.
+  for (const iterations of [
+    MAX_PIN_HASH_ITERATIONS + 1,
+    1_000_000_000,
+    4_294_967_296,
+    5_000_000_000,
+  ]) {
+    assert.deepEqual(
+      classifyPin(JSON.stringify({ ...HASH, iterations })),
+      { kind: "unreadable", reason: "malformed" },
+      `${iterations} iterations`,
+    );
+  }
+  // The ceiling itself is believed — it exists to bound the row, not to beat it.
+  assert.equal(
+    classifyPin(
+      JSON.stringify({ ...HASH, iterations: MAX_PIN_HASH_ITERATIONS }),
+    ).kind,
+    "stored",
+  );
+});
+
+test("lockGate: a malformed or downgraded answer hash is pin-only (H2)", () => {
+  // `pinResetBlocked` has refused these on submit since G1, but `lockGate`
+  // still offered the fallback — a “Forgot PIN?” button that fails closed the
+  // moment it is taken. Offer and grant now share `isValidStoredPinHash`.
+  const unusable: unknown[] = [
+    42,
+    {},
+    { salt: "***", hash: "x", iterations: 600_000 },
+    { salt: "   ", hash: HASH.hash, iterations: 600_000 },
+    { ...HASH, iterations: MIN_PIN_HASH_ITERATIONS - 1 }, // downgrade
+    { ...HASH, iterations: MAX_PIN_HASH_ITERATIONS + 1 }, // stall
+  ];
+  for (const answerHash of unusable) {
+    assert.equal(
+      lockGate(STORED, answerHash),
+      "pin-only",
+      JSON.stringify(answerHash),
+    );
+  }
+  // Absent is the same gate — the fallback is unavailable either way — and a
+  // hash the app could have written still gets it.
+  assert.equal(lockGate(STORED, null), "pin-only");
+  assert.equal(lockGate(STORED, undefined), "pin-only");
+  assert.equal(lockGate(STORED, HASH), "pin");
+});
+
 test("lockGate: an unreadable PIN locks, refusing BOTH setup and unlock", () => {
   for (const reason of ["corrupt", "malformed", "weak-iterations"] as const) {
     const state: PinState = { kind: "unreadable", reason };
@@ -149,6 +240,10 @@ test("securityReloadNeeded: a PIN write must refresh the lock shell's hash", () 
   // verifying against the previous PIN.
   assert.equal(securityReloadNeeded(["pin_hash"]), true);
   assert.equal(securityReloadNeeded(["security_answer_hash"]), true);
+  // The prompt text is cached on the lock screen beside the hash, so writing
+  // the question ALONE must also reload — otherwise the next lock asks a
+  // stale question (H9).
+  assert.equal(securityReloadNeeded(["security_question"]), true);
   assert.equal(
     securityReloadNeeded(["pin_hash", "security_question"]),
     true,
@@ -473,7 +568,9 @@ test("UNREADABLE_PIN_REASON covers every reason classifyPin can produce", () => 
     );
   }
   // The iteration floor is named in the message, so the user learns why a PIN
-  // that used to work is now refused.
+  // that used to work is now refused. Formatted for en-US explicitly (H9): on
+  // a de-DE host an implicit locale would print "100.000" inside this English
+  // sentence and fail the match.
   assert.match(
     UNREADABLE_PIN_REASON["weak-iterations"],
     new RegExp(
@@ -486,13 +583,7 @@ test("a weak-iteration PIN is unreadable, so Change PIN refuses to touch it", ()
   // The second trust root. Boot already fails closed on this row, which is why
   // the audit called the Change-PIN path unreachable — but a trust root that
   // reaches the same secret and validates nothing is still a trust root.
-  const weak = classifyPin(
-    JSON.stringify({
-      salt: "s".repeat(16),
-      hash: "h".repeat(64),
-      iterations: 1,
-    }),
-  );
+  const weak = classifyPin(JSON.stringify({ ...HASH, iterations: 1 }));
   assert.equal(weak.kind, "unreadable");
   assert.equal(
     weak.kind === "unreadable" ? weak.reason : null,

@@ -5,6 +5,13 @@
 
 export const PBKDF2_ITERATIONS = 600_000;
 export const SALT_BYTES = 16;
+/**
+ * Bytes one PBKDF2-SHA256 digest occupies — the length of what `hashPin`
+ * stores as `hash`. Exported so a reader that must accept or refuse a stored
+ * hash (`appLock.ts`) can check it against the same number the derivation
+ * below actually produces, instead of a second copy that could drift.
+ */
+export const PBKDF2_DIGEST_BYTES = 32;
 const IV_BYTES = 12;
 
 // ---------------------------------------------------------------------------
@@ -20,7 +27,37 @@ export function bytesToB64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/** The base64 alphabet, without padding — the body of a canonical string. */
+const BASE64_BODY = /^[A-Za-z0-9+/]*$/;
+
+/**
+ * Strict canonical base64: the standard alphabet, no whitespace anywhere, and
+ * padding only in the final position and only as much as the length requires.
+ *
+ * `atob` on its own is too forgiving for what this module stores with it. Its
+ * algorithm *drops* ASCII whitespace, so a salt of `"   "` decodes to zero
+ * bytes and PBKDF2 would run **unsalted**; and it accepts a missing `=` pad,
+ * so several distinct strings decode to the same bytes. The empty string is
+ * canonical (it encodes zero bytes) and passes — refusing a value that is too
+ * *short* is the byte-length check's job, not this one's.
+ */
+function isB64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  const padCount = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return BASE64_BODY.test(value.slice(0, value.length - padCount));
+}
+
 export function b64ToBytes(b64: string): Uint8Array {
+  if (!isB64(b64)) {
+    // The name `atob` itself would throw, so any caller recognising a decode
+    // failure by name keeps working — but with a message that says what was
+    // wrong, instead of an opaque exception from inside the decoder, and
+    // crucially BEFORE the forgiving decode can silently discard whitespace.
+    throw new DOMException(
+      "not canonical base64 (whitespace, bad alphabet, or bad padding)",
+      "InvalidCharacterError",
+    );
+  }
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -77,9 +114,14 @@ async function pbkdf2Sha256(
     ["deriveBits"],
   );
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: salt as BufferSource, iterations },
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: salt as BufferSource,
+      iterations,
+    },
     keyMaterial,
-    256,
+    PBKDF2_DIGEST_BYTES * 8,
   );
   return new Uint8Array(bits);
 }
