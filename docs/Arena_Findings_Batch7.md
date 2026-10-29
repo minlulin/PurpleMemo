@@ -525,3 +525,50 @@ Every area below was verified directly in the scoped files and their immediate c
 - **Options:**
   1. **Enforce exact byte lengths (`salt === 16` bytes, `hash === 32` bytes) and update `appLock.test.ts:30`'s fixture (recommended):** Ensures any stored hash that `verifyPin` / `verifyAnswer` could never mathematically match fails closed as `"malformed"` (`LockedScreen` for `pin_hash`, `"pin-only"` / `"no-answer"` for `security_answer_hash`).
   2. **Require only valid base64 with `byteLength >= 1` (keep `appLock.test.ts:30` unchanged):** Fixes **H2**'s undecodable base64 and 0-byte whitespace salt bugs while documenting that wrong-length digests fail closed at `verifyPin` (`return false`) rather than `classifyPin`.
+
+---
+
+## Resolutions — owner decisions, 2026-10-29
+
+The two decisions above are settled as follows. The original wording is
+preserved; these resolutions are the fix wave's authority.
+
+1. **Retry reset: option (1) — keep & document the current flow, plus
+   fix H3.** `factoryReset()` stays exclusively in `SettingsPage.tsx`
+   and `onRetry` keeps returning to `SettingsPage`'s Danger Zone (paired
+   with `setPage("settings")` and H3's session/poller/auto-lock fixes);
+   the misleading comments in `ResetScreen.tsx:4-8` and
+   `reset-gate.test.ts:221-223` are updated to document that return.
+   Rationale: the single-call-site gate for factory reset (ack checkbox
+   + two-step confirmation, pinned by `reset-gate.test.ts`) is a
+   deliberate safety design — moving the retry into `ResetResultScreen`
+   would duplicate that gate in a second UI, exactly what the gate
+   exists to prevent, plus test-pin churn. H3's fixes already remove
+   the dangerous parts (lock trap, live pollers, cached keys); what
+   remains is fail-closed broken screens plus misleading comments,
+   which this option fixes by documentation.
+2. **Hash lengths: option (1) — enforce exact byte lengths (`salt === 16`
+   bytes, `hash === 32` bytes) and update `appLock.test.ts:30`'s fixture.**
+   Rationale: `hashPin` always produces a 16-byte salt and a 32-byte
+   hash, and `verifyPin` can never match anything else — so a truncated
+   hash routed to `LockScreen` is a forever-"Wrong PIN" dead end with no
+   recovery path offered, while exact-length fail-closed routes to
+   `LockedScreen` / `"pin-only"` with recovery. The only cost is one
+   synthetic test fixture update (plus any assertions depending on its
+   byte lengths); production rows are always 16/32 by construction, so
+   only corrupt or tampered rows change routing — precisely the
+   fail-closed target. This completes Batch 6's G1 direction.
+
+**Fix-wave note (verification, not a finding).** The fix wave runs in
+three commits, in order: commit 1 = H1+H4 (session tickers & sharing:
+`session.ts`, `session.test.ts`, `App.tsx` notify channel); commit 2 =
+H2+H9+D2(1) (hash validation & lock constants: `appLock.ts`,
+`crypto.ts`, `appLock.test.ts`, `crypto.test.ts`); commit 3 =
+H3+H5+H6+H8+H10+D1(1) (reset terminal & vault decrypt:
+`ResetScreen.tsx`, `reset.ts`, `App.tsx`, `crypto.ts` H5 part,
+`vault.ts`, `reset-gate.test.ts`, `submit-guards.test.ts`,
+`session.ts` JSDoc, `crypto.test.ts`/`vault.test.ts` H5 tests).
+Commits 2–3 share `crypto.ts` and commits 1 and 3 share `App.tsx`, so
+they run in this order. Verification note: H6's Rust line citations in
+the doc drifted slightly (`raise_reset()` takes no `?`; the store sits
+inside the spawned closure) — the mechanism is exactly as described.
