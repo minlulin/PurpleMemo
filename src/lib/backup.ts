@@ -490,6 +490,30 @@ export function assertExpandedLimits(
   }
 }
 
+/**
+ * The refusal for a current-format manifest that does not name every table
+ * (decision D1, option a).
+ *
+ * The exporter writes all {@link BACKUP_TABLES} on every save, and
+ * {@link upgradeBackupData} adds the tables an *older* format could not know
+ * about — so at the current version an absent key is not "an empty table", it
+ * is a file this app did not write (hand-edited, truncated, or produced by a
+ * different tool). Accepting it as empty is the dangerous direction:
+ * `applyBackup` deletes every table and then inserts `data[table] ?? []`, so
+ * one missing key would silently wipe that table's live rows.
+ */
+function incompleteBackupError(missing: string[]): Error {
+  const shown = missing.slice(0, 6).join(", ");
+  const rest = missing.length > 6 ? `, … and ${missing.length - 6} more` : "";
+  const what =
+    missing.length === 1
+      ? `table ${shown}`
+      : `${missing.length} tables (${shown}${rest})`;
+  return new Error(
+    `backup.json is incomplete: this version ${BACKUP_FORMAT_VERSION} backup is missing ${what}, but a backup this app writes always contains all ${BACKUP_TABLES.length} tables. Importing it would empty the tables it leaves out — import rejected.`,
+  );
+}
+
 function parseBackupJson(text: string): BackupPayload {
   let raw: unknown;
   try {
@@ -525,19 +549,30 @@ function parseBackupJson(text: string): BackupPayload {
     throw new Error("backup.json is corrupt (no data) — import rejected.");
   }
   let totalRows = 0;
+  const missing: string[] = [];
   for (const table of BACKUP_TABLES) {
     const rows = (obj.data as Record<string, unknown>)[table];
-    if (rows !== undefined && !Array.isArray(rows)) {
+    if (rows === undefined) {
+      // D1(a): only an *older* format may leave a table out — the upgrade
+      // fills those in. A current-format manifest must name every one, or
+      // importing it would delete the live table it omits.
+      if (obj.version === BACKUP_FORMAT_VERSION) missing.push(table);
+      continue;
+    }
+    if (!Array.isArray(rows)) {
       throw new Error(
         `backup.json is corrupt (table ${table}) — import rejected.`,
       );
     }
-    totalRows += rows === undefined ? 0 : rows.length;
+    totalRows += rows.length;
     if (totalRows > MAX_BACKUP_ROWS) {
       throw new Error(
         `Backup holds more than ${MAX_BACKUP_ROWS.toLocaleString()} rows — import rejected.`,
       );
     }
+  }
+  if (missing.length > 0) {
+    throw incompleteBackupError(missing);
   }
   const upgraded = upgradeBackupData({
     app: obj.app,

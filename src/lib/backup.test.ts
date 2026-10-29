@@ -75,12 +75,22 @@ const PHOTO_ROW = {
   created_at: "2026-01-01",
 };
 
+/**
+ * Every table, empty — the shape `readBackupData` writes on every export, and
+ * therefore the shape a current-format manifest must carry (D1).
+ */
+function emptyTables(): BackupPayload["data"] {
+  const data: BackupPayload["data"] = {};
+  for (const table of BACKUP_TABLES) data[table] = [];
+  return data;
+}
+
 function samplePayload(): BackupPayload {
   return {
     app: BACKUP_APP,
     version: BACKUP_FORMAT_VERSION,
     exportedAt: "2026-10-12T03:00:00.000Z",
-    data: { notes: [NOTE_ROW], photos: [PHOTO_ROW] },
+    data: { ...emptyTables(), notes: [NOTE_ROW], photos: [PHOTO_ROW] },
   };
 }
 
@@ -326,11 +336,11 @@ test("an import is refused when the manifest holds more rows than the cap", () =
   const overCap = zipWithPayload({
     ...samplePayload(),
     data: {
+      ...emptyTables(),
       notes: Array.from({ length: MAX_BACKUP_ROWS + 1 }, (_, i) => ({
         ...NOTE_ROW,
         id: i + 1,
       })),
-      photos: [],
     },
   });
   assert.throws(() => parseBackupZip(overCap), /more than .* rows/i);
@@ -343,6 +353,7 @@ test("the row cap sums across tables, it is not per table", () => {
   const spread = zipWithPayload({
     ...samplePayload(),
     data: {
+      ...emptyTables(),
       notes: Array.from({ length: half }, (_, i) => ({
         ...NOTE_ROW,
         id: i + 1,
@@ -351,7 +362,6 @@ test("the row cap sums across tables, it is not per table", () => {
         ...NOTE_ROW,
         id: i + 1,
       })),
-      photos: [],
     },
   });
   assert.throws(() => parseBackupZip(spread), /more than .* rows/i);
@@ -362,11 +372,11 @@ test("a manifest exactly at the row cap is still accepted", () => {
   const atCap = zipWithPayload({
     ...samplePayload(),
     data: {
+      ...emptyTables(),
       notes: Array.from({ length: MAX_BACKUP_ROWS }, (_, i) => ({
         ...NOTE_ROW,
         id: i + 1,
       })),
-      photos: [],
     },
   });
   const parsed = parseBackupZip(atCap);
@@ -429,6 +439,68 @@ test("parseBackupZip rejects payloads whose data is not a table map", () => {
   }
 });
 
+test("a current-format manifest must name every table (D1)", () => {
+  // The exporter writes all 31 keys, so a version-4 manifest missing one is
+  // not "an empty table" — it is a file this app did not write. `applyBackup`
+  // deletes every table and then inserts `data[table] ?? []`, so accepting it
+  // would wipe the live rows of the table it leaves out.
+  const data = { ...samplePayload().data };
+  delete data.notes;
+  assert.throws(
+    () => parseBackupZip(zipWithPayload({ ...samplePayload(), data })),
+    (e: unknown) => {
+      assert.ok(e instanceof Error);
+      assert.match(e.message, /is incomplete/);
+      assert.match(e.message, /table notes/);
+      assert.match(e.message, /all 31 tables/);
+      assert.match(e.message, /would empty the tables it leaves out/);
+      return true;
+    },
+  );
+  // A complete manifest of the same shape still parses: the check is on the
+  // keys, not on emptiness.
+  assert.deepEqual(
+    parseBackupZip(zipWithPayload(samplePayload())).payload.data,
+    samplePayload().data,
+  );
+});
+
+test("a manifest missing most tables names the count, not thirty errors (D1)", () => {
+  // One present table, thirty absent: the refusal has to be readable in a
+  // single sentence, so it counts and samples the tables instead of listing
+  // every one of them.
+  assert.throws(
+    () =>
+      parseBackupZip(
+        zipWithPayload({ ...samplePayload(), data: { notes: [NOTE_ROW] } }),
+      ),
+    (e: unknown) => {
+      assert.ok(e instanceof Error);
+      assert.match(e.message, /missing 30 tables \(/);
+      assert.match(e.message, /… and 24 more/);
+      return true;
+    },
+  );
+});
+
+test("only the current format is strict — an older manifest may still omit tables (D1)", () => {
+  // The boundary the decision draws: `upgradeBackupData` is what adds the
+  // tables a format could not know about, so a pre-current manifest stays
+  // permissive while a current one must name everything. A sparse v1 payload
+  // still imports and still gains the three tables it predates.
+  const v1 = {
+    ...samplePayload(),
+    version: 1,
+    data: { notes: [NOTE_ROW], photos: [PHOTO_ROW] },
+  };
+  const parsed = parseBackupZip(zipWithPayload(v1));
+  assert.equal(parsed.payload.version, BACKUP_FORMAT_VERSION);
+  assert.deepEqual(parsed.payload.data.notes, [NOTE_ROW]);
+  assert.deepEqual(parsed.payload.data.inbox_items, []);
+  assert.deepEqual(parsed.payload.data.links, []);
+  assert.deepEqual(parsed.payload.data.trash_items, []);
+});
+
 test("parseBackupZip ignores zip entries outside the photos/ tree", () => {
   const zip = zipSync({
     [BACKUP_JSON_ENTRY]: new TextEncoder().encode(
@@ -489,7 +561,7 @@ test("a v2 payload round-trips its inbox rows", () => {
   const parsed = parseBackupZip(
     zipWithPayload({
       ...samplePayload(),
-      data: { notes: [NOTE_ROW], photos: [], inbox_items: [row] },
+      data: { ...emptyTables(), notes: [NOTE_ROW], inbox_items: [row] },
     }),
   );
   assert.equal(parsed.payload.version, BACKUP_FORMAT_VERSION);
@@ -511,7 +583,7 @@ test("a converted inbox row keeps its target reference when the target is gone",
   const parsed = parseBackupZip(
     zipWithPayload({
       ...samplePayload(),
-      data: { notes: [], photos: [], inbox_items: [row] },
+      data: { ...emptyTables(), inbox_items: [row] },
     }),
   );
   const imported = parsed.payload.data.inbox_items?.[0];
@@ -541,10 +613,9 @@ function payloadWithLinks(links: Row[]): BackupPayload {
   return {
     ...samplePayload(),
     data: {
+      ...emptyTables(),
       notes: [{ ...NOTE_ROW, id: 1 }],
       tasks: [{ id: 1, title: "a task" }],
-      contacts: [],
-      photos: [],
       links,
     },
   };
@@ -1232,11 +1303,11 @@ test("the inner archive is validated with every existing limit after decryption"
   const overCap = zipWithPayload({
     ...samplePayload(),
     data: {
+      ...emptyTables(),
       notes: Array.from({ length: MAX_BACKUP_ROWS + 1 }, (_, i) => ({
         ...NOTE_ROW,
         id: i + 1,
       })),
-      photos: [],
     },
   });
   const sealedOverCap = await sealBackupContainer(overCap, PASSWORD);
