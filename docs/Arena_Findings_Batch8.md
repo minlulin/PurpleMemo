@@ -85,3 +85,52 @@ The ticker runs every 30 seconds while sharing is active (`App.tsx:250–265`). 
 - **Note reader:** The list projection is capped, but `NotesPage` fetches the selected note through `getNote()` before constructing the reader view (`notes.ts:150–171`; `NotesPage.tsx:548–588`). `resolveReaderView` keeps the full selected/editor content, and the dialog renders `note.content` (`noteReader.ts:92–115`; `NoteReaderDialog.tsx:208–215`). No truncated-reader-content issue was verified.
 - **Share disclosure/rendering:** The snapshot builder emits a fixed set of fields and its test pins the exact keys (`share.ts:115–139`; `share.test.ts:151–170`). Vault/settings/photo bytes and Trash are not inputs or snapshot fields; the default note query excludes archived notes (`notes.ts:158–170`). The Settings acknowledgement explicitly says anyone with the link can decrypt the snapshot (`SettingsPage.tsx:1253–1261`); the phone page reads the key from the URL fragment and removes it from browser history (`src-tauri/share/share.html:152–155`), and renders user values with `textContent`, not `innerHTML` (`:143–161,184–201`). The shared decryptor validates a 64-character hex key and authenticates the envelope version/timestamp (`src-tauri/share/_snapshot.js:21–69`). No additional hidden-field or markup-injection disclosure was verified.
 - **Previously reported photo boundaries:** The native 25 MiB save refusal remains before hashing/writing (`commands.rs:338–351`), so E6 is not re-reported. Batch 5 E8 concerned the safety-copy/reset symlink boundary; the current safety copy refuses linked roots and linked descendants (`safety_copy.rs:124–143,230–250`). Ordinary `photos.rs` path operations remain within the prior E8 discussion; no distinct new regression was verified here.
+
+## Resolutions (decided by Muus, delegated by the owner 2026-10-29)
+
+The DECISION items above are genuine behaviour choices. Both are settled
+here; the original DECISION wording is preserved above.
+
+- **Decision 1 — option (a): require every current table key.** A
+  current-format backup must contain all 31 `BACKUP_TABLES` keys as
+  arrays; a missing key is rejected as a corrupt/incomplete backup,
+  not treated as an empty table. Rationale: the app's own exporter
+  always writes all 31 keys, so a current-format manifest missing keys
+  is by construction not app-produced — it is hand-edited or truncated.
+  The current silent behaviour (wipe the missing tables on apply) is the
+  dangerous direction; fail-closed with a clear "backup is incomplete"
+  error is safer. The versioned-upgrade path is untouched: older
+  versions still gain new tables as empty arrays in `upgradeBackupData`;
+  only the current-version branch gets strict. Cost: update the sparse
+  synthetic fixtures in `backup.test.ts` (add the missing keys as empty
+  arrays).
+- **Decision 2 — option (a): lock wins.** Locking must invalidate any
+  in-flight LAN share start: a listener binding on `0.0.0.0` after the
+  shell locked is the sharpest possible violation of `lockSession`'s
+  pinned rule "locking ends sharing" — the user locked the app believing
+  nothing serves. The consent was given pre-lock, but the security
+  expectation at lock time dominates. Fix direction: bind the consent
+  token to a lock epoch at arm time (or a dedicated lock-stop that
+  revokes pending consent); `start` refuses tokens from a superseded
+  epoch under the server lock, following the E2 re-check pattern.
+  Ordinary stop/start token semantics stay exactly as pinned
+  (`share.rs:1016–1025`) — only the lock path changes. The renderer
+  needs no structural change: the existing `catch` in
+  `SettingsPage.startShare` surfaces the refusal.
+
+## Fix-wave note (3 commits, order 1→2→3)
+
+- Commit 1 = I1 + I2 (photo pipeline: `thumbs.ts`
+  pixel-ceiling-before-decode; `GalleryPage.tsx` picker `file.size`
+  preflight against the 25 MiB limit; tests).
+- Commit 2 = D1(a) (backup current-version strictness: `backup.ts`;
+  update the sparse fixtures in `backup.test.ts`).
+- Commit 3 = I3 + I4 + D2(a) (share subsystem: SQL caps/projections for
+  every ticker read — `share.ts` plus `budget.ts`, `tasks.ts`,
+  `memories.ts`, `contacts.ts`, `notes.ts`; UTF-8 byte budgets before
+  encryption in `share.ts`; lock-epoch share start in `share.rs` +
+  `share.ts`; extend the "capped in SQL" test to all reads; tests).
+
+Commits 1 and 2 are independent; commit 3 is the share-subsystem commit
+(I3, I4 and D2 share `share.ts`). `npm run verify` green before each
+commit.
