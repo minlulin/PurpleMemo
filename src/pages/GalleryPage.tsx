@@ -29,7 +29,11 @@ import {
   notesRepo,
 } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
-import { createThumbUrlBook, photoExtFromName } from "../lib/gallery.ts";
+import {
+  assertPickablePhotoSize,
+  createThumbUrlBook,
+  photoExtFromName,
+} from "../lib/gallery.ts";
 import { createLoadGuard } from "../lib/loads.ts";
 import { makeThumbnail } from "../lib/thumbs.ts";
 import type {
@@ -208,6 +212,12 @@ export default function GalleryPage() {
     setSaving(true);
     try {
       for (const file of Array.from(fileList)) {
+        // I2: the size is known before anything reads the file, so the
+        // 25 MiB ceiling is applied here — not after `arrayBuffer()` has
+        // copied the whole thing into the renderer and IPC has copied it
+        // again. `photo_save` still refuses the bytes it receives; this
+        // preflight only means an oversized pick is never read at all.
+        assertPickablePhotoSize(file.size);
         const bytes = new Uint8Array(await file.arrayBuffer());
         const id = await galleryRepo.savePhoto({
           bytes,

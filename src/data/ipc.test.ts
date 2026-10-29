@@ -117,6 +117,45 @@ test("the save-time photo limit is the importer's per-photo limit (E6)", () => {
   );
 });
 
+test("the gallery picker refuses an oversized file before reading it (I2)", () => {
+  // E6's refusal lives in Rust, *after* the request body has been read out of
+  // the file and copied through IPC — so the renderer used to materialise an
+  // arbitrarily large pick in full just to be told no. The `File` knows its
+  // own size, so the same ceiling must be applied before `arrayBuffer()`.
+  const galleryPageSrc = readFileSync(
+    new URL("../pages/GalleryPage.tsx", import.meta.url),
+    "utf8",
+  );
+  const start = galleryPageSrc.indexOf("const pickFiles = ");
+  assert.notEqual(start, -1, "pickFiles not found — renamed or removed?");
+  const body = galleryPageSrc.slice(start);
+  const preflight = body.indexOf("assertPickablePhotoSize(file.size)");
+  const read = body.indexOf("file.arrayBuffer()");
+  assert.ok(preflight > -1, "pickFiles must check the file's own size first");
+  assert.ok(read > -1, "pickFiles still reads the file afterwards");
+  assert.ok(
+    preflight < read,
+    "the size must be checked before the file is read (I2)",
+  );
+
+  // And the ceiling it applies is the imported constant, not a second copy of
+  // the number that could drift away from Rust's.
+  const gallerySrc = readFileSync(
+    new URL("../lib/gallery.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    gallerySrc,
+    /import \{ MAX_BACKUP_PHOTO_BYTES \} from "\.\/backup\.ts"/,
+    "gallery.ts must import the shared limit (E6's parity constant)",
+  );
+  assert.doesNotMatch(
+    gallerySrc,
+    /25 \* 1024 \* 1024/,
+    "gallery.ts must not restate the 25 MiB figure",
+  );
+});
+
 test("photo reads answer with raw bytes rather than a JSON byte array", () => {
   // The byte contract: `Vec<u8>` would serialize as a JSON number array; a
   // `tauri::ipc::Response` arrives as an ArrayBuffer.

@@ -9,7 +9,9 @@ import { test } from "node:test";
 import type { BatchStatement } from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at, first } from "../test-utils.ts";
+import { MAX_BACKUP_PHOTO_BYTES } from "./backup.ts";
 import {
+  assertPickablePhotoSize,
   createGalleryRepo,
   createThumbUrlBook,
   deleteLinkedEntity,
@@ -49,6 +51,28 @@ test("photoExtFromName: missing or hostile extensions fall back to bin", () => {
   assert.equal(photoExtFromName("noextension"), "bin");
   assert.equal(photoExtFromName("weird.<script>"), "bin");
   assert.equal(photoExtFromName(""), "bin");
+});
+
+test("assertPickablePhotoSize: the picker refuses at the door what Rust refuses at the body (I2)", () => {
+  // The preflight must never narrow the limit: at the ceiling and below, the
+  // file is read exactly as before.
+  assert.doesNotThrow(() => assertPickablePhotoSize(MAX_BACKUP_PHOTO_BYTES));
+  assert.doesNotThrow(() => assertPickablePhotoSize(1));
+  assert.doesNotThrow(() => assertPickablePhotoSize(0));
+  // One byte over, and the native refusal's own words come back — the user
+  // sees the same sentence either way.
+  assert.throws(
+    () => assertPickablePhotoSize(MAX_BACKUP_PHOTO_BYTES + 1),
+    /unrestorable/,
+  );
+  assert.throws(
+    () => assertPickablePhotoSize(MAX_BACKUP_PHOTO_BYTES + 1),
+    /25 MiB/,
+  );
+  assert.throws(
+    () => assertPickablePhotoSize(2 * 1024 * 1024 * 1024),
+    /2048\.0 MiB/,
+  );
 });
 
 test("listRefsForPhoto: queries photo_refs scoped by photo id", async () => {

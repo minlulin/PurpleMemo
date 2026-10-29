@@ -5,6 +5,7 @@
 // — the driver hands them over raw, never as a `number[]`.
 
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
+import { MAX_BACKUP_PHOTO_BYTES } from "./backup.ts";
 import { sha256HexBytes } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
 import type { PhotoRefEntity, PhotoRefRow, PhotoRow } from "./types.ts";
@@ -44,6 +45,31 @@ export function photoExtFromName(fileName: string): string {
   if (dot < 0) return "bin";
   const ext = fileName.slice(dot + 1).toLowerCase();
   return /^[a-z0-9]{1,8}$/.test(ext) ? ext : "bin";
+}
+
+/**
+ * Refuse, before reading it, a file the save command would refuse (I2).
+ *
+ * `photo_save` in `commands.rs` enforces `MAX_SAVED_PHOTO_BYTES`, which is
+ * pinned to this same `MAX_BACKUP_PHOTO_BYTES` (E6, tested in `ipc.test.ts`) —
+ * but only *after* the whole request body has been read out of the file and
+ * copied through IPC. The picker therefore used to materialise an arbitrarily
+ * large selection in full just to be told no: a multi-gigabyte pick could
+ * exhaust or freeze the renderer on the way to a refusal that was never in
+ * doubt.
+ *
+ * A `File` already knows its own length, so the ceiling is applied here, on
+ * `file.size`, before `arrayBuffer()` is called. This is a preflight, not a
+ * second authority: the bytes that reach `photo_save` are still checked there,
+ * and the constant is imported rather than restated so the two can never drift
+ * apart. The words are the native refusal's own, so the user sees one
+ * sentence whichever check catches them.
+ */
+export function assertPickablePhotoSize(byteLength: number): void {
+  if (byteLength <= MAX_BACKUP_PHOTO_BYTES) return;
+  throw new Error(
+    `this photo is ${(byteLength / (1024 * 1024)).toFixed(1)} MiB — Purple Memo accepts a single photo up to ${(MAX_BACKUP_PHOTO_BYTES / (1024 * 1024)).toFixed(0)} MiB, because a larger one would make every backup containing it unrestorable. Compress or resize the image and try again; nothing was saved.`,
+  );
 }
 
 /**
