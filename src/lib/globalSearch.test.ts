@@ -23,7 +23,11 @@ import {
   type SearchGroup,
   type TotalCapReport,
 } from "./globalSearch.ts";
+import { buildMatchQuery } from "./search.ts";
 import {
+  FOLD_RANGES,
+  foldChar,
+  globTerm,
   isSearchable,
   normalizeTerm,
   SEARCH_CONTRACT,
@@ -379,6 +383,275 @@ test("the term is normalized to NFC and lower case, and keeps its marks", () => 
     /\p{M}/u,
     "Burmese vowel signs are kept",
   );
+});
+
+test("a LIKE wildcard in the term matches itself, not everything (K6)", async () => {
+  const driver = sqliteDriver();
+  // Rows baiting the wildcards: if `%` or `_` reached the pattern unescaped,
+  // these would match a search that never mentioned them.
+  const insert = driver.db.prepare(
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (?, ?, NULL, 0, 'none', ?, 'x')",
+  );
+  insert.run(1, "a_b_c", "");
+  insert.run(2, "axbxc", "");
+  insert.run(3, "50% off", "");
+  insert.run(4, "discount 50 today", "");
+  insert.run(5, "see c:\\path", "");
+  insert.run(6, "star * here", "");
+  insert.run(7, "plain star", "");
+
+  const titles = async (input: string) =>
+    (await globalSearch(driver, input))
+      .find((g) => g.type === "task")
+      ?.results.map((r) => r.title);
+
+  assert.deepEqual(await titles("a_b"), ["a_b_c"], "`_` is a literal");
+  assert.deepEqual(
+    await titles("50%"),
+    ["50% off"],
+    "`%` is a literal — the un-escaped pattern also matched 'discount 50 today'",
+  );
+  assert.deepEqual(
+    await titles("c:\\"),
+    ["see c:\\path"],
+    "a trailing escape character is a literal, not a malformed pattern",
+  );
+  assert.deepEqual(
+    await titles("star *"),
+    ["star * here"],
+    "`*` in the term is literal — GLOB's own wildcard, not the user's",
+  );
+});
+
+test("the LIKE path is a folded GLOB, with no wildcards of its own (K4/K6)", () => {
+  // What replaced LIKE: `col GLOB ?` with the folded term as the pattern.
+  // GLOB has no `%` or `_` wildcards, so there is no ESCAPE clause to declare
+  // — and no `lower()` either, now that the fold travels in the pattern (K4).
+  for (const spec of SEARCH_CONTRACT) {
+    if (spec.match !== "like") continue;
+    const { sql, params } = buildSearchQuery(spec, "50% off", {});
+    assert.equal(
+      (sql.match(/GLOB \?/g) ?? []).length,
+      spec.searchable.length + (spec.title[0] === undefined ? 0 : 1),
+      `${spec.type}: a GLOB per searchable column plus the prefix rank`,
+    );
+    assert.equal(sql.includes("LIKE"), false, `${spec.type}: no LIKE left`);
+    const term = globTerm("50% off");
+    assert.equal(
+      params.filter((p) => p === `*${term}*`).length,
+      spec.searchable.length,
+      `${spec.type}: one contains-pattern per searchable column`,
+    );
+    assert.equal(
+      params.filter((p) => p === `${term}*`).length,
+      spec.title[0] === undefined ? 0 : 1,
+      `${spec.type}: the rank is a prefix of the same folded term`,
+    );
+  }
+});
+
+test("a GLOB metacharacter never escapes its class (K6)", () => {
+  // Outside a class, `*`, `?` and `[` are GLOB's own syntax; `globTerm` puts
+  // each of them inside a class of one so the user's text stays text. Strip
+  // the classes and no metacharacter may survive, whatever was typed.
+  const outsideClasses = (pattern: string) =>
+    pattern.replace(/\[[^\]]*\]/g, "");
+  for (const sample of [
+    "50% off",
+    "a_b",
+    "c:\\path",
+    "star * here",
+    "what?",
+    "[draft] roof",
+    "roof* (invoice)",
+  ]) {
+    const pattern = globTerm(sample);
+    assert.doesNotMatch(
+      outsideClasses(pattern),
+      /[*?[]/,
+      `${JSON.stringify(sample)}: metacharacters only ever appear inside a class`,
+    );
+  }
+});
+
+test("the same term finds the same text on both match paths (K4)", async () => {
+  const driver = sqliteDriver();
+  // One accented string behind each match mode: `notes_fts` folds with
+  // unicode61, the other three with the contract's fold. Searching without
+  // the accent must reach all of them — the report this fix came from was
+  // that `cafe` found the note and not the contact.
+  driver.db
+    .prepare(
+      "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (1, 'Café order', 'beans', '', NULL, 0, 0, 'x', 'x')",
+    )
+    .run();
+  driver.db
+    .prepare(
+      "INSERT INTO notes_fts(rowid, title, content, tags, folder) VALUES (1, 'Café order', 'beans', '', '')",
+    )
+    .run();
+  driver.db
+    .prepare(
+      "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'Café order', NULL, 0, 'none', '', 'x')",
+    )
+    .run();
+  driver.db
+    .prepare(
+      "INSERT INTO contacts (id, name, address, notes, created_at) VALUES (1, 'Café owner', '', '', 'x')",
+    )
+    .run();
+
+  for (const input of ["cafe", "café", "CAFÉ", "Cafe"]) {
+    const groups = await globalSearch(driver, input);
+    const titlesOf = (type: string) =>
+      groups.find((g) => g.type === type)?.results.map((r) => r.title);
+    assert.deepEqual(
+      titlesOf("note"),
+      ["Café order"],
+      `notes (unicode61): ${input}`,
+    );
+    assert.deepEqual(
+      titlesOf("task"),
+      ["Café order"],
+      `tasks (fold): ${input}`,
+    );
+    assert.deepEqual(
+      titlesOf("contact"),
+      ["Café owner"],
+      `contacts (fold): ${input}`,
+    );
+  }
+});
+
+test("the fold and the notes index answer with the same rows, character for character (K4)", () => {
+  const driver = sqliteDriver();
+  const noteSpec = specFor("note");
+  assert.ok(noteSpec, "the contract has a note spec");
+  const note = driver.db.prepare(
+    "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (?, ?, '', '', NULL, 0, 0, 'x', 'x')",
+  );
+  const fts = driver.db.prepare(
+    "INSERT INTO notes_fts(rowid, title, content, tags, folder) VALUES (?, ?, '', '', '')",
+  );
+  // One row per character the fold claims to cover, all wearing the same
+  // two-letter tail: a query for `<fold>zz` then asks about the fold alone.
+  const rows: { id: number; ch: string; key: string }[] = [];
+  driver.db.exec("BEGIN");
+  try {
+    for (const [from, to] of FOLD_RANGES) {
+      for (let cp = from; cp <= to; cp += 1) {
+        // Composed, because `globTerm` composes the term it builds a pattern
+        // from: a few of these characters (U+0374, U+1F71, U+1FD3) have a
+        // different NFC spelling, and the stored text this app writes is the
+        // composed one.
+        const ch = String.fromCodePoint(cp).normalize("NFC");
+        if (!/\p{L}/u.test(ch)) continue;
+        const id = rows.length + 1;
+        rows.push({ id, ch, key: foldChar(ch) });
+        note.run(id, `${ch}zz`);
+        fts.run(id, `${ch}zz`);
+      }
+    }
+    driver.db.exec("COMMIT");
+  } catch (error) {
+    driver.db.exec("ROLLBACK");
+    throw error;
+  }
+  assert.ok(rows.length > 1000, `the ranges cover letters (${rows.length})`);
+
+  const byKey = new Map<string, number[]>();
+  for (const row of rows) {
+    const ids = byKey.get(row.key);
+    if (ids === undefined) byKey.set(row.key, [row.id]);
+    else ids.push(row.id);
+  }
+
+  // A class may only hold letters: `]`, `^` or `-` inside one changes what
+  // the pattern means, and GLOB's syntax is exactly what K6 must not hand
+  // back to the user's text.
+  for (const key of byKey.keys()) {
+    for (const piece of globTerm(key).matchAll(/\[([^\]]*)\]/g)) {
+      const body = piece[1] ?? "";
+      assert.match(
+        body,
+        /^\p{L}+$/u,
+        `${JSON.stringify(key)}: a class holds letters only`,
+      );
+    }
+  }
+
+  // The index's answer, through the MATCH string the search itself builds.
+  const match = driver.db.prepare(
+    "SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?",
+  );
+  const sorted = (ids: number[]) => [...ids].sort((a, b) => a - b);
+  for (const [key, ids] of byKey) {
+    const param: string = `{${noteSpec.searchable.join(" ")}} : ${buildMatchQuery(`${key}zz`)}`;
+    const found: number[] = match
+      .all(param)
+      .map((row) => (row as { rowid: number }).rowid);
+    assert.deepEqual(
+      sorted(found),
+      sorted(ids),
+      `unicode61 and foldChar disagree on ${JSON.stringify(key)}`,
+    );
+  }
+
+  // …and the LIKE path agrees with both: each character matches the class of
+  // its own fold, and never the class of a fold it does not belong to.
+  const glob = driver.db.prepare("SELECT ? GLOB ? AS hit");
+  const patternOf = (key: string) => `*${globTerm(`${key}zz`)}*`;
+  rows.forEach((row, index) => {
+    const hit = (text: string, pattern: string) =>
+      (glob.get(text, pattern) as { hit: number }).hit;
+    assert.equal(
+      hit(`${row.ch}zz`, patternOf(row.key)),
+      1,
+      `${JSON.stringify(row.ch)} matches its own fold`,
+    );
+    const next = rows[(index + 1) % rows.length];
+    if (next !== undefined && next.key !== row.key) {
+      assert.equal(
+        hit(`${row.ch}zz`, patternOf(next.key)),
+        0,
+        `${JSON.stringify(row.ch)} is not in ${JSON.stringify(next.key)}`,
+      );
+    }
+  });
+});
+
+test("a Unicode mark is content: searchable, and it finds its rows (K7)", async () => {
+  const driver = sqliteDriver();
+  // Burmese writes vowels and tones as combining marks, so a mark alone is a
+  // letter's worth of meaning. A bare U+031A ( anusvara, also standalone in
+  // Burmese orthography) sits inside this task's note.
+  driver.db
+    .prepare(
+      "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'Burmese text', NULL, 0, 'none', ?, 'x')",
+    )
+    .run("မြန်မာ ံ စာ");
+  driver.db
+    .prepare(
+      "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (2, 'Plain', NULL, 0, 'none', 'nothing here', 'x')",
+    )
+    .run();
+
+  assert.equal(
+    isSearchable("ံ"),
+    true,
+    "a mark-only term is content, not punctuation to be refused",
+  );
+  const groups = await globalSearch(driver, "ံ");
+  const notes = groups.find((g) => g.type === "task");
+  assert.deepEqual(
+    notes?.results.map((r) => r.id),
+    [1],
+    "the mark-only term finds the row containing it, and only that row",
+  );
+  // The refusal it must NOT have weakened: real FTS operators are punctuation.
+  for (const operator of ['"', "-", "??", "()", "*", "^"]) {
+    assert.equal(isSearchable(operator), false, `${operator} is still refused`);
+  }
 });
 
 test("a composed and a decomposed spelling of the same word both match", async () => {

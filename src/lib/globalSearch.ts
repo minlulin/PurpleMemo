@@ -11,9 +11,11 @@
 // 1. **No user text reaches SQL as syntax.** Notes use the existing FTS5 MATCH
 //    builder, wrapped in the contract's column filter so the match covers the
 //    searchable columns and nothing else (`{title content tags} : …`, D1(a));
-//    every token is quoted by `buildMatchQuery`. Everything else binds a
-//    `%term%` parameter. Table and column names come from the contract, which
-//    is code-owned.
+//    every token is quoted by `buildMatchQuery`. Everything else binds a GLOB
+//    pattern built by `globTerm` (K4/K6): every character of the term becomes
+//    the class its fold reaches, so the term matches the way the notes index
+//    folds it, and the user's own `%`, `_`, `*` and `\` are ordinary text.
+//    Table and column names come from the contract, which is code-owned.
 // 2. **Ordering is deterministic.** Within a type: notes by FTS rank then date
 //    then id; the rest by "does the title start with this", then date, then id.
 //    Across types: the contract's own order, with the total cap trimming from the
@@ -29,8 +31,9 @@ import type { DataDriver, Queryable } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import { buildMatchQuery } from "./search.ts";
 import {
+  globExpression,
+  globTerm,
   isSearchable,
-  likeExpression,
   normalizeTerm,
   SEARCH_CONTRACT,
   SEARCH_TOTAL_CAP,
@@ -293,9 +296,13 @@ export function buildSearchQuery(
       `{${spec.searchable.join(" ")}} : ${buildMatchQuery(input)}`,
     );
   } else {
-    clauses.push(`(${likeExpression(spec)})`);
-    // One parameter per searchable column — the OR cannot share one.
-    for (const _ of spec.searchable) whereParams.push(`%${term}%`);
+    clauses.push(`(${globExpression(spec)})`);
+    // One parameter per searchable column — the OR cannot share one. The
+    // pattern is the term folded into character classes (K4) and wrapped for
+    // "contains"; `globTerm` has already made the user's `%`, `_` and `\`
+    // literal, so `a_b` finds `a_b` and nothing wider (K6).
+    const pattern = `*${globTerm(input)}*`;
+    for (const _ of spec.searchable) whereParams.push(pattern);
   }
 
   if (spec.inactive !== null && options.includeInactive !== true) {
@@ -330,16 +337,18 @@ export function buildSearchQuery(
       ? `SELECT ${projection} FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid`
       : `SELECT ${projection} FROM ${spec.table}`;
   // A title that STARTS with the term outranks one that merely contains it,
-  // which is what someone typing a name is looking for.
+  // which is what someone typing a name is looking for. Same folded term, one
+  // trailing `*` — and `globTerm` already made any `*` in the term literal, so
+  // the only wildcard in this pattern is ours.
   if (spec.match === "like" && spec.title[0] !== undefined) {
-    whereParams.push(`${term}%`);
+    whereParams.push(`${globTerm(input)}*`);
   }
   const rank =
     spec.match === "fts"
       ? "rank"
       : spec.title[0] === undefined
         ? "id DESC"
-        : `(lower(${spec.title[0]}) LIKE ?) DESC`;
+        : `(${spec.title[0]} GLOB ?) DESC`;
   // A total order, always: the same query must not reorder between two runs.
   const tieBreak = `, ${alias}${spec.date ?? "id"} DESC, ${alias}id DESC`;
 

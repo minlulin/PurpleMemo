@@ -251,17 +251,184 @@ export function specFor(
   return SEARCH_CONTRACT.find((spec) => spec.type === type);
 }
 
+/** ASCII letters: the only characters a diacritic may hang on (K4). */
+const ASCII_LETTER = /[A-Za-z]/;
+
 /**
- * The columns a LIKE entity searches, as one expression.
+ * Where SQLite's case-folding table and `String.prototype.toLowerCase`
+ * disagree — the adjustment {@link foldChar} applies after lower-casing.
  *
- * A LIKE match is case-insensitive only for ASCII in SQLite, so Burmese text
- * is matched by the caller passing a normalized term — `normalizeTerm` below.
- * `lower(col) LIKE ?` keeps one comparison for every column.
+ * Unicode case folding is not lower-casing: it unifies `ς` with `σ`, `ſ`
+ * with `s`, `µ` with Greek `μ`, the Greek symbol variants with the letters
+ * they stand for, and U+1FBE with iota. unicode61 case-folds, so the fold has
+ * to as well, or a query would find a word on the notes page and miss the
+ * same word in a task. Looked up on the raw character first and then on its
+ * lower-cased form, so the uppercase variants (`ϴ`) follow their lowercase
+ * one (`ϑ`).
+ *
+ * The identity entry (`Ϳ`) records the opposite case: a character the index
+ * does NOT fold, added to Unicode after sqlite's table was generated.
+ *
+ * Every entry here was found by the parity test in `globalSearch.test.ts`,
+ * which walks {@link FOLD_RANGES} and compares the two answers character by
+ * character. When it names a character, add it here — do not teach the test
+ * to look away.
  */
-export function likeExpression(spec: SearchEntitySpec): string {
-  return spec.searchable
-    .map((column) => `lower(${column}) LIKE ?`)
-    .join(" OR ");
+const CASE_FOLD: Readonly<Record<string, string>> = {
+  µ: "μ", // MICRO SIGN case-folds to Greek mu, and lower-casing keeps it
+  ς: "σ",
+  // U+1FBE (GREEK PROSGEGRAMMENI) case-folds to iota — written escaped
+  // because it renders identically to U+03B9 in every font.
+  "\u1fbe": "\u03b9",
+  ſ: "s",
+  ẛ: "s",
+  Ϳ: "Ϳ",
+  ϐ: "β",
+  ϑ: "θ",
+  ϵ: "ε",
+  ϰ: "κ",
+  ϱ: "ρ",
+  ϕ: "φ",
+  ϖ: "π",
+};
+
+/**
+ * How one character folds for search — the ONE semantic both match paths use
+ * (K4).
+ *
+ * The notes path runs the `unicode61` tokenizer: it case-folds every script
+ * and drops a single diacritic off an ASCII-lettered character, so `cafe`
+ * finds `Café`. The LIKE path used to fold ASCII case through `lower()` and
+ * compare accents as stored, so the same term answered with different rows
+ * depending on which table the row lived in. The rule below reproduces what
+ * `unicode61` does — measured against SQLite rather than assumed:
+ *
+ *   1. an ASCII letter carrying EXACTLY ONE combining mark folds to the bare
+ *      letter (`É`→`e`, `İ`→`i`). Two marks stay two marks: `Ệ` (e with
+ *      circumflex and dot below) keeps its spelling, because unicode61 does
+ *      not strip it either — nor a decomposed mark sitting beside another.
+ *   2. otherwise lower-case, adjusted by {@link CASE_FOLD}.
+ *
+ * What it leaves alone is deliberate: Burmese has no case and its marks are
+ * letters rather than diacritics (K7); Greek tonos and the Cyrillic diaeresis
+ * stay because unicode61 keeps them; `æ`, `ø`, `đ` and `ß` are letters, not
+ * accented spellings of another one.
+ *
+ * Exported because the promise is testable: the parity test in
+ * `globalSearch.test.ts` walks every character in {@link FOLD_RANGES} and
+ * asserts the two paths answer with the same rows, so this rule cannot drift
+ * away from the index silently.
+ */
+export function foldChar(ch: string): string {
+  const decomposed = ch.normalize("NFD");
+  const base = decomposed.charAt(0);
+  const mark = decomposed.charAt(1);
+  if (
+    decomposed.length === 2 &&
+    /\p{M}/u.test(mark) &&
+    ASCII_LETTER.test(base)
+  ) {
+    return base.toLowerCase();
+  }
+  const lower = ch.toLowerCase();
+  return CASE_FOLD[ch] ?? CASE_FOLD[lower] ?? lower;
+}
+
+/**
+ * The code-point ranges this app's search folds — the scripts it stores text
+ * in. Characters outside them keep their own spelling on the LIKE path; the
+ * claim and the parity test cover exactly these ranges.
+ */
+export const FOLD_RANGES: readonly (readonly [number, number])[] = [
+  [0x0000, 0x024f], // ASCII, Latin-1 Supplement, Latin Extended-A and B
+  [0x0370, 0x03ff], // Greek
+  [0x0400, 0x04ff], // Cyrillic
+  [0x1e00, 0x1eff], // Latin Extended Additional (the Vietnamese block)
+  [0x1f00, 0x1fff], // Greek Extended
+  [0x212a, 0x212b], // KELVIN SIGN and ANGSTROM SIGN, folding to k and a
+];
+
+/** Every character {@link foldChar} can reach, grouped by where it folds to. */
+let foldGroups: Map<string, Set<string>> | undefined;
+
+function foldedGroups(): Map<string, Set<string>> {
+  if (foldGroups !== undefined) return foldGroups;
+  const groups = new Map<string, Set<string>>();
+  const letter = /\p{L}/u;
+  for (const [from, to] of FOLD_RANGES) {
+    for (let cp = from; cp <= to; cp += 1) {
+      const ch = String.fromCodePoint(cp);
+      // Only letters are collected, so a class can never hold GLOB's own
+      // punctuation (`]`, `^`, `-`): a non-letter folds to itself and is
+      // emitted raw below.
+      if (!letter.test(ch)) continue;
+      const key = foldChar(ch);
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, new Set([ch]));
+      else group.add(ch);
+    }
+  }
+  foldGroups = groups;
+  return groups;
+}
+
+/**
+ * The term as a GLOB pattern that matches the term itself — folded (K4) and
+ * escaped (K6), in one step.
+ *
+ * Each character becomes a character class holding every character the fold
+ * maps to the same place, so `cafe` finds `Café`, `CAFÉ` and `café` in a task
+ * exactly as it finds them in a note — while the column stays as stored,
+ * which is what makes one comparison possible without `lower()`, without an
+ * `ESCAPE` clause and without a schema migration. A character with nothing to
+ * fold into is emitted as itself.
+ *
+ * GLOB's metacharacters — `*`, `?`, `[` — go inside a class of one, so they
+ * match literally. `%` and `_` are not metacharacters in GLOB at all, and
+ * that is K6: `a_b` finds `a_b` and never `axb`, `50%` finds `50% off` and
+ * never `discount 50`, and a trailing lone backslash is an ordinary character
+ * where the old LIKE pattern made it malformed. There is no escape clause for
+ * a later reader to forget. The caller may wrap the result in `*…*`
+ * (contains) or `…*` (prefix): every `*` the user typed is already literal.
+ *
+ * NFC-normalised and trimmed like `normalizeTerm`, but deliberately NOT
+ * lower-cased: the classes carry both cases, and JavaScript's lower-casing
+ * turns `İ` into two code points, which a single-character class cannot
+ * absorb — the index folds it to `i`, and so does this.
+ */
+export function globTerm(input: string): string {
+  const term = input.normalize("NFC").trim();
+  const groups = foldedGroups();
+  let pattern = "";
+  for (const ch of term) {
+    if (ch === "*" || ch === "?" || ch === "[") {
+      pattern += `[${ch}]`;
+      continue;
+    }
+    const group = groups.get(foldChar(ch));
+    if (group === undefined) {
+      pattern += ch;
+      continue;
+    }
+    // A letter from outside the ranges can still fold into a group; keep it
+    // in the class or its own spelling would not match.
+    const members = group.has(ch) ? group : new Set([...group, ch]);
+    pattern += members.size === 1 ? ch : `[${[...members].join("")}]`;
+  }
+  return pattern;
+}
+
+/**
+ * The columns a folded entity searches, as one expression (K4).
+ *
+ * `col GLOB ?`, one per searchable column, with the term's pattern bound to
+ * each. The fold lives in the pattern rather than in the column, so the
+ * comparison is case- and accent-insensitive for every character in
+ * {@link FOLD_RANGES} instead of `lower(col) LIKE ?`'s ASCII half of it — and
+ * the OR still cannot share one parameter.
+ */
+export function globExpression(spec: SearchEntitySpec): string {
+  return spec.searchable.map((column) => `${column} GLOB ?`).join(" OR ");
 }
 
 /**
@@ -275,8 +442,18 @@ export function likeExpression(spec: SearchEntitySpec): string {
  * combining acute. Burmese vowel signs are stored as their own codepoints, so
  * NFC leaves them alone and they keep matching.
  *
- * `LIKE` also does not fold case for non-ASCII, which costs nothing for
- * Burmese (it has no case) and is handled by `lower()` on the column for ASCII.
+ * **One folding semantic, both paths (K4).** The notes path folds through
+ * unicode61; the LIKE path folds through {@link foldChar} and {@link globTerm},
+ * which reproduce what unicode61 does — case-fold every script, drop one
+ * diacritic off an ASCII letter — so `cafe` finds `Café` in a task exactly as
+ * it finds it in a note, and `CAFÉ` finds both.
+ *
+ * What this function is left doing is the text side of that: NFC + lower case
+ * for the `instr()` excerpt anchor in `globalSearch.ts`, which pairs with
+ * SQL's `lower(col)`. What still differs between the paths is tokenization
+ * rather than folding — unicode61 cuts a word at a combining mark and at `_`,
+ * where a character class matches the text as written — and that is stated
+ * here rather than presented as handled.
  */
 export function normalizeTerm(input: string): string {
   return input.normalize("NFC").toLowerCase().trim();
@@ -288,9 +465,16 @@ export function normalizeTerm(input: string): string {
  * Punctuation-only input returns false rather than searching for nothing:
  * `"` and `-` are legitimate characters in the FTS expression builder, and a
  * search box that briefly shows an error for them is worse than one that waits.
+ *
+ * Marks count as content (K7). Burmese writes its vowels and tones as combining
+ * marks, so a mark is a letter's worth of meaning there — stripping `\p{M}`
+ * refused a term like a bare vowel sign while still accepting the same sign
+ * attached to a consonant, i.e. the refusal fired on valid Burmese and only
+ * on it. Real FTS operators (`"`, `-`, `(`, `*`, `^`) are all non-mark
+ * punctuation, so the punctuation-only refusal is untouched.
  */
 export function isSearchable(input: string): boolean {
-  return normalizeTerm(input).replace(/[^\p{L}\p{N}]/gu, "").length > 0;
+  return normalizeTerm(input).replace(/[^\p{L}\p{N}\p{M}]/gu, "").length > 0;
 }
 
 /** Rows per entity before the total cap applies. */

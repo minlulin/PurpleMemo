@@ -25,7 +25,7 @@
  *   - the app's database is SQLCipher-encrypted, so every read here is
  *     unencrypted and the SQL numbers are a floor, not a ceiling;
  *   - the text is synthetic. The shape is what matters for scanning cost, not
- *     the words; the Burmese terms are there because LIKE folding is
+ *     the words; the Burmese terms are there because search folding is
  *     Unicode-sensitive and the real user writes Burmese.
  */
 import { readFileSync } from "node:fs";
@@ -39,9 +39,8 @@ const root = join(here, "..");
 const { globalSearch } = await import(
   pathToFileURL(join(root, "src/lib/globalSearch.ts")).href
 );
-const { SEARCH_CONTRACT, isSearchable } = await import(
-  pathToFileURL(join(root, "src/lib/searchContract.ts")).href
-);
+const { SEARCH_CONTRACT, globExpression, globTerm, isSearchable } =
+  await import(pathToFileURL(join(root, "src/lib/searchContract.ts")).href);
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -283,13 +282,12 @@ const driver = {
 /** Sync SQL time alone: the number that would block if it ran on the UI thread. */
 function sqlOnly(input, options = {}) {
   if (!isSearchable(input)) return 0;
-  const term = input.normalize("NFC").toLowerCase().trim();
   let ms = 0;
   for (const spec of SEARCH_CONTRACT) {
-    const columns = spec.searchable
-      .map((c) => `lower(${c}) LIKE ?`)
-      .join(" OR ");
-    const params = spec.searchable.map(() => `%${term}%`);
+    // The shipping shape of a folded entity's WHERE (K4): `col GLOB ?` per
+    // searchable column, with the term folded into character classes.
+    const pattern = `*${globTerm(input)}*`;
+    const params = spec.searchable.map(() => pattern);
     let sql;
     if (spec.match === "fts") {
       const tokens = input.split(/\s+/).filter(Boolean);
@@ -298,7 +296,7 @@ function sqlOnly(input, options = {}) {
       params.length = 0;
       params.push(tokens.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" "));
     } else {
-      sql = `SELECT id FROM ${spec.table} WHERE (${columns}) LIMIT ${spec.cap + 1}`;
+      sql = `SELECT id FROM ${spec.table} WHERE (${globExpression(spec)}) LIMIT ${spec.cap + 1}`;
     }
     const a = performance.now();
     db.prepare(sql).all(...params);

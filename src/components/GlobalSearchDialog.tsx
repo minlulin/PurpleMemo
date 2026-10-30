@@ -71,12 +71,18 @@ export function GlobalSearchDialog({
 
   const results = groups.flatMap((group) => group.results);
   const count = resultCount(groups);
+  // A non-blank query is a search the user ran, even when the contract refuses
+  // it (punctuation only) and `globalSearch` answers without touching the DB.
+  // That refusal is a zero-match result, not the idle box: the rows are gone
+  // either way, and an empty pane read as "still waiting" — a query that finds
+  // nothing must SAY so (K7). Only a blank input is idle.
+  const attempted = query.trim().length > 0;
 
   useEffect(() => {
     const term = query.trim();
-    // A punctuation-only query is not searchable (G9): `globalSearch` would
-    // return `[]` without touching the DB, but the UI still flashed
-    // "Searching…" then "0 results". Stay in the idle state instead.
+    // Blank or refused input never reaches the database: nothing to search,
+    // so clear to the idle state here. What the dialog SHOWS for a refused
+    // query is decided at render time by `attempted` (K7).
     if (term.length === 0 || !isSearchable(term)) {
       setGroups([]);
       setLoading(false);
@@ -263,7 +269,7 @@ export function GlobalSearchDialog({
       <div className="global-search-status" aria-live="polite">
         {loading
           ? t("search.searching")
-          : isSearchable(query) && !error
+          : attempted && !error
             ? plural("search.results", count)
             : ""}
       </div>
@@ -356,7 +362,7 @@ export function GlobalSearchDialog({
           })}
         </div>
       ) : null}
-      {!loading && !error && isSearchable(query) && count === 0 ? (
+      {!loading && !error && attempted && count === 0 ? (
         <p className="muted">{t("search.noMatches")}</p>
       ) : null}
       {/* DECISION 1a: the per-group " · more available" marker only covers a
