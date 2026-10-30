@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { createMockDriver } from "../data/mock-driver.ts";
@@ -76,6 +77,87 @@ test("setPrimaryChannel scopes both updates to the contact", async () => {
   assert.equal(batch.length, 2);
   assert.match(batch[0]?.sql ?? "", /WHERE contact_id = \?/);
   assert.match(batch[1]?.sql ?? "", /WHERE id = \? AND contact_id = \?/);
+});
+
+test("addChannel: a non-primary add is one execute and answers with its rowid (J2)", async () => {
+  const driver = createMockDriver();
+  const contacts = createContactsRepo(driver);
+  const id = await contacts.addChannel({
+    contactId: 3,
+    kind: "phone",
+    value: "09123",
+    isPrimary: false,
+  });
+  // The id must come from the SAME IPC that inserted the row: a second call
+  // reading `last_insert_rowid()` could observe any other writer's insert —
+  // that value is per-connection and moves on every insert (J2).
+  const calls = driver.calls.map((call) => call.method);
+  assert.deepEqual(
+    calls,
+    ["execute"],
+    "exactly one IPC, with no read before or after it",
+  );
+  const args = driver.callsTo("execute")[0]?.args as [string, unknown[]];
+  const [sql, params] = args;
+  assert.match(sql, /INSERT INTO contact_channels/);
+  // sort_order is computed inside the insert itself, so the add cannot race
+  // another add that reads the same MAX first.
+  assert.match(sql, /IFNULL\(MAX\(sort_order\), -1\) \+ 1/);
+  assert.match(sql, /WHERE contact_id = \?/);
+  assert.deepEqual(params, [3, "phone", "09123", 3]);
+  // The mock's `execute` returns the row's rowid — that IS the answer now.
+  assert.equal(id, 1);
+});
+
+test("addChannel: a primary add demotes and inserts in one batch, id read back contact-scoped (J2)", async () => {
+  const driver = createMockDriver({ results: [[{ id: 12 }]] });
+  const contacts = createContactsRepo(driver);
+  const id = await contacts.addChannel({
+    contactId: 3,
+    kind: "phone",
+    value: "09123",
+    isPrimary: true,
+  });
+  assert.equal(
+    driver.callsTo("execute").length,
+    0,
+    "the demote + insert must stay one batch — a demote after the insert would demote the new row",
+  );
+  const batch = driver.callsTo("batch")[0]?.args[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  assert.equal(batch.length, 2);
+  assert.match(
+    batch[0]?.sql ?? "",
+    /UPDATE contact_channels SET is_primary = 0 WHERE contact_id = \?/,
+  );
+  assert.match(batch[1]?.sql ?? "", /INSERT INTO contact_channels/);
+  assert.match(batch[1]?.sql ?? "", /IFNULL\(MAX\(sort_order\), -1\) \+ 1/);
+  // The id comes back scoped to this contact — never connection-global
+  // `last_insert_rowid()`, whose value any other writer's insert moves.
+  const queryArgs = driver.callsTo("query")[0]?.args as [string, unknown[]];
+  const [sql, params] = queryArgs;
+  assert.match(
+    sql,
+    /SELECT MAX\(id\) AS id FROM contact_channels WHERE contact_id = \?/,
+  );
+  assert.deepEqual(params, [3]);
+  assert.equal(id, 12);
+});
+
+test("contacts.ts never reads connection-global last_insert_rowid (J2)", () => {
+  // The race the fix removes: a cross-IPC `SELECT last_insert_rowid()` sees
+  // whichever insert happened last on the connection, not whichever insert
+  // this call made. Both add paths now take the id from their own write.
+  // (The phrase still appears in `addChannel`'s JSDoc, explaining what was
+  // removed — so the pin matches the SQL form, not the words.)
+  const src = readFileSync(new URL("./contacts.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    src,
+    /SELECT last_insert_rowid/,
+    "the id must come from the insert itself, not a second IPC",
+  );
 });
 
 test("birthdayLabel: full date includes the year, month-day does not", () => {

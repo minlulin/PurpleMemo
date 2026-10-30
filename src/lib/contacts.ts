@@ -246,32 +246,51 @@ export function createContactsRepo(
       );
     },
 
+    /**
+     * Add a channel and return the new row's id.
+     *
+     * The id must come back from the same connection state that produced it
+     * (J2). The old shape read `last_insert_rowid()` in a SECOND IPC call:
+     * that value is per-connection and moves on every insert, so two
+     * overlapping adds could hand each other's ids back — nothing scoped the
+     * read to this insert.
+     *
+     * Non-primary: one `execute` whose `lastInsertRowid` IS the inserted row's
+     * id, with `sort_order` computed inside the same statement so the whole
+     * add is one IPC and one atomic write. Primary: demote-then-insert must
+     * stay one batch (demoting after the insert would demote the new row), and
+     * the id is then read back scoped to THIS contact with `MAX(id)` —
+     * unambiguous for the same reason `contactImport` uses `MAX(id)`, and
+     * never connection-global the way `last_insert_rowid()` was.
+     */
     async addChannel(input: ChannelInput): Promise<number> {
-      const maxRows = await driver.query<{ max_order: number | null }>(
-        "SELECT MAX(sort_order) AS max_order FROM contact_channels WHERE contact_id = ?",
-        [input.contactId],
-      );
-      const nextOrder = (maxRows[0]?.max_order ?? -1) + 1;
-      const statements = [];
-      if (input.isPrimary) {
-        statements.push({
+      const values = [input.contactId, input.kind, input.value];
+      if (!input.isPrimary) {
+        const outcome = await driver.execute(
+          `INSERT INTO contact_channels (contact_id, kind, value, is_primary, sort_order)
+           SELECT ?, ?, ?, 0, IFNULL(MAX(sort_order), -1) + 1
+           FROM contact_channels WHERE contact_id = ?`,
+          [...values, input.contactId],
+        );
+        return outcome.lastInsertRowid;
+      }
+      await driver.batch([
+        {
           sql: "UPDATE contact_channels SET is_primary = 0 WHERE contact_id = ?",
           params: [input.contactId],
-        });
-      }
-      statements.push({
-        sql: "INSERT INTO contact_channels (contact_id, kind, value, is_primary, sort_order) VALUES (?, ?, ?, ?, ?)",
-        params: [
-          input.contactId,
-          input.kind,
-          input.value,
-          input.isPrimary ? 1 : 0,
-          nextOrder,
-        ],
-      });
-      await driver.batch(statements);
-      const rows = await driver.query<{ id: number }>(
-        "SELECT last_insert_rowid() AS id",
+        },
+        {
+          // The demote above never touches sort_order, so `MAX` here still
+          // spans every existing channel of this contact.
+          sql: `INSERT INTO contact_channels (contact_id, kind, value, is_primary, sort_order)
+                SELECT ?, ?, ?, 1, IFNULL(MAX(sort_order), -1) + 1
+                FROM contact_channels WHERE contact_id = ?`,
+          params: [...values, input.contactId],
+        },
+      ]);
+      const rows = await driver.query<{ id: number | null }>(
+        "SELECT MAX(id) AS id FROM contact_channels WHERE contact_id = ?",
+        [input.contactId],
       );
       return rows[0]?.id ?? 0;
     },

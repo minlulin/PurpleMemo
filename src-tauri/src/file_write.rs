@@ -186,10 +186,14 @@ mod tests {
     /// The encoder lives in `driver.ts`; these are the strings it produces for
     /// the paths that actually occur. `ipc.test.ts` pins the header NAME and
     /// the encoder itself, so a drift on either side fails the gate.
+    ///
+    /// `0x21..=0x7e` — space included in the escapes (J2), because the header
+    /// transport (`Headers`) strips leading/trailing whitespace from a value,
+    /// so a raw space at either end would never arrive intact.
     fn encoded(path: &str) -> String {
         let mut out = String::new();
         for byte in path.as_bytes() {
-            if (0x20..=0x7e).contains(byte) && *byte != b'%' {
+            if (0x21..=0x7e).contains(byte) && *byte != b'%' {
                 out.push(*byte as char);
             } else {
                 out.push_str(&format!("%{byte:02X}"));
@@ -208,11 +212,20 @@ mod tests {
             r"C:\Users\p\100%-done.zip",
             r"C:\Users\p\a+b&c=d.zip",
             r"C:\emoji-🙂\backup.zip",
+            // Space at the ends — the case a raw-space encoder loses to
+            // `Headers` normalization (J2); the escaped form must round trip.
+            r"C:\Users\p\ leading.zip",
+            r"C:\Users\p\trailing .zip",
+            " ",
         ] {
             let encoded = encoded(path);
             assert!(
                 encoded.is_ascii(),
                 "header value must be ASCII: {encoded:?}"
+            );
+            assert!(
+                !encoded.starts_with(' ') && !encoded.ends_with(' '),
+                "a leading/trailing space must be escaped, not raw: {encoded:?}"
             );
             assert_eq!(decode_header_path(&encoded).expect("decode"), path);
         }

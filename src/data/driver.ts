@@ -2,7 +2,11 @@
 // driver, and the driver is the only place that calls Tauri IPC. The UI never
 // touches the DB directly. `db_batch` is the multi-statement write path
 // (committed as one transaction inside Rust); `begin`/`commit`/`rollback`
-// exist only for short critical sections and are never held across UI awaits.
+// exist only for short critical sections — but "short" is a discipline, not a
+// property of this layer (D2(2)): each is an IPC round trip, and the webview
+// can run unrelated code between them. A manual transaction is a
+// single-owner critical section — at most one open at a time, awaiting
+// nothing outside this driver while it is held.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -31,21 +35,71 @@ export const EXPORT_PATH_HEADER = "x-export-path";
  * A raw request body IS the whole request, so the backup destination has no
  * argument channel and must ride in a header — but header values must be
  * visible ASCII, and a path the user picked in the native save dialog need not
- * be (`C:\Users\小明\backup.zip`). Every byte outside printable ASCII, plus
- * `%` itself, becomes `%XX`, which is unambiguous because a literal `%` in the
- * name is escaped too. `backup_file::decode_header_path` in Rust is the only
- * decoder; `ipc.test.ts` pins the header name and this function against it.
+ * be (`C:\Users\小明\backup.zip`). Every byte outside `0x21..=0x7e`
+ * (printable ASCII minus the space), plus `%` itself, becomes `%XX`, which is
+ * unambiguous because a literal `%` in the name is escaped too.
+ *
+ * Space is escaped deliberately, not merely tolerated (J2): Fetch's `Headers`
+ * normalization strips leading and trailing whitespace from a value, so a
+ * space travelling raw at either end of the path would be silently deleted —
+ * the backup would land at a different path than the one the user picked, with
+ * no error anywhere. `decode_header_path` in Rust is the only decoder;
+ * `ipc.test.ts` pins the header name and this function against it, and decodes
+ * through a real `Headers` instance to prove the value survives the transport.
  */
 export function encodeHeaderPath(path: string): string {
   let out = "";
   for (const byte of new TextEncoder().encode(path)) {
-    if (byte >= 0x20 && byte <= 0x7e && byte !== 0x25) {
+    if (byte >= 0x21 && byte <= 0x7e && byte !== 0x25) {
       out += String.fromCharCode(byte);
     } else {
       out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
     }
   }
   return out;
+}
+
+/**
+ * Validate the photo extension before it is put in a request header (J2).
+ *
+ * The photo headers are the two that Rust reads RAW — `header_str` in
+ * `commands.rs`, no percent-decoding — so they cannot ride percent-encoded the
+ * way a path does; the value must already be exactly what Rust should see.
+ * Fetch's `Headers` would otherwise act first: it stringifies a non-string and
+ * strips leading/trailing whitespace, so a sloppy caller would silently write
+ * `photo.png` for an extension it asked to be ` png ` — and a non-Latin-1
+ * value would surface as a `TypeError` thrown from inside the platform, not
+ * from here. Mirrors Rust's `is_valid_ext` (`photos.rs`): 1..=8 ASCII
+ * alphanumeric bytes; lowercased, because `save_photo` lowercases before it
+ * composes the path.
+ */
+function photoExtHeader(ext: string): string {
+  if (typeof ext !== "string" || !/^[A-Za-z0-9]{1,8}$/.test(ext)) {
+    throw new Error(`invalid photo extension: ${JSON.stringify(ext)}`);
+  }
+  return ext.toLowerCase();
+}
+
+/**
+ * Validate the source photo's relative path before it is put in a request
+ * header (J2). Same reasoning as [`photoExtHeader`]: Rust reads this header
+ * raw and validates the path itself against the strict
+ * `photos/<yyyy>/<mm>/<hash>.<ext>` grammar (`validate_rel_path`), so the
+ * header's job here is narrower — every byte must be printable ASCII with no
+ * whitespace anywhere, which is exactly what `Headers` would otherwise strip
+ * or reject. A path that passes here can still be refused by Rust; it cannot
+ * be silently altered in transport.
+ */
+function photoSourceHeader(sourceRelPath: string): string {
+  if (
+    typeof sourceRelPath !== "string" ||
+    !/^[\x21-\x7e]+$/.test(sourceRelPath)
+  ) {
+    throw new Error(
+      `invalid photo source path: ${JSON.stringify(sourceRelPath)}`,
+    );
+  }
+  return sourceRelPath;
 }
 
 /** One result row: column name -> JSON value (blob -> array of byte numbers). */
@@ -97,26 +151,50 @@ export interface DataDriver {
   ): Promise<ExecuteOutcome>;
   /** Multi-statement write; `lease` as in [`DataDriver.execute`]. */
   batch(statements: BatchStatement[], lease?: number): Promise<void>;
+  /**
+   * Open a manual transaction on the one session-wide connection flag; at
+   * most one caller may hold it (D2(2)).
+   *
+   * Each of `begin`/`commit`/`rollback` is a separate IPC round trip, and IPC
+   * interleaves: the webview can — in React, routinely will — run unrelated
+   * code between them, including another write that lands inside this
+   * transaction by accident, or a second `begin` that fails in Rust while the
+   * first caller still believes it owns the flag. "Never held across awaits"
+   * cannot be enforced from this layer, so it is stated here as a contract on
+   * callers instead: while a transaction is open, await nothing but this
+   * driver. [`DataDriver.resetTxn`] is the break-glass escape.
+   */
   begin(): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   /**
-   * Clear the manual-transaction flag without touching the DB — break-glass
-   * for when `commit` AND `rollback` both failed (e.g., the connection died)
-   * and the stuck flag would block every future `batch`. The
-   * uncommitted rows are lost; the caller re-reads and reconciles state.
+   * Break-glass for when `commit` AND `rollback` both failed (e.g., the
+   * connection died) and the stuck flag would block every future `batch`.
+   *
+   * Since E12 this is NOT "clear the flag without touching the DB": Rust runs
+   * `db::reconcile_open_txn` under the connection lock — a real ROLLBACK of
+   * whatever the dead transaction left open — and only clears `txn_open` once
+   * that succeeds. If the rollback fails the call REFUSES and the flag stays
+   * set: clearing it while a transaction may still be open would let the next
+   * `db_batch` commit over a half-dead one. When it succeeds the uncommitted
+   * rows are gone; the caller re-reads and reconciles state.
    */
   resetTxn(): Promise<void>;
   /**
    * Photo bytes cross the IPC boundary as RAW payloads: the
    * request body IS the bytes, so the metadata the Rust side needs travels in
    * request headers, and a read resolves to an `ArrayBuffer` — never a JSON
-   * array of byte numbers. Headers must be ASCII, which photo paths are
-   * (strict `photos/<yyyy>/<mm>/<sha256>.<ext>` grammar).
+   * array of byte numbers. Those two headers are validated here (J2) before
+   * `Headers` can coerce or strip them — Rust reads them raw, so what the
+   * platform silently changed could never be undone downstream.
    */
   /**
    * Save photo bytes; `lease` as in [`DataDriver.execute`] — the lease rides
    * in a header because a raw body is the whole request (E5).
+   *
+   * Rejects when `ext` is not 1..=8 ASCII alphanumeric characters (the exact
+   * shape Rust's `is_valid_ext` accepts), rather than letting `Headers`
+   * stringify or trim it first.
    */
   savePhoto(bytes: Uint8Array, ext: string, lease?: number): Promise<string>;
   readPhoto(relPath: string): Promise<Uint8Array>;
@@ -127,6 +205,14 @@ export interface DataDriver {
    * one and `savePhotoThumb` it".
    */
   readPhotoThumb(sourceRelPath: string): Promise<Uint8Array>;
+  /**
+   * Save a thumbnail, addressed by the SOURCE photo's relative path.
+   *
+   * Rejects when `sourceRelPath` is not a whitespace-free printable-ASCII
+   * string (J2) — Rust re-validates the path itself against the full
+   * `photos/...` grammar, but nothing downstream could repair a value `Headers`
+   * had already stripped in transit.
+   */
   savePhotoThumb(
     sourceRelPath: string,
     bytes: Uint8Array,
@@ -165,6 +251,14 @@ export interface DataDriver {
    * there) — not passed in as a path — because this copy must not be
    * redirectable. A copy is not an archive: the database file is already
    * encrypted, so this needs no password and cannot leak plaintext.
+   *
+   * Side effect the name hides (J7): this OPENS THE IMPORT EXCLUSION WINDOW.
+   * The copy runs under `Phase::Importing`, and for its whole duration every
+   * ordinary writer — quick capture, a reminder ticking over, anything not
+   * carrying the window's lease — is refused in Rust, session-wide. That is
+   * deliberate: the undo copy must not race a write. But a caller must know
+   * the lock exists before it awaits this, and must release the lease on every
+   * path out, including failure.
    */
   safetyBackupCopy(label: string): Promise<string>;
   /**
@@ -219,30 +313,36 @@ export function createTauriDriver(): DataDriver {
     commit: () => invoke("db_commit"),
     rollback: () => invoke("db_rollback"),
     resetTxn: () => invoke("db_reset_txn"),
-    savePhoto: (bytes, ext, lease) =>
-      invoke("photo_save", bytes, {
+    // Async so a validation failure REJECTS the returned promise (J2) rather
+    // than throwing synchronously out of a call every caller already awaits.
+    savePhoto: async (bytes, ext, lease) => {
+      const extHeader = photoExtHeader(ext);
+      return invoke("photo_save", bytes, {
         headers: {
-          [PHOTO_EXT_HEADER]: ext,
+          [PHOTO_EXT_HEADER]: extHeader,
           ...(lease === undefined
             ? {}
             : { [PHOTO_LEASE_HEADER]: String(lease) }),
         },
-      }),
+      });
+    },
     readPhoto: async (relPath) =>
       new Uint8Array(await invoke<ArrayBuffer>("photo_read", { relPath })),
     readPhotoThumb: async (sourceRelPath) =>
       new Uint8Array(
         await invoke<ArrayBuffer>("photo_read_thumb", { sourceRelPath }),
       ),
-    savePhotoThumb: (sourceRelPath, bytes, lease) =>
-      invoke("photo_save_thumb", bytes, {
+    savePhotoThumb: async (sourceRelPath, bytes, lease) => {
+      const sourceHeader = photoSourceHeader(sourceRelPath);
+      return invoke("photo_save_thumb", bytes, {
         headers: {
-          [PHOTO_SOURCE_HEADER]: sourceRelPath,
+          [PHOTO_SOURCE_HEADER]: sourceHeader,
           ...(lease === undefined
             ? {}
             : { [PHOTO_LEASE_HEADER]: String(lease) }),
         },
-      }),
+      });
+    },
     deletePhoto: (relPath, lease) => invoke("photo_delete", { relPath, lease }),
     saveDbKeyFile: (path) => invoke("db_key_save", { path }),
     saveBackupFile: (path, bytes) =>

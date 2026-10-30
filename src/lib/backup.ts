@@ -948,6 +948,11 @@ export function createBackupRepo(driver: DataDriver) {
      * failure here cancels the import: the copy is not a convenience, it is the
      * undo. `label` is a timestamp; Rust sanitizes it and composes the path, so
      * this cannot be pointed at an arbitrary directory.
+     *
+     * Note what this does beyond copying (J7): Rust opens the import exclusion
+     * window — every ordinary writer in the session is refused until the
+     * window's lease is released. The import flow owns that window and closes
+     * it on both success and failure; nothing else may call this.
      */
     async saveSafetyCopy(label: string): Promise<string> {
       return driver.safetyBackupCopy(label);

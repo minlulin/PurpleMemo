@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { MAX_BACKUP_PHOTO_BYTES } from "../lib/backup.ts";
 import {
   BACKUP_PATH_HEADER,
+  createTauriDriver,
   EXPORT_PATH_HEADER,
   encodeHeaderPath,
   PHOTO_EXT_HEADER,
@@ -95,6 +96,93 @@ test("the raw-photo headers are the same strings on both sides", () => {
   assert.ok(
     commandsSrc.includes(`const LEASE_HEADER: &str = "${PHOTO_LEASE_HEADER}"`),
     "LEASE_HEADER must stay in sync with driver.ts (E5)",
+  );
+});
+
+test("photo header values are validated before Headers can coerce them (J2)", () => {
+  // These two headers are the ones Rust reads RAW (`header_str`, no
+  // percent-decoding), so unlike a path they cannot be percent-encoded — the
+  // value must already be exactly what Rust should see. Fetch's `Headers`
+  // would otherwise act first: it stringifies non-strings and strips
+  // leading/trailing whitespace, which for Rust is a silently different
+  // extension or a "missing header" error. The driver must validate and never
+  // hand these headers a raw caller-supplied value.
+  assert.match(
+    driverSrc,
+    /\[PHOTO_EXT_HEADER\]: extHeader/,
+    "savePhoto must send the validated ext, not the raw argument",
+  );
+  assert.match(
+    driverSrc,
+    /\[PHOTO_SOURCE_HEADER\]: sourceHeader/,
+    "savePhotoThumb must send the validated path, not the raw argument",
+  );
+  assert.doesNotMatch(
+    driverSrc,
+    /\[PHOTO_EXT_HEADER\]: ext,/,
+    "the raw ext must never reach a header",
+  );
+  assert.doesNotMatch(
+    driverSrc,
+    /\[PHOTO_SOURCE_HEADER\]: sourceRelPath,/,
+    "the raw source path must never reach a header",
+  );
+
+  // Parity with the Rust side, which is what makes the validation safe to
+  // apply here: Rust must accept everything this accepts (it lowercases and
+  // checks the same 1..=8 alphanumeric rule) and nothing that it would refuse.
+  const photosSrc = readFileSync(
+    new URL("../../src-tauri/src/photos.rs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    photosSrc,
+    /\(1\.\.=8\)\.contains\(&ext\.len\(\)\) && ext\.bytes\(\)\.all\(\|b\| b\.is_ascii_alphanumeric\(\)\)/,
+    "Rust's is_valid_ext must keep the shape driver.ts mirrors",
+  );
+  assert.match(
+    driverSrc,
+    /\/\^\[A-Za-z0-9\]\{1,8\}\$\/\.test\(ext\)/,
+    "the TS ext check must stay the mirror of Rust's is_valid_ext",
+  );
+  assert.match(
+    driverSrc,
+    /return ext\.toLowerCase\(\)/,
+    "the ext must be lowercased here, like Rust's save_photo does",
+  );
+
+  // Behavioural: validation throws before any IPC, so this rejects without a
+  // Tauri runtime — which is exactly the point. `Headers` would have trimmed
+  // "jpg " to "jpg" and the write would have "succeeded" under the wrong name.
+  const driver = createTauriDriver();
+  assert.equal(typeof driver.savePhoto, "function");
+  assert.rejects(
+    () => driver.savePhoto(new Uint8Array([1]), "jpg "),
+    /invalid photo extension/,
+    "a whitespace-padded ext must be refused, not trimmed",
+  );
+  assert.rejects(
+    () => driver.savePhoto(new Uint8Array([1]), "jpeg.webp"),
+    /invalid photo extension/,
+    "a multi-dot ext must be refused",
+  );
+  assert.rejects(
+    () => driver.savePhoto(new Uint8Array([1]), 42 as unknown as string),
+    /invalid photo extension/,
+    "a non-string ext must be refused, not stringified",
+  );
+  // Leading/trailing whitespace in the SOURCE path is the exact case `Headers`
+  // would strip silently; Rust would then fail its path grammar with a generic
+  // error far from the caller's mistake.
+  assert.rejects(
+    () => driver.savePhotoThumb(" photos/2026/10/a.jpg", new Uint8Array([1])),
+    /invalid photo source path/,
+    "a whitespace-padded source path must be refused, not trimmed",
+  );
+  assert.rejects(
+    () => driver.savePhotoThumb("photos/2026/10/a.jpg ", new Uint8Array([1])),
+    /invalid photo source path/,
+    "trailing whitespace must be refused too",
   );
 });
 
@@ -290,25 +378,41 @@ test("encoded header paths are ASCII and reversible", () => {
     "C:\\Users\\小明\\备份\\purple-memo-backup.zip",
     "C:\\Users\\p\\100%-done.zip",
     "C:\\emoji-🙂\\backup.zip",
+    // Spaces at the value's ends (J2): `Headers` strips leading/trailing
+    // whitespace from a value, so only an escaped space arrives intact.
+    "C:\\Users\\p\\ leading.zip",
+    "C:\\Users\\p\\trailing .zip",
+    " ",
   ]) {
     const encoded = encodeHeaderPath(path);
-    // The `Headers` check below already rejects anything a header could not
-    // carry; assert the ASCII property explicitly too, since Rust's decoder
-    // relies on every input being byte-per-character.
+    // Rust's decoder relies on every input being byte-per-character.
     assert.equal(
       encoded.length,
       new TextEncoder().encode(encoded).length,
       `must be ASCII: ${encoded}`,
-    );
-    assert.doesNotThrow(
-      () => new Headers({ [BACKUP_PATH_HEADER]: encoded }),
-      `must be a legal header value: ${encoded}`,
     );
     assert.doesNotMatch(encoded, /%(?![0-9A-F]{2})/, `bad escape: ${encoded}`);
     assert.equal(
       decodeHeaderPath(encoded),
       path,
       "the path must survive the round trip",
+    );
+    // And through the actual transport: what a receiver observes is the value
+    // AFTER `Headers` normalization. An encoded value must come back
+    // byte-for-byte — a raw space at either end would NOT, which is why the
+    // encoder escapes `0x20` rather than passing it through.
+    const wire = new Headers({ [BACKUP_PATH_HEADER]: encoded }).get(
+      BACKUP_PATH_HEADER,
+    );
+    assert.equal(
+      wire,
+      encoded,
+      "Headers must not alter what the encoder emitted",
+    );
+    assert.equal(
+      decodeHeaderPath(wire ?? ""),
+      path,
+      "the path must survive encode -> Headers -> decode",
     );
   }
 });
