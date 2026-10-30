@@ -97,3 +97,20 @@ test("searchNotes: collection, archived and rank clauses combine", async () => {
   assert.match(sql, /ORDER BY rank/);
   assert.deepEqual(call.args[1], ['"x"* "y"*', 7]);
 });
+
+test("searchNotes breaks bm25 ties with a total order (K8)", async () => {
+  // `ORDER BY rank` alone is not a total order: tied rows had no defined
+  // relative position, so two identical searches could answer in different
+  // orders — while the global search over this same index promises one. The
+  // tie-break is the browse list's own order, so a search and the list it
+  // replaced agree on what the same rows means. (The behaviour — real ranks,
+  // real tie — is pinned in notes.test.ts; this pins the SQL that runs.)
+  const driver = createMockDriver();
+  await searchNotes(driver, "x");
+  const sql = first(driver.callsTo("query"), "query").args[0] as string;
+  assert.match(
+    sql,
+    /ORDER BY rank, n\.updated_at DESC, n\.id DESC/,
+    "ties fall back to the browse order, never to SQLite's scan order",
+  );
+});
