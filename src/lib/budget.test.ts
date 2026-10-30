@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
-import { at } from "../test-utils.ts";
+import { at, gatedQueryDriver, tick } from "../test-utils.ts";
 import {
   cleanName,
   createBudgetRepo,
@@ -610,6 +610,50 @@ test("deleteRecurring: removes the rule, and nothing else", async () => {
   assert.equal(call.args[0], "DELETE FROM recurring_payments WHERE id = ?");
   assert.deepEqual(call.args[1], [6]);
   assert.deepEqual(driver.callsTo("batch"), []);
+});
+
+test("the recurring mutators queue behind an in-flight markRecurringPaid (J3)", async () => {
+  // All three share `recurring:${id}` with `markRecurringPaid`: the gate
+  // parks the mark mid-read-compute-write, and a pause, an edit, or a
+  // delete slipping in there would be clobbered by the mark's stale
+  // `advanceDate` — or would let it book occurrences for a deleted rule.
+  const rule = {
+    id: 7,
+    frequency: "monthly",
+    amount_cents: 9000,
+    category_id: 2,
+    wallet_id: 3,
+    next_due_date: "2026-09-10",
+    title: "Net",
+    note: "",
+  };
+  const base = createMockDriver({ results: [[rule]] });
+  const { driver, release } = gatedQueryDriver(base);
+  const budget = createBudgetRepo(driver);
+  const marking = budget.markRecurringPaid(7, "2026-10-20", {
+    categoryId: 5,
+    walletId: 6,
+  });
+  await tick();
+  const edits = Promise.all([
+    budget.setRecurringActive(7, false),
+    budget.updateRecurring(7, { note: "edited" }),
+    budget.deleteRecurring(7),
+  ]);
+  await tick();
+  assert.equal(
+    base.callsTo("execute").length,
+    0,
+    "no recurring mutator may write while markRecurringPaid holds recurring:7",
+  );
+  release();
+  await Promise.all([marking, edits]);
+  assert.equal(base.callsTo("batch").length, 1, "the mark's own batch");
+  const writes = base.callsTo("execute").map((call) => call.args[0] as string);
+  assert.equal(writes.length, 3, "the three mutators ran, in queue order");
+  assert.match(writes[0] ?? "", /UPDATE recurring_payments SET active = \?/);
+  assert.match(writes[1] ?? "", /UPDATE recurring_payments SET note = \?/);
+  assert.match(writes[2] ?? "", /DELETE FROM recurring_payments/);
 });
 
 test("convertEntry: the delete and the insert are ONE batch, in that order", async () => {

@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type {
@@ -7,6 +8,7 @@ import type {
   ExecuteOutcome,
   Queryable,
 } from "../data/driver.ts";
+import { gatedQueryDriver, tick } from "../test-utils.ts";
 import { createGalleryRepo } from "./gallery.ts";
 import {
   createTrashRepo,
@@ -639,5 +641,116 @@ test("Trash backup references to missing photos, links, or Inbox rows are reject
         { inboxRows: [] },
       ),
     /missing Inbox item/,
+  );
+});
+
+test("trashEntity runs its maintenance purge inside the lock, not re-entering it (J3)", {
+  timeout: 10_000,
+}, async () => {
+  const driver = sqliteDriver();
+  seedNote(driver.db);
+  const trash = createTrashRepo(driver);
+  // Would hang — the timeout is what turns that into a failure — if the
+  // internal maintenance pass took the repo lock again: `mutex.ts` never
+  // nests the same key, so it must call the unlocked variant.
+  await trash.trashEntity("note", 1);
+  const rows = driver.db.prepare("SELECT id FROM trash_items").all();
+  assert.equal(
+    rows.length,
+    1,
+    "the note is in Trash and the maintenance pass kept it (not expired)",
+  );
+});
+
+test("restore queues behind an in-flight purge on the one trash lock (J3)", {
+  timeout: 10_000,
+}, async () => {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  seedNote(db, 1, "Expired");
+  seedNote(db, 2, "Fresh");
+  const trash = createTrashRepo(driver);
+  await trash.trashEntity("note", 1);
+  await trash.trashEntity("note", 2);
+  // Age the first item past the retention window so the purge wants it.
+  db.prepare(
+    "UPDATE trash_items SET deleted_at = '2020-01-01' WHERE entity_id = 1",
+  ).run();
+  const fresh = db
+    .prepare("SELECT id FROM trash_items WHERE entity_id = 2")
+    .get() as {
+    id: number;
+  };
+
+  // Park the purge at its first query, start the restore behind it, and
+  // watch which queries are actually issued (J3: `App.tsx` fires this
+  // detached purge the moment the user unlocks).
+  const { driver: gated, release } = gatedQueryDriver(driver);
+  const queries: string[] = [];
+  const spy = {
+    ...gated,
+    query: <T extends Queryable>(sql: string, params?: unknown[]) => {
+      queries.push(sql);
+      return gated.query<T>(sql, params);
+    },
+  } as DataDriver;
+  const observing = createTrashRepo(spy);
+  const purging = observing.purge("2026-10-20");
+  await tick();
+  const restoring = observing.restore(fresh.id);
+  await tick();
+  assert.ok(
+    !queries.includes("SELECT * FROM trash_items WHERE id = ?"),
+    "restore must not have issued its first SELECT while purge holds the lock",
+  );
+  release();
+  assert.equal(await purging, 1, "the expired item was purged");
+  await restoring;
+  const remaining = db.prepare("SELECT entity_id FROM trash_items").all() as {
+    entity_id: number;
+  }[];
+  assert.deepEqual(
+    remaining,
+    [],
+    "the expired row was purged and the fresh one restored out of Trash",
+  );
+  const notes = db.prepare("SELECT id FROM notes").all() as { id: number }[];
+  assert.deepEqual(
+    notes.map((note) => note.id),
+    [2],
+    "the fresh note is live again; the expired one is gone for good",
+  );
+});
+
+test("every trash mutator serializes on the one repo lock (J3)", () => {
+  // The behavioural tests above park `purge` and watch `restore`; this pins
+  // the two wrappers they do not exercise — and the unlocked-internal rule
+  // that keeps the re-entrant maintenance passes from deadlocking.
+  const src = readFileSync(new URL("./trash.ts", import.meta.url), "utf8");
+  for (const [name, pattern] of [
+    [
+      "trashEntity",
+      /trashEntity: \(type: TrashEntityType, id: number\) =>\s*mutex\.withLock\("trash", \(\) => trashEntityUnlocked\(type, id\)\)/,
+    ],
+    [
+      "restore",
+      /restore: \(trashId: number\) =>\s*mutex\.withLock\("trash", \(\) => restoreUnlocked\(trashId\)\)/,
+    ],
+    [
+      "removePermanently",
+      /removePermanently: \(trashId: number\) =>\s*mutex\.withLock\("trash", \(\) => removePermanentlyUnlocked\(trashId\)\)/,
+    ],
+    [
+      "purge",
+      /purge: \(today\?: string\) =>\s*mutex\.withLock\("trash", \(\) => purgeUnlocked\(today\)\)/,
+    ],
+  ] as const) {
+    assert.match(src, pattern, `${name} must take the repo lock`);
+  }
+  assert.match(src, /await purgeUnlocked\(\);/);
+  assert.doesNotMatch(
+    src,
+    /await purge\(\);/,
+    "the internal maintenance pass must call the UNLOCKED variant",
   );
 });

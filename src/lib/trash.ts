@@ -5,6 +5,7 @@ import {
   LINK_ENTITY_TABLES,
   LINKABLE_TYPES,
 } from "./entityLinks.ts";
+import { createKeyedMutex } from "./mutex.ts";
 import type { LinkRow, PhotoRefRow } from "./types.ts";
 
 export const TRASH_RETENTION_DAYS = 30;
@@ -389,6 +390,20 @@ function insertStatement(
 }
 
 export function createTrashRepo(driver: DataDriver) {
+  // One repository-level mutex for the whole trash lifecycle (J3). Every
+  // multi-await mutation shares the key "trash" because they share
+  // invariants, not rows: `App.tsx` fires a detached `purge()` the moment
+  // the user unlocks while `TrashPage` can be mid-`restore`, and
+  // `restore`/`removePermanently` read `trash_items` (and photo files)
+  // across many awaits before writing — interleave them and `allocateIds`
+  // can hand out colliding IDs, sibling `trash_items.snapshot` link arrays
+  // can be overwritten, or a purge can delete rows a restore already
+  // validated. The internals below stay callable from inside the lock
+  // (`trashEntity` and `restore` both finish with a maintenance purge) —
+  // `mutex.ts` forbids nesting the same key, so they are the `*Unlocked`
+  // variants and only the exported wrappers take the lock.
+  const mutex = createKeyedMutex();
+
   async function allocateIds(
     table: string,
     requested: number[],
@@ -425,7 +440,10 @@ export function createTrashRepo(driver: DataDriver) {
     });
   }
 
-  async function trashEntity(type: TrashEntityType, id: number): Promise<void> {
+  async function trashEntityUnlocked(
+    type: TrashEntityType,
+    id: number,
+  ): Promise<void> {
     const table = TABLES[type];
     const snapshotId = crypto.randomUUID();
     const today = todayLocal();
@@ -456,7 +474,7 @@ export function createTrashRepo(driver: DataDriver) {
     });
     await driver.batch(statements);
     try {
-      await purge();
+      await purgeUnlocked();
     } catch {
       // The user deletion is already committed; maintenance must not mask it.
     }
@@ -473,7 +491,7 @@ export function createTrashRepo(driver: DataDriver) {
     }));
   }
 
-  async function restore(trashId: number): Promise<void> {
+  async function restoreUnlocked(trashId: number): Promise<void> {
     const [item] = await driver.query<TrashItemRow>(
       "SELECT * FROM trash_items WHERE id = ?",
       [trashId],
@@ -676,13 +694,13 @@ export function createTrashRepo(driver: DataDriver) {
     });
     await driver.batch(statements);
     try {
-      await purge();
+      await purgeUnlocked();
     } catch {
       // Restore is committed; a failed maintenance pass is retried on next load.
     }
   }
 
-  async function removePermanently(trashId: number): Promise<void> {
+  async function removePermanentlyUnlocked(trashId: number): Promise<void> {
     const [item] = await driver.query<TrashItemRow>(
       "SELECT * FROM trash_items WHERE id = ?",
       [trashId],
@@ -762,7 +780,7 @@ export function createTrashRepo(driver: DataDriver) {
     }
   }
 
-  async function purge(today = todayLocal()): Promise<number> {
+  async function purgeUnlocked(today = todayLocal()): Promise<number> {
     const all = await driver.query<TrashItemRow>(
       "SELECT * FROM trash_items ORDER BY deleted_at DESC, id DESC",
     );
@@ -788,12 +806,17 @@ export function createTrashRepo(driver: DataDriver) {
     await driver.execute("DELETE FROM trash_items");
   }
 
+  // The exported surface takes the lock; see the mutex's comment above.
   return {
-    trashEntity,
+    trashEntity: (type: TrashEntityType, id: number) =>
+      mutex.withLock("trash", () => trashEntityUnlocked(type, id)),
     list,
-    restore,
-    removePermanently,
-    purge,
+    restore: (trashId: number) =>
+      mutex.withLock("trash", () => restoreUnlocked(trashId)),
+    removePermanently: (trashId: number) =>
+      mutex.withLock("trash", () => removePermanentlyUnlocked(trashId)),
+    purge: (today?: string) =>
+      mutex.withLock("trash", () => purgeUnlocked(today)),
     purgeForReset,
   };
 }

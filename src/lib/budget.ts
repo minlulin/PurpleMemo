@@ -884,10 +884,15 @@ export function createBudgetRepo(driver: DataDriver) {
     },
 
     async setRecurringActive(id: number, active: boolean): Promise<void> {
-      await driver.execute(
-        "UPDATE recurring_payments SET active = ? WHERE id = ?",
-        [active ? 1 : 0, id],
-      );
+      // Same `recurring:${id}` key as `markRecurringPaid` (J3): pausing a
+      // rule the mark is mid-way through booking must queue, not interleave
+      // with its read-compute-write.
+      return mutex.withLock(`recurring:${id}`, async () => {
+        await driver.execute(
+          "UPDATE recurring_payments SET active = ? WHERE id = ?",
+          [active ? 1 : 0, id],
+        );
+      });
     },
 
     /**
@@ -902,45 +907,52 @@ export function createBudgetRepo(driver: DataDriver) {
       id: number,
       fields: Partial<RecurringInput>,
     ): Promise<void> {
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      if (fields.title !== undefined) {
-        sets.push("title = ?");
-        params.push(fields.title);
-      }
-      if (fields.amountCents !== undefined) {
-        if (fields.amountCents <= 0) {
-          throw new Error("A recurring amount must be greater than zero.");
+      // Same `recurring:${id}` key as `markRecurringPaid` (J3): an edit
+      // landing after the mark read the rule but before its batch commits
+      // would have its `next_due_date` overwritten by the mark's stale
+      // `advanceDate`, while the occurrences it books use the stale amount
+      // and frequency.
+      return mutex.withLock(`recurring:${id}`, async () => {
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        if (fields.title !== undefined) {
+          sets.push("title = ?");
+          params.push(fields.title);
         }
-        sets.push("amount_cents = ?");
-        params.push(fields.amountCents);
-      }
-      if (fields.categoryId !== undefined) {
-        sets.push("category_id = ?");
-        params.push(fields.categoryId);
-      }
-      if (fields.walletId !== undefined) {
-        sets.push("wallet_id = ?");
-        params.push(fields.walletId);
-      }
-      if (fields.frequency !== undefined) {
-        sets.push("frequency = ?");
-        params.push(fields.frequency);
-      }
-      if (fields.nextDueDate !== undefined) {
-        sets.push("next_due_date = ?");
-        params.push(fields.nextDueDate);
-      }
-      if (fields.note !== undefined) {
-        sets.push("note = ?");
-        params.push(fields.note);
-      }
-      if (sets.length === 0) return;
-      params.push(id);
-      await driver.execute(
-        `UPDATE recurring_payments SET ${sets.join(", ")} WHERE id = ?`,
-        params,
-      );
+        if (fields.amountCents !== undefined) {
+          if (fields.amountCents <= 0) {
+            throw new Error("A recurring amount must be greater than zero.");
+          }
+          sets.push("amount_cents = ?");
+          params.push(fields.amountCents);
+        }
+        if (fields.categoryId !== undefined) {
+          sets.push("category_id = ?");
+          params.push(fields.categoryId);
+        }
+        if (fields.walletId !== undefined) {
+          sets.push("wallet_id = ?");
+          params.push(fields.walletId);
+        }
+        if (fields.frequency !== undefined) {
+          sets.push("frequency = ?");
+          params.push(fields.frequency);
+        }
+        if (fields.nextDueDate !== undefined) {
+          sets.push("next_due_date = ?");
+          params.push(fields.nextDueDate);
+        }
+        if (fields.note !== undefined) {
+          sets.push("note = ?");
+          params.push(fields.note);
+        }
+        if (sets.length === 0) return;
+        params.push(id);
+        await driver.execute(
+          `UPDATE recurring_payments SET ${sets.join(", ")} WHERE id = ?`,
+          params,
+        );
+      });
     },
 
     /**
@@ -952,7 +964,14 @@ export function createBudgetRepo(driver: DataDriver) {
      * same as a job's income entries.
      */
     async deleteRecurring(id: number): Promise<void> {
-      await driver.execute("DELETE FROM recurring_payments WHERE id = ?", [id]);
+      // Same `recurring:${id}` key as `markRecurringPaid` (J3): a delete
+      // landing inside the mark's read-compute-write would book phantom
+      // expense entries for a rule that no longer exists.
+      return mutex.withLock(`recurring:${id}`, async () => {
+        await driver.execute("DELETE FROM recurring_payments WHERE id = ?", [
+          id,
+        ]);
+      });
     },
 
     /** See {@link dueOccurrences} — same capped walk, kept on the repo API. */

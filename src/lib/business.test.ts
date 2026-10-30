@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { DataDriver } from "../data/driver.ts";
 import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
-import { at, first } from "../test-utils.ts";
+import { at, first, gatedQueryDriver, tick } from "../test-utils.ts";
 import {
   createBusinessRepo,
   inWarranty,
@@ -636,4 +636,99 @@ test("deletePayable: deletes the row, and no photo links (there are none to clea
   assert.equal(sql, "DELETE FROM payables WHERE id = ?");
   assert.deepEqual(params, [9]);
   assert.deepEqual(driver.callsTo("batch"), []);
+});
+
+test("deleteJob: queues behind an in-flight recordJobPayment on the job:<id> key (J3)", async () => {
+  // Without the shared `job:${id}` lock a delete landing between the
+  // payment's `getJob` read and its batch removes the job first — the
+  // UPDATE affects 0 rows silently while the INSERT still books a phantom
+  // income entry. The gate parks the payment mid-critical-section so the
+  // racing delete is observable.
+  const openJob = {
+    id: 1,
+    title: "Fix roof",
+    total_cents: 100_000,
+    paid_cents: 0,
+    status: "open",
+  };
+  const base = createMockDriver({ results: [[openJob], [{ id: 9 }]] });
+  const { driver, release } = gatedQueryDriver(base);
+  const business = createBusinessRepo(driver);
+  const payment = business.recordJobPayment({
+    jobId: 1,
+    amountCents: 40_000,
+    walletId: 2,
+    date: "2026-10-10",
+  });
+  await tick();
+  const deletion = business.deleteJob(1);
+  await tick();
+  assert.equal(
+    base.callsTo("batch").length,
+    0,
+    "deleteJob must queue behind job:1, not race the payment's read-modify-write",
+  );
+  release();
+  await Promise.all([payment, deletion]);
+  const batches = base
+    .callsTo("batch")
+    .map((call) => call.args[0] as { sql: string }[]);
+  assert.equal(batches.length, 2, "the payment commits first, then the delete");
+  assert.match(
+    at(batches, 0, "batch")[0]?.sql ?? "",
+    /UPDATE jobs SET paid_cents/,
+  );
+  assert.match(
+    at(batches, 1, "batch")[1]?.sql ?? "",
+    /DELETE FROM jobs WHERE id = \?/,
+  );
+});
+
+test("deletePayable: queues behind an in-flight markPayablePaid on the payable:<id> key (J3)", async () => {
+  // Same shape as the job case: the mark reads the payable, then batches
+  // the UPDATE plus the expense INSERT; an unlocked delete in that window
+  // books an expense for a payable that no longer exists.
+  const payable = {
+    id: 9,
+    title: "Cement",
+    amount_cents: 7000,
+    shop_id: null,
+    due_date: null,
+    paid: 0,
+    note: "",
+    created_at: "2026-10-01",
+  };
+  const base = createMockDriver({ results: [[payable]] });
+  const { driver, release } = gatedQueryDriver(base);
+  const business = createBusinessRepo(driver);
+  const marking = business.markPayablePaid({
+    payableId: 9,
+    categoryId: 3,
+    walletId: 2,
+    date: "2026-10-10",
+  });
+  await tick();
+  const deletion = business.deletePayable(9);
+  await tick();
+  assert.equal(
+    base.callsTo("execute").length,
+    0,
+    "deletePayable must queue behind payable:9, not interleave with the mark",
+  );
+  release();
+  await Promise.all([marking, deletion]);
+  assert.deepEqual(
+    base.calls.map((call) => call.method),
+    ["query", "batch", "execute"],
+    "the mark reads, batches its paid+expense write, and only then the delete runs",
+  );
+  const statements = at(base.callsTo("batch"), 0, "batch").args[0] as {
+    sql: string;
+  }[];
+  assert.match(statements[0]?.sql ?? "", /UPDATE payables SET paid = 1/);
+  assert.match(statements[1]?.sql ?? "", /INSERT INTO expense_entries/);
+  const [deleteSql] = at(base.callsTo("execute"), 0, "execute").args as [
+    string,
+  ];
+  assert.equal(deleteSql, "DELETE FROM payables WHERE id = ?");
 });

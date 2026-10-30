@@ -349,7 +349,13 @@ export function createBusinessRepo(driver: DataDriver) {
      * note as a historical record.
      */
     async deleteJob(id: number): Promise<void> {
-      await driver.batch(deleteLinkedEntity("job", id));
+      // Same `job:${id}` key as `recordJobPayment` and `updateJob` (J3):
+      // without it a delete landing between the payment's `getJob` read and
+      // its batch removes the job first — the UPDATE then affects 0 rows
+      // silently while the INSERT still books a phantom income entry.
+      return mutex.withLock(`job:${id}`, () =>
+        driver.batch(deleteLinkedEntity("job", id)),
+      );
     },
 
     async listJobs(status?: JobStatus): Promise<JobRow[]> {
@@ -595,7 +601,12 @@ export function createBusinessRepo(driver: DataDriver) {
      * cash-basis reason a job's income entries are
      */
     async deletePayable(id: number): Promise<void> {
-      await driver.execute("DELETE FROM payables WHERE id = ?", [id]);
+      // Same `payable:${id}` key as `markPayablePaid` (J3): a delete landing
+      // between its read and its batch would let the INSERT book a phantom
+      // expense entry for a payable that no longer exists.
+      return mutex.withLock(`payable:${id}`, async () => {
+        await driver.execute("DELETE FROM payables WHERE id = ?", [id]);
+      });
     },
 
     /**
