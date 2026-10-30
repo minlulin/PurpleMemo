@@ -806,7 +806,10 @@ test("the FTS path reuses the existing MATCH builder, with its limit", () => {
   assert.ok(spec);
   const { sql, params } = buildSearchQuery(spec, "buy milk", {});
   assert.match(sql, /notes_fts MATCH \?/);
-  assert.equal(params[0], '"buy"* "milk"*');
+  // D1(a): the match is restricted to the contract's columns — an
+  // unfiltered MATCH would search `folder`, the collection name, which
+  // SEARCH_EXCLUSIONS lists as deliberately not searchable.
+  assert.equal(params[0], '{title content tags} : "buy"* "milk"*');
   // And it asks for one row more than the cap, so it can tell it bit.
   assert.match(sql, new RegExp(`LIMIT ${(spec?.cap ?? 0) + 1}$`));
 });
@@ -827,10 +830,9 @@ test("every query projects only the columns a result reads, with a bounded excer
       `${spec.type}: no wildcard projection`,
     );
     if (spec.excerpt !== null) {
-      assert.match(
-        sql,
-        /substr\((n\.)?[a-z_]+, 1, [0-9]+\) AS/,
-        `${spec.type}: the long text is cut in SQL, not in JS`,
+      assert.ok(
+        sql.includes("AS _excerpt"),
+        `${spec.type}: the excerpt is a SQL-built window under _excerpt (K2)`,
       );
     }
   }
@@ -931,4 +933,140 @@ test("the per-entity queries are issued concurrently, not one keystroke at a tim
     ["note", "task"],
   );
   assert.equal(maxInFlight, 2, "a narrowed search issues only its own queries");
+});
+
+// ---------------------------------------------------------------------------
+// Relevance (K2, K3, D1(a))
+// ---------------------------------------------------------------------------
+
+test("an excerpt is the window around the match, not the head of the row (K2)", async () => {
+  const driver = sqliteDriver();
+  const filler = "the quick brown fox jumps over the lazy dog. ".repeat(400);
+  // The match sits thousands of characters into each row's long text.
+  const noteBody = `${filler}milk arrives on tuesdays${filler}`;
+  driver.db
+    .prepare(
+      "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (101, 'Farming notes', ?, '', NULL, 0, 0, 'x', '2026-10-01')",
+    )
+    .run(noteBody);
+  driver.db
+    .prepare(
+      "INSERT INTO notes_fts(rowid, title, content, tags, folder) VALUES (101, 'Farming notes', ?, '', '')",
+    )
+    .run(noteBody);
+  driver.db
+    .prepare(
+      "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (101, 'Errand', NULL, 0, 'none', ?, 'x'), (102, 'Milk round', NULL, 0, 'none', 'eggs and bread for the week', 'x')",
+    )
+    .run(`${filler}milk is on sale today${filler}`);
+
+  const groups = await globalSearch(driver, "milk");
+  const note = groups
+    .find((g) => g.type === "note")
+    ?.results.find((r) => r.id === 101);
+  assert.ok(
+    note?.excerpt?.includes("milk arrives on tuesdays"),
+    "the note excerpt must contain the term that matched it",
+  );
+  assert.equal(
+    note?.excerpt?.startsWith("the quick brown fox"),
+    false,
+    "and must not be the head of the row the term is nowhere near",
+  );
+  const task = groups
+    .find((g) => g.type === "task")
+    ?.results.find((r) => r.id === 101);
+  assert.ok(
+    task?.excerpt?.includes("milk is on sale today"),
+    "the LIKE entities get the same match-anchored window (via instr)",
+  );
+  assert.equal(task?.excerpt?.startsWith("the quick brown fox"), false);
+  // A row matched by its TITLE keeps the head of its long text as fallback:
+  // the window is around the match, and this row's text has none.
+  const titleHit = groups
+    .find((g) => g.type === "task")
+    ?.results.find((r) => r.id === 102);
+  assert.equal(titleHit?.excerpt, "eggs and bread for the week");
+});
+
+test("a journal result no longer prints its opening text twice (K2)", async () => {
+  const driver = sqliteDriver();
+  // The match is INSIDE the title slice (the first 80 characters).
+  const nearHead =
+    "Milk run in the morning and then the long quiet afternoon was spent writing letters home until the lamp ran low on oil and the cat came inside.";
+  const insert = driver.db.prepare(
+    "INSERT INTO journal_entries (id, entry_date, content, created_at, updated_at) VALUES (?, ?, ?, 'x', 'x')",
+  );
+  insert.run(1, "2026-10-12", nearHead);
+  // And a second entry whose match is deep in the body.
+  const deep = `${"quiet day at the archives. ".repeat(10)}milk again in the evening.`;
+  insert.run(2, "2026-10-13", deep);
+
+  const journal = (await globalSearch(driver, "milk")).find(
+    (g) => g.type === "journal",
+  );
+  const first = journal?.results.find((r) => r.dateKey === "2026-10-12");
+  assert.ok(first, "the near-head entry is found");
+  assert.ok(
+    first.title.includes("Milk"),
+    "the title still carries the match when it is in the opening",
+  );
+  // The title is the head; the excerpt continues where the title ends —
+  // disjoint slices of the same opening, shown once (the old code showed
+  // the first 80 chars twice and the match in neither).
+  assert.ok(
+    nearHead.startsWith(first.title.replace(/…$/, "")),
+    "the title is the entry's head",
+  );
+  assert.equal(
+    first.excerpt,
+    nearHead.slice(79),
+    "the excerpt is the continuation, not a repeat of the opening",
+  );
+  assert.equal(
+    first.excerpt?.startsWith("Milk run in the morning"),
+    false,
+    "and the opening phrase appears exactly once across the two lines",
+  );
+  const second = journal?.results.find((r) => r.dateKey === "2026-10-13");
+  assert.ok(
+    second?.excerpt?.includes("milk again in the evening"),
+    "a deeper match keeps its own context window",
+  );
+});
+
+test("a collection name is not matched by the global search (D1(a))", async () => {
+  const driver = sqliteDriver();
+  // A note FILED UNDER SecretFolder that never mentions it in its own text:
+  // `folder` is the collection name, and collections are not searchable.
+  driver.db
+    .prepare(
+      "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (201, 'roof quote', 'three quotes', '', NULL, 0, 0, 'x', '2026-10-01')",
+    )
+    .run();
+  driver.db
+    .prepare(
+      "INSERT INTO notes_fts(rowid, title, content, tags, folder) VALUES (201, 'roof quote', 'three quotes', '', 'SecretFolder')",
+    )
+    .run();
+  // Control: the same term IN a searchable column is still found.
+  driver.db
+    .prepare(
+      "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (202, 'SecretFolder index', 'filed away', '', NULL, 0, 0, 'x', '2026-10-02')",
+    )
+    .run();
+  driver.db
+    .prepare(
+      "INSERT INTO notes_fts(rowid, title, content, tags, folder) VALUES (202, 'SecretFolder index', 'filed away', '', '')",
+    )
+    .run();
+
+  const notes = (await globalSearch(driver, "SecretFolder")).find(
+    (g) => g.type === "note",
+  );
+  assert.deepEqual(
+    notes?.results.map((r) => r.id),
+    [202],
+    "only the note that mentions the term in its own text matches",
+  );
 });

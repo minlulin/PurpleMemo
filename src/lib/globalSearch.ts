@@ -9,9 +9,11 @@
 // Two rules worth stating before the code:
 //
 // 1. **No user text reaches SQL as syntax.** Notes use the existing FTS5 MATCH
-//    builder, which quotes every token (`buildMatchQuery`). Everything else
-//    binds a `%term%` parameter. Table and column names come from the contract,
-//    which is code-owned.
+//    builder, wrapped in the contract's column filter so the match covers the
+//    searchable columns and nothing else (`{title content tags} : …`, D1(a));
+//    every token is quoted by `buildMatchQuery`. Everything else binds a
+//    `%term%` parameter. Table and column names come from the contract, which
+//    is code-owned.
 // 2. **Ordering is deterministic.** Within a type: notes by FTS rank then date
 //    then id; the rest by "does the title start with this", then date, then id.
 //    Across types: the contract's own order, with the total cap trimming from the
@@ -100,13 +102,79 @@ export interface SearchOptions {
 const EXCERPT_CHARS = 140;
 
 /**
- * How much of a long text column crosses the IPC boundary (K1).
+ * How much of a long text column crosses the IPC boundary when the excerpt
+ * falls back to the head of the row (K1).
  *
  * Well above the 140 characters the UI displays, so the SQL-side cut cannot
  * starve the display cap even after whitespace flattening; well below a user's
  * prose, which is the point — this bounds the payload, not the writing.
  */
 const EXCERPT_SQL_CHARS = 512;
+
+/** The result column the SQL-built excerpt window arrives in (K2). */
+const EXCERPT_ALIAS = "_excerpt";
+
+/** Context characters kept before a match inside an excerpt window (K2). */
+const EXCERPT_WINDOW_BEFORE = 30;
+
+/** Total characters in an `instr`-anchored excerpt window (K2). */
+const EXCERPT_WINDOW_CHARS = 100;
+
+/** Title cap, shared with SQL: the journal's title slice is its first 80. */
+const TITLE_CHARS = 80;
+
+/** `notes_fts` column index of `content` (schema: title, content, tags, folder). */
+const NOTES_FTS_EXCERPT_INDEX = 1;
+
+/**
+ * Token budget for FTS5 `snippet()`. Measured against SQLite: ~122 characters
+ * for ordinary prose — under the 140-char display cap, so the window keeps
+ * both flanks of the match instead of being cut by it.
+ */
+const SNIPPET_TOKENS = 24;
+
+/**
+ * The excerpt expression, bound to the match (K2).
+ *
+ * A result that shows the head of its row cannot be triaged: a note matched
+ * at character 5,000 is presented with its first 140 characters, the term
+ * nowhere on screen. So the excerpt is a window ANCHORED on the match —
+ * FTS5 `snippet()` for the notes entity, `instr()` in SQL for the LIKE
+ * entities — and the head of the row is only the fallback for a row whose
+ * match lives in a different column (a title hit, say). The result arrives
+ * under {@link EXCERPT_ALIAS}; LIKE windows bind `term` once per `instr`
+ * use, and those params live in the SELECT list — they must LEAD the bound
+ * parameter array, because the SELECT precedes the WHERE in the SQL.
+ */
+function excerptExpr(
+  spec: SearchEntitySpec,
+  alias: string,
+  term: string,
+  params: unknown[],
+): string {
+  const column = spec.excerpt;
+  if (column === null) return "";
+  if (spec.match === "fts") {
+    // FTS5 builds the window itself, centered on the matched tokens in the
+    // excerpt column. When the match was in another column (title, tags),
+    // `snippet()` answers with THIS column's head — precisely the title-hit
+    // fallback, no second expression needed. Empty prefix/suffix: the term
+    // sits inline, and the dialog renders plain text.
+    return `snippet(notes_fts, ${NOTES_FTS_EXCERPT_INDEX}, '', '', '…', ${SNIPPET_TOKENS}) AS ${EXCERPT_ALIAS}`;
+  }
+  const hit = `instr(lower(${alias}${column}), ?)`;
+  if (spec.title[0] === column) {
+    // The journal: the title IS the head of this same column. Anchoring the
+    // window on a match inside the title prints the same text twice (K2), so
+    // the window always continues from where the title's ellipsis stands — a
+    // match inside the title is context enough, and a deeper match keeps its
+    // own context.
+    params.push(term, term);
+    return `CASE WHEN ${hit} = 0 THEN substr(${alias}${column}, 1, ${EXCERPT_SQL_CHARS}) ELSE substr(${alias}${column}, max(${TITLE_CHARS}, ${hit} - ${EXCERPT_WINDOW_BEFORE}), ${EXCERPT_WINDOW_CHARS}) END AS ${EXCERPT_ALIAS}`;
+  }
+  params.push(term, term);
+  return `CASE WHEN ${hit} > 0 THEN '…' || substr(${alias}${column}, max(1, ${hit} - ${EXCERPT_WINDOW_BEFORE}), ${EXCERPT_WINDOW_CHARS}) || '…' ELSE substr(${alias}${column}, 1, ${EXCERPT_SQL_CHARS}) END AS ${EXCERPT_ALIAS}`;
+}
 
 /**
  * The columns one result actually reads, and nothing else (K1).
@@ -115,16 +183,21 @@ const EXCERPT_SQL_CHARS = 512;
  * the WHOLE note or journal body across the IPC boundary on every keystroke —
  * measured at 541 KB for fifteen 54 KB bodies — only for the UI to throw all
  * but 140 characters away. The projection is the exact set `toResults` reads:
- * the id, the contract's title column(s), the excerpt column cut by SQL to a
- * bounded prefix, the date column, the inactive column — plus the shopping
- * item's `list_id` (its `parentId`), the one field `toResults` reads beside
- * the contract's own columns.
+ * the id, the contract's title column(s), the match-anchored excerpt window
+ * (K2), the date column, the inactive column — plus the shopping item's
+ * `list_id` (its `parentId`), the one field `toResults` reads beside the
+ * contract's own columns.
  *
- * A column serving two roles is emitted once: the journal's title IS its
- * excerpt (`content`), so it takes the bounded form and the title is cut from
- * that same prefix.
+ * A title column that IS the long excerpt column (the journal's `content`)
+ * arrives twice, in its two roles: the bounded head under its own name for
+ * the title, the anchored window under {@link EXCERPT_ALIAS} for the
+ * excerpt.
  */
-function projectionList(spec: SearchEntitySpec): string {
+function projectionList(
+  spec: SearchEntitySpec,
+  term: string,
+  excerptParams: unknown[],
+): string {
   const alias = spec.match === "fts" ? "n." : "";
   const seen = new Set<string>(["id"]);
   const columns = [`${alias}id`];
@@ -138,7 +211,9 @@ function projectionList(spec: SearchEntitySpec): string {
     );
   };
   for (const column of spec.title) add(column, column === spec.excerpt);
-  if (spec.excerpt !== null) add(spec.excerpt, true);
+  if (spec.excerpt !== null) {
+    columns.push(excerptExpr(spec, alias, term, excerptParams));
+  }
   if (spec.date !== null) add(spec.date);
   if (spec.inactive !== null) add(spec.inactive.column);
   if (spec.type === "shopping_item") add("list_id");
@@ -150,22 +225,30 @@ function titleOf(row: Record<string, unknown>, spec: SearchEntitySpec): string {
   for (const column of spec.title) {
     const value = row[column];
     if (typeof value === "string" && value.trim().length > 0) {
-      return trimTo(value.trim(), 80);
+      return trimTo(value.trim(), TITLE_CHARS);
     }
   }
   return `${spec.label} ${String(row.id ?? "")}`.trim();
 }
 
-/** The excerpt: the row's own long text, flattened and capped. */
+/**
+ * The excerpt: the SQL-built window around the match, flattened and capped.
+ *
+ * The window arrives anchored (K2) — head-of-row only when the match lived in
+ * another column. The `…` markers say "context was omitted here"; they are
+ * stripped before the title comparison so a task whose note merely repeats its
+ * title still shows no excerpt, the way the old head-slice did.
+ */
 function excerptOf(
   row: Record<string, unknown>,
   spec: SearchEntitySpec,
 ): string | null {
   if (spec.excerpt === null) return null;
-  const value = row[spec.excerpt];
+  const value = row[EXCERPT_ALIAS];
   if (typeof value !== "string") return null;
   const flat = value.replace(/\s+/g, " ").trim();
-  if (flat.length === 0 || flat === titleOf(row, spec)) return null;
+  const bare = flat.replace(/^…\s*/, "").replace(/\s*…$/, "");
+  if (bare.length === 0 || bare === titleOf(row, spec)) return null;
   return trimTo(flat, EXCERPT_CHARS);
 }
 
@@ -177,8 +260,9 @@ function trimTo(text: string, max: number): string {
  * The bound parameters and WHERE clauses for one entity.
  *
  * Every value is a `?`. The only interpolated pieces are the contract's own
- * column and table names (code-owned, never derived from input) and the two
- * fixed integers of this file: the `substr` bound and the `LIMIT`.
+ * column and table names (code-owned, never derived from input) and the fixed
+ * integers of this file: the `substr` bounds, the snippet budget and the
+ * `LIMIT`.
  */
 export function buildSearchQuery(
   spec: SearchEntitySpec,
@@ -190,22 +274,34 @@ export function buildSearchQuery(
   // `archived` is ambiguous there and only works by accident elsewhere.
   const alias = spec.match === "fts" ? "n." : "";
   const clauses: string[] = [];
-  const params: unknown[] = [];
+  const whereParams: unknown[] = [];
+  // The excerpt window binds the term inside the SELECT list (K2), whose
+  // placeholders precede the WHERE's in the SQL — so its params must lead.
+  const selectParams: unknown[] = [];
+  const projection = projectionList(spec, term, selectParams);
 
   if (spec.match === "fts") {
     // The existing builder: every token quoted, AND-ed, prefix-matched.
+    // Wrapped in the contract's column filter (K3 / D1(a)): an unfiltered
+    // FTS5 MATCH covers EVERY indexed column, `folder` included — and
+    // `folder` holds the collection name, which `SEARCH_EXCLUSIONS` lists
+    // as deliberately not searchable. The notes PAGE keeps its own
+    // whole-index search; only here, where the contract speaks, does the
+    // match agree with it.
     clauses.push("notes_fts MATCH ?");
-    params.push(buildMatchQuery(input));
+    whereParams.push(
+      `{${spec.searchable.join(" ")}} : ${buildMatchQuery(input)}`,
+    );
   } else {
     clauses.push(`(${likeExpression(spec)})`);
     // One parameter per searchable column — the OR cannot share one.
-    for (const _ of spec.searchable) params.push(`%${term}%`);
+    for (const _ of spec.searchable) whereParams.push(`%${term}%`);
   }
 
   if (spec.inactive !== null && options.includeInactive !== true) {
     // Bound, not interpolated: 1 for the 0/1 flags, 'paid' for jobs.status.
     clauses.push(`${alias}${spec.inactive.column} IS NOT ?`);
-    params.push(spec.inactive.value);
+    whereParams.push(spec.inactive.value);
   }
   if (options.since !== undefined && spec.date !== null) {
     // A range clause only matches a FULL `yyyy-mm-dd` value (G9 remainder):
@@ -218,7 +314,7 @@ export function buildSearchQuery(
     clauses.push(
       `${alias}${spec.date} IS NOT NULL AND length(${alias}${spec.date}) = 10 AND ${alias}${spec.date} >= ?`,
     );
-    params.push(options.since);
+    whereParams.push(options.since);
   }
   if (options.until !== undefined && spec.date !== null) {
     // Same full-date guard: `MM-DD` sorts below every `YYYY-…` bound, so an
@@ -226,17 +322,17 @@ export function buildSearchQuery(
     clauses.push(
       `${alias}${spec.date} IS NOT NULL AND length(${alias}${spec.date}) = 10 AND ${alias}${spec.date} <= ?`,
     );
-    params.push(options.until);
+    whereParams.push(options.until);
   }
 
   const prefix =
     spec.match === "fts"
-      ? `SELECT ${projectionList(spec)} FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid`
-      : `SELECT ${projectionList(spec)} FROM ${spec.table}`;
+      ? `SELECT ${projection} FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid`
+      : `SELECT ${projection} FROM ${spec.table}`;
   // A title that STARTS with the term outranks one that merely contains it,
   // which is what someone typing a name is looking for.
   if (spec.match === "like" && spec.title[0] !== undefined) {
-    params.push(`${term}%`);
+    whereParams.push(`${term}%`);
   }
   const rank =
     spec.match === "fts"
@@ -249,7 +345,9 @@ export function buildSearchQuery(
 
   return {
     sql: `${prefix} WHERE ${clauses.join(" AND ")} ORDER BY ${rank}${tieBreak} LIMIT ${spec.cap + 1}`,
-    params,
+    // SELECT-list placeholders come first in the SQL text, so their params
+    // lead the array (K2) — a bound parameter out of position is a SQL error.
+    params: [...selectParams, ...whereParams],
   };
 }
 

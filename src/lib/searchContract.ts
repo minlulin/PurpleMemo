@@ -39,7 +39,12 @@ export interface SearchEntitySpec {
   label: string;
   table: string;
   match: SearchMatch;
-  /** Columns the query looks in, in the order they are reported. */
+  /**
+   * Columns the query looks in, in the order they are reported. For the FTS
+   * entity these are also the columns the MATCH is restricted to (D1(a)):
+   * an unfiltered match covers every indexed column, `folder` included, and
+   * the collection name is on the exclusions list.
+   */
   searchable: string[];
   /** Columns concatenated into the displayed title (first non-empty wins). */
   title: string[];
