@@ -17,6 +17,11 @@
 //    Across types: the contract's own order, with the total cap trimming from the
 //    end. The same query and the same data always produce the same list, which
 //    is what lets Up/Down mean something while someone types.
+// 3. **The payload is bounded like the list (K1).** A capped row count is not a
+//    capped payload: every query projects only the columns a result reads, with
+//    the long text cut by SQL to a prefix, so one keystroke ships kilobytes and
+//    not the user's whole notebook over the IPC boundary. The per-entity queries
+//    are issued together — the group order is the contract's, not the network's.
 
 import type { DataDriver, Queryable } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
@@ -94,6 +99,52 @@ export interface SearchOptions {
 
 const EXCERPT_CHARS = 140;
 
+/**
+ * How much of a long text column crosses the IPC boundary (K1).
+ *
+ * Well above the 140 characters the UI displays, so the SQL-side cut cannot
+ * starve the display cap even after whitespace flattening; well below a user's
+ * prose, which is the point — this bounds the payload, not the writing.
+ */
+const EXCERPT_SQL_CHARS = 512;
+
+/**
+ * The columns one result actually reads, and nothing else (K1).
+ *
+ * `db_query` returns every selected column as JSON, so a `SELECT *` here ships
+ * the WHOLE note or journal body across the IPC boundary on every keystroke —
+ * measured at 541 KB for fifteen 54 KB bodies — only for the UI to throw all
+ * but 140 characters away. The projection is the exact set `toResults` reads:
+ * the id, the contract's title column(s), the excerpt column cut by SQL to a
+ * bounded prefix, the date column, the inactive column — plus the shopping
+ * item's `list_id` (its `parentId`), the one field `toResults` reads beside
+ * the contract's own columns.
+ *
+ * A column serving two roles is emitted once: the journal's title IS its
+ * excerpt (`content`), so it takes the bounded form and the title is cut from
+ * that same prefix.
+ */
+function projectionList(spec: SearchEntitySpec): string {
+  const alias = spec.match === "fts" ? "n." : "";
+  const seen = new Set<string>(["id"]);
+  const columns = [`${alias}id`];
+  const add = (column: string, bounded = false) => {
+    if (seen.has(column)) return;
+    seen.add(column);
+    columns.push(
+      bounded
+        ? `substr(${alias}${column}, 1, ${EXCERPT_SQL_CHARS}) AS ${column}`
+        : `${alias}${column}`,
+    );
+  };
+  for (const column of spec.title) add(column, column === spec.excerpt);
+  if (spec.excerpt !== null) add(spec.excerpt, true);
+  if (spec.date !== null) add(spec.date);
+  if (spec.inactive !== null) add(spec.inactive.column);
+  if (spec.type === "shopping_item") add("list_id");
+  return columns.join(", ");
+}
+
 /** First non-empty of the contract's title columns, trimmed and capped. */
 function titleOf(row: Record<string, unknown>, spec: SearchEntitySpec): string {
   for (const column of spec.title) {
@@ -126,7 +177,8 @@ function trimTo(text: string, max: number): string {
  * The bound parameters and WHERE clauses for one entity.
  *
  * Every value is a `?`. The only interpolated pieces are the contract's own
- * column and table names, which are code-owned and never derived from input.
+ * column and table names (code-owned, never derived from input) and the two
+ * fixed integers of this file: the `substr` bound and the `LIMIT`.
  */
 export function buildSearchQuery(
   spec: SearchEntitySpec,
@@ -179,8 +231,8 @@ export function buildSearchQuery(
 
   const prefix =
     spec.match === "fts"
-      ? "SELECT n.* FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid"
-      : `SELECT * FROM ${spec.table}`;
+      ? `SELECT ${projectionList(spec)} FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid`
+      : `SELECT ${projectionList(spec)} FROM ${spec.table}`;
   // A title that STARTS with the term outranks one that merely contains it,
   // which is what someone typing a name is looking for.
   if (spec.match === "like" && spec.title[0] !== undefined) {
@@ -267,20 +319,30 @@ export async function globalSearch(
 ): Promise<SearchGroup[]> {
   if (!isSearchable(input)) return [];
   const wanted = new Set(options.types ?? []);
-  const groups: SearchGroup[] = [];
-  for (const spec of SEARCH_CONTRACT) {
-    if (wanted.size > 0 && !wanted.has(spec.type)) continue;
-    const { sql, params } = buildSearchQuery(spec, input, options);
-    const rows = await driver.query(sql, params);
+  const specs = SEARCH_CONTRACT.filter(
+    (spec) => wanted.size === 0 || wanted.has(spec.type),
+  );
+  // Issued together, not one behind the other (K1): nine sequential IPC round
+  // trips per keystroke bought nothing, because the group order is the
+  // contract's — `Promise.all` answers in input order no matter which query
+  // finishes first.
+  const rowSets = await Promise.all(
+    specs.map((spec) => {
+      const { sql, params } = buildSearchQuery(spec, input, options);
+      return driver.query(sql, params);
+    }),
+  );
+  const groups = specs.map((spec, index): SearchGroup => {
+    const rows = rowSets[index] ?? [];
     // One row over the cap tells us it bit, without a second COUNT query.
     const capped = rows.length > spec.cap;
-    groups.push({
+    return {
       type: spec.type,
       label: spec.label,
       results: toResults(rows.slice(0, spec.cap), spec),
       capped,
-    });
-  }
+    };
+  });
   return applyTotalCap(
     groups,
     options.totalCap ?? SEARCH_TOTAL_CAP,

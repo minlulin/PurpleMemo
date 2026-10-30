@@ -810,3 +810,125 @@ test("the FTS path reuses the existing MATCH builder, with its limit", () => {
   // And it asks for one row more than the cap, so it can tell it bit.
   assert.match(sql, new RegExp(`LIMIT ${(spec?.cap ?? 0) + 1}$`));
 });
+
+// ---------------------------------------------------------------------------
+// The payload (K1)
+// ---------------------------------------------------------------------------
+
+test("every query projects only the columns a result reads, with a bounded excerpt (K1)", () => {
+  // `db_query` serialises every selected column as JSON, so a wildcard
+  // projection ships whole note and journal bodies over IPC on every
+  // keystroke — for the UI to keep 140 characters of each.
+  for (const spec of SEARCH_CONTRACT) {
+    const { sql } = buildSearchQuery(spec, "milk", { includeInactive: true });
+    assert.equal(
+      /SELECT \*|SELECT n\.\*/.test(sql),
+      false,
+      `${spec.type}: no wildcard projection`,
+    );
+    if (spec.excerpt !== null) {
+      assert.match(
+        sql,
+        /substr\((n\.)?[a-z_]+, 1, [0-9]+\) AS/,
+        `${spec.type}: the long text is cut in SQL, not in JS`,
+      );
+    }
+  }
+  // The note query carries exactly what `toResults` reads off a row.
+  const spec = specFor("note");
+  assert.ok(spec);
+  const { sql } = buildSearchQuery(spec, "milk", {});
+  for (const column of ["n.id", "n.title", "n.updated_at", "n.archived"]) {
+    assert.ok(sql.includes(column), `the note projection must carry ${column}`);
+  }
+});
+
+test("large bodies do not cross the IPC boundary: the payload stays bounded (K1)", async () => {
+  const driver = sqliteDriver();
+  // Ten notes and five journal entries with ~54 KB bodies, all matching.
+  const bigBody = (word: string) =>
+    `${word} ${"lorem ipsum dolor sit amet ".repeat(2000)}`;
+  const note = driver.db.prepare(
+    "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (?, ?, ?, '', NULL, 0, 0, 'x', '2026-10-01')",
+  );
+  const fts = driver.db.prepare(
+    "INSERT INTO notes_fts(rowid, title, content, tags, folder) VALUES (?, ?, ?, '', '')",
+  );
+  for (let i = 1; i <= 10; i++) {
+    note.run(i, `Note ${i}`, bigBody("milk"));
+    fts.run(i, `Note ${i}`, bigBody("milk"));
+  }
+  const journal = driver.db.prepare(
+    "INSERT INTO journal_entries (id, entry_date, content, created_at, updated_at) VALUES (?, ?, ?, 'x', 'x')",
+  );
+  for (let i = 1; i <= 5; i++) journal.run(i, `2026-10-1${i}`, bigBody("milk"));
+
+  // Measure what actually crosses the IPC boundary: the JSON of every row
+  // set the search pulls back (the Rust `db_query` response shape).
+  let payloadBytes = 0;
+  const base = driver.query.bind(driver);
+  const measuring: DataDriver = {
+    ...driver,
+    query: async <T extends Queryable>(sql: string, params: unknown[] = []) => {
+      const rows = await base<T>(sql, params);
+      payloadBytes += JSON.stringify(rows).length;
+      return rows;
+    },
+  };
+  const groups = await globalSearch(measuring, "milk");
+  assert.equal(
+    resultCount(groups),
+    15,
+    "all fifteen large rows are still found",
+  );
+  // With `SELECT *` this measured ~830 KB (541 KB notes + 270 KB journal for
+  // the same shape of fixture). The projection must keep one keystroke in
+  // the tens of kilobytes regardless of how much the user has written.
+  assert.equal(
+    payloadBytes < 64 * 1024,
+    true,
+    `payload was ${payloadBytes} bytes`,
+  );
+  // And the results still carry the capped excerpt the UI renders.
+  const firstNote = groups.find((g) => g.type === "note")?.results[0];
+  assert.equal((firstNote?.excerpt?.length ?? 0) <= 140, true);
+  assert.ok(firstNote?.excerpt?.startsWith("milk"));
+});
+
+test("the per-entity queries are issued concurrently, not one keystroke at a time (K1)", async () => {
+  const driver = sqliteDriver();
+  seed(driver.db);
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const base = driver.query.bind(driver);
+  const tracking: DataDriver = {
+    ...driver,
+    query: async <T extends Queryable>(sql: string, params: unknown[] = []) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Yield before answering: a sequential caller can never have two
+      // queries invoked at once, so the peak counts invocations, not rows.
+      await Promise.resolve();
+      const rows = await base<T>(sql, params);
+      inFlight -= 1;
+      return rows;
+    },
+  };
+  const groups = await globalSearch(tracking, "milk");
+  assert.ok(resultCount(groups) > 0, "the search still finds rows");
+  assert.equal(
+    maxInFlight,
+    SEARCH_CONTRACT.length,
+    "one keystroke issues every entity query at once",
+  );
+  // A type filter issues exactly the wanted queries — still concurrently.
+  maxInFlight = 0;
+  const narrowed = await globalSearch(tracking, "milk", {
+    types: ["note", "task"],
+  });
+  assert.deepEqual(
+    narrowed.map((g) => g.type),
+    ["note", "task"],
+  );
+  assert.equal(maxInFlight, 2, "a narrowed search issues only its own queries");
+});
