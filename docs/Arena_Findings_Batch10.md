@@ -283,3 +283,67 @@ The contract's `inactive` shape (a column and a value, `searchContract.ts:50–6
 - **`noteExcerpt`'s markdown stripping.** Fences, inline code, images, links, headings, quotes, rules, list bullets, bold/italic/strikethrough are removed in a safe order and `snake_case_names` survive (`notes.ts:67–85`), pinned by `notes.test.ts:44–90`. Only the truncation boundary is at issue (K11).
 - **`buildMatchQuery`'s quoting.** Every token is double-quoted with embedded quotes doubled and a `*` prefix suffix, so FTS operators typed by the user stay literal (`search.ts:10–17`); the suite drives the operator-shaped inputs (`"`, `milk"`, `AND`, `OR NOT`, `NEAR(a b)`, `*`, `^milk`, `a OR`, `(`, `col:milk`) through the real SQLite fixture (`globalSearch.test.ts:348–369`) and they neither throw nor act as syntax.
 - **NFC normalization of the term.** `normalizeTerm` composes and lowercases without stripping combining marks, so both the composed and the decomposed spelling of a word match the stored text (`searchContract.ts:262–278`), pinned by `globalSearch.test.ts:371–403`. (The ASCII-only folding consequence is K4.)
+
+## Resolutions (decided by Muus, delegated by the owner 2026-10-30)
+
+The DECISION items above are genuine behaviour choices. Both are settled
+here; the original DECISION wording is preserved above.
+
+- **Decision 1 — option (a): restrict the global search's FTS match to
+  the contract's columns** (`notes_fts MATCH '{title content tags} : …'`).
+  Rationale: the exclusions header itself reserves the other path —
+  declaring `folder` searchable "needs MinLulin's approval and a
+  documented note in `docs/RELEASE.md`" — so expanding search into
+  collection names silently is not ours to take. The contract and the
+  SQL must say the same thing, and the contract says collections are
+  not searchable. The notes page's own folder matching stays exactly as
+  it is (pinned by the P3-4 regression test); only the global search is
+  brought into agreement with the contract.
+- **Decision 2 — filter closed loans** (fully repaid,
+  `repaid_cents >= amount_cents`), showing them with a "Closed" state
+  when `includeInactive` is on. Rationale: the contract's stated policy
+  is explicit — finished things stay out of search — and the loan
+  spec's `inactive: null` is an omission, not a documented intent
+  (contrast the shopping-items counter-precedent, which carries a
+  stated `why`). Today a closed loan is also indistinguishable from an
+  open one (no state at all), which is actively misleading. The
+  `inactive` contract shape grows to express a derived predicate
+  rather than a column value, plus the "Closed" label.
+
+## Fix-wave note (6 commits, order 1→2→3→4→5→6)
+
+- Commit 1 = K1 (search payload: project only the columns a result
+  needs — id, title columns, bounded `substr(<content>, 1, N)` excerpt,
+  date and inactive columns — instead of `*` / `n.*`; issue the
+  per-entity queries concurrently; tests measuring payload).
+- Commit 2 = K2 + K3 + D1(a) (relevance: excerpt built around the match
+  — `snippet(notes_fts, …)` for FTS, `instr` window for LIKE, head-slice
+  only as fallback; FTS match restricted to `{title content tags}` per
+  D1(a); fix the journal title/excerpt double-display).
+- Commit 3 = K4 + K6 + K7 (term handling: one folding semantic for both
+  paths — or at minimum correct the `:273–274` comment so the
+  ASCII-only LIKE limitation is not presented as neutral; escape `%`,
+  `_` and the escape char with `ESCAPE '\'`; `isSearchable` treats
+  Unicode marks as content, keeping the punctuation-only refusal for
+  real FTS operators).
+- Commit 4 = K5 + K8 + K11 (notes search path: `notesRepo.search`
+  answers `NoteListRow[]` (or a dedicated `NoteSearchRow`) and
+  `searchNotes`'s generic is narrowed so projection and row type cannot
+  drift; in-page search gets the total order
+  `ORDER BY rank, n.updated_at DESC, n.id DESC`; `noteExcerpt` finds its
+  boundary with `Intl.Segmenter` and counts the cap in grapheme
+  clusters).
+- Commit 5 = K9 + K10 + K12 (small fixes: NotesPage mount read yields
+  to the writer — a "changed since mount" ref, or load before the
+  controls go interactive; `daysAgo` validates its components instead
+  of throwing `RangeError`; the empty-title test actually exercises the
+  fallback it names).
+- Commit 6 = K13 + D2 (contract policy: correct the caption sentence —
+  captions are not searchable at all — or make it true, settled here as
+  the sentence fix; grow the `inactive` contract to a derived predicate
+  and filter closed loans with a "Closed" state under
+  `includeInactive`).
+
+Commits 1, 2 and 5 share `globalSearch.ts`; commits 3 and 6 share
+`searchContract.ts` (order 1→2→3→4→5→6 as listed). `npm run verify`
+green before each commit.
