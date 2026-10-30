@@ -108,8 +108,10 @@ test("savePhoto hands the driver raw bytes, never a number array", async () => {
 
 test("readThumbBytes: a stored thumbnail reads back; a missing one rejects", async () => {
   // Row lookup, then the thumb read — the driver owns the path derivation.
+  // The rel_path is a real content-addressed source path (D1-1): anything
+  // else is refused by the driver before any thumbnail is looked for.
   const driver = createMockDriver({
-    results: [[{ id: 4, rel_path: "photos/2026/10/aa.jpg" }]],
+    results: [[{ id: 4, rel_path: `photos/2026/10/${"a".repeat(64)}.jpg` }]],
   });
   const gallery = createGalleryRepo(driver);
   await assert.rejects(
@@ -118,18 +120,18 @@ test("readThumbBytes: a stored thumbnail reads back; a missing one rejects", asy
     "no thumbnail yet is a rejection the page turns into generation",
   );
   assert.deepEqual(driver.callsTo("readPhotoThumb")[0]?.args, [
-    "photos/2026/10/aa.jpg",
+    `photos/2026/10/${"a".repeat(64)}.jpg`,
   ]);
 });
 
 test("saveThumb writes the thumbnail against the photo's own path", async () => {
   const driver = createMockDriver({
-    results: [[{ id: 4, rel_path: "photos/2026/10/aa.jpg" }]],
+    results: [[{ id: 4, rel_path: `photos/2026/10/${"a".repeat(64)}.jpg` }]],
   });
   const gallery = createGalleryRepo(driver);
   await gallery.saveThumb(4, Uint8Array.from([1, 2]));
   const [source, bytes] = driver.callsTo("savePhotoThumb")[0]?.args ?? [];
-  assert.equal(source, "photos/2026/10/aa.jpg");
+  assert.equal(source, `photos/2026/10/${"a".repeat(64)}.jpg`);
   assert.ok(bytes instanceof Uint8Array);
 });
 

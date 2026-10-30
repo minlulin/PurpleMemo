@@ -100,6 +100,16 @@ function samplePhotos(): BackupPhotoEntry[] {
   ];
 }
 
+/**
+ * Where the mock driver's `savePhoto` lands a photo (D1-1: content-addressed
+ * like Rust — sha256 of the bytes, lowercased ext). `SAMPLE_JPG` is where
+ * `samplePhotos()`' [9,9,9] land; `ONE_TWO_THREE_JPG` is [1,2,3].
+ */
+const SAMPLE_JPG =
+  "photos/2026/10/e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584.jpg";
+const ONE_TWO_THREE_JPG =
+  "photos/2026/10/039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81.jpg";
+
 // bytes are `Uint8Array` end to end — a `number[]` anywhere in
 // this path is the JSON-array-per-byte problem coming back.
 function expectBytes(value: unknown, expected: number[]): void {
@@ -754,9 +764,10 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
     photos: samplePhotos(),
   };
   const result = await applyBackup(driver, parsed);
-  // The mock savePhoto derives its own path (photos/2026/10/jpg.3) from the
-  // bytes — different from the zip path — so the row is re-pointed at the
-  // real content-addressed location instead of trusting the zip path.
+  // The mock savePhoto derives its own path (photos/2026/10/<sha256>.jpg,
+  // D1-1 content-addressed like Rust) from the bytes — different from the
+  // zip path — so the row is re-pointed at the real location instead of
+  // trusting the zip path.
   assert.deepEqual(result, { tables: 31, rows: 2, photos: 1 });
 
   // Photo files go through savePhoto BEFORE any DB write — a photo failure
@@ -805,7 +816,7 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
     s.sql.startsWith("INSERT INTO photos"),
   );
   assert.ok(photoInsert);
-  assert.equal(photoInsert.params?.[1], "photos/2026/10/jpg.3");
+  assert.equal(photoInsert.params?.[1], SAMPLE_JPG);
 });
 
 test("applyBackup cancels before any DB write when a photo file is missing", async () => {
@@ -844,7 +855,7 @@ test("applyBackup removes newly written photos when the DB import fails", async 
   await assert.rejects(applyBackup(driver, parsed), /batch failed/);
   assert.deepEqual(
     driver.callsTo("deletePhoto").map((c) => c.args),
-    [["photos/2026/10/jpg.3"]],
+    [[ONE_TWO_THREE_JPG]],
   );
 });
 
@@ -931,11 +942,11 @@ test("applyBackup deletes orphaned old photo files, but only after the batch com
 });
 
 test("applyBackup keeps files the imported backup still references", async () => {
-  // The mock savePhoto re-points the row to photos/2026/10/jpg.3, so that is
-  // the path the new DB references — a current file at that exact path must
-  // survive the import.
+  // The mock savePhoto re-points the row to its content-addressed path
+  // (SAMPLE_JPG), so that is the path the new DB references — a current
+  // file at that exact path must survive the import.
   const driver = createMockDriver({
-    results: [[{ rel_path: "photos/2026/10/jpg.3" }]],
+    results: [[{ rel_path: SAMPLE_JPG }]],
   });
   await applyBackup(driver, {
     payload: samplePayload(),
@@ -1037,8 +1048,10 @@ test("applyBackup corrects sha256 + size_bytes when a zip entry does not match t
     .map((c) => c.trim());
   const get = (name: string) => photoInsert.params?.[cols.indexOf(name)];
 
-  assert.equal(get("rel_path"), "photos/2026/10/jpg.3");
-  // sha256 of the actual bytes [9,9,9], and the actual byte length.
+  assert.equal(get("rel_path"), SAMPLE_JPG);
+  // sha256 of the actual bytes [9,9,9], and the actual byte length — and
+  // with D1-1 content-addressing the rel_path IS that hash: every column
+  // that describes the bytes moves together, path included.
   assert.equal(
     get("sha256"),
     "e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584",
@@ -1047,24 +1060,17 @@ test("applyBackup corrects sha256 + size_bytes when a zip entry does not match t
 });
 
 test("applyBackup repairs forged photo metadata when the content path already matches", async () => {
-  const path =
-    "photos/2026/10/e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584.jpg";
-  const base = createMockDriver();
-  const driver: MockDriver = {
-    ...base,
-    async savePhoto(bytes, ext) {
-      base.calls.push({ method: "savePhoto", args: [bytes, ext] });
-      return path;
-    },
-  };
+  // The mock's savePhoto IS content-addressed now (D1-1): the path below is
+  // exactly where it lands [9,9,9].jpg — no patching needed.
+  const driver = createMockDriver();
   const payload = samplePayload();
   payload.data.photos = [
-    { ...PHOTO_ROW, rel_path: path, sha256: "forged", size_bytes: 1 },
+    { ...PHOTO_ROW, rel_path: SAMPLE_JPG, sha256: "forged", size_bytes: 1 },
   ];
 
   await applyBackup(driver, {
     payload,
-    photos: [{ path, bytes: Uint8Array.from([9, 9, 9]) }],
+    photos: [{ path: SAMPLE_JPG, bytes: Uint8Array.from([9, 9, 9]) }],
   });
 
   const statements = first(driver.callsTo("batch"), "batch").args[0] as {
@@ -1084,7 +1090,7 @@ test("applyBackup repairs forged photo metadata when the content path already ma
     .map((column) => column.trim());
   const get = (name: string) => photoInsert.params?.[columns.indexOf(name)];
 
-  assert.equal(get("rel_path"), path);
+  assert.equal(get("rel_path"), SAMPLE_JPG);
   assert.equal(
     get("sha256"),
     "e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584",
