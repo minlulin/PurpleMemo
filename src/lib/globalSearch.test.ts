@@ -833,6 +833,48 @@ test("a date filter bounds by the contract's date column", async () => {
   );
 });
 
+test("daysAgo validates its today instead of throwing (K10)", () => {
+  // A real date still answers exactly — the filter test above depends on it.
+  assert.equal(daysAgo(10, "2026-10-18"), "2026-10-08");
+  // A malformed `today` degrades to the current date instead of reaching
+  // `toISOString()`, which threw `RangeError` (K10): the old `?? 1970` /
+  // `?? 1` could never fire, because `Number.parseInt` answers NaN, never
+  // null — they read as validation and were not. Format AND calendar
+  // reality are required: out-of-range and impossible days count too.
+  for (const bad of [
+    "",
+    "not-a-date",
+    "2026-13-45",
+    "2026-02-31",
+    "2026-1-1",
+  ]) {
+    assert.doesNotThrow(
+      () => daysAgo(10, bad),
+      `daysAgo must not throw on ${JSON.stringify(bad)}`,
+    );
+    const out = daysAgo(10, bad);
+    assert.match(
+      out,
+      /^\d{4}-\d{2}-\d{2}$/,
+      `…and must answer a plain yyyy-mm-dd for ${JSON.stringify(bad)}`,
+    );
+    assert.equal(
+      out,
+      daysAgo(10),
+      `${JSON.stringify(bad)} is ignored, so the window comes from the current date`,
+    );
+  }
+  // The silent failure the guards used to allow: `2026-02-31` parsed as
+  // 2026-03-03, so daysAgo(10) claimed 2026-02-21 — a window anchored to a
+  // day that does not exist. The fixed value can never equal the clock
+  // fallback, whose year is not 2026 anymore.
+  assert.notEqual(
+    daysAgo(10, "2026-02-31"),
+    "2026-02-21",
+    "an impossible day must not roll into March",
+  );
+});
+
 // G9 remainder: a yearless birthday (`MM-DD`) is not a `yyyy-mm-dd` date, so
 // it cannot satisfy the range clause's documented contract — it is excluded
 // while a range is active rather than compared lexicographically (where it
@@ -937,16 +979,46 @@ test("results carry enough to open the exact row", async () => {
 
 test("an empty title still produces a usable row", async () => {
   const driver = sqliteDriver();
+  // Reachable ONLY through its note: every title column is empty, so the
+  // title the results list renders must come from `titleOf`'s fallback —
+  // `${label} ${id}` — which is the behaviour this test is named for and
+  // never used to reach (K12: the old version gave the row an empty note
+  // too, so nothing matched and the fallback stayed uncovered).
+  driver.db
+    .prepare(
+      "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, '', NULL, 0, 'none', 'remember the reunion', 'x')",
+    )
+    .run();
+  const groups = await globalSearch(driver, "reunion");
+  const row = groups.find((g) => g.type === "task")?.results[0];
+  assert.ok(row, "the empty-titled row is found through its note");
+  assert.equal(
+    row.title,
+    `${specFor("task")?.label} 1`,
+    "the fallback titles the row by entity and id, never blank",
+  );
+  assert.ok(
+    row.title.trim().length > 0,
+    "usable means renderable: non-empty after trimming",
+  );
+});
+
+test("a row with nothing searchable matches nothing (K12)", async () => {
+  // The separate case K12 asks to keep: an empty TITLE is not what empties
+  // the results — a row with no searchable text at all is. Own test, so the
+  // fallback above is never starved of a row to exercise it.
+  const driver = sqliteDriver();
   driver.db
     .prepare(
       "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, '', NULL, 0, 'none', '', 'x')",
     )
     .run();
-  // Search by the note field, since the title is empty.
-  const groups = await globalSearch(driver, "unnamed");
-  assert.equal(groups.length, 0);
-  const byNote = await globalSearch(driver, "x");
-  assert.equal(byNote.length, 0);
+  assert.equal((await globalSearch(driver, "unnamed")).length, 0);
+  assert.equal(
+    (await globalSearch(driver, "x")).length,
+    0,
+    "created_at is not a searchable column, so it matches nothing",
+  );
 });
 
 test("every cap in the contract is enforced, and reported when it bites", async () => {

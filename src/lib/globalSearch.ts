@@ -490,12 +490,53 @@ export function applyTotalCap(
   return out;
 }
 
-/** `yyyy-mm-dd` for "N days ago", for the date filter. */
+/**
+ * `yyyy-mm-dd` for "N days ago", for the date filter.
+ *
+ * A `today` that is not a real, zero-padded calendar date is IGNORED and the
+ * answer is computed from the current date instead — `daysAgo(10,
+ * "not-a-date")` degrades to "10 days ago from now" rather than throwing
+ * (K10). The old `?? 1970` / `?? 1` fallbacks could never fire:
+ * `Number.parseInt` answers NaN, never null, so malformed input sailed past
+ * them into `toISOString()`, which threw `RangeError` out of a search-layer
+ * export — and out-of-range components did not throw at all, so
+ * `2026-13-45` rolled over to 2027-02-04 as if it were a date. Validation is
+ * format plus calendar reality: three zero-padded groups, then a round-trip
+ * through Date (below), so an impossible day counts as malformed too. This
+ * helper feeds `since`/`until`, where the only answer a caller can act on is
+ * "N days ago from a real day" — never a throw from a filter.
+ */
 export function daysAgo(days: number, today: string = todayLocal()): string {
-  const [y, m, d] = today.split("-").map((part) => Number.parseInt(part, 10));
-  const date = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
-  date.setUTCDate(date.getUTCDate() - days);
-  return date.toISOString().slice(0, 10);
+  // `isoDate(todayLocal())` is always a date; the final `new Date()` is the
+  // type-level term that makes `toISOString()` unreachable-by-throwing, not
+  // a validation claim.
+  const from = isoDate(today) ?? isoDate(todayLocal()) ?? new Date();
+  from.setUTCDate(from.getUTCDate() - days);
+  return from.toISOString().slice(0, 10);
+}
+
+/**
+ * `raw` as a UTC date at midnight, or null when it is not a real
+ * `yyyy-mm-dd` calendar date (K10). The regex checks the shape; the
+ * round-trip checks the day actually exists — `2026-13-45` and `2026-02-31`
+ * parse into Date (which rolls them over) but do not survive being read back,
+ * so they are rejected instead of silently shifting the window.
+ */
+function isoDate(raw: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
 }
 
 /** How many results in total, for the "showing N" line. */

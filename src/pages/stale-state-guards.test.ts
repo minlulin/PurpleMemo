@@ -1,5 +1,6 @@
 // Batch-3 stale-state gates (findings C2/C3/C4/C6 in
-// docs/Arena_Findings_Batch3.md).
+// docs/Arena_Findings_Batch3.md), plus K9 from Batch10 — same defect class
+// (a read that lands after the human has already chosen), same file.
 //
 // `node --test` cannot mount a page component, so each rule is pinned by
 // reading the page source — the same trick submit-guards.test.ts uses on the
@@ -15,7 +16,10 @@
 //   C4  the search-focus effect is keyed on arrival, not on the data — with
 //       the list in its dependencies every reload snapped the user back to
 //       the "all" view for the rest of the session;
-//   C6  the gallery re-reads the link-picker's labels when the inspector opens.
+//   C6  the gallery re-reads the link-picker's labels when the inspector opens;
+//   K9  (Batch10) the Notes page's mount-time preference read yields to a
+//       writer that already chose — one ref per preference, raised by every
+//       writer (buttons and Ctrl+E), checked by the read.
 //
 // C5 (ShoppingPage's reorder guard) is pinned in submit-guards.test.ts, which
 // owns the guard shape.
@@ -196,5 +200,54 @@ test("the gallery's link-picker labels refresh when the inspector opens (C6)", (
   assert.ok(
     src.includes("loadPickerLists(() => cancelled)"),
     "GalleryPage: the mount effect must load them too, with its cancellation check",
+  );
+});
+
+test("the mount-time preference read yields to the writer (K9)", () => {
+  // NotesPage reads view mode + collapse once on mount; the click can land
+  // while that read is in flight (an IPC round trip that can queue behind a
+  // write), and the read resolving afterwards reverted the click — while the
+  // store already held the new value, so UI and repository disagreed and the
+  // choice was lost on the next launch. `cancelled` alone does not close it:
+  // it fires on UNMOUNT, and the losing page stays mounted.
+  const src = readPage("NotesPage.tsx");
+
+  // One ref per preference — a choice of one must not freeze the other,
+  // which the read still owns.
+  assert.match(
+    src,
+    /const viewModeChosenRef = useRef\(false\)/,
+    "NotesPage: the yield needs a ref (survives re-renders), not state",
+  );
+  assert.match(
+    src,
+    /const collectionsChosenRef = useRef\(false\)/,
+    "NotesPage: the collapse flag needs its own ref, so the two writers do not block each other",
+  );
+
+  // EVERY writer marks the choice the moment it makes it — the button
+  // handlers and the Ctrl+E shortcut, both view-mode writers.
+  assert.equal(
+    (src.match(/viewModeChosenRef\.current = true/g) ?? []).length,
+    2,
+    "NotesPage: both view-mode writers (changeViewMode and the Ctrl+E handler) must mark the choice",
+  );
+  assert.equal(
+    (src.match(/collectionsChosenRef\.current = true/g) ?? []).length,
+    1,
+    "NotesPage: the collapse writer must mark its choice too",
+  );
+
+  // …and the read installs a value only while its ref is still false — the
+  // guard that was missing when the read could overwrite the writer.
+  assert.match(
+    src,
+    /if \(!viewModeChosenRef\.current\) setViewMode\(mode\)/,
+    "NotesPage: the mount read must skip a view mode the writer already chose",
+  );
+  assert.match(
+    src,
+    /if \(!collectionsChosenRef\.current\) setCollectionsCollapsed\(collapsed\)/,
+    "NotesPage: the mount read must skip a collapse flag the writer already chose",
   );
 });

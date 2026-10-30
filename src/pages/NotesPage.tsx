@@ -388,10 +388,28 @@ export default function NotesPage(p: NotesPageProps) {
   const [readerOpen, setReaderOpen] = useState(false);
 
   /**
+   * Set the moment a writer CHOOSES a preference — the mount read below
+   * then skips that preference (K9). The read and the click are two writers
+   * of the same state with no ordering between them: the read is an IPC
+   * round trip that can queue behind a write, so it can resolve AFTER the
+   * click and hand back the value the click just replaced. The store already
+   * holds the new value then, so the UI and the repository disagree and the
+   * choice is lost on the next launch. One ref per preference: choosing the
+   * view mode must not freeze the collapse flag the read still owns, and
+   * vice versa.
+   */
+  const viewModeChosenRef = useRef(false);
+  const collectionsChosenRef = useRef(false);
+
+  /**
    * Load the two Notes-page view preferences once on mount. A missing or
    * malformed stored value falls back inside `settingsRepo` (split /
    * expanded) — no error reaches the writer. Best-effort like drafts: a
    * failed read leaves the defaults rather than blocking the page.
+   *
+   * A preference the writer chose while this read was in flight keeps its
+   * chosen value (K9): the store already carries that choice, so applying
+   * the older read would revert it — the exact race the refs above close.
    */
   useEffect(() => {
     let cancelled = false;
@@ -402,8 +420,10 @@ export default function NotesPage(p: NotesPageProps) {
           settingsRepo.getNotesCollectionsCollapsed(),
         ]);
         if (cancelled) return;
-        setViewMode(mode);
-        setCollectionsCollapsed(collapsed);
+        // Yield to the writer: a preference with a human decision behind it
+        // is left alone (K9).
+        if (!viewModeChosenRef.current) setViewMode(mode);
+        if (!collectionsChosenRef.current) setCollectionsCollapsed(collapsed);
       } catch {
         // Defaults (split / expanded) already stand.
       }
@@ -415,11 +435,17 @@ export default function NotesPage(p: NotesPageProps) {
 
   /** Persist on every change; state already applied either way. */
   function changeViewMode(mode: NotesViewMode): void {
+    // Raised BEFORE the state write: the in-flight mount read must never
+    // undo this choice (K9).
+    viewModeChosenRef.current = true;
     setViewMode(mode);
     void settingsRepo.setNotesViewMode(mode).catch(() => undefined);
   }
 
   function changeCollectionsCollapsed(collapsed: boolean): void {
+    // Raised for the same reason (K9) — this writer owns only the flag it
+    // sets, so the read may still land the other one.
+    collectionsChosenRef.current = true;
     setCollectionsCollapsed(collapsed);
     void settingsRepo
       .setNotesCollectionsCollapsed(collapsed)
@@ -450,6 +476,9 @@ export default function NotesPage(p: NotesPageProps) {
       if (document.querySelector("[role=dialog]") !== null) return;
       e.preventDefault();
       const next = toggleViewMode(viewMode);
+      // A writer like the buttons above, so the mount read yields to it too
+      // (K9): Ctrl+E can land while the preference read is still in flight.
+      viewModeChosenRef.current = true;
       setViewMode(next);
       void settingsRepo.setNotesViewMode(next).catch(() => undefined);
     };
