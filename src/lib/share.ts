@@ -291,15 +291,33 @@ export function buildShareSnapshot(input: ShareSnapshotInput): ShareSnapshot {
  * `publishSnapshot` is the only writer: the phone can read what the desktop
  * last published, and nothing else.
  */
-export function createShareRepo(driver: DataDriver) {
+/**
+ * The domain repositories the snapshot reads, as the composition root
+ * already built them (J5). Every field is optional: a caller that passes
+ * nothing gets the default-constructed repo it always did, while `app.ts`
+ * passes its singletons so no domain repo (and no `KeyedMutex` or
+ * `trashRepo` inside one) is ever constructed twice for the same driver —
+ * per-instance state would otherwise silently split across two copies.
+ */
+export interface ShareRepos {
+  budget?: ReturnType<typeof createBudgetRepo>;
+  business?: ReturnType<typeof createBusinessRepo>;
+  tasks?: ReturnType<typeof createTasksRepo>;
+  habits?: ReturnType<typeof createHabitsRepo>;
+  memories?: ReturnType<typeof createMemoriesRepo>;
+  contacts?: ReturnType<typeof createContactsRepo>;
+  notes?: ReturnType<typeof createNotesRepo>;
+}
+
+export function createShareRepo(driver: DataDriver, repos: ShareRepos = {}) {
   let shareKey: string | null = null;
-  const budget = createBudgetRepo(driver);
-  const business = createBusinessRepo(driver);
-  const tasks = createTasksRepo(driver);
-  const habits = createHabitsRepo(driver);
-  const memories = createMemoriesRepo(driver);
-  const contacts = createContactsRepo(driver);
-  const notes = createNotesRepo(driver);
+  const budget = repos.budget ?? createBudgetRepo(driver);
+  const business = repos.business ?? createBusinessRepo(driver);
+  const tasks = repos.tasks ?? createTasksRepo(driver);
+  const habits = repos.habits ?? createHabitsRepo(driver);
+  const memories = repos.memories ?? createMemoriesRepo(driver);
+  const contacts = repos.contacts ?? createContactsRepo(driver);
+  const notes = repos.notes ?? createNotesRepo(driver);
 
   return {
     /**

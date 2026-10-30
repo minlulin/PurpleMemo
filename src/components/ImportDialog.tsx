@@ -18,7 +18,7 @@ import { useRef, useState } from "react";
 import { saveCsvTemplate } from "../data/app.ts";
 import { cellText, PREVIEW_ROW_LIMIT } from "../lib/csv.ts";
 import { errText } from "../lib/errors.ts";
-import { isMessageKeyError, type MessageKey } from "../lib/i18n.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { Dialog } from "./Dialog.tsx";
 import { IconDownload, IconUpload } from "./icons.tsx";
 import { useToast } from "./Toast.tsx";
@@ -109,10 +109,10 @@ export function ImportDialog<T extends object>({
   // not just the template button.
   const busy = reading || downloading || phase === "running";
 
-  /** A key-carrying refusal is rendered in the current locale; anything else
-   * (a file-read failure, a database error) keeps its own text. */
-  const describe = (e: unknown) =>
-    isMessageKeyError(e) ? t(e.messageKey, e.params) : errText(e);
+  // A key-carrying refusal renders in the current locale (`errText`
+  // resolves message keys itself, J6); anything else — a file-read failure,
+  // a database error — keeps its own text.
+  const describe = (e: unknown) => errText(e);
 
   // Closing mid-write would hide an import that may already have landed; the
   // user waits for the one batch instead. Any in-flight step (read, download,

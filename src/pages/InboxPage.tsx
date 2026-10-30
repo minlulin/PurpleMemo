@@ -26,7 +26,7 @@ import {
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
 import { formatDateTime } from "../lib/format.ts";
-import { isMessageKeyError, type MessageKey } from "../lib/i18n.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { journalBlock, targetKey } from "../lib/inbox.ts";
 import type { InboxRow, InboxTarget } from "../lib/types.ts";
 
@@ -125,10 +125,10 @@ export default function InboxPage(p: InboxPageProps) {
 
   /**
    * Render a caught value: a keyed inbox refusal in the locale active right
-   * now (D11), anything else through the shared raw-text helper.
+   * now (D11 — `errText` resolves message keys itself, J6), anything else
+   * through the shared raw-text helper.
    */
-  const errMessage = (e: unknown): string =>
-    isMessageKeyError(e) ? t(e.messageKey, e.params) : errText(e);
+  const errMessage = (e: unknown): string => errText(e);
 
   const reload = useCallback(async () => {
     const seq = ++reloadSeqRef.current;

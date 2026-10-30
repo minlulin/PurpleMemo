@@ -53,6 +53,7 @@ export const en = {
   "common.dismiss": "Dismiss",
   "common.dismissNotification": "Dismiss notification",
   "common.deleteWhat": "Delete {what}",
+  "common.somethingWentWrong": "Something went wrong.",
 
   "shell.skipToContent": "Skip to content",
   "shell.sections": "Sections",
@@ -728,6 +729,7 @@ export const my: Record<MessageKey, string> = {
   "common.dismiss": "ပိတ်မည်",
   "common.dismissNotification": "အသိပေးချက်ကို ပိတ်မည်",
   "common.deleteWhat": "{what} ကို ဖျက်မည်",
+  "common.somethingWentWrong": "တစ်ခုခုမှားသွားပါသည်",
 
   "shell.skipToContent": "အကြောင်းအရာသို့ ကျော်သွားမည်",
   "shell.sections": "ကဏ္ဍများ",

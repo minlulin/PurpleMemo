@@ -976,10 +976,7 @@ function AppShell() {
           ) : page === "notes" ? (
             <NotesPage
               focusToken={focusToken}
-              focusId={focusedRowFor(
-                { page, entity: focus ?? undefined },
-                "note",
-              )}
+              focusId={focusedRowFor(focus, "note")}
               onOpenEntity={openEntity}
             />
           ) : page === "journal" ? (
@@ -1022,10 +1019,7 @@ function AppShell() {
               focusToken={focusToken}
               notifyNote={notifyNote}
               remindersFired={remindersFired}
-              focusId={focusedRowFor(
-                { page, entity: focus ?? undefined },
-                "task",
-              )}
+              focusId={focusedRowFor(focus, "task")}
               onOpenEntity={openEntity}
             />
           ) : page === "shopping" ? (
@@ -1043,10 +1037,7 @@ function AppShell() {
           ) : page === "contacts" ? (
             <ContactsPage
               focusToken={focusToken}
-              focusId={focusedRowFor(
-                { page, entity: focus ?? undefined },
-                "contact",
-              )}
+              focusId={focusedRowFor(focus, "contact")}
               onOpenEntity={openEntity}
             />
           ) : page === "memories" ? (

@@ -895,7 +895,30 @@ async function innerArchive(
   return openBackupContainer(bytes, password);
 }
 
-export function createBackupRepo(driver: DataDriver) {
+/**
+ * Lifecycle hooks the composition root attaches to the backup repo (J5).
+ *
+ * `onBeforeImport` runs at the top of `importBackup`, before the first
+ * write — the moment old in-memory state must stop being trusted, whichever
+ * caller runs the import.
+ */
+export interface BackupRepoHooks {
+  /**
+   * Called before an import replaces every table. `app.ts` uses this to
+   * `vaultRepo.lockVault()`: the vault's derived-`CryptoKey` cache belongs
+   * to rows that are about to be gone, and a key that survives the import
+   * both decrypts nothing and answers a later open of a same-id imported
+   * item with the OLD salt's key — a false "wrong password" (J5). Locking
+   * here makes the invalidation unconditional, not a duty every import
+   * caller must remember.
+   */
+  onBeforeImport?: () => void;
+}
+
+export function createBackupRepo(
+  driver: DataDriver,
+  hooks: BackupRepoHooks = {},
+) {
   return {
     /**
      * Build the backup bytes (caller saves the file wherever it wants).
@@ -987,6 +1010,11 @@ export function createBackupRepo(driver: DataDriver) {
      * bytes that get validated are exactly the bytes that get written.
      */
     async importBackup(bytes: Uint8Array): Promise<BackupApplyResult> {
+      // Old in-memory state dies here, before the first write (J5): the
+      // vault's key cache (via the composition root's hook) belongs to the
+      // rows this import replaces, and every caller of importBackup gets
+      // that guarantee — not only SettingsPage's confirm step.
+      hooks.onBeforeImport?.();
       // The import exclusion window (E5): claim it BEFORE the first write so
       // every write below carries the lease, and release it in `finally` so
       // the window closes whether the import commits, fails, or throws while

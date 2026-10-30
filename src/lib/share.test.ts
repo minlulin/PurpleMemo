@@ -7,6 +7,7 @@ import type { MockDriver } from "../data/mock-driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at, first } from "../test-utils.ts";
 import { addDays, todayLocal } from "./dates.ts";
+import { createNotesRepo } from "./notes.ts";
 import {
   buildShareSnapshot,
   clipToBytes,
@@ -505,6 +506,52 @@ test("the shell's lock port stops sharing through the lock path (D2a)", () => {
     /stopSharing: \(\) => shareRepo\.stop\(\)/,
     "an ordinary stop leaves an armed token alive — not the lock's stop",
   );
+});
+
+test("createShareRepo: a caller's repos are used, not rebuilt underneath (J5)", async () => {
+  // A second repo instance over the same driver splits any per-instance
+  // state (memoization, mutexes) across two copies the moment it appears.
+  // The spy replaces one method of a real repo and must be the one
+  // publishSnapshot reads through.
+  const driver = createMockDriver();
+  const seen: unknown[] = [];
+  const notes = {
+    ...createNotesRepo(driver),
+    async listNotes(options: unknown) {
+      seen.push(options);
+      return [];
+    },
+  };
+  const repo = createShareRepo(driver, { notes });
+  await repo.start();
+  await repo.publishSnapshot();
+  assert.deepEqual(
+    seen,
+    [{ limit: SHARE_LIMITS.notes }],
+    "the passed notes repo served the snapshot, with the same bound",
+  );
+});
+
+test("app.ts hands the share repo the singletons it already built (J5)", () => {
+  // The runtime test above proves the parameter is honored; this proves the
+  // production composition root actually passes it — a default-constructed
+  // share repo would keep every test green.
+  const app = readFileSync(new URL("../data/app.ts", import.meta.url), "utf8");
+  assert.match(app, /shareRepo = createShareRepo\(driver, \{/);
+  for (const name of [
+    "budget",
+    "business",
+    "tasks",
+    "habits",
+    "memories",
+    "contacts",
+    "notes",
+  ]) {
+    assert.ok(
+      app.includes(`${name}: ${name}Repo,`),
+      `${name} must be passed as the already-built singleton`,
+    );
+  }
 });
 
 test("createShareRepo: start/stop/status go through the driver (single IPC surface)", async () => {

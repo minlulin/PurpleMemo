@@ -1365,6 +1365,59 @@ test("a failed safety copy rejects, so the import can be abandoned", async () =>
   await assert.rejects(() => repo.saveSafetyCopy("x"), /disk full/);
 });
 
+test("importBackup runs its onBeforeImport hook before the first write (J5)", async () => {
+  // The hook is where in-memory state that belongs to the rows being
+  // replaced must die — the vault's key cache through the composition
+  // root. If it ran after the first write, a key could survive into the
+  // replaced data.
+  const driver = createMockDriver({ results: [[]] });
+  let hooked = 0;
+  const repo = createBackupRepo(driver, {
+    onBeforeImport: () => {
+      hooked += 1;
+      assert.equal(driver.callsTo("savePhoto").length, 0, "no photo write yet");
+      assert.equal(driver.callsTo("batch").length, 0, "no batch yet");
+      assert.equal(driver.callsTo("execute").length, 0, "no execute yet");
+    },
+  });
+  const bytes = await buildBackupZip(samplePayload(), samplePhotos());
+  const result = await repo.importBackup(bytes);
+  assert.ok(result.photos === 1, "the import itself still applied");
+  assert.equal(hooked, 1, "exactly once per import");
+});
+
+test("the onBeforeImport hook runs even when the import fails (J5)", async () => {
+  // The data is not replaced on a failed parse, but the hook must still be
+  // unconditional — a caller cannot know in advance which imports fail.
+  const driver = createMockDriver();
+  let hooked = 0;
+  const repo = createBackupRepo(driver, {
+    onBeforeImport: () => {
+      hooked += 1;
+    },
+  });
+  await assert.rejects(
+    () => repo.importBackup(Uint8Array.from([1, 2, 3, 4, 5])),
+    /not a valid zip file/i,
+  );
+  assert.equal(hooked, 1);
+});
+
+test("app.ts locks the vault before an import replaces the data (J5)", () => {
+  // The hook tests above prove the seam; this proves the production
+  // composition root wires the vault into it — an unhooked repo keeps
+  // every test green while the stale-CryptoKey window stays open.
+  const app = readFileSync(
+    new URL("../../src/data/app.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    app,
+    /onBeforeImport: \(\) => vaultRepo\.lockVault\(\)/,
+    "importBackup must invalidate the vault's key cache for every caller",
+  );
+});
+
 test("export -> inspect -> import round-trips a password-protected backup", async () => {
   // The whole ship criterion in miniature: one library, sealed to disk,
   // inspected through a password, and applied from exactly the bytes that were

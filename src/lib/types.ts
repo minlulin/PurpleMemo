@@ -1,6 +1,9 @@
-// Row/domain types for the 29-table baseline. Money is integer cents
-// everywhere; dates are local `yyyy-mm-dd` strings. Domain objects mirror
-// rows — major units appear only at display/parse edges.
+// Row/domain types for the 31-table schema — the 32nd, `notes_fts`, is the
+// trigger-maintained FTS index (SCHEMA_VERSION 5). Money is integer cents
+// everywhere; dates are local `yyyy-mm-dd` strings unless the field says
+// otherwise — `ReminderRow.remind_at` is `yyyy-mm-ddTHH:mm` and
+// `ContactRow.birthday` is `yyyy-mm-dd` or yearless `mm-dd`. Domain objects
+// mirror rows — major units appear only at display/parse edges.
 
 export interface CollectionRow {
   id: number;
@@ -237,7 +240,7 @@ export interface RelatedItem {
 export interface ReminderRow {
   id: number;
   title: string;
-  remind_at: string;
+  remind_at: string; // local `yyyy-mm-ddTHH:mm`, not a date-only day
   repeat: "none" | "daily" | "weekly" | "monthly";
   note: string;
   fired: number; // 0 | 1

@@ -17,7 +17,6 @@ import {
 } from "../lib/entityPicker.ts";
 import { errText } from "../lib/errors.ts";
 import { formatBirthday, formatDate } from "../lib/format.ts";
-import { isMessageKeyError } from "../lib/i18n.ts";
 import type {
   ContactRow,
   LinkableEntity,
@@ -190,9 +189,10 @@ export function EntityPicker(p: EntityPickerProps) {
       // success means "finished", not "abandoned".
       p.onClose();
     } catch (e) {
-      // A keyed refusal (a vanished target, G8) renders in the active locale;
-      // anything else keeps its own text.
-      setError(isMessageKeyError(e) ? t(e.messageKey, e.params) : errText(e));
+      // A keyed refusal (a vanished target, G8) renders in the active
+      // locale — `errText` resolves message keys itself (J6); anything
+      // else keeps its own text.
+      setError(errText(e));
     } finally {
       choosingRef.current = false;
       setBusy(false);
