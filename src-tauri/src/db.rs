@@ -2072,7 +2072,9 @@ mod tests {
             .prepare("PRAGMA table_info(settings)")
             .expect("table_info");
         let columns: Vec<(String, i64)> = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+            })
             .expect("rows")
             .collect::<Result<_, _>>()
             .expect("read columns");
@@ -2080,11 +2082,17 @@ mod tests {
             .into_iter()
             .find(|(name, _)| name == "value")
             .expect("settings.value must exist");
-        assert_eq!(value.1, 1, "settings.value must stay NOT NULL (import canary)");
+        assert_eq!(
+            value.1, 1,
+            "settings.value must stay NOT NULL (import canary)"
+        );
         // And the canary must actually fail on this connection.
         assert!(
-            conn.execute("INSERT INTO settings (key, value) VALUES ('import-fk-check', NULL)", [])
-                .is_err(),
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('import-fk-check', NULL)",
+                []
+            )
+            .is_err(),
             "the import canary relies on this INSERT failing"
         );
     }
@@ -2373,8 +2381,11 @@ mod tests {
             [],
         )
         .expect("insert a second note");
-        conn.execute("UPDATE notes SET content = 'brand new text' WHERE id = 2", [])
-            .expect("edit the second note");
+        conn.execute(
+            "UPDATE notes SET content = 'brand new text' WHERE id = 2",
+            [],
+        )
+        .expect("edit the second note");
         assert_eq!(
             scalar_i64(
                 &conn,
