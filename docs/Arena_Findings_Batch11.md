@@ -192,6 +192,8 @@ useEffect(() => () => {
 
 This is an a11y/product call, not a mechanical defect; either resolution removes the comment/attribute contradiction. The other four findings are mechanical and need no owner call.
 
+**RESOLVED 2026-10-31 (owner-delegated to Muus): option 1 — Decoration.** Remove `aria-busy="true"` from the single-text branch. The module header already states the design: "Decorative by default — a stack (or a card) carries `role=\"status\"` so the wait is still announced, and the bars themselves are hidden from assistive tech" — the lone-bar comment ("A lone inline bar is decoration") agrees, so the `aria-busy` attribute is the defect, not the comment. Adding `role="status"` would make every single-line placeholder announce "Loading…", noisier and contradicting the hidden-from-assistive-tech design. A page that needs an announced loading state uses a stack/card.
+
 ---
 
 ## Checked and found clean
