@@ -2522,7 +2522,25 @@ mod tests {
                  DROP INDEX idx_inbox_items_status;
                  DROP TABLE inbox_items;
                  DROP INDEX idx_photo_refs_unique;
-                 DROP INDEX idx_reminders_fired_at;",
+                 DROP INDEX idx_reminders_fired_at;
+                 DROP INDEX idx_notes_browse;
+                 DROP INDEX idx_photos_created;
+                 DROP INDEX idx_memories_date;
+                 DROP INDEX idx_habit_logs_date;
+                 DROP INDEX idx_income_cat_date;
+                 DROP INDEX idx_expense_cat_date;
+                 DROP INDEX idx_jobs_shop;
+                 DROP INDEX idx_payables_paid_due;
+                 DROP INDEX idx_shopping_order;
+                 DROP TRIGGER notes_fts_au;
+                 CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
+                   UPDATE notes_fts
+                   SET title = new.title,
+                       content = new.content,
+                       tags = new.tags,
+                       folder = COALESCE((SELECT name FROM collections WHERE id = new.collection_id), '')
+                   WHERE rowid = new.id;
+                 END;",
             )
             .expect("strip v2+");
             conn.pragma_update(None, "user_version", 1i64)
@@ -2629,7 +2647,25 @@ mod tests {
              DROP INDEX idx_trash_items_deleted;
              DROP TABLE trash_items;
              DROP INDEX idx_photo_refs_unique;
-             DROP INDEX idx_reminders_fired_at;",
+             DROP INDEX idx_reminders_fired_at;
+             DROP INDEX idx_notes_browse;
+             DROP INDEX idx_photos_created;
+             DROP INDEX idx_memories_date;
+             DROP INDEX idx_habit_logs_date;
+             DROP INDEX idx_income_cat_date;
+             DROP INDEX idx_expense_cat_date;
+             DROP INDEX idx_jobs_shop;
+             DROP INDEX idx_payables_paid_due;
+             DROP INDEX idx_shopping_order;
+             DROP TRIGGER notes_fts_au;
+             CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
+               UPDATE notes_fts
+               SET title = new.title,
+                   content = new.content,
+                   tags = new.tags,
+                   folder = COALESCE((SELECT name FROM collections WHERE id = new.collection_id), '')
+               WHERE rowid = new.id;
+             END;",
         )
         .expect("strip v3 additions");
         conn.pragma_update(None, "user_version", 2i64)
@@ -2664,7 +2700,25 @@ mod tests {
              DROP INDEX idx_trash_items_deleted;
              DROP TABLE trash_items;
              DROP INDEX idx_photo_refs_unique;
-             DROP INDEX idx_reminders_fired_at;",
+             DROP INDEX idx_reminders_fired_at;
+             DROP INDEX idx_notes_browse;
+             DROP INDEX idx_photos_created;
+             DROP INDEX idx_memories_date;
+             DROP INDEX idx_habit_logs_date;
+             DROP INDEX idx_income_cat_date;
+             DROP INDEX idx_expense_cat_date;
+             DROP INDEX idx_jobs_shop;
+             DROP INDEX idx_payables_paid_due;
+             DROP INDEX idx_shopping_order;
+             DROP TRIGGER notes_fts_au;
+             CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
+               UPDATE notes_fts
+               SET title = new.title,
+                   content = new.content,
+                   tags = new.tags,
+                   folder = COALESCE((SELECT name FROM collections WHERE id = new.collection_id), '')
+               WHERE rowid = new.id;
+             END;",
         )
         .expect("strip v4 addition");
         conn.pragma_update(None, "user_version", 3i64)
@@ -2726,7 +2780,25 @@ mod tests {
             .expect("apply baseline");
         conn.execute_batch(
             "DROP INDEX idx_photo_refs_unique;
-             DROP INDEX idx_reminders_fired_at;",
+             DROP INDEX idx_reminders_fired_at;
+             DROP INDEX idx_notes_browse;
+             DROP INDEX idx_photos_created;
+             DROP INDEX idx_memories_date;
+             DROP INDEX idx_habit_logs_date;
+             DROP INDEX idx_income_cat_date;
+             DROP INDEX idx_expense_cat_date;
+             DROP INDEX idx_jobs_shop;
+             DROP INDEX idx_payables_paid_due;
+             DROP INDEX idx_shopping_order;
+             DROP TRIGGER notes_fts_au;
+             CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
+               UPDATE notes_fts
+               SET title = new.title,
+                   content = new.content,
+                   tags = new.tags,
+                   folder = COALESCE((SELECT name FROM collections WHERE id = new.collection_id), '')
+               WHERE rowid = new.id;
+             END;",
         )
         .expect("strip v5 additions");
         conn.pragma_update(None, "user_version", 4i64)
