@@ -41,7 +41,11 @@ export function Skeleton({
 
   // A lone inline bar is decoration; a stack or a card is a loading region.
   if (count <= 1 && variant === "text") {
-    return <span className={barClass(variant, width)} aria-busy="true" />;
+    return (
+      <span
+        className={`${barClass(variant, width)} ${className ?? ""}`.trim()}
+      />
+    );
   }
 
   return (
