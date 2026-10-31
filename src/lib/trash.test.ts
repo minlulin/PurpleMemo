@@ -607,7 +607,7 @@ test("restore refuses a missing photo file without consuming the Trash item", as
   assert.equal(db.prepare("SELECT count(*) AS n FROM trash_items").get()?.n, 1);
 });
 
-test("permanent deletion preserves shared photos and removes unreferenced photo files", async () => {
+test("permanent deletion keeps photo rows and files in Gallery as unlinked (D1)", async () => {
   const driver = sqliteDriver();
   const { db } = driver;
   seedNote(db);
@@ -627,13 +627,38 @@ test("permanent deletion preserves shared photos and removes unreferenced photo 
     "INSERT INTO photo_refs (photo_id, entity_type, entity_id) VALUES (1, 'memory', 1)",
   ).run();
   const trash = createTrashRepo(driver);
+  const gallery = createGalleryRepo(driver);
   await trash.trashEntity("note", 1);
   const item = db.prepare("SELECT id FROM trash_items").get() as { id: number };
   await trash.removePermanently(item.id);
-  assert.equal(
-    db.prepare("SELECT count(*) AS n FROM photos WHERE id = 1").get()?.n,
-    1,
+
+  // Gallery owns the photo (D1): the Trash path deletes neither the photo row
+  // nor the file, so the photo survives as "Not linked to anything yet".
+  assert.deepEqual(
+    (await gallery.listPhotos()).map((photo) => photo.id).sort(),
+    [1, 2],
+    "both photos stay listed in Gallery",
   );
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM photo_refs WHERE photo_id = 1").get()
+      ?.n,
+    1,
+    "the memory's link keeps the shared photo referenced",
+  );
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM photo_refs WHERE photo_id = 2").get()
+      ?.n,
+    0,
+    "the orphaned photo has no link left",
+  );
+  assert.deepEqual(
+    driver.deletedFiles,
+    [],
+    "the Trash path never unlinks a file",
+  );
+
+  // Clearing the unlinked photo stays possible — as an explicit Gallery action.
+  await gallery.deletePhoto(2);
   assert.equal(
     db.prepare("SELECT count(*) AS n FROM photos WHERE id = 2").get()?.n,
     0,

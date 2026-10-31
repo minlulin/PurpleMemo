@@ -775,18 +775,20 @@ export function createTrashRepo(driver: DataDriver) {
     );
     if (!item) return;
     validateTrashPayload([item]);
-    const snapshot = asSnapshot(item.snapshot);
-    await removeTrashRows(
-      [item],
-      snapshot.photoRefs.map((ref) => ref.photo_id),
-    );
+    await removeTrashRows([item]);
   }
 
-  async function removeTrashRows(
-    items: TrashItemRow[],
-    photoIds: number[],
-  ): Promise<void> {
-    const uniquePhotoIds = [...new Set(photoIds)];
+  /**
+   * D1 (Batch 12): Gallery owns its photos. Dropping a Trash row — permanent
+   * delete or retention purge — never touches photo rows or files: the photo
+   * survives as "Not linked to anything yet", which the Gallery UI already
+   * treats as a legitimate state. With no photo GC on this path there is no
+   * check-then-unlink race against a concurrent Gallery save (M3), so this
+   * deliberately does NOT coordinate a save: the GC it would coordinate no
+   * longer exists. Deleting a photo remains an explicit Gallery action, and
+   * gallery.ts deletePhoto keeps its guard for snapshots that still name it.
+   */
+  async function removeTrashRows(items: TrashItemRow[]): Promise<void> {
     const trashIds = items.map((item) => item.id);
     const remainingItems = await driver.query<TrashItemRow>(
       `SELECT * FROM trash_items WHERE id NOT IN (${trashIds.map(() => "?").join(", ")})`,
@@ -818,12 +820,6 @@ export function createTrashRepo(driver: DataDriver) {
         });
       }
     }
-    const photos = uniquePhotoIds.length
-      ? await driver.query<{ id: number; rel_path: string }>(
-          `SELECT id, rel_path FROM photos WHERE id IN (${uniquePhotoIds.map(() => "?").join(", ")})`,
-          uniquePhotoIds,
-        )
-      : [];
     const statements: BatchStatement[] = [
       ...snapshotUpdates,
       ...items.map((item) => ({
@@ -831,21 +827,7 @@ export function createTrashRepo(driver: DataDriver) {
         params: [item.id],
       })),
     ];
-    if (uniquePhotoIds.length) {
-      statements.push({
-        sql: `DELETE FROM photos WHERE id IN (${uniquePhotoIds.map(() => "?").join(", ")}) AND NOT EXISTS (SELECT 1 FROM photo_refs WHERE photo_refs.photo_id = photos.id) AND NOT EXISTS (SELECT 1 FROM trash_items, json_each(trash_items.snapshot, '$.photoRefs') AS ref WHERE trash_items.id NOT IN (${trashIds.map(() => "?").join(", ")}) AND json_extract(ref.value, '$.photo_id') = photos.id)`,
-        params: [...uniquePhotoIds, ...trashIds],
-      });
-    }
     if (statements.length) await driver.batch(statements);
-
-    for (const photo of photos) {
-      const [stillStored] = await driver.query<{ id: number }>(
-        "SELECT id FROM photos WHERE id = ?",
-        [photo.id],
-      );
-      if (!stillStored) await driver.deletePhoto(photo.rel_path);
-    }
   }
 
   async function purgeUnlocked(today = todayLocal()): Promise<number> {
@@ -863,10 +845,7 @@ export function createTrashRepo(driver: DataDriver) {
     const items = [...removed.values()];
     if (!items.length) return 0;
     validateTrashPayload(items);
-    const photoIds = items.flatMap((item) =>
-      asSnapshot(item.snapshot).photoRefs.map((ref) => ref.photo_id),
-    );
-    await removeTrashRows(items, photoIds);
+    await removeTrashRows(items);
     return items.length;
   }
 
