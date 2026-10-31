@@ -167,6 +167,27 @@ function seedNote(db: DatabaseSync, id = 1, title = "A note") {
   ).run(id, title);
 }
 
+/** Link note 1 <-> task 1, trash both, then hand task id 1 to an unrelated row. */
+async function seedRecycledPair(driver: ReturnType<typeof sqliteDriver>) {
+  const { db } = driver;
+  seedNote(db, 1, "original note");
+  db.prepare(
+    "INSERT INTO tasks VALUES (1, 'original task', NULL, 0, 'none', '', '2026-01-01')",
+  ).run();
+  db.prepare(
+    "INSERT INTO links VALUES (1, 'related', 'note', 1, 'task', 1, '2026-01-01')",
+  ).run();
+  const trash = createTrashRepo(driver);
+  await trash.trashEntity("note", 1); // trash row 1
+  await trash.trashEntity("task", 1); // trash row 2
+  // SQLite recycles the freed number: id 1 now belongs to an unrelated task
+  // while the original is still in Trash.
+  db.prepare(
+    "INSERT INTO tasks VALUES (1, 'unrelated task', NULL, 0, 'none', '', '2026-01-02')",
+  ).run();
+  return trash;
+}
+
 test("note Trash round-trip remaps IDs and restores links, photos, and Inbox references", async () => {
   const driver = sqliteDriver();
   const { db } = driver;
@@ -210,6 +231,107 @@ test("note Trash round-trip remaps IDs and restores links, photos, and Inbox ref
     2,
   );
   assert.equal(db.prepare("SELECT count(*) AS n FROM trash_items").get()?.n, 0);
+});
+
+test("restoring the task first remaps the link into the note's Trash snapshot (M1)", async () => {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  const trash = await seedRecycledPair(driver);
+
+  await trash.restore(2); // the original task, onto id 2
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM links").get()?.n,
+    0,
+    "the unrelated task at the old number must stay unlinked",
+  );
+  const [noteTrash] = db
+    .prepare("SELECT snapshot FROM trash_items WHERE entity_type = 'note'")
+    .all() as { snapshot: string }[];
+  assert.ok(noteTrash, "the note is still in Trash");
+  const noteSnapshot = JSON.parse(noteTrash.snapshot) as {
+    links: { type_a: string; id_a: number; type_b: string; id_b: number }[];
+  };
+  assert.equal(
+    noteSnapshot.links.length,
+    1,
+    "the stale old-ID entry is replaced, not kept alongside",
+  );
+  const [remapped] = noteSnapshot.links;
+  assert.ok(remapped, "the note keeps its one relationship");
+  assert.deepEqual(
+    {
+      type_a: remapped.type_a,
+      id_a: remapped.id_a,
+      type_b: remapped.type_b,
+      id_b: remapped.id_b,
+    },
+    { type_a: "note", id_a: 1, type_b: "task", id_b: 2 },
+  );
+
+  await trash.restore(1); // the original note, back onto id 1
+  const link = db
+    .prepare("SELECT type_a, id_a, type_b, id_b FROM links")
+    .get() as { type_a: string; id_a: number; type_b: string; id_b: number };
+  assert.equal(link.type_a, "note");
+  assert.equal(link.id_a, 1);
+  assert.equal(link.type_b, "task");
+  assert.equal(link.id_b, 2);
+  assert.equal(
+    db.prepare("SELECT title FROM tasks WHERE id = 2").get()?.title,
+    "original task",
+  );
+  assert.equal(db.prepare("SELECT count(*) AS n FROM trash_items").get()?.n, 0);
+});
+
+test("restoring the original does not rewrite a snapshot that describes the reuse (M1)", async () => {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  const trash = await seedRecycledPair(driver);
+
+  // The unrelated task at id 1 builds its own relationship, and that note is
+  // trashed afterwards — its snapshot must keep describing the unrelated task.
+  seedNote(db, 1, "linked to the reuse");
+  db.prepare(
+    "INSERT INTO links VALUES (2, 'related', 'note', 1, 'task', 1, '2026-01-02')",
+  ).run();
+  await trash.trashEntity("note", 1); // trash row 3
+
+  await trash.restore(2); // the original task, onto id 2
+  const rows = db
+    .prepare("SELECT id, snapshot FROM trash_items ORDER BY id")
+    .all() as { id: number; snapshot: string }[];
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    [1, 3],
+    "the original task's own Trash row is consumed",
+  );
+  const snapshots = rows.map(
+    (row) =>
+      JSON.parse(row.snapshot) as {
+        links: { type_a: string; id_a: number; type_b: string; id_b: number }[];
+      },
+  );
+  const [preTrash, reuseTrash] = snapshots;
+  assert.ok(preTrash, "the original note's snapshot survives");
+  assert.ok(reuseTrash, "the reuse's snapshot survives");
+  const [preLink] = preTrash.links;
+  const [reuseLink] = reuseTrash.links;
+  assert.ok(preLink, "the original note keeps its relationship");
+  assert.ok(reuseLink, "the reuse keeps its relationship");
+  assert.equal(
+    preLink.id_b,
+    2,
+    "the pre-trash snapshot follows the original to its new ID",
+  );
+  assert.equal(
+    reuseLink.id_b,
+    1,
+    "the later snapshot still points at the unrelated task",
+  );
+  assert.equal(
+    db.prepare("SELECT title FROM tasks WHERE id = 1").get()?.title,
+    "unrelated task",
+  );
 });
 
 test("a failed source deletion rolls back its Trash snapshot and link removal", async () => {
@@ -286,6 +408,37 @@ test("links stay hidden while either endpoint is trashed and return after both r
   assert.equal(db.prepare("SELECT count(*) AS n FROM links").get()?.n, 0);
   await trash.restore(2);
   assert.equal(db.prepare("SELECT count(*) AS n FROM links").get()?.n, 1);
+});
+
+test("restoring the note first never links it to the task that reused the old ID (M1)", async () => {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  const trash = await seedRecycledPair(driver);
+
+  await trash.restore(1);
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM links").get()?.n,
+    0,
+    "the unrelated task holding the old number must not receive the link",
+  );
+
+  await trash.restore(2); // id 1 is taken, so the original task lands on 2
+  const link = db
+    .prepare("SELECT type_a, id_a, type_b, id_b FROM links")
+    .get() as { type_a: string; id_a: number; type_b: string; id_b: number };
+  assert.equal(link.type_a, "note");
+  assert.equal(link.id_a, 1);
+  assert.equal(link.type_b, "task");
+  assert.equal(link.id_b, 2);
+  assert.equal(
+    db.prepare("SELECT title FROM notes WHERE id = 1").get()?.title,
+    "original note",
+  );
+  assert.equal(
+    db.prepare("SELECT title FROM tasks WHERE id = 2").get()?.title,
+    "original task",
+  );
+  assert.equal(db.prepare("SELECT count(*) AS n FROM trash_items").get()?.n, 0);
 });
 
 test("same-type links remain canonical when a restored ID is remapped", async () => {

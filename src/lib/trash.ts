@@ -635,9 +635,15 @@ export function createTrashRepo(driver: DataDriver) {
       const otherType = ownsA ? link.type_b : link.type_a;
       const otherId = ownsA ? link.id_b : link.id_a;
       const otherTable = LINK_ENTITY_TABLES[otherType];
+      // M1: notes and tasks use INTEGER PRIMARY KEY without AUTOINCREMENT, so
+      // SQLite recycles a freed number. A live row carrying the other
+      // endpoint's old number therefore only proves the endpoint is back
+      // while no Trash snapshot still claims that number — a claim means the
+      // id was reused and the live row is an unrelated item that must not
+      // receive this relationship.
       const [other] = await driver.query<{ id: number }>(
-        `SELECT id FROM ${otherTable} WHERE id = ?`,
-        [otherId],
+        `SELECT id FROM ${otherTable} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM trash_items WHERE entity_type = ? AND entity_id = ?)`,
+        [otherId, otherType, otherId],
       );
       if (other) {
         statements.push({
@@ -662,23 +668,36 @@ export function createTrashRepo(driver: DataDriver) {
       );
       if (otherTrash) {
         const otherSnapshot = asSnapshot(otherTrash.snapshot);
-        const duplicate = otherSnapshot.links.some(
+        // M1: the endpoint still in Trash holds this relationship snapshotted
+        // under OUR old number. Remap it to the restored id, replacing the
+        // stale entry: when this endpoint is restored later it would otherwise
+        // rebuild the link against whatever reused that number — or fail, if
+        // the number now belongs to no row at all.
+        const theirs = `${otherType}:${otherId}`;
+        const ours = new Set([`${type}:${sourceId}`, `${type}:${rootId}`]);
+        const stalePair = (candidate: LinkRow) => {
+          if (candidate.kind !== normalizedLink.kind) return false;
+          const a = `${candidate.type_a}:${candidate.id_a}`;
+          const b = `${candidate.type_b}:${candidate.id_b}`;
+          return (ours.has(a) && b === theirs) || (ours.has(b) && a === theirs);
+        };
+        const links = otherSnapshot.links.filter(
+          (candidate) => !stalePair(candidate),
+        );
+        const recorded = links.some(
           (candidate) =>
+            candidate.kind === normalizedLink.kind &&
             candidate.type_a === normalizedLink.type_a &&
             candidate.id_a === normalizedLink.id_a &&
             candidate.type_b === normalizedLink.type_b &&
             candidate.id_b === normalizedLink.id_b,
         );
-        if (!duplicate) {
+        if (!recorded) links.push(normalizedLink);
+        const snapshot = JSON.stringify({ ...otherSnapshot, links });
+        if (snapshot !== otherTrash.snapshot) {
           statements.push({
             sql: "UPDATE trash_items SET snapshot = ? WHERE id = ?",
-            params: [
-              JSON.stringify({
-                ...otherSnapshot,
-                links: [...otherSnapshot.links, normalizedLink],
-              }),
-              otherTrash.id,
-            ],
+            params: [snapshot, otherTrash.id],
           });
         }
         continue;
@@ -686,6 +705,55 @@ export function createTrashRepo(driver: DataDriver) {
       throw new Error(
         "A related item is neither live nor in Trash, so this item cannot be restored safely.",
       );
+    }
+
+    // M1: this item came back under a NEW number, and snapshots taken BEFORE
+    // it was trashed still pair it with the old one. A trash row is only
+    // created while its entity is live, so `id < trashId` snapshots could only
+    // have captured that number while it belonged to THIS row — the newer
+    // snapshots (higher trash id) describe whatever reused the number and are
+    // left alone. Rewrite the old pairings to the restored id, or the later
+    // restore of that endpoint would attach the relationship to the reuse.
+    if (rootId !== sourceId) {
+      const otherClaims = await driver.query<{ id: number }>(
+        "SELECT id FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ?",
+        [type, sourceId, trashId],
+      );
+      if (!otherClaims.length) {
+        const referencing = await driver.query<TrashItemRow>(
+          `SELECT * FROM trash_items WHERE id < ? AND EXISTS (SELECT 1 FROM json_each(trash_items.snapshot, '$.links') AS ref WHERE (json_extract(ref.value, '$.type_a') = ? AND json_extract(ref.value, '$.id_a') = ?) OR (json_extract(ref.value, '$.type_b') = ? AND json_extract(ref.value, '$.id_b') = ?))`,
+          [trashId, type, sourceId, type, sourceId],
+        );
+        for (const row of referencing) {
+          const older = asSnapshot(row.snapshot);
+          let remapped = false;
+          const links = older.links.map((candidate) => {
+            const ownsA =
+              candidate.type_a === type && candidate.id_a === sourceId;
+            const ownsB =
+              candidate.type_b === type && candidate.id_b === sourceId;
+            if (!ownsA && !ownsB) return candidate;
+            remapped = true;
+            const [first, second] = canonicalPair(
+              { type: candidate.type_a, id: ownsA ? rootId : candidate.id_a },
+              { type: candidate.type_b, id: ownsB ? rootId : candidate.id_b },
+            );
+            return {
+              ...candidate,
+              type_a: first.type,
+              id_a: first.id,
+              type_b: second.type,
+              id_b: second.id,
+            };
+          });
+          if (remapped) {
+            statements.push({
+              sql: "UPDATE trash_items SET snapshot = ? WHERE id = ?",
+              params: [JSON.stringify({ ...older, links }), row.id],
+            });
+          }
+        }
+      }
     }
 
     statements.push({
