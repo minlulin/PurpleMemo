@@ -52,7 +52,7 @@ export interface SearchResult {
   title: string;
   excerpt: string | null;
   date: string | null;
-  /** "Archived", "Done", "Paid" — or null when the row is plainly live. */
+  /** "Archived", "Done", "Paid", "Closed" — or null when the row is plainly live. */
   state: string | null;
   /** The entity key a relationship-style jump would use, when there is one. */
   entity: LinkableEntity | null;
@@ -84,7 +84,7 @@ export interface TotalCapReport {
 }
 
 export interface SearchOptions {
-  /** Hide archived/completed rows unless this is true. */
+  /** Hide archived/completed/closed rows unless this is true. */
   includeInactive?: boolean;
   /** Only these entity types; empty or omitted means all of them. */
   types?: SearchEntitySpec["type"][];
@@ -116,6 +116,15 @@ const EXCERPT_SQL_CHARS = 512;
 
 /** The result column the SQL-built excerpt window arrives in (K2). */
 const EXCERPT_ALIAS = "_excerpt";
+
+/**
+ * The result column a derived inactive predicate arrives in (D2).
+ *
+ * A loan's closed state exists in no column, so SQL evaluates the contract's
+ * predicate once and the result rides back with the row — the label is then
+ * read from the same expression that filtered, and cannot disagree with it.
+ */
+const INACTIVE_ALIAS = "_inactive";
 
 /** Context characters kept before a match inside an excerpt window (K2). */
 const EXCERPT_WINDOW_BEFORE = 30;
@@ -187,9 +196,10 @@ function excerptExpr(
  * measured at 541 KB for fifteen 54 KB bodies — only for the UI to throw all
  * but 140 characters away. The projection is the exact set `toResults` reads:
  * the id, the contract's title column(s), the match-anchored excerpt window
- * (K2), the date column, the inactive column — plus the shopping item's
- * `list_id` (its `parentId`), the one field `toResults` reads beside the
- * contract's own columns.
+ * (K2), the date column, the inactive column — or, for a derived state, the
+ * predicate itself under {@link INACTIVE_ALIAS} (D2) — plus the shopping
+ * item's `list_id` (its `parentId`), the one field `toResults` reads beside
+ * the contract's own columns.
  *
  * A title column that IS the long excerpt column (the journal's `content`)
  * arrives twice, in its two roles: the bounded head under its own name for
@@ -218,7 +228,16 @@ function projectionList(
     columns.push(excerptExpr(spec, alias, term, excerptParams));
   }
   if (spec.date !== null) add(spec.date);
-  if (spec.inactive !== null) add(spec.inactive.column);
+  if (spec.inactive !== null) {
+    if (spec.inactive.kind === "column") {
+      add(spec.inactive.column);
+    } else {
+      // Derived (D2): the predicate, evaluated by SQL — the very expression
+      // the WHERE clause filters on, so the label cannot drift from the
+      // filter. 0/1 arrives here as with any SQLite boolean.
+      columns.push(`(${spec.inactive.predicate}) AS ${INACTIVE_ALIAS}`);
+    }
+  }
   if (spec.type === "shopping_item") add("list_id");
   return columns.join(", ");
 }
@@ -306,9 +325,17 @@ export function buildSearchQuery(
   }
 
   if (spec.inactive !== null && options.includeInactive !== true) {
-    // Bound, not interpolated: 1 for the 0/1 flags, 'paid' for jobs.status.
-    clauses.push(`${alias}${spec.inactive.column} IS NOT ?`);
-    whereParams.push(spec.inactive.value);
+    if (spec.inactive.kind === "column") {
+      // Bound, not interpolated: 1 for the 0/1 flags, 'paid' for jobs.status.
+      clauses.push(`${alias}${spec.inactive.column} IS NOT ?`);
+      whereParams.push(spec.inactive.value);
+    } else {
+      // Derived (D2): drop what the predicate holds for — a fully repaid
+      // loan. Both columns are NOT NULL in the schema, so the predicate is
+      // never NULL; COALESCE states the intent regardless: a row that cannot
+      // be SHOWN to be finished counts as live and stays findable.
+      clauses.push(`NOT COALESCE((${spec.inactive.predicate}), 0)`);
+    }
   }
   if (options.since !== undefined && spec.date !== null) {
     // A range clause only matches a FULL `yyyy-mm-dd` value (G9 remainder):
@@ -361,15 +388,22 @@ export function buildSearchQuery(
 }
 
 /**
- * "Archived" / "Done" / "Paid", when this row is one of those.
+ * "Archived" / "Done" / "Paid" / "Closed", when this row is one of those.
  *
  * SQLite hands back a number for a 0/1 column and a string for `status`, and a
  * driver behind an IPC boundary may hand back either, so both sides are
- * compared as text. Only ever reached when the caller asked for inactive rows:
- * by default they were filtered out in SQL.
+ * compared as text — and the derived flag (D2) arrives the same way, hence
+ * `Number`, which reads 1, "1" and true alike. Only ever reached when the
+ * caller asked for inactive rows: by default they were filtered out in SQL.
  */
 function stateOf(row: Record<string, unknown>, spec: SearchEntitySpec) {
   if (spec.inactive === null) return null;
+  if (spec.inactive.kind === "derived") {
+    // The SQL-evaluated predicate from the projection — not a column of the
+    // row: a closed loan's state is computed, which is why the contract
+    // shape grew a second variant.
+    return Number(row[INACTIVE_ALIAS]) === 1 ? spec.inactive.label : null;
+  }
   const value = row[spec.inactive.column];
   if (value === null || value === undefined) return null;
   return String(value) === String(spec.inactive.value)

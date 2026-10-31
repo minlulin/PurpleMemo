@@ -54,15 +54,28 @@ export interface SearchEntitySpec {
   date: string | null;
   /**
    * What counts as "not active", and the word the UI uses for it. Archived
-   * notes, completed tasks, paid payables and paid jobs are hidden unless the
-   * user asks for them — a search that surfaces a hundred finished things is
-   * not a search.
+   * notes, completed tasks, paid payables, paid jobs and closed loans are
+   * hidden unless the user asks for them — a search that surfaces a hundred
+   * finished things is not a search.
    *
-   * `value` is what the column holds when the row is inactive: 1 for the 0/1
-   * flags (`archived`, `done`, `paid`) and 'paid' for `jobs.status`. It is
-   * bound like any other value, so this stays data and not SQL.
+   * Two shapes, because not every state is stored (D2):
+   *
+   * - `column` — `value` is what the column holds when the row is inactive:
+   *   1 for the 0/1 flags (`archived`, `done`, `paid`) and 'paid' for
+   *   `jobs.status`. It is bound like any other value, so this stays data
+   *   and not SQL.
+   * - `derived` — a predicate over the row's own columns, for a state that
+   *   is computed rather than held: a loan is closed when
+   *   `repaid_cents >= amount_cents` (the first rule `deriveLoanState`
+   *   applies) and no column says so. `predicate` is code-owned SQL from
+   *   this file, never user input; it is evaluated once, in the query — the
+   *   WHERE clause drops the rows it holds for, and the same expression
+   *   arrives as `_inactive` so the label cannot disagree with the filter.
    */
-  inactive: { column: string; label: string; value: number | string } | null;
+  inactive:
+    | { kind: "column"; column: string; label: string; value: number | string }
+    | { kind: "derived"; label: string; predicate: string }
+    | null;
   /** Rows this entity may contribute before the total cap bites. */
   cap: number;
   /** Why this entity is in the contract at all. */
@@ -91,7 +104,12 @@ export const SEARCH_CONTRACT: SearchEntitySpec[] = [
     title: ["title"],
     excerpt: "content",
     date: "updated_at",
-    inactive: { column: "archived", label: "Archived", value: 1 },
+    inactive: {
+      kind: "column",
+      column: "archived",
+      label: "Archived",
+      value: 1,
+    },
     cap: 10,
     why: "The user's own writing, and the only entity with a maintained FTS5 index (notes_fts), so it can be searched properly rather than approximately.",
     opens: { page: "notes", key: "id" },
@@ -105,7 +123,7 @@ export const SEARCH_CONTRACT: SearchEntitySpec[] = [
     title: ["title"],
     excerpt: "note",
     date: "due_date",
-    inactive: { column: "done", label: "Done", value: 1 },
+    inactive: { kind: "column", column: "done", label: "Done", value: 1 },
     cap: 10,
     why: "Tasks are short, numerous and usually searched by the words in the title. A title that starts with the query sorts above one that merely contains it.",
     opens: { page: "tasks", key: "id" },
@@ -161,7 +179,12 @@ export const SEARCH_CONTRACT: SearchEntitySpec[] = [
     title: ["title"],
     excerpt: "note",
     date: "job_date",
-    inactive: { column: "status", label: "Paid", value: "paid" },
+    inactive: {
+      kind: "column",
+      column: "status",
+      label: "Paid",
+      value: "paid",
+    },
     cap: 5,
     why: "A job is found by what it is called and when it was done. Amounts are deliberately not part of the searchable text — see the exclusions. A job already settled is as finished as a ticked-off task.",
     opens: { page: "business", key: "id" },
@@ -175,7 +198,7 @@ export const SEARCH_CONTRACT: SearchEntitySpec[] = [
     title: ["title"],
     excerpt: "note",
     date: "due_date",
-    inactive: { column: "paid", label: "Paid", value: 1 },
+    inactive: { kind: "column", column: "paid", label: "Paid", value: 1 },
     cap: 5,
     why: "Owed money is searched by what it is for, and a paid one is usually not what someone is looking for mid-month.",
     opens: { page: "business", key: "id" },
@@ -189,9 +212,13 @@ export const SEARCH_CONTRACT: SearchEntitySpec[] = [
     title: ["counterparty"],
     excerpt: "note",
     date: "due_date",
-    inactive: null,
+    inactive: {
+      kind: "derived",
+      label: "Closed",
+      predicate: "repaid_cents >= amount_cents",
+    },
     cap: 5,
-    why: "A loan belongs to a person or shop, and the counterparty's name is the only thing anyone searches it by.",
+    why: "A loan belongs to a person or shop, and the counterparty's name is the only thing anyone searches it by. A loan fully repaid is as finished as a paid job and hides the same way unless the user asks for it (D2).",
     opens: { page: "loans", key: "id" },
   },
   {
@@ -228,7 +255,7 @@ export const SEARCH_EXCLUSIONS: { what: string; why: string }[] = [
   },
   {
     what: "photos (note, taken_date) and photo bytes",
-    why: "The file bytes are the user's photographs; a caption search would put image metadata into a text surface. Photo captions stay searchable from the note that holds them.",
+    why: "The file bytes are the user's photographs; a caption search would put image metadata into a text surface. A caption is stored only in `photos.note` and never enters the owning note's title, content or tags, so captions are not searchable at all — this entry is a refusal, not a pointer to another search (K13).",
   },
   {
     what: "income_entries and expense_entries (note)",

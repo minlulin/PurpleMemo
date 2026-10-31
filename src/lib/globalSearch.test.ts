@@ -307,6 +307,26 @@ test("the vault, settings and money entries are excluded, each with a reason", (
   }
 });
 
+test("the photo exclusion admits captions are not searchable (K13)", () => {
+  const photos = SEARCH_EXCLUSIONS.find((e) => e.what.startsWith("photos"));
+  assert.ok(photos, "the photos exclusion exists");
+  // The entry used to end "Photo captions stay searchable from the note that
+  // holds them" — false: a caption lives only in `photos.note`, no contract
+  // row reads `photos` (pinned above), and nothing copies it into the owning
+  // note's title, content or tags. Documentation must not promise a search
+  // that does not exist.
+  assert.doesNotMatch(
+    photos.why,
+    /stay searchable/i,
+    "captions are not reachable from any searchable column",
+  );
+  assert.match(
+    photos.why,
+    /not searchable at all/i,
+    "the entry must state the refusal plainly",
+  );
+});
+
 test("a search for a secret finds nothing in it", async () => {
   const driver = sqliteDriver();
   seed(driver.db);
@@ -764,8 +784,83 @@ test("a paid job is as finished as a ticked task, and hides the same way", async
   // The open job keeps matching a term that only it has.
   assert.equal(resultCount(await globalSearch(driver, "fridge")), 1);
   // And the state word comes from the contract, not from the column name.
-  assert.equal(specFor("job")?.inactive?.label, "Paid");
-  assert.equal(specFor("job")?.inactive?.value, "paid");
+  assert.deepEqual(specFor("job")?.inactive, {
+    kind: "column",
+    column: "status",
+    label: "Paid",
+    value: "paid",
+  });
+});
+
+test("a closed loan is hidden like a paid job, and labelled Closed when asked for (D2)", async () => {
+  const driver = sqliteDriver();
+  seed(driver.db);
+  // The seed's loan is open (0 of 50,000 repaid). Add one fully repaid and
+  // one repaid in half: `repaid_cents >= amount_cents` is the whole rule.
+  driver.db
+    .prepare(
+      "INSERT INTO loans (id, counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at) VALUES (2, 'Settled Friend', 'lent', 90000, 90000, '2026-01-01', 'paid back in full', 'x'), (3, 'Half Friend', 'borrowed', 60000, 30000, '2026-11-30', 'half paid back', 'x')",
+    )
+    .run();
+  const live = await globalSearch(driver, "friend");
+  assert.deepEqual(
+    (live.find((g) => g.type === "loan")?.results ?? []).map((r) => r.id),
+    [3],
+    "the finished loan is gone by default; the partly-repaid one is not",
+  );
+  const all = await globalSearch(driver, "friend", {
+    includeInactive: true,
+  });
+  const loans = all.find((g) => g.type === "loan")?.results ?? [];
+  assert.deepEqual(
+    loans.map((r) => r.id),
+    [3, 2],
+    "asked for, both come back — newest due date first, as ordered",
+  );
+  assert.equal(
+    loans.find((r) => r.id === 2)?.state,
+    "Closed",
+    "the closed loan carries its state",
+  );
+  assert.equal(
+    loans.find((r) => r.id === 3)?.state,
+    null,
+    "half repaid is not labelled finished",
+  );
+  // The seed loan (open) still answers for its own counterparty, unlabelled.
+  const supplier = await globalSearch(driver, "supplier");
+  const seedLoan = (supplier.find((g) => g.type === "loan")?.results ?? [])[0];
+  assert.equal(seedLoan?.id, 1);
+  assert.equal(seedLoan?.state, null);
+});
+
+test("the loan filter is the contract's derived predicate, evaluated once (D2)", () => {
+  const spec = specFor("loan");
+  assert.ok(spec);
+  assert.deepEqual(spec.inactive, {
+    kind: "derived",
+    label: "Closed",
+    predicate: "repaid_cents >= amount_cents",
+  });
+  // Filtering form: the predicate as SQL, with no bound value — a derived
+  // state has no column value to bind, and the suite's placeholder/param
+  // parity test must still hold for this row.
+  const hidden = buildSearchQuery(spec, "supplier", {});
+  assert.match(
+    hidden.sql,
+    /NOT COALESCE\(\(repaid_cents >= amount_cents\), 0\)/,
+  );
+  assert.equal(
+    (hidden.sql.match(/\?/g) ?? []).length,
+    hidden.params.length,
+    "no parameter was added by the derived clause",
+  );
+  // Labelling form: the SAME predicate arrives with the row, so the badge
+  // the UI shows cannot disagree with the filter that hid it.
+  assert.equal(hidden.sql.includes("AS _inactive"), true);
+  // And asking for inactive rows drops the clause rather than widening it.
+  const shown = buildSearchQuery(spec, "supplier", { includeInactive: true });
+  assert.equal(shown.sql.includes("COALESCE"), false);
 });
 
 test("the same search twice returns the same order", async () => {
