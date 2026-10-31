@@ -151,8 +151,12 @@ npm run tauri -- signer generate -w .keys/updater.key
 - The `pubkey` in `tauri.conf.json` is the public half only; there is no
   signing secret in this repository and no hosted secret store.
 - **Schema migrations are forward-only, and downgrading is unsupported.** The
-  current schema is v5 (`inbox_items`, `links`, `trash_items`, and the v5
-  unique `photo_refs` index plus the `reminders` due-index); an older
+  current schema is v6 (`inbox_items`, `links`, `trash_items`, and the v5
+  unique `photo_refs` index plus the `reminders` due-index, plus the v5→6
+  hot-path index set — nine `CREATE INDEX` statements: notes browse, photos
+  `created_at`, `memories.memory_date`, `habit_logs(habit_id, log_date)`,
+  ledger `(category_id, entry_date)`, `jobs.shop_id`, `payables(paid,
+  due_date)`, `shopping_items(list_id, sort_order)`); an older
   binary opens a migrated database only to refuse it, by design. Release notes must say so, and
   must not imply that reinstalling an older version rolls the data back — the
   database file is untouched, but nothing older than the schema version can open

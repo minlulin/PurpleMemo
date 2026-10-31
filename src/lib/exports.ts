@@ -1,7 +1,8 @@
 import { strToU8, zip, zipSync } from "fflate";
 import type { DataDriver } from "../data/driver.ts";
+import { createLoansRepo } from "./loans.ts";
 import { outstandingCents } from "./money.ts";
-import { parseTags } from "./notes.ts";
+import { createNotesRepo, parseTags } from "./notes.ts";
 import type {
   CollectionRow,
   ContactChannelKind,
@@ -878,7 +879,29 @@ interface AttachmentRow {
   rel_path: string;
 }
 
-export function createExportsRepo(driver: DataDriver) {
+/**
+ * The domain repos the exporter reads through (docs/AUDIT.md DUP-08).
+ *
+ * `collect` used to issue its own `SELECT * FROM collections ORDER BY name` and
+ * `SELECT * FROM loans ORDER BY id` — the same statements `notesRepo` and
+ * `loansRepo` already own — so a change to how either repo orders or derives
+ * its rows never reached the export. The exporter now reads through the same
+ * singletons the pages use (the `createShareRepo(driver, repos)` pattern), and
+ * a caller that passes none still gets a working exporter built over the same
+ * driver.
+ */
+export interface ExportRepos {
+  notes?: ReturnType<typeof createNotesRepo>;
+  loans?: ReturnType<typeof createLoansRepo>;
+}
+
+export function createExportsRepo(driver: DataDriver, repos: ExportRepos = {}) {
+  // Default to the same repo owners the pages use, so a caller that passes
+  // none still reads each table through its one owner. Named `notesRepo` /
+  // `loansRepo` (not `notes` / `loans`) so they cannot shadow — and be caught
+  // in the TDZ by — the same-named row arrays `collect` destructures.
+  const notesRepo = repos.notes ?? createNotesRepo(driver);
+  const loansRepo = repos.loans ?? createLoansRepo(driver);
   return {
     async save(path: string, bytes: Uint8Array): Promise<void> {
       await driver.saveExportFile(path, bytes);
@@ -918,11 +941,7 @@ export function createExportsRepo(driver: DataDriver) {
         channels,
         tags,
       ] = await Promise.all([
-        selection.notes
-          ? driver.query<CollectionRow>(
-              "SELECT * FROM collections ORDER BY name",
-            )
-          : none<CollectionRow>(),
+        selection.notes ? notesRepo.listCollections() : none<CollectionRow>(),
         selection.notes
           ? driver.query<NoteRow>(
               "SELECT * FROM notes ORDER BY collection_id, updated_at DESC, id",
@@ -970,9 +989,7 @@ export function createExportsRepo(driver: DataDriver) {
                 ORDER BY expense_entries.entry_date, expense_entries.id`,
             )
           : none<ExpenseJoinedRow>(),
-        selection.finance
-          ? driver.query<LoanRow>("SELECT * FROM loans ORDER BY id")
-          : none<LoanRow>(),
+        selection.finance ? loansRepo.listLoans() : none<LoanRow>(),
         selection.finance
           ? driver.query<JobJoinedRow>(
               `SELECT jobs.*, shops.name AS shop_name

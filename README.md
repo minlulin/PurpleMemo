@@ -52,6 +52,11 @@ Two things the archive is not:
 
 ## Development
 
+Requires **Node.js ≥ 24** (the `engines` field in `package.json` is enforced by
+`engine-strict=true` in `.npmrc`, so `npm install` refuses anything older) and,
+for the Rust gates, a Rust toolchain with the `clippy` and `rustfmt`
+components (`rustup component add clippy rustfmt`).
+
 ```
 npm install        # once
 npm run tauri dev  # desktop app (Vite dev server on :1420)
