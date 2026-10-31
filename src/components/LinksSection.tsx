@@ -41,17 +41,37 @@ export function LinksSection(p: LinksSectionProps) {
   const [busy, setBusy] = useState(false);
   /** In-flight guards, so a double-click cannot link or unlink twice. */
   const busyRef = useRef(false);
+  /** Monotonic load token: a superseded `reload` may not write (L2). */
+  const reloadSeqRef = useRef(0);
+  /**
+   * The entity as a primitive identity.
+   *
+   * All three pages hand `entity` in as an inline object literal, so its
+   * reference is new on every parent render — every keystroke in the editor
+   * above. Keying `reload` on that reference re-ran the effect each time and
+   * flickered the list back through "Loading…" (L1). `type` + `id` is the
+   * whole of `LinkableEntity`, so this key changes exactly when the entity
+   * does, and never when it merely does not.
+   */
+  const entityKey = `${p.entity.type}-${p.entity.id}`;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `entityKey` is the deliberate trigger — reload reads `p.entity`, which the callers rebuild as an equal-but-new literal every render
   const reload = useCallback(async () => {
+    // The token is taken before the await: a response for a previously
+    // selected entity that resolves after a newer load started is stale by
+    // construction, and a stale load writes nothing at all (L2).
+    const seq = ++reloadSeqRef.current;
     try {
-      setItems(await entityLinksRepo.listRelated(p.entity));
+      const related = await entityLinksRepo.listRelated(p.entity);
+      if (seq !== reloadSeqRef.current) return; // superseded — newest wins
+      setItems(related);
       setError(null);
     } catch (e) {
-      setError(errText(e));
+      if (seq === reloadSeqRef.current) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (seq === reloadSeqRef.current) setLoading(false);
     }
-  }, [p.entity]);
+  }, [entityKey]);
 
   useEffect(() => {
     setLoading(true);

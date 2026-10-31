@@ -20,6 +20,10 @@
 //   K9  (Batch10) the Notes page's mount-time preference read yields to a
 //       writer that already chose — one ref per preference, raised by every
 //       writer (buttons and Ctrl+E), checked by the read.
+//   L1/L2 (Batch11) the relationships panel loads on a primitive entity
+//       identity instead of the caller's inline object literal — a re-render
+//       with an equal-but-new entity re-fires nothing — and only the newest
+//       load may write.
 //
 // C5 (ShoppingPage's reorder guard) is pinned in submit-guards.test.ts, which
 // owns the guard shape.
@@ -249,5 +253,123 @@ test("the mount-time preference read yields to the writer (K9)", () => {
     src,
     /if \(!collectionsChosenRef\.current\) setCollectionsCollapsed\(collapsed\)/,
     "NotesPage: the mount read must skip a collapse flag the writer already chose",
+  );
+});
+
+// -- The relationships panel (batch-11, L1/L2) --------------------------------
+// Same defect class, one seam down: the load was keyed on something every
+// parent render rebuilds, with no token to stop a superseded response from
+// installing itself. `node --test` still cannot mount the component, so both
+// rules are pinned by reading it — and by reading that the callers keep
+// handing it an inline literal, which is the condition the component must
+// survive rather than the thing to fix.
+
+test("the relationships list re-queries on the entity, not on every parent render (L1)", () => {
+  const src = readPage("../components/LinksSection.tsx");
+
+  // A primitive identity: `type` + `id` is the whole of LinkableEntity, so an
+  // equal-but-new object from a caller's inline literal leaves the key alone
+  // — the re-render that fires nothing.
+  assert.match(
+    src,
+    /const entityKey = `\$\{p\.entity\.type\}-\$\{p\.entity\.id\}`;/,
+    "LinksSection: key the load on a primitive the inline literal cannot change",
+  );
+
+  // `reload` changes identity only when that key changes…
+  assert.match(
+    src,
+    /const reload = useCallback\(async \(\) => \{[\s\S]*?\}, \[entityKey\]\);/,
+    "LinksSection: reload must be keyed on entityKey, not on the p.entity reference",
+  );
+  // …and the effect hangs off `reload`, so it re-fires on an entity change
+  // and on nothing else.
+  assert.match(
+    src,
+    /useEffect\(\(\) => \{\s+setLoading\(true\);\s+void reload\(\);\s+\}, \[reload\]\);/,
+    "LinksSection: the load effect must fire through reload",
+  );
+  assert.doesNotMatch(
+    src,
+    /\}, \[p\.entity\]\);/,
+    "LinksSection: a dependency on p.entity is exactly the every-keystroke reload L1 is about",
+  );
+
+  // The three pages keep their inline literal — deliberately unchanged: the
+  // component, not each caller, owns the stability.
+  const callers: [page: string, type: string][] = [
+    ["NotesPage.tsx", "note"],
+    ["ContactsPage.tsx", "contact"],
+    ["TasksPage.tsx", "task"],
+  ];
+  for (const [page, type] of callers) {
+    assert.match(
+      readPage(page),
+      new RegExp(`entity=\\{\\{ type: "${type}", id: [\\w.]+ \\}\\}`),
+      `${page}: LinksSection is fed an inline object literal — its entityKey is what keeps that from re-firing the load`,
+    );
+  }
+});
+
+test("a superseded relationships load may not install its rows (L2)", () => {
+  const src = readPage("../components/LinksSection.tsx");
+  const reload = handlerSource(src, "reload");
+  // Comments off: the prose below the code talks about awaits and writes too,
+  // and a position check that reads it would pass or fail on wording.
+  const code = reload.replace(/\/\/[^\n]*/g, "");
+
+  // The token is taken inside `reload`, before its await — so the load
+  // effect, `link` and `unlink` all take a fresh one, and a response for a
+  // previously selected entity is stale the moment a newer load starts.
+  const takenAt = code.indexOf("const seq = ++reloadSeqRef.current;");
+  assert.notEqual(
+    takenAt,
+    -1,
+    "LinksSection: reload must take a sequence token of its own",
+  );
+  const awaitAt = code.search(/\bawait\b/);
+  assert.notEqual(awaitAt, -1, "LinksSection: reload has no await to guard");
+  assert.ok(
+    takenAt < awaitAt,
+    "LinksSection: take the token before the await, or the older load still wins the race it just lost",
+  );
+
+  // The rows go in only while the token is still the newest one — never
+  // straight from the await, which is the shape that let a stale response
+  // overwrite the list of the entity now on screen.
+  const guardAt = code.indexOf("if (seq !== reloadSeqRef.current) return;");
+  assert.notEqual(
+    guardAt,
+    -1,
+    "LinksSection: a superseded load must return before it writes",
+  );
+  const rowsAt = code.indexOf("setItems(");
+  assert.notEqual(rowsAt, -1, "LinksSection: reload installs no rows?");
+  assert.ok(
+    guardAt < rowsAt,
+    "LinksSection: the newest-wins check must come before the rows are installed",
+  );
+  assert.equal(
+    (code.match(/setItems\(/g) ?? []).length,
+    1,
+    "LinksSection: rows have exactly one writer, behind the token",
+  );
+  assert.doesNotMatch(
+    code,
+    /setItems\(await/,
+    "LinksSection: rows must not be installed straight from the await",
+  );
+
+  // The other two writes are behind it as well: a stale load may change
+  // nothing at all — not the error, not the spinner.
+  assert.match(
+    code,
+    /if \(seq === reloadSeqRef\.current\) setError\(errText\(e\)\);/,
+    "LinksSection: a stale rejection may not post its error under the current entity",
+  );
+  assert.match(
+    code,
+    /if \(seq === reloadSeqRef\.current\) setLoading\(false\);/,
+    "LinksSection: a stale load may not clear the spinner the newest one is still filling",
   );
 });
