@@ -12,7 +12,7 @@
 // Invalid input is returned unchanged: display code must not throw over a
 // malformed row, and the raw value is still more useful than "Invalid Date".
 
-import { getLocale, type Locale } from "./i18n.ts";
+import type { Locale } from "./i18n.ts";
 
 const numberFormatters = new Map<Locale, Intl.NumberFormat>();
 
@@ -182,14 +182,4 @@ export function formatNumber(
     ...options,
     numberingSystem: "latn",
   }).format(value);
-}
-
-/** The active locale's date, for components that do not need to subscribe. */
-export function formatLocalDate(isoDate: string): string {
-  return formatDate(getLocale(), isoDate);
-}
-
-/** The active locale's date and time. */
-export function formatLocalDateTime(isoDateTime: string): string {
-  return formatDateTime(getLocale(), isoDateTime);
 }

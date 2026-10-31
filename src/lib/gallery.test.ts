@@ -15,6 +15,7 @@ import {
   createGalleryRepo,
   createThumbUrlBook,
   deleteLinkedEntity,
+  digestFromPhotoPath,
   isPhotoCleanupPending,
   isUniqueViolation,
   PhotoCleanupPendingError,
@@ -582,4 +583,29 @@ test("a non-uniqueness insert failure is not swallowed", async () => {
     /database is locked/,
     "a locked database is not a lost race and must propagate",
   );
+});
+
+// docs/AUDIT.md PERF-07: restore used to sha256 every photo a second time even
+// though `save_photo` had just hashed it to build the content-addressed path.
+test("digestFromPhotoPath reads the digest the path already carries", () => {
+  const hash = "a".repeat(64);
+  assert.equal(digestFromPhotoPath(`photos/2026/10/${hash}.jpg`), hash);
+  assert.equal(digestFromPhotoPath(`photos/1999/01/${hash}.png`), hash);
+  // Anything that does not look like our layout must fall back to hashing.
+  assert.equal(digestFromPhotoPath(`photos/2026/10/${hash}.JPG`), null);
+  assert.equal(
+    digestFromPhotoPath(`photos/2026/10/${"A".repeat(64)}.jpg`),
+    null,
+  );
+  assert.equal(
+    digestFromPhotoPath(`photos/2026/10/${"a".repeat(63)}.jpg`),
+    null,
+  );
+  assert.equal(digestFromPhotoPath(`photos/2026/10/${hash}`), null);
+  // A 4-character extension is fine (`.jpeg`), a non-alphanumeric one is not.
+  assert.equal(digestFromPhotoPath(`photos/2026/10/${hash}.jpeg`), hash);
+  assert.equal(digestFromPhotoPath(`photos/2026/10/${hash}.j_pg`), null);
+  assert.equal(digestFromPhotoPath(`photos/2026/10/${hash}.toolongext`), null);
+  assert.equal(digestFromPhotoPath("elsewhere/2026/10/x.jpg"), null);
+  assert.equal(digestFromPhotoPath(""), null);
 });

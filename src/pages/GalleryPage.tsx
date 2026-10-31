@@ -28,6 +28,7 @@ import {
   memoriesRepo,
   notesRepo,
 } from "../data/app.ts";
+import { mapConcurrent } from "../lib/concurrency.ts";
 import { errText } from "../lib/errors.ts";
 import {
   assertPickablePhotoSize,
@@ -44,6 +45,13 @@ import type {
   PhotoRefRow,
   PhotoRow,
 } from "../lib/types.ts";
+
+/**
+ * How many thumbnails the grid loads at once. Small enough that the photo
+ * command host is never asked for a burst of large reads, large enough that a
+ * full grid is not one round trip per tile.
+ */
+const THUMB_CONCURRENCY = 4;
 
 const ENTITY_LABELS: { key: PhotoRefEntity; label: string }[] = [
   { key: "note", label: "Note" },
@@ -146,14 +154,29 @@ export default function GalleryPage() {
 
   const loadThumbs = useCallback(
     async (list: PhotoRow[], isCancelled?: () => boolean) => {
+      // Four tiles at a time: thumbnails used to load strictly one after the
+      // other, so a 60-photo grid waited on 60 serial round trips
+      // (docs/AUDIT.md PERF-05). The bound keeps the queue from holding every
+      // read at once; tile order is preserved by id, not by arrival.
+      const loaded = await mapConcurrent(
+        list,
+        THUMB_CONCURRENCY,
+        async (photo) => {
+          if (isCancelled?.()) return null;
+          try {
+            return {
+              id: photo.id,
+              url: thumbUrls.create(await thumbBytesFor(photo)),
+            };
+          } catch {
+            // Missing or undecodable: a placeholder tile — never break the grid.
+            return null;
+          }
+        },
+      );
       const next = new Map<number, string>();
-      for (const photo of list) {
-        if (isCancelled?.()) break;
-        try {
-          next.set(photo.id, thumbUrls.create(await thumbBytesFor(photo)));
-        } catch {
-          // Missing or undecodable: a placeholder tile — never break the grid.
-        }
+      for (const tile of loaded) {
+        if (tile !== null) next.set(tile.id, tile.url);
       }
       if (isCancelled?.()) {
         // These URLs were never tracked, so the book cannot know about them.

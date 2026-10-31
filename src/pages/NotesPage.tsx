@@ -57,6 +57,7 @@ import {
   type NotesViewMode,
   toggleViewMode,
 } from "../lib/notesView.ts";
+import { SEARCH_DEBOUNCE_MS } from "../lib/searchContract.ts";
 import type { CollectionRow, LinkableEntity, NoteRow } from "../lib/types.ts";
 
 interface EditorProps {
@@ -345,6 +346,11 @@ export default function NotesPage(p: NotesPageProps) {
   const [notes, setNotes] = useState<NoteRow[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  // What the loader actually queries. Typing updates `search` on every
+  // keystroke but only settles here after a pause: the search ran one query
+  // per character, and a one-character FTS prefix match is the most expensive
+  // kind there is (docs/AUDIT.md PERF-02).
+  const [searchTerm, setSearchTerm] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -551,8 +557,8 @@ export default function NotesPage(p: NotesPageProps) {
       const collectionId =
         activeCollection === "all" ? undefined : activeCollection;
       const listPromise =
-        search.trim().length > 0
-          ? notesRepo.search(search, {
+        searchTerm.length > 0
+          ? notesRepo.search(searchTerm, {
               includeArchived: showArchived,
               collectionId,
             })
@@ -574,7 +580,21 @@ export default function NotesPage(p: NotesPageProps) {
     } finally {
       if (listGuard.isCurrent(token)) setLoading(false);
     }
-  }, [activeCollection, listGuard, search, showArchived]);
+  }, [activeCollection, listGuard, searchTerm, showArchived]);
+
+  // Debounce: the first keystroke schedules the query, later keystrokes
+  // cancel and reschedule it, and a pause of SEARCH_DEBOUNCE_MS settles the
+  // value the loader depends on. Mount and whitespace-only edits schedule
+  // nothing, so a cold load still starts immediately.
+  useEffect(() => {
+    const next = search.trim();
+    if (next === searchTerm) return;
+    const timer = window.setTimeout(
+      () => setSearchTerm(next),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [search, searchTerm]);
 
   useEffect(() => {
     void refresh();
@@ -939,6 +959,14 @@ export default function NotesPage(p: NotesPageProps) {
     }
   }
 
+  // 140-character excerpts were rebuilt for every note on every render — one
+  // per keystroke before the search was debounced. They only change when the
+  // note list does (docs/AUDIT.md PERF-02).
+  const excerpts = useMemo(
+    () => new Map(notes.map((n) => [n.id, noteExcerpt(n.content)])),
+    [notes],
+  );
+
   const listBody =
     notes.length === 0 ? (
       <li className="note-list-empty">
@@ -950,7 +978,7 @@ export default function NotesPage(p: NotesPageProps) {
     ) : (
       notes.map((note) => {
         const isActive = note.id === selectedId;
-        const excerpt = noteExcerpt(note.content);
+        const excerpt = excerpts.get(note.id) ?? "";
         return (
           <li key={note.id}>
             <button

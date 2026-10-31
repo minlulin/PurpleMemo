@@ -2,7 +2,7 @@
 // month grid. Pure streak/week math lives in lib/habits.ts; the month grid
 // is reused from the journal (same Sunday-start grid).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import {
@@ -17,7 +17,9 @@ import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import type { HabitRow } from "../lib/types.ts";
+import { useDayRollover } from "../lib/useDayRollover.ts";
 
 interface HabitProgress {
   current: number;
@@ -61,20 +63,24 @@ export default function HabitsPage() {
    */
   const togglingRef = useRef<boolean>(false);
   const [toggling, setToggling] = useState(false);
-  /** Sequence token for `reload`: two toggles may not install out of order (D3). */
-  const reloadSeqRef = useRef(0);
+  /**
+   * Sequence token for `reload`: two toggles may not install out of order
+   * (D3). The shared guard instead of a hand-rolled counter
+   * (docs/AUDIT.md DUP-04) — same monotonic token, one implementation.
+   */
+  const reloadGuard = useMemo(() => createLoadGuard(), []);
 
   const reload = useCallback(async () => {
     // The day THIS load is for, read when the load runs (C2).
     const day = todayLocal();
-    const seq = ++reloadSeqRef.current;
+    const token = reloadGuard.begin();
     try {
       // One two-query pass covers every habit: the old shape was
       // progress (2 queries) plus calendar dates (1 query) per habit — 3N IPC
       // round trips on first paint. `habitProgressList` already reads all the
       // log rows it needs, so the dates ride along at no extra cost.
       const progs = await habitsRepo.habitProgressList(day);
-      if (seq !== reloadSeqRef.current) return; // a newer load owns the view
+      if (!reloadGuard.isCurrent(token)) return; // a newer load owns the view
       const hs = progs.map((p) => p.habit);
       setHabits(hs);
       setProgress(
@@ -94,11 +100,11 @@ export default function HabitsPage() {
       setToday(day);
       setError(null);
     } catch (e) {
-      if (seq === reloadSeqRef.current) setError(errText(e));
+      if (reloadGuard.isCurrent(token)) setError(errText(e));
     } finally {
-      if (seq === reloadSeqRef.current) setLoading(false);
+      if (reloadGuard.isCurrent(token)) setLoading(false);
     }
-  }, []);
+  }, [reloadGuard]);
 
   useEffect(() => {
     void reload();
@@ -107,12 +113,10 @@ export default function HabitsPage() {
   // The page stays mounted across midnight, so nothing re-renders it when the
   // date rolls over (C2): this tick is what makes "Mark done today" and the
   // week strip talk about the new day.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (todayLocal() !== today) void reload();
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [reload, today]);
+  useDayRollover((day) => {
+    setToday(day);
+    void reload();
+  });
 
   const addHabit = async () => {
     if (savingRef.current) return;

@@ -78,18 +78,33 @@ test("date-derived reloads take their day at call time (C2)", () => {
       `${page}: reload must not be keyed on a render-captured \`today\` — that only refreshes when something re-renders the page`,
     );
     // Nothing re-renders a parked page, so the rollover needs its own tick.
-    // Pages that hold the day as state compare it directly; pages that only
-    // read it keep the ref of the last day they loaded.
+    // The tick now lives in ONE hook (docs/AUDIT.md DUP-03): each page used to
+    // carry its own copy, in two different staleness styles. The page only has
+    // to use the hook — the next test pins the hook's own shape.
     assert.match(
       src,
-      /if \(todayLocal\(\) !== today(Ref\.current)?\) void reload\(\);/,
-      `${page}: a page parked across midnight must reload when the local date changes`,
-    );
-    assert.ok(
-      src.includes("clearInterval(timer)"),
-      `${page}: the date-rollover interval must be cleaned up on unmount`,
+      /useDayRollover\(/,
+      `${page}: a page parked across midnight must re-anchor on a day change`,
     );
   }
+});
+
+test("the shared day-rollover hook compares the local date and cleans up", () => {
+  // The five pages above delegate here, so this is now the single place the
+  // midnight rule can break: it must compare against the day it last acted
+  // on, fire once per change, and clear its interval.
+  const hook = readFileSync(
+    new URL("../lib/useDayRollover.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(hook, /export const DAY_TICK_MS = 60_000;/);
+  assert.match(hook, /const now = todayLocal\(\);/);
+  assert.match(hook, /if \(now === dayRef\.current\) return;/);
+  assert.match(hook, /handlerRef\.current\(now\);/);
+  assert.match(hook, /clearInterval\(timer\)/);
+  // The interval must not depend on the handler identity, or an inline arrow
+  // would restart the countdown on every render and never reach midnight.
+  assert.match(hook, /\}, \[\]\);/);
 });
 
 test("the day a page displays is the day its rows were loaded for (C2)", () => {

@@ -2,7 +2,7 @@
 // reminders fire local notifications (the notification wiring itself is a P3d
 // UI concern — this layer stores and queries them).
 
-import type { DataDriver } from "../data/driver.ts";
+import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import {
   addDays,
   addDaysToDateTime,
@@ -119,6 +119,48 @@ export interface ReminderInput {
   note?: string;
 }
 
+/** What one due reminder becomes when the ticker settles it. */
+export interface ReminderOutcome {
+  id: number;
+  /** `null` marks the reminder fired; a datetime re-arms it. */
+  nextRemindAt: string | null;
+}
+
+/**
+ * Statements that settle a tick's due reminders, in the order given.
+ *
+ * Pure so the two shapes stay visible and testable: `fired = 1` for a
+ * one-shot reminder, `remind_at` + `fired = 0` for a repeating one (same rules
+ * as `markReminderFired` / `rescheduleReminder`).
+ */
+/**
+ * The one task-list SELECT, mirroring `noteListQuery` in notes.ts
+ * (docs/AUDIT.md DUP-07): `listTasks` and `openTasks` had written the same
+ * open-task query twice, so an ORDER BY tuned for one silently missed the
+ * other. `due_date IS NULL` first keeps undated tasks at the bottom.
+ */
+export function taskListQuery(includeDone: boolean): string {
+  return includeDone
+    ? "SELECT * FROM tasks ORDER BY due_date IS NULL, due_date, id"
+    : "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date IS NULL, due_date, id";
+}
+
+export function reminderSettleStatements(
+  outcomes: ReminderOutcome[],
+): BatchStatement[] {
+  return outcomes.map((outcome) =>
+    outcome.nextRemindAt === null
+      ? {
+          sql: "UPDATE reminders SET fired = 1 WHERE id = ?",
+          params: [outcome.id],
+        }
+      : {
+          sql: "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
+          params: [outcome.nextRemindAt, outcome.id],
+        },
+  );
+}
+
 export function createTasksRepo(
   driver: DataDriver,
   trash = createTrashRepo(driver),
@@ -126,13 +168,7 @@ export function createTasksRepo(
   return {
     // -- Tasks -----------------------------------------------------------------
     async listTasks(includeDone = false): Promise<TaskRow[]> {
-      return includeDone
-        ? driver.query<TaskRow>(
-            "SELECT * FROM tasks ORDER BY due_date IS NULL, due_date, id",
-          )
-        : driver.query<TaskRow>(
-            "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date IS NULL, due_date, id",
-          );
+      return driver.query<TaskRow>(taskListQuery(includeDone));
     },
 
     async getTask(id: number): Promise<TaskRow | undefined> {
@@ -247,9 +283,7 @@ export function createTasksRepo(
      * in SQLite).
      */
     async openTasks(): Promise<TaskRow[]> {
-      return driver.query<TaskRow>(
-        "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date IS NULL, due_date, id",
-      );
+      return driver.query<TaskRow>(taskListQuery(false));
     },
 
     // -- Reminders ---------------------------------------------------------------
@@ -288,6 +322,21 @@ export function createTasksRepo(
         "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
         [remindAt, id],
       );
+    },
+
+    /**
+     * Settle a whole reminder tick in ONE batch.
+     *
+     * The ticker used to await one `UPDATE` per due reminder — after a wake
+     * from sleep that is a burst of round trips for rows that are all decided
+     * at once (docs/AUDIT.md PERF-08). `markReminderFired` and
+     * `rescheduleReminder` remain for the single-row paths (snooze, manual
+     * re-arm) and share the same statement shapes.
+     */
+    async settleReminders(outcomes: ReminderOutcome[]): Promise<void> {
+      const statements = reminderSettleStatements(outcomes);
+      if (statements.length === 0) return;
+      await driver.batch(statements);
     },
 
     async deleteReminder(id: number): Promise<void> {

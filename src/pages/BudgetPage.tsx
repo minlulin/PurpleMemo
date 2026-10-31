@@ -1184,13 +1184,9 @@ function YearView() {
     setLoading(true);
     (async () => {
       try {
-        const monthly = await Promise.all(
-          Array.from({ length: 12 }, (_, i) =>
-            budgetRepo.monthlySummary(
-              `${year}-${String(i + 1).padStart(2, "0")}`,
-            ),
-          ),
-        );
+        // One grouped call for all twelve buckets, not twelve round trips
+        // (docs/AUDIT.md PERF-04).
+        const monthly = await budgetRepo.yearSummary(year);
         if (cancelled) return;
         setDisplay(yearDisplay(year, monthly));
         setError(null);
@@ -1334,17 +1330,11 @@ function LimitsView() {
     async (ym: string, signal?: { cancelled: boolean }) => {
       try {
         setLoading(true);
+        // One grouped statement for every category, not 2N+1
+        // (docs/AUDIT.md PERF-03).
+        const statuses = await budgetRepo.limitStatuses(ym);
+        if (signal?.cancelled) return;
         const cats = await budgetRepo.listExpenseCategories();
-        const statuses = await Promise.all(
-          cats.map(async (c) => {
-            const info = await budgetRepo.limitStatusFor(c.id, ym);
-            return {
-              categoryId: c.id,
-              spentCents: info.spentCents,
-              limitCents: info.limitCents,
-            };
-          }),
-        );
         if (signal?.cancelled) return;
         setRows(limitDisplayRows(cats, statuses));
         setError(null);

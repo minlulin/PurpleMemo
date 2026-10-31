@@ -1,3 +1,8 @@
+> **Historical plan — not a requirement.**
+> The work described here has shipped (see `src/`, `docs/RELEASE.md` and
+> `docs/EXPORTS.md`); this file is kept only as the record of what was
+> planned. Do not treat it as the current specification.
+
 # Purple Memo — Dashboard Ongoing Tasks + System Tray Plan (dev branch)
 
 **Scope:** two features, one plan, built on `dev` (never `main`).

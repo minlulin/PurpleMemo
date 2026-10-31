@@ -1,5 +1,7 @@
 // Row/domain types for the 31-table schema — the 32nd, `notes_fts`, is the
-// trigger-maintained FTS index (SCHEMA_VERSION 5). Money is integer cents
+// trigger-maintained FTS index (SCHEMA_VERSION 6). Every table in that schema
+// has a `*Row` here, including the two ledger tables, `settings` and
+// `trash_items` (docs/AUDIT.md SCHEMA-02). Money is integer cents
 // everywhere; dates are local `yyyy-mm-dd` strings unless the field says
 // otherwise — `ReminderRow.remind_at` is `yyyy-mm-ddTHH:mm` and
 // `ContactRow.birthday` is `yyyy-mm-dd` or yearless `mm-dd`. Domain objects
@@ -309,4 +311,54 @@ export interface VaultItemRow {
   iv: string; // base64, per-item IV
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One `income_entries` row — the ledger's money-in side. The two ledger tables
+ * have identical columns by design; they are separate tables so a category id
+ * can never be read against the wrong category list.
+ */
+export interface IncomeEntryRow {
+  id: number;
+  amount_cents: number;
+  category_id: number;
+  wallet_id: number;
+  entry_date: string; // yyyy-mm-dd
+  note: string;
+  created_at: string;
+}
+
+/** One `expense_entries` row. Same column list as {@link IncomeEntryRow}. */
+export interface ExpenseEntryRow {
+  id: number;
+  amount_cents: number;
+  category_id: number;
+  wallet_id: number;
+  entry_date: string; // yyyy-mm-dd
+  note: string;
+  created_at: string;
+}
+
+/** One `settings` row. `value` is TEXT NOT NULL — see the import canary. */
+export interface SettingRow {
+  key: string;
+  value: string;
+}
+
+/** Entity types Trash can hold — the `trash_items.entity_type` CHECK list. */
+export type TrashEntityType =
+  | "note"
+  | "task"
+  | "contact"
+  | "memory"
+  | "journal_entry";
+
+/** One `trash_items` row. `snapshot` is JSON text. */
+export interface TrashItemRow {
+  id: number;
+  entity_type: TrashEntityType;
+  entity_id: number;
+  snapshot: string;
+  deleted_at: string;
+  created_at: string;
 }

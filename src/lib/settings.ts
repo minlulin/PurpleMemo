@@ -2,13 +2,14 @@
 // `settings` table. Values are stored as JSON text; this module is the only
 // place that knows the key names.
 
-import type { DataDriver } from "../data/driver.ts";
+import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { isLocale, type Locale } from "./i18n.ts";
 import {
   type NotesViewMode,
   parseCollectionsCollapsed,
   parseViewMode,
 } from "./notesView.ts";
+import type { SettingRow } from "./types.ts";
 
 export const SETTING_KEYS = {
   theme: "theme",
@@ -17,7 +18,19 @@ export const SETTING_KEYS = {
   pinHash: "pin_hash",
   securityQuestion: "security_question",
   securityAnswerHash: "security_answer_hash",
-  vault: "vault",
+  /**
+   * The vault's own marker/verifier rows. They live here because this module
+   * is the only place that knows key names (docs/AUDIT.md DUP-06); `vault.ts`
+   * re-exports them under its longer-standing names.
+   */
+  vaultSetup: "vault_setup",
+  vaultVerify: "vault_verify",
+  /**
+   * Prefix of the durable photo-cleanup records gallery.ts writes. The value
+   * is the one already stored in existing databases — renaming it would hide
+   * every record written by an older build and orphan those files.
+   */
+  photoCleanupPrefix: "gallery.pendingPhotoFile.",
   autoLockMinutes: "auto_lock_minutes",
   notificationPreview: "notification_preview",
   closeToTray: "close_to_tray",
@@ -26,6 +39,25 @@ export const SETTING_KEYS = {
 } as const;
 
 export type Theme = "dark" | "light";
+
+/**
+ * The one upsert for this table, as a batch statement.
+ *
+ * `setJSON`, `setManyJSON` and the batch writers in `gallery.ts` used to spell
+ * this INSERT out four times (docs/AUDIT.md DUP-06), which is how one copy
+ * drifted from the others. `value` is the raw stored text — JSON for typed
+ * settings, a bare string for the photo-cleanup records.
+ */
+export function settingsUpsertStatement(
+  key: string,
+  value: string,
+): BatchStatement {
+  return {
+    sql: `INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    params: [key, value],
+  };
+}
 
 export function createSettingsRepo(driver: DataDriver) {
   return {
@@ -50,18 +82,37 @@ export function createSettingsRepo(driver: DataDriver) {
      * (setup must be refused).
      */
     async getRaw(key: string): Promise<string | undefined> {
-      const rows = await driver.query<{ value: string }>(
-        "SELECT value FROM settings WHERE key = ?",
+      const rows = await driver.query<SettingRow>(
+        "SELECT key, value FROM settings WHERE key = ?",
         [key],
       );
       return rows[0]?.value;
     },
 
     async setJSON(key: string, value: unknown): Promise<void> {
-      await driver.execute(
-        `INSERT INTO settings (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        [key, JSON.stringify(value)],
+      const stmt = settingsUpsertStatement(key, JSON.stringify(value));
+      await driver.execute(stmt.sql, stmt.params);
+    },
+
+    /**
+     * Store a value that is already text — no JSON encoding. Used by the
+     * photo-cleanup records, whose value is a file path.
+     */
+    async setRaw(key: string, value: string): Promise<void> {
+      const stmt = settingsUpsertStatement(key, value);
+      await driver.execute(stmt.sql, stmt.params);
+    },
+
+    /**
+     * Every row under `prefix`, key ascending.
+     *
+     * A prefix scan is not a setting anyone looks up by name, so the SQL stays
+     * here with the key names instead of in the caller (docs/AUDIT.md DUP-06).
+     */
+    async listByPrefix(prefix: string): Promise<SettingRow[]> {
+      return driver.query<SettingRow>(
+        "SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key",
+        [`${prefix}%`],
       );
     },
 
@@ -70,11 +121,9 @@ export function createSettingsRepo(driver: DataDriver) {
       entries: { key: string; value: unknown }[],
     ): Promise<void> {
       await driver.batch(
-        entries.map(({ key, value }) => ({
-          sql: `INSERT INTO settings (key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          params: [key, JSON.stringify(value)],
-        })),
+        entries.map(({ key, value }) =>
+          settingsUpsertStatement(key, JSON.stringify(value)),
+        ),
       );
     },
 

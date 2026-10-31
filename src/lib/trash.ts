@@ -6,27 +6,21 @@ import {
   LINKABLE_TYPES,
 } from "./entityLinks.ts";
 import { createKeyedMutex } from "./mutex.ts";
-import type { LinkRow, PhotoRefRow } from "./types.ts";
+import type {
+  LinkRow,
+  PhotoRefRow,
+  TrashEntityType,
+  TrashItemRow,
+} from "./types.ts";
+
+// The row types live in types.ts with every other table's (docs/AUDIT.md
+// SCHEMA-02); these re-exports keep the call sites that already import them
+// from here working.
+export type { TrashEntityType, TrashItemRow };
 
 export const TRASH_RETENTION_DAYS = 30;
 export const TRASH_MAX_ITEMS = 1_000;
 export const TRASH_SNAPSHOT_VERSION = 1;
-
-export type TrashEntityType =
-  | "note"
-  | "task"
-  | "contact"
-  | "memory"
-  | "journal_entry";
-
-export interface TrashItemRow {
-  id: number;
-  entity_type: TrashEntityType;
-  entity_id: number;
-  snapshot: string;
-  deleted_at: string;
-  created_at: string;
-}
 
 interface InboxReference {
   id: number;
@@ -95,6 +89,26 @@ const LINK_COLUMNS = [
   "created_at",
 ];
 const INBOX_REF_COLUMNS = ["id", "converted_type", "converted_id"];
+
+/**
+ * The snapshot column lists, exported so a test can compare them to the DDL
+ * in `schema.rs` (docs/AUDIT.md SCHEMA-01).
+ *
+ * They are hand-maintained on purpose — a snapshot is a historical record and
+ * an explicit list keeps its shape readable — but "hand-maintained" is exactly
+ * why a migration that adds a column would silently drop it on the next
+ * restore. The test is the thing that keeps them honest.
+ */
+export const TRASH_SNAPSHOT_COLUMNS: Record<TrashEntityType, string[]> =
+  COLUMNS;
+
+/** Child-table projections a snapshot stores, for the same test. */
+export const TRASH_CHILD_COLUMNS = {
+  contact_channels: CONTACT_CHANNEL_COLUMNS,
+  contact_tags: CONTACT_TAG_COLUMNS,
+  photo_refs: PHOTO_REF_COLUMNS,
+  links: LINK_COLUMNS,
+} as const;
 
 function jsonObjectSql(alias: string, columns: string[]): string {
   return `json_object(${columns.map((column) => `'${column}', ${alias}.${column}`).join(", ")})`;
@@ -790,8 +804,15 @@ export function createTrashRepo(driver: DataDriver) {
    */
   async function removeTrashRows(items: TrashItemRow[]): Promise<void> {
     const trashIds = items.map((item) => item.id);
-    const remainingItems = await driver.query<TrashItemRow>(
-      `SELECT * FROM trash_items WHERE id NOT IN (${trashIds.map(() => "?").join(", ")})`,
+    // Narrow projection on purpose: the link bookkeeping below needs the
+    // entity key and the snapshot, and nothing else in the row.
+    const remainingItems = await driver.query<{
+      id: number;
+      entity_type: TrashEntityType;
+      entity_id: number;
+      snapshot: string;
+    }>(
+      `SELECT id, entity_type, entity_id, snapshot FROM trash_items WHERE id NOT IN (${trashIds.map(() => "?").join(", ")})`,
       trashIds,
     );
     const remainingByEntity = new Set(
@@ -831,22 +852,28 @@ export function createTrashRepo(driver: DataDriver) {
   }
 
   async function purgeUnlocked(today = todayLocal()): Promise<number> {
-    const all = await driver.query<TrashItemRow>(
-      "SELECT * FROM trash_items ORDER BY deleted_at DESC, id DESC",
+    // Decide the policy from the small columns only. This runs on every
+    // workspace load (and after every restore), and it used to pull every
+    // snapshot through IPC and JSON-parse each one just to discover that
+    // nothing had expired (docs/AUDIT.md PERF-14). The usual answer is "no
+    // rows to purge", which now touches no snapshot at all.
+    const policy = await driver.query<{ id: number; deleted_at: string }>(
+      "SELECT id, deleted_at FROM trash_items ORDER BY deleted_at DESC, id DESC",
     );
     const cutoff = addDays(today, -TRASH_RETENTION_DAYS);
-    const expired = all.filter((item) => item.deleted_at <= cutoff);
-    const overflow =
-      all.slice(0, TRASH_MAX_ITEMS).length < all.length
-        ? all.slice(TRASH_MAX_ITEMS)
-        : [];
-    const removed = new Map<number, TrashItemRow>();
-    for (const item of [...expired, ...overflow]) removed.set(item.id, item);
-    const items = [...removed.values()];
-    if (!items.length) return 0;
-    validateTrashPayload(items);
-    await removeTrashRows(items);
-    return items.length;
+    const expired = policy.filter((item) => item.deleted_at <= cutoff);
+    const overflow = policy.slice(TRASH_MAX_ITEMS);
+    const ids = [...new Set([...expired, ...overflow].map((item) => item.id))];
+    if (!ids.length) return 0;
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = await driver.query<TrashItemRow>(
+      `SELECT * FROM trash_items WHERE id IN (${placeholders})`,
+      ids,
+    );
+    if (!rows.length) return 0;
+    validateTrashPayload(rows);
+    await removeTrashRows(rows);
+    return rows.length;
   }
 
   async function purgeForReset(): Promise<void> {

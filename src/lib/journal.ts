@@ -1,7 +1,7 @@
 // Journal repository: one entry per calendar day, month navigation.
 
 import type { DataDriver } from "../data/driver.ts";
-import { datesInMonth, todayLocal } from "./dates.ts";
+import { datesInMonth, monthRange, todayLocal } from "./dates.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { JournalEntryRow } from "./types.ts";
 
@@ -108,11 +108,16 @@ export function createJournalRepo(
       if (entry) await trash.trashEntity("journal_entry", entry.id);
     },
 
-    /** Days of `yyyy-mm` that have an entry — the month grid's marked days. */
+    /**
+     * Days of `yyyy-mm` that have an entry — the month grid's marked days.
+     * Range predicate so the `entry_date` index is used instead of a scan
+     * (docs/AUDIT.md PERF-01).
+     */
     async datesInMonth(yearMonth: string): Promise<string[]> {
+      const { from, to } = monthRange(yearMonth);
       const rows = await driver.query<{ entry_date: string }>(
-        "SELECT entry_date FROM journal_entries WHERE substr(entry_date, 1, 7) = ? ORDER BY entry_date",
-        [yearMonth],
+        "SELECT entry_date FROM journal_entries WHERE entry_date >= ? AND entry_date < ? ORDER BY entry_date",
+        [from, to],
       );
       return rows.map((r) => r.entry_date);
     },

@@ -211,8 +211,7 @@ function useReminderPoll(
       messages,
       now: () => localISODateTime(new Date()),
       due: (now) => tasksRepo.dueReminders(now),
-      markFired: (id) => tasksRepo.markReminderFired(id),
-      reschedule: (id, remindAt) => tasksRepo.rescheduleReminder(id, remindAt),
+      settle: (outcomes) => tasksRepo.settleReminders(outcomes),
       requestPermission: ensureNotifyPermission,
       notify: ({ title, body }) => sendNotification({ title, body }),
       // Re-read every tick, so flipping the Settings toggle applies within one

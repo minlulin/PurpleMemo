@@ -625,7 +625,37 @@ pub fn open_encrypted_db(path: &Path, key_hex: &str) -> Result<Connection, Strin
     // conflict surfaces as an error rather than a hang.
     conn.busy_timeout(std::time::Duration::from_secs(BUSY_TIMEOUT_SECS))
         .map_err(|e| format!("failed to set busy timeout: {e}"))?;
+    apply_performance_pragmas(&conn)?;
     Ok(conn)
+}
+
+/// Connection settings that only affect speed, never durability of a committed
+/// write that survives an app crash — apply them after the key, WAL and the
+/// busy timeout (docs/AUDIT.md PERF-10).
+///
+/// * `synchronous = NORMAL` — with WAL this is the documented pairing: a
+///   commit is durable against an application crash (the WAL is fsynced before
+///   a checkpoint) and only an OS-level crash or power loss can lose the last
+///   transactions. `FULL` fsyncs on every commit, which is why a batch of
+///   small writes on a laptop disk was slow. A local single-user app accepts
+///   that trade; a ledger application with a server would not.
+/// * `cache_size = -16384` — a 16 MiB page cache (the negative form means
+///   KiB). The default 2 MiB is small next to a library with photos, FTS and
+///   a decade of journal entries, and every miss is a decrypt + read.
+/// * `temp_store = MEMORY` — sorts and temp b-trees (`ORDER BY` on a browse
+///   list, the FTS index build) stay in RAM instead of paging through a
+///   temporary file on disk.
+///
+/// Deliberately NOT set: `mmap_size` (SQLCipher reads through its own pager,
+/// so a mapped file would bypass decryption) and `locking_mode = EXCLUSIVE`
+/// (a second instance must still be able to fail cleanly on the lock).
+fn apply_performance_pragmas(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -16384;
+         PRAGMA temp_store = MEMORY;",
+    )
+    .map_err(|e| format!("failed to apply performance pragmas: {e}"))
 }
 
 /// Key first, then **verify before use** by reading `sqlite_master` — the
@@ -680,6 +710,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         2 => Some(schema::MIGRATION_2_3),
         3 => Some(schema::MIGRATION_3_4),
         4 => Some(schema::MIGRATION_4_5),
+        5 => Some(schema::MIGRATION_5_6),
         _ => None,
     }
 }
@@ -1101,8 +1132,12 @@ pub fn query_rows(
     // process.
     reject_dangerous_statement(sql)?;
     let params = json_params(params)?;
+    // `prepare_cached`: the repository runs the same few dozen statements over
+    // and over, and compiling one is not free (SQLite parses, plans, and
+    // SQLCipher walks it). A cached statement is re-planned automatically if
+    // the schema changes under it (docs/AUDIT.md PERF-10).
     let mut stmt = conn
-        .prepare(sql)
+        .prepare_cached(sql)
         .map_err(|e| format!("prepare failed: {e}"))?;
     let columns: Vec<String> = stmt
         .column_names()
@@ -1139,8 +1174,11 @@ fn execute_inner(
     params: &[JsonValue],
 ) -> Result<ExecuteOutcome, String> {
     let params = json_params(params)?;
-    let rows_affected = conn
-        .execute(sql, rusqlite::params_from_iter(params.iter()))
+    let mut stmt = conn
+        .prepare_cached(sql)
+        .map_err(|e| format!("prepare failed: {e}"))?;
+    let rows_affected = stmt
+        .execute(rusqlite::params_from_iter(params.iter()))
         .map_err(|e| format!("execute failed: {e}"))?;
     Ok(ExecuteOutcome {
         rows_affected: rows_affected as u64,
@@ -2001,6 +2039,15 @@ mod tests {
             "idx_inbox_items_status",
             "idx_trash_items_entity",
             "idx_trash_items_deleted",
+            "idx_notes_browse",
+            "idx_photos_created",
+            "idx_memories_date",
+            "idx_habit_logs_date",
+            "idx_income_cat_date",
+            "idx_expense_cat_date",
+            "idx_jobs_shop",
+            "idx_payables_paid_due",
+            "idx_shopping_order",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -2011,6 +2058,35 @@ mod tests {
                 .expect("index query");
             assert_eq!(count, 1, "index {name} must exist in the baseline schema");
         }
+    }
+
+    #[test]
+    fn settings_value_is_still_not_null_for_the_import_canary() {
+        // SCHEMA-04 (docs/AUDIT.md): the backup import commits a deliberate
+        // constraint violation (`INSERT ... VALUES ('import-fk-check', NULL)`)
+        // so a dangling foreign key rolls the whole import back. The failure
+        // only happens because `settings.value` is NOT NULL — a default or a
+        // relaxed flag would leave the canary inserting a junk row instead.
+        let (_dir, conn) = open_baseline("settings-not-null");
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(settings)")
+            .expect("table_info");
+        let columns: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?)))
+            .expect("rows")
+            .collect::<Result<_, _>>()
+            .expect("read columns");
+        let value = columns
+            .into_iter()
+            .find(|(name, _)| name == "value")
+            .expect("settings.value must exist");
+        assert_eq!(value.1, 1, "settings.value must stay NOT NULL (import canary)");
+        // And the canary must actually fail on this connection.
+        assert!(
+            conn.execute("INSERT INTO settings (key, value) VALUES ('import-fk-check', NULL)", [])
+                .is_err(),
+            "the import canary relies on this INSERT failing"
+        );
     }
 
     #[test]
@@ -2066,7 +2142,25 @@ mod tests {
              DROP INDEX idx_inbox_items_status;
              DROP TABLE inbox_items;
              DROP INDEX idx_photo_refs_unique;
-             DROP INDEX idx_reminders_fired_at;",
+             DROP INDEX idx_reminders_fired_at;
+             DROP INDEX idx_notes_browse;
+             DROP INDEX idx_photos_created;
+             DROP INDEX idx_memories_date;
+             DROP INDEX idx_habit_logs_date;
+             DROP INDEX idx_income_cat_date;
+             DROP INDEX idx_expense_cat_date;
+             DROP INDEX idx_jobs_shop;
+             DROP INDEX idx_payables_paid_due;
+             DROP INDEX idx_shopping_order;
+             DROP TRIGGER notes_fts_au;
+             CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
+               UPDATE notes_fts
+               SET title = new.title,
+                   content = new.content,
+                   tags = new.tags,
+                   folder = COALESCE((SELECT name FROM collections WHERE id = new.collection_id), '')
+               WHERE rowid = new.id;
+             END;",
         )
         .expect("strip v2+ additions");
         conn.pragma_update(None, "user_version", 1i64)
@@ -2198,6 +2292,97 @@ mod tests {
                 "{name} differs between a fresh baseline and a migrated database"
             );
         }
+    }
+
+    #[test]
+    fn migration_5_6_adds_the_hot_path_indexes_and_narrows_the_fts_trigger() {
+        // PERF-09 / SCHEMA-03 (docs/AUDIT.md). A v1 fixture really lacks the
+        // v6 additions, so this exercises the migration rather than the
+        // baseline.
+        let (_dir, conn) = seeded_v1("migrate-5-6");
+        let had_trigger: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='notes_fts_au'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("v1 must have the wide trigger");
+        assert!(
+            !normalize_sql(&had_trigger).contains("UPDATE OF"),
+            "the fixture must start with the old wide trigger"
+        );
+
+        init_schema(&conn).expect("migrate 1 -> current");
+
+        for name in [
+            "idx_notes_browse",
+            "idx_photos_created",
+            "idx_memories_date",
+            "idx_habit_logs_date",
+            "idx_income_cat_date",
+            "idx_expense_cat_date",
+            "idx_jobs_shop",
+            "idx_payables_paid_due",
+            "idx_shopping_order",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("index query");
+            assert_eq!(count, 1, "{name} must exist after the migration");
+        }
+
+        let trigger: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='notes_fts_au'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("trigger survives the migration");
+        let normalized = normalize_sql(&trigger);
+        assert!(
+            normalized
+                .to_ascii_lowercase()
+                .contains("after update of title, content, tags, collection_id on notes"),
+            "the recreated trigger must only fire for the indexed columns: {trigger}"
+        );
+
+        // Prove the narrowed trigger, rather than trusting its text: take
+        // note 1's index row away and pin the note. The old trigger's body is
+        // an UPDATE, so a fired trigger would have written (and the row would
+        // still be gone) — but with `UPDATE OF` it never runs at all. What can
+        // be observed directly is that the index is left exactly as it was.
+        conn.execute("DELETE FROM notes_fts WHERE rowid = 1", [])
+            .expect("clear one index row");
+        conn.execute("UPDATE notes SET pinned = 1 WHERE id = 1", [])
+            .expect("pin a note");
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM notes_fts"),
+            0,
+            "pinning a note must not rewrite its index row"
+        );
+
+        // ...while a real content edit still reaches the index: a second note
+        // is edited and becomes searchable under the new text.
+        conn.execute(
+            "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at)
+             VALUES (2, 'Second', 'old body', '', 1, 0, 0, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("insert a second note");
+        conn.execute("UPDATE notes SET content = 'brand new text' WHERE id = 2", [])
+            .expect("edit the second note");
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'brand'"
+            ),
+            1,
+            "a content edit must still update the index"
+        );
     }
 
     /// SQLite records the DDL as it was typed, so two textually different but
@@ -2497,6 +2682,15 @@ mod tests {
             "trash_items",
             "idx_trash_items_entity",
             "idx_trash_items_deleted",
+            "idx_notes_browse",
+            "idx_photos_created",
+            "idx_memories_date",
+            "idx_habit_logs_date",
+            "idx_income_cat_date",
+            "idx_expense_cat_date",
+            "idx_jobs_shop",
+            "idx_payables_paid_due",
+            "idx_shopping_order",
         ] {
             let fresh_sql: String = fresh
                 .query_row(

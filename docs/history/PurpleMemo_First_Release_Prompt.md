@@ -1,3 +1,8 @@
+> **Historical plan — not a requirement.**
+> The work described here has shipped (see `src/`, `docs/RELEASE.md` and
+> `docs/EXPORTS.md`); this file is kept only as the record of what was
+> planned. Do not treat it as the current specification.
+
 # Purple Memo — First Release (v0.1.0): fresh clone → signed GitHub Release
 
 Execute this exactly, phase by phase. Each phase ends with a one-line status.

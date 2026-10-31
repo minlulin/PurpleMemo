@@ -6,7 +6,7 @@
 // with the same title are two tasks, exactly as two manual adds would be.
 
 import type { DataDriver } from "../data/driver.ts";
-import { unescapeSpreadsheetCell } from "./csv.ts";
+import { cellValue } from "./csv.ts";
 import { isValidISODate, todayLocal } from "./dates.ts";
 import type { MessageKey } from "./i18n.ts";
 import type { TaskRow } from "./types.ts";
@@ -52,19 +52,6 @@ const DONE_VALUES: Record<string, number> = {
 
 const REPEAT_VALUES = new Set<string>(["none", "daily", "weekly", "monthly"]);
 
-/** A cell value; checks optional aliases and unescapes spreadsheet formula guards. */
-function cell(
-  row: Record<string, string>,
-  name: string,
-  aliases: string[] = [],
-): string {
-  if (row[name] !== undefined) return unescapeSpreadsheetCell(row[name]);
-  for (const alias of aliases) {
-    if (row[alias] !== undefined) return unescapeSpreadsheetCell(row[alias]);
-  }
-  return "";
-}
-
 /**
  * Map parsed CSV rows to task inserts, collecting per-row errors instead of
  * failing the whole import: one bad date must not cost the user the other 200
@@ -80,13 +67,13 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
   rows.forEach((row, index) => {
     const rowNumber = index + 1;
 
-    const title = cell(row, "title").trim();
+    const title = cellValue(row, "title").trim();
     if (title === "") {
       errors.push({ row: rowNumber, reason: "import.reason.titleRequired" });
       return;
     }
 
-    const dueDate = cell(row, "due_date", ["due date", "duedate"]).trim();
+    const dueDate = cellValue(row, "due_date", ["due date", "duedate"]).trim();
     if (dueDate !== "" && !isValidISODate(dueDate)) {
       errors.push({
         row: rowNumber,
@@ -95,7 +82,7 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       return;
     }
 
-    const doneRaw = cell(row, "done").trim().toLowerCase();
+    const doneRaw = cellValue(row, "done").trim().toLowerCase();
     const done = doneRaw === "" ? 0 : DONE_VALUES[doneRaw];
     if (done === undefined) {
       errors.push({
@@ -105,7 +92,7 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       return;
     }
 
-    const repeatRaw = cell(row, "repeat").trim().toLowerCase();
+    const repeatRaw = cellValue(row, "repeat").trim().toLowerCase();
     if (repeatRaw !== "" && !REPEAT_VALUES.has(repeatRaw)) {
       errors.push({
         row: rowNumber,
@@ -119,7 +106,7 @@ export function mapTaskRows(rows: Record<string, string>[]): TaskImportResult {
       due_date: dueDate === "" ? null : dueDate,
       done,
       repeat: repeatRaw === "" ? "none" : (repeatRaw as TaskRow["repeat"]),
-      note: cell(row, "note", ["notes"]),
+      note: cellValue(row, "note", ["notes"]),
     });
   });
 

@@ -8,6 +8,11 @@ import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { MAX_BACKUP_PHOTO_BYTES } from "./backup.ts";
 import { sha256HexBytes } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
+import {
+  createSettingsRepo,
+  SETTING_KEYS,
+  settingsUpsertStatement,
+} from "./settings.ts";
 import type { PhotoRefEntity, PhotoRefRow, PhotoRow } from "./types.ts";
 
 /**
@@ -43,7 +48,8 @@ export function isUniqueViolation(error: unknown): boolean {
  * The prefix contains no LIKE wildcards (`_`, `%`), so
  * `key LIKE '<prefix>%'` matches cleanup records and nothing else.
  */
-const PENDING_CLEANUP_PREFIX = "gallery.pendingPhotoFile.";
+// The prefix lives with the other setting key names (docs/AUDIT.md DUP-06).
+const PENDING_CLEANUP_PREFIX = SETTING_KEYS.photoCleanupPrefix;
 
 /**
  * "The row is gone; the file cleanup is still pending" (M2).
@@ -120,9 +126,7 @@ async function finishPhotoCleanup(
   } catch (cause) {
     throw new PhotoCleanupPendingError(photoId, relPath, cause);
   }
-  await driver.execute("DELETE FROM settings WHERE key = ?", [
-    pendingCleanupKey(photoId, relPath),
-  ]);
+  await createSettingsRepo(driver).remove(pendingCleanupKey(photoId, relPath));
 }
 
 export interface SavePhotoInput {
@@ -205,6 +209,26 @@ export interface ThumbUrlBook {
   revokeAll(urls: Iterable<string>): void;
   /** Revoke everything (unmount). */
   clear(): void;
+}
+
+/**
+ * `photos/<yyyy>/<mm>/<sha256>.<ext>` — the layout `photos.rs` `save_photo`
+ * writes (content-addressed, lowercase hex).
+ */
+const CONTENT_ADDRESSED_PATH_RE =
+  /^photos\/\d{4}\/\d{2}\/([0-9a-f]{64})\.[a-z0-9]{1,8}$/;
+
+/**
+ * The sha256 that a content-addressed photo path already carries, or `null`
+ * when the path does not look like one.
+ *
+ * Restore used to re-hash every photo after the host had just hashed it to
+ * build the path — megabytes through sha256 twice per file, on the UI thread's
+ * critical path (docs/AUDIT.md PERF-07). Callers must still validate: `null`
+ * means "hash the bytes yourself", never "trust whatever is in the name".
+ */
+export function digestFromPhotoPath(relPath: string): string | null {
+  return CONTENT_ADDRESSED_PATH_RE.exec(relPath)?.[1] ?? null;
 }
 
 export function createThumbUrlBook(io: {
@@ -432,10 +456,8 @@ export function createGalleryRepo(driver: DataDriver) {
      * remains for it — a retry can never no-op its way past pending cleanup.
      */
     async deletePhoto(id: number): Promise<void> {
-      const pending = await driver.query<{ key: string; value: string }>(
-        "SELECT key, value FROM settings WHERE key LIKE ?",
-        [`${PENDING_CLEANUP_PREFIX}%`],
-      );
+      const settings = createSettingsRepo(driver);
+      const pending = await settings.listByPrefix(PENDING_CLEANUP_PREFIX);
       let ownPending: PhotoCleanupPendingError | undefined;
       for (const record of pending) {
         try {
@@ -476,11 +498,10 @@ export function createGalleryRepo(driver: DataDriver) {
       }
       await driver.batch([
         { sql: "DELETE FROM photos WHERE id = ?", params: [id] },
-        {
-          sql: `INSERT INTO settings (key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          params: [pendingCleanupKey(id, photo.rel_path), photo.rel_path],
-        },
+        settingsUpsertStatement(
+          pendingCleanupKey(id, photo.rel_path),
+          photo.rel_path,
+        ),
       ]);
       await finishPhotoCleanup(driver, id, photo.rel_path);
     },

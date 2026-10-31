@@ -576,6 +576,9 @@ export default function SettingsPage(p: SettingsPageProps) {
   const [shareCopied, setShareCopied] = useState(false);
   const [shareAck, setShareAck] = useState(false);
 
+  /** Last status this page rendered, for the "is this news?" check below. */
+  const lastShareRef = useRef<ShareInfo | null>(null);
+
   // The app shell keeps re-publishing while sharing; this mirrors the state
   // here (including a server that stopped unexpectedly).
   useEffect(() => {
@@ -583,10 +586,23 @@ export default function SettingsPage(p: SettingsPageProps) {
     const sync = async () => {
       try {
         const info = await shareRepo.status();
-        if (!cancelled) {
-          setShareState(info);
-          setShareCopied(false);
-        }
+        if (cancelled) return;
+        const prev = lastShareRef.current;
+        lastShareRef.current = info;
+        const unchanged =
+          prev !== null &&
+          prev.running === info.running &&
+          prev.url === info.url &&
+          prev.port === info.port &&
+          prev.note === info.note &&
+          prev.publishedAt === info.publishedAt;
+        // A poll that repeats itself is not news. Re-rendering four times a
+        // minute also wiped the "Copied" confirmation for a link that never
+        // changed (docs/AUDIT.md PERF-15); only a genuinely different state
+        // (or a different link) resets it.
+        if (unchanged) return;
+        setShareState(info);
+        if (prev === null || prev.url !== info.url) setShareCopied(false);
       } catch {
         // Keep the last known state — the buttons report real errors.
       }

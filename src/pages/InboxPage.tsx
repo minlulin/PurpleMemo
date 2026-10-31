@@ -9,7 +9,7 @@
 // target, and says so. The in-flight refs below are UX, so a double-click does
 // not even reach the database twice.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconInbox, IconSpinner } from "../components/icons.tsx";
@@ -28,6 +28,7 @@ import { errText } from "../lib/errors.ts";
 import { formatDateTime } from "../lib/format.ts";
 import type { MessageKey } from "../lib/i18n.ts";
 import { journalBlock, targetKey } from "../lib/inbox.ts";
+import { createLoadGuard } from "../lib/loads.ts";
 import type { InboxRow, InboxTarget } from "../lib/types.ts";
 
 interface InboxPageProps {
@@ -120,8 +121,11 @@ export default function InboxPage(p: InboxPageProps) {
    *  the database twice and no Convert lands behind it. */
   const archivingRef = useRef<number | null>(null);
   const [archivingId, setArchivingId] = useState<number | null>(null);
-  /** Sequence token: only the newest reload may install its snapshot (D6). */
-  const reloadSeqRef = useRef(0);
+  /**
+   * Sequence token: only the newest reload may install its snapshot (D6).
+   * The shared guard, not a hand-rolled counter (docs/AUDIT.md DUP-04).
+   */
+  const reloadGuard = useMemo(() => createLoadGuard(), []);
 
   /**
    * Render a caught value: a keyed inbox refusal in the locale active right
@@ -131,7 +135,7 @@ export default function InboxPage(p: InboxPageProps) {
   const errMessage = (e: unknown): string => errText(e);
 
   const reload = useCallback(async () => {
-    const seq = ++reloadSeqRef.current;
+    const token = reloadGuard.begin();
     // The list is knowingly pre-write while this runs: say so, instead of
     // leaving the old rows sitting there as if current (D6 — the B9 second
     // half). Two overlapping reloads (a row action and the capturesMade
@@ -142,7 +146,7 @@ export default function InboxPage(p: InboxPageProps) {
       const done = await inboxRepo.listByStatus("converted");
       const away = showArchived ? await inboxRepo.listByStatus("archived") : [];
       const liveTargets = await inboxRepo.liveTargets(done);
-      if (seq !== reloadSeqRef.current) return; // superseded — newest wins
+      if (!reloadGuard.isCurrent(token)) return; // superseded — newest wins
       setLive(liveTargets);
       setItems(open);
       setConverted(done);
@@ -152,11 +156,11 @@ export default function InboxPage(p: InboxPageProps) {
       // Reload only reads: its failures are driver errors, never the keyed
       // conversion refusals — so no `t` is captured here and this callback
       // keeps its identity across renders.
-      if (seq === reloadSeqRef.current) setError(errText(e));
+      if (reloadGuard.isCurrent(token)) setError(errText(e));
     } finally {
-      if (seq === reloadSeqRef.current) setLoading(false);
+      if (reloadGuard.isCurrent(token)) setLoading(false);
     }
-  }, [showArchived]);
+  }, [reloadGuard, showArchived]);
 
   // `capturesMade` is deliberately not read in the body: it is a signal, not
   // data, and its whole job is to change this effect's identity — the same

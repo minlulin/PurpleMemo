@@ -1,7 +1,7 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 32 tables at `PRAGMA user_version = 5`: 31 regular tables + the
+//! 32 tables at `PRAGMA user_version = 6`: 31 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
 //! shadow tables are FTS internals, not part of the 31).
 //!
@@ -18,7 +18,7 @@
 //! land on the current version in one step — a test asserts the two agree.
 
 /// The schema version this build expects and stamps.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -111,6 +111,54 @@ CREATE UNIQUE INDEX idx_photo_refs_unique
 CREATE INDEX idx_reminders_fired_at ON reminders(fired, remind_at);
 "#;
 
+/// Hot-path indexes and a narrower FTS maintenance trigger
+/// (docs/AUDIT.md PERF-09 and SCHEMA-03).
+///
+/// Every index below answers a query the repository actually runs, in the
+/// form it runs it:
+///
+/// * `idx_notes_browse` — the browse list's
+///   `WHERE archived = 0 ORDER BY pinned DESC, updated_at DESC, id DESC`.
+///   Without it SQLite materialises the whole table and sorts it.
+/// * `idx_photos_created` — the gallery grid, newest first.
+/// * `idx_memories_date` — the month feed and On-this-day scans.
+/// * `idx_habit_logs_date` — the habit month grid and the dashboard tick.
+/// * `idx_income_cat_date` / `idx_expense_cat_date` — per-category spend for a
+///   month: the equality column first, then the range the summary filters on.
+/// * `idx_jobs_shop` — receivables grouped by shop.
+/// * `idx_payables_paid_due` — unpaid payables by due date.
+/// * `idx_shopping_order` — a list's items in their stored order.
+///
+/// The trigger change matters because `notes_fts` was 2.2x the size of the
+/// notes it indexes: `AFTER UPDATE ON notes` rewrote the FTS row for a pin,
+/// an archive, or any other column the index does not even store.
+/// `AFTER UPDATE OF title, content, tags, collection_id` fires only when one
+/// of the indexed columns is actually in the UPDATE's SET list, which is
+/// exactly when the FTS row can differ. Triggers cannot be altered, so the
+/// old one is dropped and recreated with the same body.
+pub const MIGRATION_5_6: &str = r#"
+CREATE INDEX idx_notes_browse ON notes(archived, pinned DESC, updated_at DESC, id DESC);
+CREATE INDEX idx_photos_created ON photos(created_at);
+CREATE INDEX idx_memories_date ON memories(memory_date);
+CREATE INDEX idx_habit_logs_date ON habit_logs(log_date);
+CREATE INDEX idx_income_cat_date ON income_entries(category_id, entry_date);
+CREATE INDEX idx_expense_cat_date ON expense_entries(category_id, entry_date);
+CREATE INDEX idx_jobs_shop ON jobs(shop_id);
+CREATE INDEX idx_payables_paid_due ON payables(paid, due_date);
+CREATE INDEX idx_shopping_order ON shopping_items(list_id, sort_order);
+
+DROP TRIGGER notes_fts_au;
+
+CREATE TRIGGER notes_fts_au AFTER UPDATE OF title, content, tags, collection_id ON notes BEGIN
+  UPDATE notes_fts
+  SET title = new.title,
+      content = new.content,
+      tags = new.tags,
+      folder = COALESCE((SELECT name FROM collections WHERE id = new.collection_id), '')
+  WHERE rowid = new.id;
+END;
+"#;
+
 /// Quick capture. The two conversions that create a
 /// row (note, task) and the one that appends to today's journal entry all run
 /// as one `driver.batch`, which is what makes a double-click produce exactly
@@ -190,7 +238,10 @@ CREATE TRIGGER notes_fts_ad AFTER DELETE ON notes BEGIN
   DELETE FROM notes_fts WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
+-- Only the indexed columns: a pin, an archive or any other non-FTS column
+-- used to rewrite this row anyway, which left `notes_fts` at 2.2x the size of
+-- the notes it indexes (docs/AUDIT.md SCHEMA-03; see MIGRATION_5_6).
+CREATE TRIGGER notes_fts_au AFTER UPDATE OF title, content, tags, collection_id ON notes BEGIN
   UPDATE notes_fts
   SET title = new.title,
       content = new.content,
@@ -510,6 +561,10 @@ CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);
 -- ============================================================
 -- Settings — key/value: PIN hash, security question, theme…
 -- ============================================================
+-- `value` must stay NOT NULL: the backup import uses a deliberately failing
+-- INSERT of a NULL value into this column as its foreign-key canary
+-- (`backup.ts`, docs/AUDIT.md SCHEMA-04), and a default or a dropped NOT NULL
+-- would turn that canary into a silent no-op. A Rust test pins the flag.
 CREATE TABLE settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -532,6 +587,17 @@ CREATE INDEX idx_reminders_fired_at ON reminders(fired, remind_at);
 -- A photo may be linked to one entity once: see MIGRATION_4_5.
 CREATE UNIQUE INDEX idx_photo_refs_unique
   ON photo_refs(photo_id, entity_type, entity_id);
+
+-- The audit's hot-path set: see MIGRATION_5_6 for what each one serves.
+CREATE INDEX idx_notes_browse ON notes(archived, pinned DESC, updated_at DESC, id DESC);
+CREATE INDEX idx_photos_created ON photos(created_at);
+CREATE INDEX idx_memories_date ON memories(memory_date);
+CREATE INDEX idx_habit_logs_date ON habit_logs(log_date);
+CREATE INDEX idx_income_cat_date ON income_entries(category_id, entry_date);
+CREATE INDEX idx_expense_cat_date ON expense_entries(category_id, entry_date);
+CREATE INDEX idx_jobs_shop ON jobs(shop_id);
+CREATE INDEX idx_payables_paid_due ON payables(paid, due_date);
+CREATE INDEX idx_shopping_order ON shopping_items(list_id, sort_order);
 
 -- ============================================================
 -- Seed data : default wallets + seeded categories. One-time

@@ -3,7 +3,7 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { addDays, todayLocal } from "./dates.ts";
-import { formatDate } from "./format.ts";
+import { formatBirthday } from "./format.ts";
 import type { Locale } from "./i18n.ts";
 import { createTrashRepo } from "./trash.ts";
 import type {
@@ -65,44 +65,25 @@ const MONTH_SHORT = [
   "Dec",
 ];
 
-const monthDayFormatters = new Map<Locale, Intl.DateTimeFormat>();
-
-function monthDayFormatter(locale: Locale): Intl.DateTimeFormat {
-  const cached = monthDayFormatters.get(locale);
-  if (cached !== undefined) return cached;
-  const formatter = new Intl.DateTimeFormat(locale, {
-    calendar: "gregory",
-    numberingSystem: "latn",
-    month: "short",
-    day: "numeric",
-  });
-  monthDayFormatters.set(locale, formatter);
-  return formatter;
-}
-
 /**
  * Display label for a birthday: "Oct 20, 1990" for a full date,
  * "Oct 20" for a month-day (localized when `locale` is non-English).
- * Malformed input degrades to a placeholder instead of throwing — the label
- * sits in list rows.
+ *
+ * `formatBirthday` (format.ts) is the ONE birthday formatter — the same rule
+ * printed a different label in the Contacts list than in the Memories card,
+ * because this file grew a second implementation (docs/AUDIT.md DUP-02). What
+ * stays local is the fallback: `formatBirthday` echoes input it cannot parse,
+ * and a list row wants a placeholder rather than a raw "13-40".
  */
 export function birthdayLabel(birthday: string, locale: Locale = "en"): string {
   if (birthday.length === 0) return "";
-  if (locale !== "en") {
-    if (birthday.length >= 10) {
-      const formatted = formatDate(locale, birthday);
-      if (formatted !== birthday) return formatted;
-    } else if (/^\d{2}-\d{2}$/.test(birthday)) {
-      const leapDate = new Date(`2024-${birthday}T00:00:00`);
-      if (
-        !Number.isNaN(leapDate.getTime()) &&
-        leapDate.getMonth() + 1 === Number(birthday.slice(0, 2)) &&
-        leapDate.getDate() === Number(birthday.slice(3, 5))
-      ) {
-        return monthDayFormatter(locale).format(leapDate);
-      }
-    }
-  }
+  const formatted = formatBirthday(locale, birthday);
+  if (formatted !== birthday) return formatted;
+  return placeholderBirthday(birthday);
+}
+
+/** "?? 40" for an impossible month-day — degraded, never thrown. */
+function placeholderBirthday(birthday: string): string {
   const mmdd = birthday.length >= 10 ? birthday.slice(5) : birthday;
   const month = Number(mmdd.slice(0, 2));
   const day = Number(mmdd.slice(3, 5));
