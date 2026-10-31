@@ -69,7 +69,10 @@ export function saveCsvTemplate(
 export const shoppingRepo = createShoppingRepo(driver);
 export const contactsRepo = createContactsRepo(driver, trashRepo);
 export const entityLinksRepo = createEntityLinksRepo(driver);
-export const exportsRepo = createExportsRepo(driver);
+export const exportsRepo = createExportsRepo(driver, {
+  notes: notesRepo,
+  loans: loansRepo,
+});
 export const memoriesRepo = createMemoriesRepo(driver, trashRepo);
 export const galleryRepo = createGalleryRepo(driver);
 export const vaultRepo = createVaultRepo(driver);

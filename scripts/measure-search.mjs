@@ -39,6 +39,9 @@ const root = join(here, "..");
 const { globalSearch } = await import(
   pathToFileURL(join(root, "src/lib/globalSearch.ts")).href
 );
+const { buildMatchQuery } = await import(
+  pathToFileURL(join(root, "src/lib/search.ts")).href
+);
 const { SEARCH_CONTRACT, globExpression, globTerm, isSearchable } =
   await import(pathToFileURL(join(root, "src/lib/searchContract.ts")).href);
 
@@ -290,11 +293,13 @@ function sqlOnly(input, options = {}) {
     const params = spec.searchable.map(() => pattern);
     let sql;
     if (spec.match === "fts") {
-      const tokens = input.split(/\s+/).filter(Boolean);
+      // The shipping token quoting, imported rather than re-derived: a
+      // hand-rolled copy would let this harness report a healthy number while
+      // the app's own MATCH expression regressed (docs/AUDIT.md DUP-11).
       sql = `SELECT n.id FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid
              WHERE notes_fts MATCH ? AND n.archived = 0 ORDER BY rank LIMIT ${spec.cap + 1}`;
       params.length = 0;
-      params.push(tokens.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" "));
+      params.push(buildMatchQuery(input));
     } else {
       sql = `SELECT id FROM ${spec.table} WHERE (${globExpression(spec)}) LIMIT ${spec.cap + 1}`;
     }

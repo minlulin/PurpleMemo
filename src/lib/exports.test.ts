@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { strFromU8, unzipSync } from "fflate";
+import { createMockDriver } from "../data/mock-driver.ts";
 import { CONTACT_CSV_ALIASES, mapContactRows } from "./contactImport.ts";
 import { parseCsv as parseImportCsv } from "./csv.ts";
 import {
@@ -11,6 +12,7 @@ import {
   centsToDecimal,
   contactsCsv,
   contactVcard,
+  createExportsRepo,
   csvText,
   EXPORT_FIELD_MAPPING,
   type ExportContact,
@@ -21,6 +23,8 @@ import {
   sanitizeFilePart,
   tasksCsv,
 } from "./exports.ts";
+import { createLoansRepo } from "./loans.ts";
+import { createNotesRepo } from "./notes.ts";
 import { mapTaskRows, TASK_CSV_ALIASES } from "./taskImport.ts";
 
 function fixture(): ExportData {
@@ -440,4 +444,49 @@ test("contactVcard escapes CATEGORIES as text; the separators stay literal", () 
     "CATEGORIES:fun\\, friends,work\\; team",
     "escaped inside the tag, literal between tags",
   );
+});
+
+test("createExportsRepo reads collections and loans through the caller's repos (DUP-08)", async () => {
+  // The exporter used to issue its own `SELECT * FROM collections` and
+  // `SELECT * FROM loans` — the same statements the notes and loans repos
+  // own. The spies replace those methods and must be the ones `collect` reads
+  // through, so an ordering or derivation change in the repos reaches the
+  // export instead of being shadowed by a second copy of the query.
+  const driver = createMockDriver();
+  const seen: string[] = [];
+  const notes = {
+    ...createNotesRepo(driver),
+    async listCollections() {
+      seen.push("collections");
+      return [];
+    },
+  };
+  const loans = {
+    ...createLoansRepo(driver),
+    async listLoans() {
+      seen.push("loans");
+      return [];
+    },
+  };
+  const repo = createExportsRepo(driver, { notes, loans });
+  const data = await repo.collect("2026-10-31", {
+    notes: true,
+    journal: false,
+    finance: true,
+    tasks: false,
+    contacts: false,
+  });
+  assert.deepEqual(seen, ["collections", "loans"]);
+  assert.deepEqual(data.collections, []);
+  assert.deepEqual(data.loans, []);
+});
+
+test("app.ts hands the export repo the singletons it already built (DUP-08)", () => {
+  // The runtime test above proves the parameter is honored; this proves the
+  // production composition root actually passes it — a default-constructed
+  // export repo would keep every test green while reading its own copies.
+  const app = readFileSync(new URL("../data/app.ts", import.meta.url), "utf8");
+  assert.match(app, /createExportsRepo\(driver, \{/);
+  assert.match(app, /notes: notesRepo/);
+  assert.match(app, /loans: loansRepo/);
 });
