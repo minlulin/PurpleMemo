@@ -6,8 +6,9 @@
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AnchorHTMLAttributes, HTMLAttributes, ReactNode } from "react";
-import { createElement, useEffect, useRef } from "react";
+import { createElement, useRef } from "react";
 import type { Components } from "react-markdown";
+import { createHeadingIdScope } from "../lib/headingIds.ts";
 import { routeLink } from "../lib/links.ts";
 import { useToast } from "./Toast.tsx";
 
@@ -54,19 +55,15 @@ export function MarkdownLink({ href, children, title }: MarkdownLinkProps) {
 
 // --- Heading ids (Decision 2) ---------------------------------------------
 // Shared markdown components render every h1-h6 with a stable, deduplicated id
-// so `[Jump](#introduction)` scrolls to `# Introduction`. Scoped per rendered
-// document; raw HTML stays disabled.
-
-function slugifyHeading(text: string): string {
-  const slug = text
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^\w-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug.length > 0 ? slug : "heading";
-}
+// so `[Jump](#introduction)` scrolls to `# Introduction`. Raw HTML stays
+// disabled.
+//
+// The id is allocated ONCE per mounted heading (the refs below) so it stays
+// stable across re-renders — typing in the editor re-renders the preview, and
+// the old render-phase allocation drifted (`introduction` → `introduction-1`
+// → … on every keystroke). Dedup runs at allocation time against one
+// module-level scope that only grows: an id handed out is never handed out
+// again, so editing two headings to the same text can never collide.
 
 function textFromChildren(children: ReactNode): string {
   if (children == null || typeof children === "boolean") return "";
@@ -81,70 +78,27 @@ function textFromChildren(children: ReactNode): string {
   return "";
 }
 
-// Per-document dedup state. Reset when a new render pass begins (detected by
-// an offset that moves backwards) or when all headings have unmounted.
-const seenSlugs = new Map<string, number>();
-let lastOffset = -1;
-let mountCount = 0;
-
-function allocHeadingId(text: string, offset: number): string {
-  // Reset per-document state when a new render pass begins. Within one
-  // document offsets strictly increase, so an offset that does not advance
-  // (or an empty state) signals a fresh document — including a re-render of
-  // a single-heading document.
-  if (seenSlugs.size > 0 && offset <= lastOffset) {
-    seenSlugs.clear();
-    lastOffset = -1;
-  }
-  lastOffset = Math.max(lastOffset, offset);
-
-  const base = slugifyHeading(text);
-  const count = seenSlugs.get(base) ?? 0;
-  seenSlugs.set(base, count + 1);
-  return count === 0 ? base : `${base}-${count}`;
-}
+/** Session-wide dedup scope for heading ids (see above). */
+const headingScope = createHeadingIdScope();
 
 function makeHeading(tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
   function Heading(
     props: HTMLAttributes<HTMLHeadingElement> & {
-      node?: { position?: { start?: { offset?: number } } };
       children?: ReactNode;
     },
   ) {
-    const { children, node, ...rest } = props;
-    const offset = node?.position?.start?.offset ?? 0;
+    const { children, ...rest } = props;
     const text = textFromChildren(children);
 
-    // Allocate the id once per mounted heading so it stays stable across
-    // re-renders (typing in the editor re-renders the preview). Module-level
-    // dedup still runs at allocation time for mount-time uniqueness.
+    // Allocate once per mounted heading; re-allocate only when the text
+    // itself changes (an edited heading is a new heading for id purposes).
     const idRef = useRef<string | null>(null);
     const textRef = useRef<string | null>(null);
     if (idRef.current === null || textRef.current !== text) {
-      idRef.current = allocHeadingId(text, offset);
+      idRef.current = headingScope.alloc(text);
       textRef.current = text;
     }
     const id = idRef.current as string;
-
-    // Track mounts so the per-document state can be released for client renders.
-    const mounted = useRef(false);
-    useEffect(() => {
-      if (!mounted.current) {
-        if (mountCount === 0) seenSlugs.clear();
-        mountCount += 1;
-        mounted.current = true;
-      }
-      return () => {
-        if (mounted.current) {
-          mountCount = Math.max(0, mountCount - 1);
-          mounted.current = false;
-          if (mountCount === 0) {
-            seenSlugs.clear();
-            lastOffset = -1;
-          }
-        }
-      };
-    }, []);
 
     return createElement(tag, { ...rest, id }, children);
   }
