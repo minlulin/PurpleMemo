@@ -210,3 +210,31 @@ test("collections stay expanded unless collapse was stored explicitly", async ()
     "true",
   ]);
 });
+
+// -- Appearance / theme -------------------------------------------------------
+
+test("getTheme: only dark and light pass through; every other JSON value is null", async () => {
+  // `getJSON` happily parses `{}`, `true` and `"blue"`, and the shell's
+  // fallback is nullish — so a parseable non-theme row used to reach
+  // SettingsPage and get rendered as a React child, unmounting the app
+  // root, while an unknown string bypassed the "dark" default. Validation
+  // is the fix: absent, unreadable and non-theme values all normalise to
+  // null, which is what the caller's `theme ?? "dark"` already expects.
+  const themeOf = async (value: string | undefined) => {
+    const rows = value === undefined ? [] : [{ value }];
+    const driver = createMockDriver({ results: [rows] });
+    return createSettingsRepo(driver).getTheme();
+  };
+
+  assert.equal(await themeOf('"dark"'), "dark", "dark passes through");
+  assert.equal(await themeOf('"light"'), "light", "light passes through");
+  assert.equal(await themeOf(undefined), null, "a missing row stays null");
+  assert.equal(await themeOf("not json"), null, "unparseable stays null");
+  assert.equal(await themeOf("{}"), null, "an object never reaches React");
+  assert.equal(await themeOf("[]"), null, "an array never reaches React");
+  assert.equal(await themeOf("true"), null, "a boolean never reaches React");
+  assert.equal(await themeOf("false"), null, "…and neither does false");
+  assert.equal(await themeOf('"blue"'), null, "an unknown string falls back");
+  assert.equal(await themeOf('"DARK"'), null, "no case-insensitive leniency");
+  assert.equal(await themeOf("42"), null, "a number falls back too");
+});

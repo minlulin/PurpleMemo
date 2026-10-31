@@ -83,8 +83,20 @@ export function createSettingsRepo(driver: DataDriver) {
     },
 
     // -- Typed helpers -----------------------------------------------------------
+    /**
+     * The stored appearance — exactly `"dark"` or `"light"`, else `null` (M4).
+     *
+     * `getJSON` parses ANY JSON: `{}`, `true` and `"blue"` all come back as
+     * values, and the shell's fallback is nullish (`theme ?? "dark"`), so a
+     * parseable non-theme row used to sail through and get rendered as a
+     * React child — "Objects are not valid as a React child" unmounted the
+     * whole root — while an unknown string silently bypassed the "dark"
+     * default. Absent, unparseable and non-theme values all normalise to
+     * `null`, the documented fallback: the caller applies its own default.
+     */
     async getTheme(): Promise<Theme | null> {
-      return this.getJSON<Theme>(SETTING_KEYS.theme);
+      const value = await this.getJSON<unknown>(SETTING_KEYS.theme);
+      return value === "dark" || value === "light" ? value : null;
     },
 
     async setTheme(theme: Theme): Promise<void> {
