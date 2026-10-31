@@ -88,8 +88,13 @@ let lastOffset = -1;
 let mountCount = 0;
 
 function allocHeadingId(text: string, offset: number): string {
-  if (offset < lastOffset) {
+  // Reset per-document state when a new render pass begins. Within one
+  // document offsets strictly increase, so an offset that does not advance
+  // (or an empty state) signals a fresh document — including a re-render of
+  // a single-heading document.
+  if (seenSlugs.size > 0 && offset <= lastOffset) {
     seenSlugs.clear();
+    lastOffset = -1;
   }
   lastOffset = Math.max(lastOffset, offset);
 
@@ -108,7 +113,18 @@ function makeHeading(tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
   ) {
     const { children, node, ...rest } = props;
     const offset = node?.position?.start?.offset ?? 0;
-    const id = allocHeadingId(textFromChildren(children), offset);
+    const text = textFromChildren(children);
+
+    // Allocate the id once per mounted heading so it stays stable across
+    // re-renders (typing in the editor re-renders the preview). Module-level
+    // dedup still runs at allocation time for mount-time uniqueness.
+    const idRef = useRef<string | null>(null);
+    const textRef = useRef<string | null>(null);
+    if (idRef.current === null || textRef.current !== text) {
+      idRef.current = allocHeadingId(text, offset);
+      textRef.current = text;
+    }
+    const id = idRef.current as string;
 
     // Track mounts so the per-document state can be released for client renders.
     const mounted = useRef(false);

@@ -4,7 +4,7 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { opensExternally, routeLink } from "./links.ts";
+import { markdownUrlTransform, opensExternally, routeLink } from "./links.ts";
 
 test("routeLink: http/https/mailto/tel go to the system, never in-app", () => {
   for (const href of [
@@ -52,6 +52,17 @@ test("routeLink: relative and empty hrefs are blocked", () => {
   }
   assert.equal(routeLink(null), "blocked");
   assert.equal(routeLink(undefined), "blocked");
+});
+
+test("markdownUrlTransform: preserves tel: and blocks dangerous schemes", () => {
+  assert.equal(markdownUrlTransform("tel:+15550100"), "tel:+15550100");
+  assert.equal(markdownUrlTransform("javascript:alert(1)"), "");
+  assert.equal(markdownUrlTransform("data:text/html,x"), "");
+  assert.equal(markdownUrlTransform("relative/path"), "relative/path");
+  assert.equal(
+    markdownUrlTransform("HTTPS://example.com"),
+    "HTTPS://example.com",
+  );
 });
 
 test("opensExternally: only the external route calls the opener", () => {
