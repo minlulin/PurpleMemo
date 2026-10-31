@@ -20,7 +20,10 @@ import {
   IconSearch,
 } from "../components/icons.tsx";
 import { LinksSection } from "../components/LinksSection.tsx";
-import { markdownComponents } from "../components/MarkdownLink.tsx";
+import {
+  markdownComponents,
+  markdownUrlTransform,
+} from "../components/MarkdownLink.tsx";
 import { NoteReaderDialog } from "../components/NoteReaderDialog.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -244,7 +247,10 @@ function NoteEditor(p: EditorProps) {
             {p.content.trim().length === 0 ? (
               <p className="empty-state">{t("notes.previewEmpty")}</p>
             ) : (
-              <ReactMarkdown components={markdownComponents}>
+              <ReactMarkdown
+                components={markdownComponents}
+                urlTransform={markdownUrlTransform}
+              >
                 {p.content}
               </ReactMarkdown>
             )}

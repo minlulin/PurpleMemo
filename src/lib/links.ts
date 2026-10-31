@@ -22,6 +22,28 @@
  *   them), `javascript:`, `data:`, `file:`, `ftp:` and unknown schemes. A click
  *   does nothing at all.
  */
+/** Normalize a rendered-markdown URL the way react-markdown's default
+ *  transform does, but only for the schemes this app actually opens. Used as
+ *  `urlTransform` on every `ReactMarkdown` so `tel:` survives (react-markdown's
+ *  default allowlist omits it) while dangerous/relative handling is unchanged.
+ */
+export function markdownUrlTransform(value: string): string {
+  const colon = value.indexOf(":");
+  const questionMark = value.indexOf("?");
+  const numberSign = value.indexOf("#");
+  const slash = value.indexOf("/");
+  // No protocol (relative or hash): leave untouched, the router decides.
+  if (colon === -1) return value;
+  if (slash !== -1 && colon > slash) return value;
+  if (questionMark !== -1 && colon > questionMark) return value;
+  if (numberSign !== -1 && colon > numberSign) return value;
+  const scheme = value.slice(0, colon).toLowerCase();
+  return ["http", "https", "mailto", "tel"].includes(scheme) ? value : "";
+}
+
+/** Alias for callers that prefer the react-markdown prop name. */
+export const urlTransform = markdownUrlTransform;
+
 export type LinkRoute = "external" | "hash" | "blocked";
 
 /** The schemes the system can open on the app's behalf. */

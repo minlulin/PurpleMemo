@@ -5,7 +5,8 @@
 // Rust-side navigation guard cancels any navigation that still slips past.
 
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AnchorHTMLAttributes, ReactNode } from "react";
+import type { AnchorHTMLAttributes, HTMLAttributes, ReactNode } from "react";
+import { createElement, useEffect, useRef } from "react";
 import type { Components } from "react-markdown";
 import { routeLink } from "../lib/links.ts";
 import { useToast } from "./Toast.tsx";
@@ -17,11 +18,12 @@ interface MarkdownLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
 export function MarkdownLink({ href, children, title }: MarkdownLinkProps) {
   const toast = useToast();
   const route = routeLink(href);
-  // Only this value is ever handed to the opener — never a raw `href`. The
-  // schemes that reach here are exactly the ones `opener:allow-default-urls`
-  // permits (http, https, mailto, tel), so the capability and the UI agree.
+  // Hand a normalized URL to the opener: `new URL(href).href` lowercases the
+  // scheme (and host) so an uppercase `HTTPS://…` matches the opener's
+  // lowercase, case-sensitive scope glob. The schemes that reach here are
+  // exactly the ones `opener:allow-default-urls` permits.
   const external =
-    route === "external" && href !== undefined ? href : undefined;
+    route === "external" && href !== undefined ? new URL(href).href : undefined;
 
   return (
     <a
@@ -50,9 +52,111 @@ export function MarkdownLink({ href, children, title }: MarkdownLinkProps) {
   );
 }
 
+// --- Heading ids (Decision 2) ---------------------------------------------
+// Shared markdown components render every h1-h6 with a stable, deduplicated id
+// so `[Jump](#introduction)` scrolls to `# Introduction`. Scoped per rendered
+// document; raw HTML stays disabled.
+
+function slugifyHeading(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^\w-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "heading";
+}
+
+function textFromChildren(children: ReactNode): string {
+  if (children == null || typeof children === "boolean") return "";
+  if (typeof children === "string" || typeof children === "number")
+    return String(children);
+  if (Array.isArray(children)) return children.map(textFromChildren).join("");
+  if (typeof children === "object" && "props" in children) {
+    return textFromChildren(
+      (children as { props?: { children?: ReactNode } }).props?.children,
+    );
+  }
+  return "";
+}
+
+// Per-document dedup state. Reset when a new render pass begins (detected by
+// an offset that moves backwards) or when all headings have unmounted.
+const seenSlugs = new Map<string, number>();
+let lastOffset = -1;
+let mountCount = 0;
+
+function allocHeadingId(text: string, offset: number): string {
+  if (offset < lastOffset) {
+    seenSlugs.clear();
+  }
+  lastOffset = Math.max(lastOffset, offset);
+
+  const base = slugifyHeading(text);
+  const count = seenSlugs.get(base) ?? 0;
+  seenSlugs.set(base, count + 1);
+  return count === 0 ? base : `${base}-${count}`;
+}
+
+function makeHeading(tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+  function Heading(
+    props: HTMLAttributes<HTMLHeadingElement> & {
+      node?: { position?: { start?: { offset?: number } } };
+      children?: ReactNode;
+    },
+  ) {
+    const { children, node, ...rest } = props;
+    const offset = node?.position?.start?.offset ?? 0;
+    const id = allocHeadingId(textFromChildren(children), offset);
+
+    // Track mounts so the per-document state can be released for client renders.
+    const mounted = useRef(false);
+    useEffect(() => {
+      if (!mounted.current) {
+        if (mountCount === 0) seenSlugs.clear();
+        mountCount += 1;
+        mounted.current = true;
+      }
+      return () => {
+        if (mounted.current) {
+          mountCount = Math.max(0, mountCount - 1);
+          mounted.current = false;
+          if (mountCount === 0) {
+            seenSlugs.clear();
+            lastOffset = -1;
+          }
+        }
+      };
+    }, []);
+
+    return createElement(tag, { ...rest, id }, children);
+  }
+  Heading.displayName = tag;
+  return Heading;
+}
+
+const h1 = makeHeading("h1");
+const h2 = makeHeading("h2");
+const h3 = makeHeading("h3");
+const h4 = makeHeading("h4");
+const h5 = makeHeading("h5");
+const h6 = makeHeading("h6");
+
 /**
  * Shared `components` for every `ReactMarkdown` in the app: a preview can no
  * longer render markdown without the link rule, because there is one object to
  * pass rather than one behaviour to remember.
  */
-export const markdownComponents: Components = { a: MarkdownLink };
+export const markdownComponents: Components = {
+  a: MarkdownLink,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+};
+
+// Re-export the URL transform under the names callers/tests may use.
+export { markdownUrlTransform, urlTransform } from "../lib/links.ts";

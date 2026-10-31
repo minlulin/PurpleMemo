@@ -20,7 +20,7 @@ import {
   IconFolder,
   IconPin,
 } from "./icons.tsx";
-import { markdownComponents } from "./MarkdownLink.tsx";
+import { markdownComponents, markdownUrlTransform } from "./MarkdownLink.tsx";
 import { useToast } from "./Toast.tsx";
 import { useLocale, usePlural, useT } from "./useTranslation.ts";
 
@@ -209,7 +209,10 @@ export function NoteReaderDialog({
         {note.content.trim().length === 0 ? (
           <p className="empty-state">{t("notes.previewEmpty")}</p>
         ) : (
-          <ReactMarkdown components={markdownComponents}>
+          <ReactMarkdown
+            components={markdownComponents}
+            urlTransform={markdownUrlTransform}
+          >
             {note.content}
           </ReactMarkdown>
         )}

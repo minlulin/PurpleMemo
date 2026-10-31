@@ -10,7 +10,10 @@ import {
   IconChevronRight,
   IconJournal,
 } from "../components/icons.tsx";
-import { markdownComponents } from "../components/MarkdownLink.tsx";
+import {
+  markdownComponents,
+  markdownUrlTransform,
+} from "../components/MarkdownLink.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { journalRepo, settingsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -482,7 +485,10 @@ export default function JournalPage({
                 {content.trim().length === 0 ? (
                   <p className="empty-state">Live preview appears here.</p>
                 ) : (
-                  <ReactMarkdown components={markdownComponents}>
+                  <ReactMarkdown
+                    components={markdownComponents}
+                    urlTransform={markdownUrlTransform}
+                  >
                     {content}
                   </ReactMarkdown>
                 )}
