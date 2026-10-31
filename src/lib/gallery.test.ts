@@ -15,7 +15,9 @@ import {
   createGalleryRepo,
   createThumbUrlBook,
   deleteLinkedEntity,
+  isPhotoCleanupPending,
   isUniqueViolation,
+  PhotoCleanupPendingError,
   photoExtFromName,
 } from "./gallery.ts";
 import { createMemoriesRepo } from "./memories.ts";
@@ -397,6 +399,84 @@ test("isUniqueViolation recognises a uniqueness failure and nothing else", () =>
   assert.ok(!isUniqueViolation(new Error("database is locked")));
   assert.ok(!isUniqueViolation(undefined));
   assert.ok(!isUniqueViolation(null));
+});
+
+test("isPhotoCleanupPending separates pending cleanup from every other outcome", () => {
+  // The distinction the UI relies on (M2): a completed delete throws
+  // nothing, a refusal that changed nothing is a plain Error, and only the
+  // typed error means "row gone, file still on disk".
+  const pending = new PhotoCleanupPendingError(
+    4,
+    `photos/2026/10/${"a".repeat(64)}.jpg`,
+    new Error("permission denied"),
+  );
+  assert.ok(isPhotoCleanupPending(pending));
+  assert.equal(pending.photoId, 4);
+  assert.equal(pending.relPath, `photos/2026/10/${"a".repeat(64)}.jpg`);
+  assert.match(pending.message, /cleanup pending/);
+  assert.match(
+    pending.message,
+    /permission denied/,
+    "the driver's reason is kept",
+  );
+  // Look-alikes must not pass: the state is the error object, not the wording.
+  assert.ok(!isPhotoCleanupPending(new Error("cleanup pending")));
+  assert.ok(
+    !isPhotoCleanupPending(
+      new Error("This photo is held by an item in Trash."),
+    ),
+  );
+  assert.ok(!isPhotoCleanupPending({ message: "cleanup pending" }));
+  assert.ok(!isPhotoCleanupPending(undefined));
+  assert.ok(!isPhotoCleanupPending(null));
+});
+
+test("deletePhoto commits the pending record with the row and never clears it on failure (M2)", async () => {
+  // Row deletion and cleanup record in ONE batch: separate commits would
+  // leave a crash window that recreates the orphan this fix prevents.
+  const relPath = `photos/2026/10/${"b".repeat(64)}.jpg`;
+  const driver = createMockDriver({
+    results: [
+      [], // sweep: nothing pending yet
+      [{ id: 1, rel_path: relPath }], // getPhoto: the row exists
+      [], // held by Trash: nobody
+    ],
+  });
+  driver.deletePhoto = async () => {
+    throw new Error("delete failed: permission denied");
+  };
+  const gallery = createGalleryRepo(driver);
+
+  await assert.rejects(gallery.deletePhoto(1), (e: unknown) => {
+    assert.ok(
+      isPhotoCleanupPending(e),
+      "a failed unlink is pending cleanup, not a success and not a plain error",
+    );
+    assert.equal((e as PhotoCleanupPendingError).relPath, relPath);
+    return true;
+  });
+
+  const sweep = driver.callsTo("query")[0];
+  assert.match(sweep?.args[0] as string, /FROM settings WHERE key LIKE/);
+
+  const statements = first(driver.callsTo("batch"), "deletePhoto")
+    .args[0] as BatchStatement[];
+  assert.equal(statements.length, 2, "row and record commit atomically");
+  assert.match(statements[0]?.sql ?? "", /DELETE FROM photos WHERE id = \?/);
+  assert.match(statements[1]?.sql ?? "", /INSERT INTO settings/);
+  assert.deepEqual(statements[1]?.params, [
+    `gallery.pendingPhotoFile.1.${relPath}`,
+    relPath,
+  ]);
+
+  const clears = driver
+    .callsTo("execute")
+    .filter((c) => /DELETE FROM settings/.test(c.args[0] as string));
+  assert.equal(
+    clears.length,
+    0,
+    "the record outlives the failure — it is cleared only after a real unlink",
+  );
 });
 
 test("addRef: a link that already exists is a no-op, other failures still throw", async () => {

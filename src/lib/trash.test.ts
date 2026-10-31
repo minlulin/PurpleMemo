@@ -9,7 +9,7 @@ import type {
   Queryable,
 } from "../data/driver.ts";
 import { gatedQueryDriver, tick } from "../test-utils.ts";
-import { createGalleryRepo } from "./gallery.ts";
+import { createGalleryRepo, isPhotoCleanupPending } from "./gallery.ts";
 import {
   createTrashRepo,
   TRASH_MAX_ITEMS,
@@ -69,6 +69,7 @@ CREATE TABLE trash_items (
   snapshot TEXT NOT NULL, deleted_at TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
 const OFF_SHARE = {
@@ -686,6 +687,66 @@ test("Gallery cannot delete a photo retained by a Trash snapshot", async () => {
     1,
   );
   assert.deepEqual(driver.deletedFiles, []);
+});
+
+test("a failed file delete leaves a durable record the next delete completes (M2)", async () => {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  db.prepare(
+    "INSERT INTO photos VALUES (1, 'photos/m2.jpg', 'hash', 'jpg', 3, NULL, '', '2026-01-01')",
+  ).run();
+  // The unlink fails exactly once — the finding's permission-denied case.
+  let failNext = true;
+  const unlink = driver.deletePhoto.bind(driver);
+  driver.deletePhoto = async (path) => {
+    if (failNext) {
+      failNext = false;
+      throw new Error(`delete ${path}: permission denied`);
+    }
+    await unlink(path);
+  };
+  const gallery = createGalleryRepo(driver);
+
+  await assert.rejects(gallery.deletePhoto(1), (e: unknown) => {
+    assert.ok(
+      isPhotoCleanupPending(e),
+      "the failure is reported as pending cleanup — never as success",
+    );
+    assert.match((e as Error).message, /cleanup pending/);
+    return true;
+  });
+
+  // The state that must survive: row deleted, file pending, record durable.
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM photos WHERE id = 1").get()?.n,
+    0,
+    "the row deletion committed",
+  );
+  const record = db.prepare("SELECT key, value FROM settings").get() as {
+    key: string;
+    value: string;
+  };
+  assert.equal(record.value, "photos/m2.jpg", "the record names the file");
+  assert.match(
+    record.key,
+    /^gallery\.pendingPhotoFile\.1\./,
+    "keyed by the photo id a retry uses",
+  );
+  assert.deepEqual(driver.deletedFiles, [], "the file is still on disk");
+
+  // The retry finishes the physical deletion instead of no-op'ing on the
+  // missing row — that no-op was the finding's false success.
+  await gallery.deletePhoto(1);
+  assert.deepEqual(driver.deletedFiles, ["photos/m2.jpg"]);
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM settings").get()?.n,
+    0,
+    "the record is cleared only once the file is gone",
+  );
+
+  // Now the delete genuinely is done: a further call changes nothing.
+  await gallery.deletePhoto(1);
+  assert.deepEqual(driver.deletedFiles, ["photos/m2.jpg"]);
 });
 
 test("retention removes expired entries and bounds the remaining Trash", async () => {

@@ -27,6 +27,104 @@ export function isUniqueViolation(error: unknown): boolean {
   );
 }
 
+/**
+ * Durable photo-cleanup records live in `settings` — the schema's existing
+ * key/value table, exported with every backup — under a prefix no setting
+ * uses (M2).
+ *
+ * A key carries BOTH the photo id and the file it names:
+ * `gallery.pendingPhotoFile.<id>.<rel_path>`, with the rel_path repeated as
+ * the value so a sweeper never parses the key. The id is what lets a retry
+ * find "its own" pending work; the path inside the key is what keeps a record
+ * for a RECYCLED rowid distinct — SQLite hands a freed id to the next insert,
+ * so an id-only key would be overwritten by the next photo that inherits the
+ * number, orphaning the first file forever.
+ *
+ * The prefix contains no LIKE wildcards (`_`, `%`), so
+ * `key LIKE '<prefix>%'` matches cleanup records and nothing else.
+ */
+const PENDING_CLEANUP_PREFIX = "gallery.pendingPhotoFile.";
+
+/**
+ * "The row is gone; the file cleanup is still pending" (M2).
+ *
+ * `deletePhoto` commits the row deletion together with a record naming the
+ * file, then unlinks. When the unlink fails, both stand: the row cannot come
+ * back, and the record is the only thing that still points at the bytes on
+ * disk. This error is what that state surfaces as — thrown rather than
+ * resolved, so no caller (and no UI) can mistake "cleanup pending" for
+ * "photo deleted". The next `deletePhoto` for that photo finds the record,
+ * finishes the unlink and clears it.
+ *
+ * `photoId` and `relPath` are public so a caller can render the specifics;
+ * the driver's own failure rides along as `cause`.
+ */
+export class PhotoCleanupPendingError extends Error {
+  readonly photoId: number;
+  readonly relPath: string;
+
+  constructor(photoId: number, relPath: string, cause: unknown) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Photo #${photoId} is already gone from Gallery, but its file (${relPath}) is still on disk — cleanup pending: ${reason}. Deleting it again finishes the job.`,
+      { cause },
+    );
+    this.name = "PhotoCleanupPendingError";
+    this.photoId = photoId;
+    this.relPath = relPath;
+  }
+}
+
+/**
+ * Is this the "row gone, file cleanup pending" state (M2)?
+ *
+ * A completed delete throws nothing, and a refusal that changed nothing (a
+ * photo held by Trash) is a plain `Error` — only the typed error passes. The
+ * check is `instanceof`, not a message match: this error is created in this
+ * realm and never crosses IPC, and a structural match would let any message
+ * reading "cleanup pending" masquerade as the state.
+ */
+export function isPhotoCleanupPending(
+  error: unknown,
+): error is PhotoCleanupPendingError {
+  return error instanceof PhotoCleanupPendingError;
+}
+
+/** The durable record's key for one photo's pending file. */
+function pendingCleanupKey(photoId: number, relPath: string): string {
+  return `${PENDING_CLEANUP_PREFIX}${photoId}.${relPath}`;
+}
+
+/** The photo a cleanup record belongs to (`NaN` for a key that is not ours). */
+function pendingCleanupId(key: string): number {
+  const rest = key.slice(PENDING_CLEANUP_PREFIX.length);
+  return Number(rest.slice(0, rest.indexOf(".")));
+}
+
+/**
+ * Unlink one pending file, then drop its record — never the other way round.
+ *
+ * Clearing the record only after the driver confirms the unlink is what makes
+ * the state durable: every failure, and a crash in between, leaves the record
+ * for the next call to find. `photo_delete` treats an already-absent file as
+ * success, so a record whose file went away out-of-band clears cleanly
+ * instead of wedging forever.
+ */
+async function finishPhotoCleanup(
+  driver: DataDriver,
+  photoId: number,
+  relPath: string,
+): Promise<void> {
+  try {
+    await driver.deletePhoto(relPath);
+  } catch (cause) {
+    throw new PhotoCleanupPendingError(photoId, relPath, cause);
+  }
+  await driver.execute("DELETE FROM settings WHERE key = ?", [
+    pendingCleanupKey(photoId, relPath),
+  ]);
+}
+
 export interface SavePhotoInput {
   bytes: Uint8Array;
   ext: string;
@@ -312,10 +410,58 @@ export function createGalleryRepo(driver: DataDriver) {
       await driver.savePhotoThumb(photo.rel_path, bytes);
     },
 
-    /** Delete the row + the file (idempotent file delete). */
+    /**
+     * Delete the row + the file, losing track of neither when the file cannot
+     * go (M2).
+     *
+     * The old order was row-commit-then-unlink with nothing bridging them: a
+     * failed unlink (a permissions error, a locked file) left the photo
+     * invisible in Gallery while its bytes stayed on disk, and the next call
+     * hit `if (!photo) return` — resolving as a success for a file that would
+     * never be deleted. Now the row deletion and a record naming the file
+     * commit in ONE batch, so the database ends up in exactly one of "photo +
+     * no record" / "no photo + record"; the record is cleared only after a
+     * confirmed unlink; and every call starts by finishing whatever cleanup is
+     * still pending instead of trusting a missing row to mean "done".
+     *
+     * Records for OTHER photos are completed best-effort: once the grid
+     * reloads without a photo, its id is never asked for again, so this sweep
+     * is the only ordinary path that can still reach that file. A failure
+     * there stays recorded for the next call and never blocks the delete in
+     * progress. This photo's OWN record, though, throws as soon as no row
+     * remains for it — a retry can never no-op its way past pending cleanup.
+     */
     async deletePhoto(id: number): Promise<void> {
+      const pending = await driver.query<{ key: string; value: string }>(
+        "SELECT key, value FROM settings WHERE key LIKE ?",
+        [`${PENDING_CLEANUP_PREFIX}%`],
+      );
+      let ownPending: PhotoCleanupPendingError | undefined;
+      for (const record of pending) {
+        try {
+          await finishPhotoCleanup(
+            driver,
+            pendingCleanupId(record.key),
+            record.value,
+          );
+        } catch (e) {
+          if (
+            e instanceof PhotoCleanupPendingError &&
+            pendingCleanupId(record.key) === id
+          ) {
+            ownPending ??= e;
+          }
+        }
+      }
+
       const photo = await this.getPhoto(id);
-      if (!photo) return;
+      if (!photo) {
+        // Nothing left to delete: either the delete already finished (its
+        // record is gone too) or its own cleanup is what this retry must
+        // complete — never a silent success while a record for it stands.
+        if (ownPending) throw ownPending;
+        return;
+      }
       const heldByTrash = await driver.query<{ id: number }>(
         `SELECT trash_items.id
          FROM trash_items, json_each(trash_items.snapshot, '$.photoRefs') AS ref
@@ -330,8 +476,13 @@ export function createGalleryRepo(driver: DataDriver) {
       }
       await driver.batch([
         { sql: "DELETE FROM photos WHERE id = ?", params: [id] },
+        {
+          sql: `INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          params: [pendingCleanupKey(id, photo.rel_path), photo.rel_path],
+        },
       ]);
-      await driver.deletePhoto(photo.rel_path);
+      await finishPhotoCleanup(driver, id, photo.rel_path);
     },
 
     // -- Photo links ------------------------------------------------------
