@@ -206,6 +206,16 @@ export function createNotesRepo(
       );
     },
 
+    /**
+     * Create a collection.
+     *
+     * There is deliberately NO rename: `notes_fts.folder` stores a copy of this
+     * name at index time, so a bare `UPDATE collections SET name = ?` would
+     * leave every note in it findable under the old folder until each note was
+     * next edited (docs/AUDIT.md SCHEMA-05). If rename ever ships, it must run
+     * `UPDATE notes SET collection_id = collection_id WHERE collection_id = ?`
+     * in the same batch — that fires the FTS maintenance trigger.
+     */
     async createCollection(name: string): Promise<number> {
       const r = await driver.execute(
         "INSERT INTO collections (name, created_at) VALUES (?, ?)",

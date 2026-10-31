@@ -13,7 +13,7 @@
 
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { normalizeMonthDay } from "./contacts.ts";
-import { unescapeSpreadsheetCell } from "./csv.ts";
+import { cellValue, unescapeSpreadsheetCell } from "./csv.ts";
 import { isValidISODate, todayLocal } from "./dates.ts";
 import type { MessageKey } from "./i18n.ts";
 import type { ContactChannelKind } from "./types.ts";
@@ -74,19 +74,6 @@ function parseImportedBirthday(raw: string): string | null | "invalid" {
   return "invalid";
 }
 
-/** A cell value; checks optional aliases and unescapes spreadsheet formula guards. */
-function cell(
-  row: Record<string, string>,
-  name: string,
-  aliases: string[] = [],
-): string {
-  if (row[name] !== undefined) return unescapeSpreadsheetCell(row[name]);
-  for (const alias of aliases) {
-    if (row[alias] !== undefined) return unescapeSpreadsheetCell(row[alias]);
-  }
-  return "";
-}
-
 /**
  * Split a `;` list into trimmed, formula-unescaped, non-empty values. Trimming
  * is what makes `"555-0100; 555-0101"` two usable numbers instead of one with a
@@ -145,13 +132,13 @@ export function mapContactRows(
   rows.forEach((row, index) => {
     const rowNumber = index + 1;
 
-    const name = cell(row, "name").trim();
+    const name = cellValue(row, "name").trim();
     if (name === "") {
       errors.push({ row: rowNumber, reason: "import.reason.nameRequired" });
       return;
     }
 
-    const birthday = parseImportedBirthday(cell(row, "birthday"));
+    const birthday = parseImportedBirthday(cellValue(row, "birthday"));
     if (birthday === "invalid") {
       errors.push({
         row: rowNumber,
@@ -162,15 +149,15 @@ export function mapContactRows(
 
     valid.push({
       name,
-      address: cell(row, "address"),
+      address: cellValue(row, "address"),
       birthday,
-      notes: cell(row, "notes", ["note"]),
+      notes: cellValue(row, "notes", ["note"]),
       channels: channelsOf(
-        cell(row, "phones", ["phone"]),
-        cell(row, "emails", ["email"]),
-        cell(row, "others", ["other"]),
+        cellValue(row, "phones", ["phone"]),
+        cellValue(row, "emails", ["email"]),
+        cellValue(row, "others", ["other"]),
       ),
-      tags: tagsOf(cell(row, "tags", ["tag"])),
+      tags: tagsOf(cellValue(row, "tags", ["tag"])),
     });
   });
 

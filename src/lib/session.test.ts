@@ -412,11 +412,16 @@ function reminderTick(over: Partial<ReminderTickPorts> = {}) {
   const ports: ReminderTickPorts = {
     now: () => "2026-10-16T09:00",
     due: async () => [],
-    markFired: async (id) => {
-      events.push(`fired:${id}`);
-    },
-    reschedule: async (id, at) => {
-      events.push(`rescheduled:${id}:${at}`);
+    // One settle call per tick (docs/AUDIT.md PERF-08); the events keep the
+    // same per-reminder names the old per-row ports pushed.
+    settle: async (outcomes) => {
+      for (const o of outcomes) {
+        events.push(
+          o.nextRemindAt === null
+            ? `fired:${o.id}`
+            : `rescheduled:${o.id}:${o.nextRemindAt}`,
+        );
+      }
     },
     requestPermission: async () => true,
     // Default ON so the earlier expectations below (the per-reminder
@@ -641,8 +646,8 @@ test("the ticker does not signal a re-read once the shell locked mid-write", asy
   let cancelled = false;
   const { tick, events } = reminderTick({
     due: async () => [reminderRow()],
-    markFired: async (id) => {
-      events.push(`fired:${id}`);
+    settle: async (outcomes) => {
+      for (const o of outcomes) events.push(`fired:${o.id}`);
       cancelled = true; // the lock lands while this write is in flight
     },
     onFired: () => {
@@ -767,4 +772,33 @@ test("a preview read that throws falls back to the private text", async () => {
   assert.deepEqual(sent, [
     { title: "Reminder due", body: "Open Purple Memo to see the reminder." },
   ]);
+});
+
+// docs/AUDIT.md PERF-08: one settle call per tick, whatever the due count.
+test("the reminder ticker settles every due reminder in one call", async () => {
+  const calls: { id: number; nextRemindAt: string | null }[][] = [];
+  const reminders = [
+    { ...reminderRow(), id: 1 },
+    { ...reminderRow(), id: 2, repeat: "daily" as const },
+    { ...reminderRow(), id: 3 },
+  ];
+  const { tick } = reminderTick({
+    due: async () => reminders,
+    settle: async (outcomes) => {
+      calls.push(outcomes);
+    },
+  });
+  await tick();
+  assert.equal(calls.length, 1, "one batch, not one write per reminder");
+  assert.deepEqual(
+    calls[0]?.map((o) => o.id),
+    [1, 2, 3],
+  );
+  assert.equal(calls[0]?.[0]?.nextRemindAt, null, "one-shot -> fired");
+  assert.match(
+    String(calls[0]?.[1]?.nextRemindAt),
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/,
+    "repeating -> re-armed",
+  );
+  assert.equal(calls[0]?.[2]?.nextRemindAt, null);
 });

@@ -6,6 +6,7 @@
 // password is set.
 
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
+import { mapConcurrent } from "./concurrency.ts";
 import {
   decryptWithKey,
   deriveVaultKey,
@@ -15,10 +16,26 @@ import {
 } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
 import { errText } from "./errors.ts";
+import {
+  createSettingsRepo,
+  SETTING_KEYS,
+  settingsUpsertStatement,
+} from "./settings.ts";
 import type { VaultItemRow } from "./types.ts";
 
-/** Settings marker — its presence means the vault password has been set up. */
-export const VAULT_SETUP_KEY = "vault_setup";
+/**
+ * How many vault items `changePassword` re-encrypts at once. Items are few and
+ * each holds its plaintext in memory while in flight, so this stays small
+ * (docs/AUDIT.md PERF-13).
+ */
+const VAULT_REENCRYPT_CONCURRENCY = 4;
+
+/**
+ * Settings marker — its presence means the vault password has been set up.
+ * The key name itself lives in `SETTING_KEYS` (docs/AUDIT.md DUP-06); this
+ * alias keeps the name the rest of the app and the tests already use.
+ */
+export const VAULT_SETUP_KEY = SETTING_KEYS.vaultSetup;
 
 /**
  * Settings key holding a verifier: a known string encrypted under the vault
@@ -27,7 +44,7 @@ export const VAULT_SETUP_KEY = "vault_setup";
  * any password — and the user's first secret would end up encrypted under a
  * password they never chose.
  */
-export const VAULT_VERIFY_KEY = "vault_verify";
+export const VAULT_VERIFY_KEY = SETTING_KEYS.vaultVerify;
 
 /**
  * Thrown when the supplied password demonstrably failed to open the vault —
@@ -105,22 +122,14 @@ async function verifierSeal(password: string): Promise<BatchStatement> {
     iv: cipher.iv,
     ciphertext: cipher.ciphertext,
   };
-  return {
-    sql: `INSERT INTO settings (key, value) VALUES (?, ?)
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    params: [VAULT_VERIFY_KEY, JSON.stringify(verifier)],
-  };
+  return settingsUpsertStatement(VAULT_VERIFY_KEY, JSON.stringify(verifier));
 }
 
 async function checkVerifier(
   driver: DataDriver,
   password: string,
 ): Promise<boolean> {
-  const rows = await driver.query<{ value: string }>(
-    "SELECT value FROM settings WHERE key = ?",
-    [VAULT_VERIFY_KEY],
-  );
-  const raw = rows[0]?.value;
+  const raw = await createSettingsRepo(driver).getRaw(VAULT_VERIFY_KEY);
   if (!raw) return false; // nothing stored — nothing to check
   let verifier: VaultVerifier;
   try {
@@ -218,11 +227,11 @@ export function createVaultRepo(driver: DataDriver) {
 
   return {
     async isSetUp(): Promise<boolean> {
-      const rows = await driver.query<{ key: string }>(
-        "SELECT key FROM settings WHERE key = ?",
-        [VAULT_SETUP_KEY],
+      // `settings.value` is NOT NULL, so a present row always has a value —
+      // `undefined` means "no row" (docs/AUDIT.md SCHEMA-04 for the flag).
+      return (
+        (await createSettingsRepo(driver).getRaw(VAULT_SETUP_KEY)) !== undefined
       );
-      return rows.length > 0;
     },
 
     /**
@@ -273,11 +282,8 @@ export function createVaultRepo(driver: DataDriver) {
       // waving it through — otherwise the first secret would be encrypted
       // under a password the user never chose.
       if (await checkVerifier(driver, password)) return;
-      const marker = await driver.query<{ key: string }>(
-        "SELECT key FROM settings WHERE key = ?",
-        [VAULT_SETUP_KEY],
-      );
-      if (marker[0]) {
+      const marker = await createSettingsRepo(driver).getRaw(VAULT_SETUP_KEY);
+      if (marker !== undefined) {
         throw new WrongPasswordError();
       }
     },
@@ -412,23 +418,32 @@ export function createVaultRepo(driver: DataDriver) {
         iv: string;
         key: CryptoKey;
       }[] = [];
-      for (const item of items) {
-        const { key } = await deriveItemKey(item.id, oldPassword);
-        const plaintext = await decryptItem(key, {
-          ciphertext: item.ciphertext,
-          iv: item.iv,
-        });
-        const salt = randomSaltB64();
-        const newKey = await deriveVaultKey(newPassword, salt);
-        const cipher = await encryptWithKey(newKey, plaintext);
-        migrated.push({
-          id: item.id,
-          ciphertext: cipher.ciphertext,
-          salt,
-          iv: cipher.iv,
-          key: newKey,
-        });
-      }
+      // Re-encrypt a few items at a time. Every item costs two ~600k-iteration
+      // PBKDF2 derivations that run off-thread, so awaiting them one by one
+      // left the CPU idle between items (docs/AUDIT.md PERF-13). The pool is
+      // deliberately small: each in-flight item holds its plaintext.
+      const results = await mapConcurrent(
+        items,
+        VAULT_REENCRYPT_CONCURRENCY,
+        async (item) => {
+          const { key } = await deriveItemKey(item.id, oldPassword);
+          const plaintext = await decryptItem(key, {
+            ciphertext: item.ciphertext,
+            iv: item.iv,
+          });
+          const salt = randomSaltB64();
+          const newKey = await deriveVaultKey(newPassword, salt);
+          const cipher = await encryptWithKey(newKey, plaintext);
+          return {
+            id: item.id,
+            ciphertext: cipher.ciphertext,
+            salt,
+            iv: cipher.iv,
+            key: newKey,
+          };
+        },
+      );
+      migrated.push(...results);
       // Items AND the re-sealed verifier in ONE batch: a later unlock proves
       // against the NEW password, and there is no window in which the items
       // have moved to the new password but the verifier still expects the old

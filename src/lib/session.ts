@@ -12,7 +12,7 @@
 // invisible when it breaks: a lock that leaves the phone link up, a poll that
 // notifies over the lock screen, a note that repeats on every tick.
 
-import { nextReminderAt } from "./tasks.ts";
+import { nextReminderAt, type ReminderOutcome } from "./tasks.ts";
 import type { ReminderRow } from "./types.ts";
 
 /** What locking has to do, injected so a test can watch it happen. */
@@ -274,8 +274,13 @@ export interface ReminderTickPorts {
   /** Local datetime (`yyyy-mm-ddTHH:mm`), injected so tests own the clock. */
   now: () => string;
   due: (now: string) => Promise<ReminderRow[]>;
-  markFired: (id: number) => Promise<void>;
-  reschedule: (id: number, remindAt: string) => Promise<void>;
+  /**
+   * Settle every due reminder of this tick. One call per tick, not one per
+   * reminder: the ticker used to await `markFired` / `reschedule` in a loop,
+   * which after a wake from sleep meant a burst of writes for rows that were
+   * all already decided (docs/AUDIT.md PERF-08).
+   */
+  settle: (outcomes: ReminderOutcome[]) => Promise<void>;
   /**
    * Ask the OS for notification permission; false when denied. Called again on
    * each tick while permission is not granted (so an enablement in OS settings
@@ -402,16 +407,15 @@ export function createReminderTicker(
           );
         }
       }
-      for (const reminder of due) {
-        if (reminder.repeat === "none") {
-          await ports.markFired(reminder.id);
-        } else {
-          await ports.reschedule(
-            reminder.id,
-            nextReminderAt(reminder.remind_at, reminder.repeat, now),
-          );
-        }
-      }
+      await ports.settle(
+        due.map((reminder) => ({
+          id: reminder.id,
+          nextRemindAt:
+            reminder.repeat === "none"
+              ? null
+              : nextReminderAt(reminder.remind_at, reminder.repeat, now),
+        })),
+      );
       // After the writes, so a listener that re-reads sees the marked rows —
       // and only while the shell still stands: a lock that lands mid-loop must
       // not poke a listener from behind the lock screen.

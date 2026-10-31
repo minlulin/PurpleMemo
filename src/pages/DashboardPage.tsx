@@ -54,6 +54,7 @@ import type {
   TaskRow,
 } from "../lib/types.ts";
 import { badgeFor, SOON_DAYS, urgencyFor } from "../lib/urgency.ts";
+import { useDayRollover } from "../lib/useDayRollover.ts";
 import { useRevealWithin } from "../lib/useReveal.ts";
 
 interface DashboardPageProps {
@@ -220,12 +221,10 @@ export default function DashboardPage(p: DashboardPageProps) {
   // The shell keeps this page mounted across midnight, so nothing re-renders
   // it when the date rolls over (C2): this tick is what reloads "today at a
   // glance" — the date label, the overdue badge, the habit check-ins.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (todayLocal() !== today) void reload();
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [reload, today]);
+  useDayRollover((day) => {
+    setToday(day);
+    void reload();
+  });
 
   // -- Today actions -------------------------------------------
   // Every action calls the same repository function its source page uses —

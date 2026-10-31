@@ -156,6 +156,26 @@ export function unescapeSpreadsheetCell(raw: string): string {
 }
 
 /**
+ * One cell of a parsed record, by header name or one of its aliases.
+ *
+ * Both importers carried an identical private copy (docs/AUDIT.md DUP-01); the
+ * two CSVs share the same header-alias convention and the same spreadsheet
+ * formula guard, so the lookup belongs beside the parser. Missing columns read
+ * as an empty string — an optional column is not an error.
+ */
+export function cellValue(
+  row: Record<string, string>,
+  name: string,
+  aliases: string[] = [],
+): string {
+  if (row[name] !== undefined) return unescapeSpreadsheetCell(row[name]);
+  for (const alias of aliases) {
+    if (row[alias] !== undefined) return unescapeSpreadsheetCell(row[alias]);
+  }
+  return "";
+}
+
+/**
  * A record whose cells are all empty/whitespace — including an empty line
  * (`[""]`) and a trailing formatted spreadsheet row (`["", "", ""]`) — is not
  * a data row and is skipped.

@@ -9,6 +9,7 @@ import { first } from "../test-utils.ts";
 import {
   CsvImportError,
   cellText,
+  cellValue,
   encodeCsvTemplate,
   MAX_CSV_BYTES,
   MAX_CSV_ROWS,
@@ -267,4 +268,20 @@ test("parseCsv normalizes headerAliases and unescapeSpreadsheetCell strips only 
     ]),
     "phone: 555-0100; email: a@x",
   );
+});
+
+// docs/AUDIT.md DUP-01: both importers carried a private copy of this lookup.
+// It lives with the parser now; these are the rules both copies had to obey.
+test("cellValue reads by header or alias, and unescapes formula guards", () => {
+  // The guard is the leading apostrophe: `'+95 9 777` reads back as `+95 9 777`.
+  const row = { title: "Buy milk", "due date": "'+95 9 777" };
+  assert.equal(cellValue(row, "title"), "Buy milk");
+  assert.equal(cellValue(row, "due_date", ["due date"]), "+95 9 777");
+  // An ordinary apostrophe is data, not an escape.
+  assert.equal(cellValue({ note: "'90s hits" }, "note"), "'90s hits");
+  // A missing column reads as empty — an optional column is not an error.
+  assert.equal(cellValue(row, "note"), "");
+  assert.equal(cellValue(row, "note", ["notes"]), "");
+  // The canonical header wins over an alias when both are present.
+  assert.equal(cellValue({ a: "1", b: "2" }, "a", ["b"]), "1");
 });

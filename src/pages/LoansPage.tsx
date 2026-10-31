@@ -17,6 +17,7 @@ import {
   parseMMK,
 } from "../lib/money.ts";
 import type { LoanDirection, LoanRow, LoanState } from "../lib/types.ts";
+import { useDayRollover } from "../lib/useDayRollover.ts";
 
 type LoanListItem = LoanRow & { state: LoanState; remaining_cents: number };
 
@@ -107,12 +108,7 @@ export default function LoansPage({
   // The app keeps this page mounted across midnight (C2), so nothing re-renders
   // it when the date rolls over: this tick is what reloads the derived state —
   // overdue is computed against the day, not against the day it was loaded on.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (todayLocal() !== todayRef.current) void reload();
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [reload]);
+  useDayRollover(() => void reload());
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers a jump to the same loan
   useEffect(() => {

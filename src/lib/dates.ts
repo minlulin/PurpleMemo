@@ -108,6 +108,35 @@ export function shiftYearMonth(yearMonth: string, delta: number): string {
   return `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}`;
 }
 
+const YEAR_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+/**
+ * Half-open `[from, to)` bounds for one `yyyy-mm` bucket, for SQL range
+ * predicates over a `yyyy-mm-dd` column.
+ *
+ * `entry_date >= from AND entry_date < to` is index-friendly (`SEARCH ...
+ * USING INDEX`), while the equivalent `substr(entry_date, 1, 7) = ?` forces a
+ * full `SCAN` because no index can serve a function of the column.
+ *
+ * Malformed input returns `from === to`, which no row can satisfy — the same
+ * empty answer the old substr comparison gave, so callers need no error path.
+ */
+export function monthRange(yearMonth: string): { from: string; to: string } {
+  if (!YEAR_MONTH_RE.test(yearMonth)) return { from: yearMonth, to: yearMonth };
+  return { from: `${yearMonth}-01`, to: `${shiftYearMonth(yearMonth, 1)}-01` };
+}
+
+/**
+ * Half-open `[from, to)` bounds for one `yyyy` bucket (`from` is Jan 1 of the
+ * year, `to` is Jan 1 of the next). Same index and malformed-input contract as
+ * {@link monthRange}.
+ */
+export function yearRange(year: string): { from: string; to: string } {
+  if (!/^\d{4}$/.test(year)) return { from: year, to: year };
+  const next = String(Number(year) + 1).padStart(4, "0");
+  return { from: `${year}-01-01`, to: `${next}-01-01` };
+}
+
 /**
  * Add days to a `yyyy-mm-ddTHH:mm` local datetime, keeping the same format.
  * Invalid input returns unchanged (never throws).

@@ -25,6 +25,7 @@ import {
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
 import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
+import { useDayRollover } from "../lib/useDayRollover.ts";
 
 const WEEKDAY_HEADS = [
   "Sun",
@@ -163,13 +164,7 @@ export default function JournalPage({
 
   // D9: nothing re-renders a parked page when the date rolls over — this tick
   // moves the "today" ring without hijacking the day the user is editing.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = todayLocal();
-      if (now !== today) setToday(now);
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [today]);
+  useDayRollover((day) => setToday(day));
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusToken retriggers a jump to the same journal date
   useEffect(() => {

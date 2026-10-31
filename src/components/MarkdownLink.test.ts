@@ -43,7 +43,7 @@ test("every ReactMarkdown site wires the tel:-preserving urlTransform (M5)", () 
     );
   }
   assert.ok(
-    linkSrc.includes("export { markdownUrlTransform, urlTransform }"),
+    linkSrc.includes("export { markdownUrlTransform }"),
     "MarkdownLink: the transform must stay re-exported for the callers",
   );
 });

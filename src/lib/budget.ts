@@ -4,11 +4,12 @@
 // Recurring payments catch up to a date with a hard cap (never an unbounded
 // loop).
 
-import type { DataDriver } from "../data/driver.ts";
-import { advanceDate, todayLocal } from "./dates.ts";
+import type { BatchStatement, DataDriver } from "../data/driver.ts";
+import { advanceDate, monthRange, todayLocal, yearRange } from "./dates.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import type {
   ExpenseCategoryRow,
+  ExpenseEntryRow,
   ExpenseLimitRow,
   IncomeCategoryRow,
   RecurringFrequency,
@@ -41,16 +42,51 @@ export interface EntryInput {
   note?: string;
 }
 
-export interface DayEntry {
-  kind: "income" | "expense";
-  id: number;
-  amount_cents: number;
-  category_id: number;
-  wallet_id: number;
-  entry_date: string;
-  note: string;
-  created_at: string;
+/** The two ledger tables. They share one column list on purpose. */
+export type LedgerKind = "income" | "expense";
+
+/** A ledger insert, ready for `driver.execute` or a `driver.batch` array. */
+export interface LedgerInsert extends BatchStatement {
+  /** amount, category, wallet, entry date, note, created_at. */
+  params: (string | number)[];
 }
+
+/**
+ * The single INSERT shape for both ledger tables.
+ *
+ * Five call sites used to spell this statement out separately (two entry
+ * creates, recurring catch-up, job payment, payable payment — docs/AUDIT.md
+ * DUP-05). A column added to one copy but not the others would silently write
+ * defaults, so all of them go through here now.
+ *
+ * `createdAt` defaults to today's local date; batch callers pass one stamp for
+ * every row they write so a multi-row catch-up cannot straddle midnight.
+ */
+export function ledgerInsertStatement(
+  kind: LedgerKind,
+  entry: EntryInput & { createdAt?: string },
+): LedgerInsert {
+  const table = kind === "income" ? "income_entries" : "expense_entries";
+  return {
+    sql: `INSERT INTO ${table} (amount_cents, category_id, wallet_id, entry_date, note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+    params: [
+      entry.amountCents,
+      entry.categoryId,
+      entry.walletId,
+      entry.entryDate,
+      entry.note ?? "",
+      entry.createdAt ?? todayLocal(),
+    ],
+  };
+}
+
+/**
+ * One day's ledger row: an `expense_entries` row (the two ledger tables share
+ * a column list) plus which side it came from. The row type now comes from
+ * `types.ts` like every other table's (docs/AUDIT.md SCHEMA-02).
+ */
+export type DayEntry = ExpenseEntryRow & { kind: LedgerKind };
 
 /**
  * One day's money in and out, aggregated rather than listed (I3).
@@ -545,34 +581,14 @@ export function createBudgetRepo(driver: DataDriver) {
 
     // -- Income / expense entries --------------------------------------
     async createIncomeEntry(input: EntryInput): Promise<number> {
-      const r = await driver.execute(
-        `INSERT INTO income_entries (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          input.amountCents,
-          input.categoryId,
-          input.walletId,
-          input.entryDate,
-          input.note ?? "",
-          todayLocal(),
-        ],
-      );
+      const stmt = ledgerInsertStatement("income", input);
+      const r = await driver.execute(stmt.sql, stmt.params);
       return r.lastInsertRowid;
     },
 
     async createExpenseEntry(input: EntryInput): Promise<number> {
-      const r = await driver.execute(
-        `INSERT INTO expense_entries (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          input.amountCents,
-          input.categoryId,
-          input.walletId,
-          input.entryDate,
-          input.note ?? "",
-          todayLocal(),
-        ],
-      );
+      const stmt = ledgerInsertStatement("expense", input);
+      const r = await driver.execute(stmt.sql, stmt.params);
       return r.lastInsertRowid;
     },
 
@@ -750,24 +766,28 @@ export function createBudgetRepo(driver: DataDriver) {
     },
 
     // -- Summaries (monthly / yearly / per-category) --------------------
+    // Range predicates (`entry_date >= from AND entry_date < to`) rather than
+    // `substr(entry_date, 1, 7) = ?`: a function of the column cannot use the
+    // date indexes, so the substr form was a full scan (docs/AUDIT.md PERF-01).
     async monthlySummary(yearMonth: string): Promise<MonthSummary> {
+      const { from, to } = monthRange(yearMonth);
       const [incomeRows, expenseRows, incomeByCat, expenseByCat] =
         await Promise.all([
           driver.query<{ total: number }>(
-            "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM income_entries WHERE substr(entry_date, 1, 7) = ?",
-            [yearMonth],
+            "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM income_entries WHERE entry_date >= ? AND entry_date < ?",
+            [from, to],
           ),
           driver.query<{ total: number }>(
-            "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM expense_entries WHERE substr(entry_date, 1, 7) = ?",
-            [yearMonth],
+            "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM expense_entries WHERE entry_date >= ? AND entry_date < ?",
+            [from, to],
           ),
           driver.query<CategoryTotal>(
-            "SELECT category_id, SUM(amount_cents) AS total_cents FROM income_entries WHERE substr(entry_date, 1, 7) = ? GROUP BY category_id",
-            [yearMonth],
+            "SELECT category_id, SUM(amount_cents) AS total_cents FROM income_entries WHERE entry_date >= ? AND entry_date < ? GROUP BY category_id",
+            [from, to],
           ),
           driver.query<CategoryTotal>(
-            "SELECT category_id, SUM(amount_cents) AS total_cents FROM expense_entries WHERE substr(entry_date, 1, 7) = ? GROUP BY category_id",
-            [yearMonth],
+            "SELECT category_id, SUM(amount_cents) AS total_cents FROM expense_entries WHERE entry_date >= ? AND entry_date < ? GROUP BY category_id",
+            [from, to],
           ),
         ]);
       return {
@@ -781,20 +801,77 @@ export function createBudgetRepo(driver: DataDriver) {
     async yearlySummary(
       year: string,
     ): Promise<{ incomeCents: number; expenseCents: number }> {
+      const { from, to } = yearRange(year);
       const [incomeRows, expenseRows] = await Promise.all([
         driver.query<{ total: number }>(
-          "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM income_entries WHERE substr(entry_date, 1, 4) = ?",
-          [year],
+          "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM income_entries WHERE entry_date >= ? AND entry_date < ?",
+          [from, to],
         ),
         driver.query<{ total: number }>(
-          "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM expense_entries WHERE substr(entry_date, 1, 4) = ?",
-          [year],
+          "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM expense_entries WHERE entry_date >= ? AND entry_date < ?",
+          [from, to],
         ),
       ]);
       return {
         incomeCents: incomeRows[0]?.total ?? 0,
         expenseCents: expenseRows[0]?.total ?? 0,
       };
+    },
+
+    /**
+     * All twelve month buckets for one year in four statements, in month order.
+     *
+     * The Year view used to call {@link monthlySummary} twelve times (48
+     * statements per render — docs/AUDIT.md PERF-04). Grouping by
+     * `substr(entry_date, 1, 7)` in the *select list* is fine: the range
+     * predicate has already narrowed the rows, so no index is bypassed.
+     */
+    async yearSummary(year: string): Promise<MonthSummary[]> {
+      const { from, to } = yearRange(year);
+      const [
+        incomeByMonth,
+        expenseByMonth,
+        incomeCatByMonth,
+        expenseCatByMonth,
+      ] = await Promise.all([
+        driver.query<{ ym: string; total: number }>(
+          "SELECT substr(entry_date, 1, 7) AS ym, COALESCE(SUM(amount_cents), 0) AS total FROM income_entries WHERE entry_date >= ? AND entry_date < ? GROUP BY ym",
+          [from, to],
+        ),
+        driver.query<{ ym: string; total: number }>(
+          "SELECT substr(entry_date, 1, 7) AS ym, COALESCE(SUM(amount_cents), 0) AS total FROM expense_entries WHERE entry_date >= ? AND entry_date < ? GROUP BY ym",
+          [from, to],
+        ),
+        driver.query<{ ym: string; category_id: number; total_cents: number }>(
+          "SELECT substr(entry_date, 1, 7) AS ym, category_id, SUM(amount_cents) AS total_cents FROM income_entries WHERE entry_date >= ? AND entry_date < ? GROUP BY ym, category_id",
+          [from, to],
+        ),
+        driver.query<{ ym: string; category_id: number; total_cents: number }>(
+          "SELECT substr(entry_date, 1, 7) AS ym, category_id, SUM(amount_cents) AS total_cents FROM expense_entries WHERE entry_date >= ? AND entry_date < ? GROUP BY ym, category_id",
+          [from, to],
+        ),
+      ]);
+      const months: MonthSummary[] = [];
+      for (let i = 1; i <= 12; i++) {
+        const ym = `${year}-${String(i).padStart(2, "0")}`;
+        months.push({
+          incomeCents: incomeByMonth.find((r) => r.ym === ym)?.total ?? 0,
+          expenseCents: expenseByMonth.find((r) => r.ym === ym)?.total ?? 0,
+          incomeByCategory: incomeCatByMonth
+            .filter((r) => r.ym === ym)
+            .map((r) => ({
+              category_id: r.category_id,
+              total_cents: r.total_cents,
+            })),
+          expenseByCategory: expenseCatByMonth
+            .filter((r) => r.ym === ym)
+            .map((r) => ({
+              category_id: r.category_id,
+              total_cents: r.total_cents,
+            })),
+        });
+      }
+      return months;
     },
 
     // -- Expense limits -------------------------------------------------
@@ -829,11 +906,12 @@ export function createBudgetRepo(driver: DataDriver) {
       limitCents: number | null;
       status: LimitStatus;
     }> {
+      const { from, to } = monthRange(yearMonth);
       const [spentRows, limit] = await Promise.all([
         driver.query<{ total: number }>(
           `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM expense_entries
-           WHERE category_id = ? AND substr(entry_date, 1, 7) = ?`,
-          [categoryId, yearMonth],
+           WHERE category_id = ? AND entry_date >= ? AND entry_date < ?`,
+          [categoryId, from, to],
         ),
         this.getLimit(categoryId),
       ]);
@@ -844,6 +922,41 @@ export function createBudgetRepo(driver: DataDriver) {
         limitCents,
         status: limitStatus(spentCents, limitCents),
       };
+    },
+
+    /**
+     * Spend + limit for every expense category in one statement.
+     *
+     * The Limits view used to call {@link limitStatusFor} once per category
+     * (2N+1 statements per render — docs/AUDIT.md PERF-03). This keeps the
+     * same numbers with a fixed cost, and reports categories with no
+     * `expense_limits` row as `limitCents: null` so the UI still lists them.
+     */
+    async limitStatuses(yearMonth: string): Promise<LimitStatusInput[]> {
+      const { from, to } = monthRange(yearMonth);
+      const rows = await driver.query<{
+        id: number;
+        limit_cents: number | null;
+        spent_cents: number;
+      }>(
+        `SELECT c.id,
+                el.limit_cents,
+                COALESCE(SUM(ee.amount_cents), 0) AS spent_cents
+           FROM expense_categories c
+           LEFT JOIN expense_limits el ON el.category_id = c.id
+           LEFT JOIN expense_entries ee
+                  ON ee.category_id = c.id
+                 AND ee.entry_date >= ?
+                 AND ee.entry_date < ?
+          GROUP BY c.id
+          ORDER BY c.sort_order, c.id`,
+        [from, to],
+      );
+      return rows.map((r) => ({
+        categoryId: r.id,
+        spentCents: r.spent_cents,
+        limitCents: r.limit_cents,
+      }));
     },
 
     // -- Recurring payments ---------------------------------------------
@@ -1003,16 +1116,14 @@ export function createBudgetRepo(driver: DataDriver) {
         const walletId = rule.wallet_id ?? fallback.walletId;
         const created = todayLocal();
         const statements = dates.map((due) => ({
-          sql: `INSERT INTO expense_entries (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-          params: [
-            rule.amount_cents,
+          ...ledgerInsertStatement("expense", {
+            amountCents: rule.amount_cents,
             categoryId,
             walletId,
-            due,
-            rule.title,
-            created,
-          ],
+            entryDate: due,
+            note: rule.title,
+            createdAt: created,
+          }),
         }));
         const lastDue = dates[dates.length - 1];
         if (lastDue === undefined) {

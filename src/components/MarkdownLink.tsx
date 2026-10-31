@@ -128,5 +128,7 @@ export const markdownComponents: Components = {
   h6,
 };
 
-// Re-export the URL transform under the names callers/tests may use.
-export { markdownUrlTransform, urlTransform } from "../lib/links.ts";
+// Re-export the URL transform the app wires into every ReactMarkdown. A second
+// name (`urlTransform`) had no caller at all and was removed — one name, one
+// behaviour (docs/AUDIT.md DEAD-01).
+export { markdownUrlTransform } from "../lib/links.ts";

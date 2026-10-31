@@ -12,7 +12,12 @@ import type {
   Queryable,
 } from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
-import { createTasksRepo, nextDueDate, nextReminderAt } from "./tasks.ts";
+import {
+  createTasksRepo,
+  nextDueDate,
+  nextReminderAt,
+  reminderSettleStatements,
+} from "./tasks.ts";
 import type { TaskRow } from "./types.ts";
 
 const OFF_SHARE = {
@@ -323,4 +328,45 @@ test("Today and Tasks complete through one repo function", () => {
       `${page} must not roll repeats on its own — the repo owns that rule`,
     );
   }
+});
+
+// docs/AUDIT.md PERF-08: the ticker settles a whole tick in one batch instead
+// of one awaited UPDATE per due reminder.
+test("reminderSettleStatements: fired vs re-armed, order preserved", () => {
+  assert.deepEqual(
+    reminderSettleStatements([
+      { id: 5, nextRemindAt: null },
+      { id: 9, nextRemindAt: "2026-10-17T09:00" },
+    ]),
+    [
+      { sql: "UPDATE reminders SET fired = 1 WHERE id = ?", params: [5] },
+      {
+        sql: "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
+        params: ["2026-10-17T09:00", 9],
+      },
+    ],
+  );
+  assert.deepEqual(reminderSettleStatements([]), []);
+});
+
+test("settleReminders writes one batch, and nothing when no reminder is due", async () => {
+  const driver = createMockDriver();
+  const tasks = createTasksRepo(driver);
+  await tasks.settleReminders([
+    { id: 1, nextRemindAt: null },
+    { id: 2, nextRemindAt: null },
+  ]);
+  assert.equal(driver.callsTo("batch").length, 1);
+  const call = driver.callsTo("batch")[0];
+  assert.ok(call);
+  const [statements] = call.args as [BatchStatement[]];
+  assert.equal(statements?.length, 2, "both rows in the same batch");
+  assert.equal(driver.callsTo("execute").length, 0, "no per-row round trip");
+
+  await tasks.settleReminders([]);
+  assert.equal(
+    driver.callsTo("batch").length,
+    1,
+    "an empty tick writes nothing",
+  );
 });

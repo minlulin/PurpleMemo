@@ -11,10 +11,12 @@ import {
   daysBetween,
   isValidISODate,
   localISODateTime,
+  monthRange,
   shiftYearMonth,
   todayLocal,
   toISODate,
   yearMonthOf,
+  yearRange,
 } from "./dates.ts";
 
 test("todayLocal returns the local date as yyyy-mm-dd", () => {
@@ -138,4 +140,56 @@ test("addDays and addMonths return impossible or malformed dates unchanged", () 
   assert.equal(addDays("2026-02-31", 1), "2026-02-31");
   assert.equal(addMonths("2026-13-45", 1), "2026-13-45");
   assert.equal(addMonths("2026-02-31", 1), "2026-02-31");
+});
+
+// Half-open range bounds exist so SQL can use the date indexes instead of
+// `substr(entry_date, 1, 7) = ?` (see docs/AUDIT.md PERF-01). The `to` bound is
+// exclusive, so a date on the last day of the month must still be `< to`.
+test("monthRange returns half-open bounds that cover the whole month", () => {
+  assert.deepEqual(monthRange("2026-01"), {
+    from: "2026-01-01",
+    to: "2026-02-01",
+  });
+  // Year rollover.
+  assert.deepEqual(monthRange("2026-12"), {
+    from: "2026-12-01",
+    to: "2027-01-01",
+  });
+  // Leap February: every real date in the month is inside the range.
+  assert.deepEqual(monthRange("2024-02"), {
+    from: "2024-02-01",
+    to: "2024-03-01",
+  });
+});
+
+test("monthRange keeps decades stable", () => {
+  assert.deepEqual(monthRange("0050-06"), {
+    from: "0050-06-01",
+    to: "0050-07-01",
+  });
+});
+
+test("monthRange returns an empty range for malformed input", () => {
+  for (const bad of ["", "bad", "2026", "2026-6", "2026-13", "2026-00"]) {
+    const { from, to } = monthRange(bad);
+    assert.equal(from, to, `${bad} must match nothing`);
+  }
+});
+
+test("yearRange returns half-open bounds that cover the whole year", () => {
+  assert.deepEqual(yearRange("2026"), {
+    from: "2026-01-01",
+    to: "2027-01-01",
+  });
+  assert.deepEqual(yearRange("1999"), {
+    from: "1999-01-01",
+    to: "2000-01-01",
+  });
+});
+
+test("yearRange returns an empty range for malformed input", () => {
+  for (const bad of ["", "bad", "2026-01", "26", "20266"]) {
+    const { from, to } = yearRange(bad);
+    assert.equal(from, to, `${bad} must match nothing`);
+  }
 });

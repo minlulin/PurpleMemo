@@ -2,7 +2,7 @@
 // On-this-day, month feed.
 
 import type { DataDriver } from "../data/driver.ts";
-import { addDays, todayLocal } from "./dates.ts";
+import { addDays, monthRange, todayLocal } from "./dates.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { MemoryRow } from "./types.ts";
 
@@ -105,11 +105,15 @@ export function createMemoriesRepo(
       );
     },
 
-    /** Entries in the month of `yyyy-mm` (month feed). */
+    /**
+     * Entries in the month of `yyyy-mm` (month feed). Range predicate so the
+     * `memory_date` index is used instead of a scan (docs/AUDIT.md PERF-01).
+     */
     async monthFeed(yearMonth: string): Promise<MemoryRow[]> {
+      const { from, to } = monthRange(yearMonth);
       return driver.query<MemoryRow>(
-        "SELECT * FROM memories WHERE substr(memory_date, 1, 7) = ? ORDER BY memory_date",
-        [yearMonth],
+        "SELECT * FROM memories WHERE memory_date >= ? AND memory_date < ? ORDER BY memory_date",
+        [from, to],
       );
     },
   };

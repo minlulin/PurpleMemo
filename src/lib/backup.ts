@@ -28,12 +28,14 @@ import {
   openBackupContainer,
   sealBackupContainer,
 } from "./backupContainer.ts";
+import { mapConcurrent } from "./concurrency.ts";
 import { sha256HexBytes } from "./crypto.ts";
 import {
   isLinkableType,
   linkIsCanonical,
   linkIsSelfReferential,
 } from "./entityLinks.ts";
+import { digestFromPhotoPath } from "./gallery.ts";
 import { validateTrashPayload } from "./trash.ts";
 import type { LinkableEntityType } from "./types.ts";
 
@@ -110,6 +112,14 @@ export const MAX_BACKUP_ROWS = 100_000;
  */
 export const MAX_EXPORT_PHOTO_BYTES =
   MAX_BACKUP_ARCHIVE_BYTES - MAX_BACKUP_MANIFEST_BYTES;
+
+/**
+ * How many photo files the exporter pulls through IPC at once. Each read is a
+ * round trip that returns up to `MAX_BACKUP_PHOTO_BYTES`, so the pool is small
+ * on purpose — enough to overlap latency, not enough to hold the library in
+ * memory twice.
+ */
+const BACKUP_PHOTO_CONCURRENCY = 4;
 
 /** Whole mebibytes, for messages a person reads. */
 function mib(bytes: number): number {
@@ -238,10 +248,16 @@ export function exportBudget(
 export async function readBackupData(
   driver: DataDriver,
 ): Promise<{ payload: BackupPayload; photos: BackupPhotoEntry[] }> {
+  // Every table read is independent, so they all go out together instead of
+  // one round trip after another (docs/AUDIT.md PERF-06). Order is fixed by
+  // BACKUP_TABLES, not by which query answers first.
+  const tableRows = await Promise.all(
+    BACKUP_TABLES.map((table) => driver.query<Row>(`SELECT * FROM ${table}`)),
+  );
   const data: Record<string, Row[]> = {};
-  for (const table of BACKUP_TABLES) {
-    data[table] = await driver.query<Row>(`SELECT * FROM ${table}`);
-  }
+  BACKUP_TABLES.forEach((table, i) => {
+    data[table] = tableRows[i] ?? [];
+  });
   const photoRows = await driver.query<{
     rel_path: string;
     size_bytes: number;
@@ -260,13 +276,17 @@ export async function readBackupData(
       `This library holds about ${mib(budget.bytes)} MiB of photos, more than the ${mib(budget.limit)} MiB one backup can hold. Delete some photos (or export after removing the largest ones) and try again — the library was not touched.`,
     );
   }
-  const photos: BackupPhotoEntry[] = [];
-  for (const row of photoRows) {
-    photos.push({
+  // Photo bytes are bounded by `exportBudget` above, so a small pool is all
+  // the archive needs; sequential reads made a 300-photo export 300 serial
+  // round trips (docs/AUDIT.md PERF-06).
+  const photos = await mapConcurrent(
+    photoRows,
+    BACKUP_PHOTO_CONCURRENCY,
+    async (row) => ({
       path: row.rel_path,
       bytes: await driver.readPhoto(row.rel_path),
-    });
-  }
+    }),
+  );
   return {
     payload: {
       app: BACKUP_APP,
@@ -780,7 +800,12 @@ export async function applyBackup(
       // Backup metadata is untrusted; derive every content field from the
       // bytes even when the stored path already matches.
       row.rel_path = saved;
-      row.sha256 = await sha256HexBytes(entry.bytes);
+      // The path the host just built is content-addressed, so it already
+      // carries the digest; hashing the same megabytes again doubled the
+      // restore cost (docs/AUDIT.md PERF-07). Never trust the name blindly —
+      // a path that does not parse falls back to hashing the bytes.
+      row.sha256 =
+        digestFromPhotoPath(saved) ?? (await sha256HexBytes(entry.bytes));
       row.size_bytes = entry.bytes.length;
       kept.add(saved);
       photoCount++;

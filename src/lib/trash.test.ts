@@ -12,7 +12,9 @@ import { gatedQueryDriver, tick } from "../test-utils.ts";
 import { createGalleryRepo, isPhotoCleanupPending } from "./gallery.ts";
 import {
   createTrashRepo,
+  TRASH_CHILD_COLUMNS,
   TRASH_MAX_ITEMS,
+  TRASH_SNAPSHOT_COLUMNS,
   validateTrashPayload,
 } from "./trash.ts";
 
@@ -992,4 +994,63 @@ test("every trash mutator serializes on the one repo lock (J3)", () => {
     /await purge\(\);/,
     "the internal maintenance pass must call the UNLOCKED variant",
   );
+});
+
+// -- SCHEMA-01: the snapshot column lists must match the real DDL ------------
+// A trash snapshot stores exactly the columns listed in trash.ts and restore
+// re-inserts exactly those. Nothing compared them to `schema.rs`, so a
+// migration that added a column (say `notes.colour`) would restore every note
+// trashed after it without that column — silently, and only for new trash
+// items. This test is the comparison.
+
+/** Column names of one `CREATE TABLE <name> (...)` in the baseline DDL. */
+function baselineColumns(sql: string, table: string): string[] {
+  const start = sql.indexOf(`CREATE TABLE ${table} (`);
+  assert.notEqual(start, -1, `CREATE TABLE ${table} not found in schema.rs`);
+  const end = sql.indexOf("\n);", start);
+  assert.notEqual(end, -1, `unterminated CREATE TABLE ${table}`);
+  const columns: string[] = [];
+  for (const line of sql.slice(start, end).split("\n").slice(1)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("--")) continue;
+    // Table constraints start with a keyword, column definitions with a name.
+    if (/^(CHECK|PRIMARY|UNIQUE|FOREIGN|CONSTRAINT)\b/i.test(trimmed)) continue;
+    const name = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(trimmed)?.[1];
+    if (name !== undefined) columns.push(name);
+  }
+  return columns;
+}
+
+test("every trash snapshot column list matches the baseline DDL (SCHEMA-01)", () => {
+  const src = readFileSync(
+    new URL("../../src-tauri/src/schema.rs", import.meta.url),
+    "utf8",
+  );
+  const match = /pub const BASELINE_SQL: &str = r#"([\s\S]*?)"#;/.exec(src);
+  assert.ok(match?.[1], "BASELINE_SQL must be readable from schema.rs");
+  const baseline = match[1];
+
+  for (const [type, columns] of Object.entries(TRASH_SNAPSHOT_COLUMNS)) {
+    const table = {
+      note: "notes",
+      task: "tasks",
+      contact: "contacts",
+      memory: "memories",
+      journal_entry: "journal_entries",
+    }[type];
+    assert.ok(table, `unmapped trash entity type ${type}`);
+    assert.deepEqual(
+      [...columns].sort(),
+      baselineColumns(baseline, table).sort(),
+      `trash snapshots for ${type} must store every ${table} column`,
+    );
+  }
+
+  for (const [table, columns] of Object.entries(TRASH_CHILD_COLUMNS)) {
+    assert.deepEqual(
+      [...columns].sort(),
+      baselineColumns(baseline, table).sort(),
+      `trash child rows for ${table} must store every column`,
+    );
+  }
 });

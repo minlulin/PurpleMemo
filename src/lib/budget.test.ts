@@ -7,6 +7,7 @@ import { at, gatedQueryDriver, tick } from "../test-utils.ts";
 import {
   cleanName,
   createBudgetRepo,
+  ledgerInsertStatement,
   limitDisplayRows,
   limitStatus,
   monthSummaryDisplay,
@@ -292,6 +293,140 @@ test("monthlySummary keeps income/expense categories separate (ids collide)", as
   assert.deepEqual(summary.expenseByCategory, [
     { category_id: 1, total_cents: 120_000 },
   ]);
+});
+
+// docs/AUDIT.md PERF-01: `substr(entry_date, 1, 7) = ?` cannot use the date
+// index, so the month summaries filter with a half-open range instead. The
+// bounds must stay local-date strings; the sub-second 59x is in the audit.
+test("monthlySummary filters with an indexed range, not substr", async () => {
+  const driver = createMockDriver({
+    results: [[{ total: 0 }], [{ total: 0 }], [], []],
+  });
+  const budget = createBudgetRepo(driver);
+  await budget.monthlySummary("2026-10");
+  const queries = driver.callsTo("query");
+  assert.equal(queries.length, 4);
+  for (const call of queries) {
+    const [sql, params] = call.args as [string, unknown[]];
+    assert.doesNotMatch(sql, /substr\s*\(\s*entry_date/);
+    assert.match(sql, /entry_date >= \? AND entry_date < \?/);
+    assert.deepEqual(params, ["2026-10-01", "2026-11-01"]);
+  }
+});
+
+test("monthlySummary on a malformed month matches no rows", async () => {
+  const driver = createMockDriver({
+    results: [[{ total: 0 }], [{ total: 0 }], [], []],
+  });
+  const budget = createBudgetRepo(driver);
+  await budget.monthlySummary("2026-13");
+  // Empty range (from === to) rather than a scan of the whole table.
+  const [, params] = argsOf(driver, "query") as [string, unknown[]];
+  assert.equal(params[0], params[1]);
+});
+
+test("yearlySummary uses a year range, not substr", async () => {
+  const driver = createMockDriver({
+    results: [[{ total: 10 }], [{ total: 4 }]],
+  });
+  const budget = createBudgetRepo(driver);
+  const totals = await budget.yearlySummary("2026");
+  assert.deepEqual(totals, { incomeCents: 10, expenseCents: 4 });
+  const [sql, params] = argsOf(driver, "query") as [string, unknown[]];
+  assert.match(sql, /entry_date >= \? AND entry_date < \?/);
+  assert.deepEqual(params, ["2026-01-01", "2027-01-01"]);
+});
+
+// docs/AUDIT.md PERF-04: the Year view used to call monthlySummary 12 times
+// (48 statements). One grouped call now returns all twelve buckets.
+test("yearSummary returns twelve ordered buckets from four statements", async () => {
+  const driver = createMockDriver({
+    results: [
+      [
+        { ym: "2026-01", total: 100 },
+        { ym: "2026-03", total: 300 },
+      ],
+      [{ ym: "2026-03", total: 40 }],
+      [
+        { ym: "2026-01", category_id: 7, total_cents: 100 },
+        { ym: "2026-03", category_id: 8, total_cents: 300 },
+      ],
+      [{ ym: "2026-03", category_id: 2, total_cents: 40 }],
+    ],
+  });
+  const budget = createBudgetRepo(driver);
+  const months = await budget.yearSummary("2026");
+  assert.equal(months.length, 12);
+  assert.equal(driver.callsTo("query").length, 4);
+  assert.equal(months[0]?.incomeCents, 100);
+  assert.equal(months[0]?.expenseCents, 0);
+  assert.deepEqual(months[0]?.incomeByCategory, [
+    { category_id: 7, total_cents: 100 },
+  ]);
+  assert.equal(months[2]?.incomeCents, 300);
+  assert.equal(months[2]?.expenseCents, 40);
+  assert.deepEqual(months[2]?.expenseByCategory, [
+    { category_id: 2, total_cents: 40 },
+  ]);
+  // Months with no rows are zeroed, not missing.
+  assert.equal(months[11]?.incomeCents, 0);
+  assert.deepEqual(months[11]?.incomeByCategory, []);
+});
+
+// docs/AUDIT.md PERF-03: the Limits view fanned out to one statement per
+// category (2N+1 per render). One grouped statement now covers all of them.
+test("limitStatuses fetches every category in one statement", async () => {
+  const driver = createMockDriver({
+    results: [
+      [
+        { id: 1, limit_cents: 10_000, spent_cents: 9_000 },
+        { id: 2, limit_cents: null, spent_cents: 0 },
+      ],
+    ],
+  });
+  const budget = createBudgetRepo(driver);
+  const statuses = await budget.limitStatuses("2026-10");
+  assert.deepEqual(statuses, [
+    { categoryId: 1, spentCents: 9_000, limitCents: 10_000 },
+    { categoryId: 2, spentCents: 0, limitCents: null },
+  ]);
+  const calls = driver.callsTo("query");
+  assert.equal(calls.length, 1, "one statement, not 2N+1");
+  const [sql, params] = argsOf(driver, "query") as [string, unknown[]];
+  assert.match(sql, /LEFT JOIN expense_limits/);
+  assert.match(sql, /LEFT JOIN expense_entries/);
+  assert.deepEqual(params, ["2026-10-01", "2026-11-01"]);
+});
+
+// docs/AUDIT.md DUP-05: five call sites spelled out the ledger INSERT. They
+// share one builder now, so `created_at` and the column list cannot drift.
+test("ledgerInsertStatement is the one shape for both ledger tables", () => {
+  const income = ledgerInsertStatement("income", {
+    amountCents: 500,
+    categoryId: 3,
+    walletId: 4,
+    entryDate: "2026-10-20",
+    note: "job",
+    createdAt: "2026-10-21",
+  });
+  assert.match(income.sql, /INSERT INTO income_entries/);
+  assert.deepEqual(income.params, [
+    500,
+    3,
+    4,
+    "2026-10-20",
+    "job",
+    "2026-10-21",
+  ]);
+  const expense = ledgerInsertStatement("expense", {
+    amountCents: 100,
+    categoryId: 1,
+    walletId: 2,
+    entryDate: "2026-10-20",
+  });
+  assert.match(expense.sql, /INSERT INTO expense_entries/);
+  assert.equal(expense.params[4], "", "note defaults to empty, never NULL");
+  assert.match(String(expense.params[5]), /^\d{4}-\d{2}-\d{2}$/);
 });
 
 test("updateIncomeEntry writes only the provided fields", async () => {

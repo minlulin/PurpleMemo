@@ -19,6 +19,7 @@ import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import { monthLabel } from "../lib/journal.ts";
 import type { ContactRow, MemoryRow } from "../lib/types.ts";
+import { useDayRollover } from "../lib/useDayRollover.ts";
 
 type MemoryView = "upcoming" | "onthisday" | "month" | "all";
 
@@ -239,12 +240,7 @@ export default function MemoriesPage({
   // date, and nothing re-renders a parked page when the date rolls over (C2):
   // this tick reloads the moment the local day changes, instead of showing
   // yesterday's lists until the user happens to tap something.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (todayLocal() !== todayRef.current) void reload();
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [reload]);
+  useDayRollover(() => void reload());
 
   // The current list for the focus effect's existence check, kept up to date
   // so that effect can be keyed on the arrival signals alone (C4).

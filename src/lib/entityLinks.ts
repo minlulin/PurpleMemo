@@ -30,9 +30,6 @@ import type {
 
 export const LINKABLE_TYPES: LinkableEntityType[] = ["note", "task", "contact"];
 
-/** Kinds a relationship can have. V1 has exactly one. */
-export const LINK_KINDS = ["related"] as const;
-
 /**
  * The table each entity type lives in — a closed, code-owned map.
  *
@@ -159,19 +156,6 @@ export function deleteEntityLinks(entity: LinkableEntity): BatchStatement[] {
       sql: "DELETE FROM links WHERE (type_a = ? AND id_a = ?) OR (type_b = ? AND id_b = ?)",
       params: [entity.type, entity.id, entity.type, entity.id],
     },
-  ];
-}
-
-/** Both ends of a relationship, read from one stored row. */
-export function linkEndpoints(row: {
-  type_a: LinkableEntityType;
-  id_a: number;
-  type_b: LinkableEntityType;
-  id_b: number;
-}): [LinkableEntity, LinkableEntity] {
-  return [
-    { type: row.type_a, id: row.id_a },
-    { type: row.type_b, id: row.id_b },
   ];
 }
 

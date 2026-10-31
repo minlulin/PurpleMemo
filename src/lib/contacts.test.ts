@@ -11,6 +11,7 @@ import {
   searchContacts,
   upcomingBirthday,
 } from "./contacts.ts";
+import { formatBirthday } from "./format.ts";
 import type { ContactRow } from "./types.ts";
 
 test("upcomingBirthday: within the window, same year", () => {
@@ -231,4 +232,24 @@ test("searchContacts: case-insensitive match on name/address/notes", () => {
     [1, 2],
     "blank query lists all",
   );
+});
+
+// docs/AUDIT.md DUP-02: `birthdayLabel` grew a second implementation, so the
+// Contacts list and the Memories card printed different labels for the same
+// row. It delegates to `formatBirthday` now — this pins that they agree, and
+// keeps a future "small tweak" here from forking them again.
+test("birthdayLabel and formatBirthday agree on every valid birthday", () => {
+  for (const birthday of ["1990-10-20", "10-20", "02-29", "2000-01-01"]) {
+    for (const locale of ["en", "my"] as const) {
+      assert.equal(
+        birthdayLabel(birthday, locale),
+        formatBirthday(locale, birthday),
+        `${birthday} / ${locale}`,
+      );
+    }
+  }
+  // Only unparseable input may differ: the list wants a placeholder, the
+  // formatter echoes what it was given.
+  assert.equal(birthdayLabel("13-40"), "?? 40");
+  assert.equal(formatBirthday("en", "13-40"), "13-40");
 });

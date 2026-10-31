@@ -4,6 +4,7 @@
 // job in Receivable with the remaining balance (never negative).
 
 import type { DataDriver } from "../data/driver.ts";
+import { ledgerInsertStatement } from "./budget.ts";
 import { addDays, todayLocal } from "./dates.ts";
 import { deleteLinkedEntity } from "./gallery.ts";
 import { applyPayment, formatMMK, outstandingCents } from "./money.ts";
@@ -485,18 +486,15 @@ export function createBusinessRepo(driver: DataDriver) {
         ];
         // Cash basis: the receipt is income now, in the wallet it
         // arrived in — whether or not the job is fully paid.
-        statements.push({
-          sql: `INSERT INTO income_entries (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)`,
-          params: [
-            appliedCents,
-            await this.businessCategoryId(),
-            p.walletId,
-            p.date,
-            `Job: ${job.title}`,
-            todayLocal(),
-          ],
-        });
+        statements.push(
+          ledgerInsertStatement("income", {
+            amountCents: appliedCents,
+            categoryId: await this.businessCategoryId(),
+            walletId: p.walletId,
+            entryDate: p.date,
+            note: `Job: ${job.title}`,
+          }),
+        );
         await driver.batch(statements);
         return { fullyPaid, appliedCents };
       });
@@ -628,18 +626,13 @@ export function createBusinessRepo(driver: DataDriver) {
             sql: "UPDATE payables SET paid = 1 WHERE id = ?",
             params: [p.payableId],
           },
-          {
-            sql: `INSERT INTO expense_entries (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-                  VALUES (?, ?, ?, ?, ?, ?)`,
-            params: [
-              payable.amount_cents,
-              p.categoryId,
-              p.walletId,
-              p.date,
-              payable.title,
-              todayLocal(),
-            ],
-          },
+          ledgerInsertStatement("expense", {
+            amountCents: payable.amount_cents,
+            categoryId: p.categoryId,
+            walletId: p.walletId,
+            entryDate: p.date,
+            note: payable.title,
+          }),
         ]);
       });
     },

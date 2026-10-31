@@ -1,3 +1,8 @@
+> **Historical plan — not a requirement.**
+> The work described here has shipped (see `src/`, `docs/RELEASE.md` and
+> `docs/EXPORTS.md`); this file is kept only as the record of what was
+> planned. Do not treat it as the current specification.
+
 # Purple Memo — Import Feature Tasks (dev branch)
 
 **Source:** `PurpleMemo_Import_Feature_Plan.md` (all §10 decisions settled
