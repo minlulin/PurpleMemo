@@ -54,6 +54,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((list) => list.filter((t) => t.id !== id));
   }, []);
 
+  /**
+   * One tracked timer, which unregisters itself as it fires.
+   *
+   * Both timer sites go through here, so an id only ever sits in `timers`
+   * while its timer is still pending: the array used to grow by one entry per
+   * toast (per dismiss, in fact) for the life of the provider and was only
+   * emptied on unmount (L5). Bounded now by what is actually pending, and the
+   * unmount cleanup below still clears exactly that.
+   */
+  const schedule = useCallback((run: () => void, ms: number) => {
+    const timer = window.setTimeout(() => {
+      timers.current = timers.current.filter((pending) => pending !== timer);
+      run();
+    }, ms);
+    timers.current.push(timer);
+  }, []);
+
   const dismiss = useCallback(
     (id: number) => {
       setToasts((list) =>
@@ -61,9 +78,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       );
       // Timer-driven rather than `animationend`: under reduced motion there is
       // no animation to end, and a toast must never get stuck on screen.
-      timers.current.push(window.setTimeout(() => remove(id), TOAST_EXIT_MS));
+      schedule(() => remove(id), TOAST_EXIT_MS);
     },
-    [remove],
+    [remove, schedule],
   );
 
   const push = useCallback(
@@ -73,14 +90,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       setToasts((list) =>
         [...list, { id, tone, message, leaving: false }].slice(-MAX_TOASTS),
       );
-      timers.current.push(window.setTimeout(() => dismiss(id), TOAST_MS));
+      schedule(() => dismiss(id), TOAST_MS);
     },
-    [dismiss],
+    [dismiss, schedule],
   );
 
   useEffect(
     () => () => {
       for (const timer of timers.current) window.clearTimeout(timer);
+      timers.current = [];
     },
     [],
   );
