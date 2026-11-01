@@ -314,21 +314,10 @@ export interface VaultItemRow {
 }
 
 /**
- * One `income_entries` row — the ledger's money-in side. The two ledger tables
- * have identical columns by design; they are separate tables so a category id
- * can never be read against the wrong category list.
+ * One `expense_entries` row. The two ledger tables (`income_entries` and
+ * `expense_entries`) have identical columns by design; they are separate
+ * tables so a category id can never be read against the wrong category list.
  */
-export interface IncomeEntryRow {
-  id: number;
-  amount_cents: number;
-  category_id: number;
-  wallet_id: number;
-  entry_date: string; // yyyy-mm-dd
-  note: string;
-  created_at: string;
-}
-
-/** One `expense_entries` row. Same column list as {@link IncomeEntryRow}. */
 export interface ExpenseEntryRow {
   id: number;
   amount_cents: number;
