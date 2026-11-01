@@ -1,6 +1,6 @@
 [package]
 name = "purple-memo"
-version = "0.1.0"
+version = "0.1.1"
 description = "Personal offline notebook and life/money manager"
 authors = ["minlulin"]
 edition = "2021"
