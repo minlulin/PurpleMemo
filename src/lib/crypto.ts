@@ -85,11 +85,6 @@ export async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
     .join("");
 }
 
-/** SHA-256 of a UTF-8 string -> lowercase hex. */
-export async function sha256HexText(text: string): Promise<string> {
-  return sha256HexBytes(new TextEncoder().encode(text));
-}
-
 /**
  * Cryptographically random bytes from the OS source. Exported so salt and IV
  * generation has exactly one implementation — the vault repo used to
@@ -326,12 +321,17 @@ export async function encryptBytesWithKey(
   plaintext: Uint8Array,
   additionalData?: Uint8Array,
 ): Promise<Uint8Array> {
+  const params: {
+    name: "AES-GCM";
+    iv: BufferSource;
+    additionalData?: BufferSource;
+  } = {
+    name: "AES-GCM",
+    iv: iv as BufferSource,
+  };
+  if (additionalData) params.additionalData = additionalData as BufferSource;
   const sealed = await crypto.subtle.encrypt(
-    {
-      name: "AES-GCM",
-      iv: iv as BufferSource,
-      additionalData: additionalData as BufferSource | undefined,
-    },
+    params,
     key,
     plaintext as BufferSource,
   );
@@ -365,12 +365,17 @@ export async function decryptBytesWithKey(
       `stored ciphertext is ${ciphertext.byteLength} bytes, shorter than its ${GCM_TAG_BYTES}-byte authentication tag — the stored data is corrupt`,
     );
   }
+  const params: {
+    name: "AES-GCM";
+    iv: BufferSource;
+    additionalData?: BufferSource;
+  } = {
+    name: "AES-GCM",
+    iv: iv as BufferSource,
+  };
+  if (additionalData) params.additionalData = additionalData as BufferSource;
   const opened = await crypto.subtle.decrypt(
-    {
-      name: "AES-GCM",
-      iv: iv as BufferSource,
-      additionalData: additionalData as BufferSource | undefined,
-    },
+    params,
     key,
     ciphertext as BufferSource,
   );

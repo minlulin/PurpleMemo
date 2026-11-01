@@ -41,9 +41,6 @@ export function markdownUrlTransform(value: string): string {
   return ["http", "https", "mailto", "tel"].includes(scheme) ? value : "";
 }
 
-/** Alias for callers that prefer the react-markdown prop name. */
-export const urlTransform = markdownUrlTransform;
-
 export type LinkRoute = "external" | "hash" | "blocked";
 
 /** The schemes the system can open on the app's behalf. */

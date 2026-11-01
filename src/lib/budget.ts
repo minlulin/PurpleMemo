@@ -948,8 +948,9 @@ export function createBudgetRepo(driver: DataDriver) {
                   ON ee.category_id = c.id
                  AND ee.entry_date >= ?
                  AND ee.entry_date < ?
-          GROUP BY c.id
-          ORDER BY c.sort_order, c.id`,
+           GROUP BY c.id
+           ORDER BY c.id`,
+
         [from, to],
       );
       return rows.map((r) => ({

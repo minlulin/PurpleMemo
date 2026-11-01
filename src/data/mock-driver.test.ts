@@ -127,7 +127,7 @@ test("thumbPath: always .thumb.jpg, and malformed sources are refused (D1-1)", (
     `photos/2026/10/${"a".repeat(63)}.jpg`, // wrong hash length
     `photos/2026/13/${hash}.jpg`, // month out of range
     `photos/2026/10/${hash}.tar.gz`, // multi-dot ext
-    "2026/10/" + hash + ".jpg", // no photos/ prefix
+    `2026/10/${hash}.jpg`, // no photos/ prefix
     `photos/2026/${hash}.jpg`, // missing a segment
   ]) {
     assert.throws(
