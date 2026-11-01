@@ -64,9 +64,19 @@ test("releaseAssetUrl points at the uploaded asset for that tag", () => {
     releaseAssetUrl("minlulin/PurpleMemo", "v0.2.0", "purple-memo.exe"),
     "https://github.com/minlulin/PurpleMemo/releases/download/v0.2.0/purple-memo.exe",
   );
+  // GitHub stores a space as a dot and cannot be renamed back, so the URL
+  // must use the stored name — not the `%20` form, which 404s.
   assert.equal(
     releaseAssetUrl("minlulin/PurpleMemo", "v0.2.0", "purple memo.exe"),
-    "https://github.com/minlulin/PurpleMemo/releases/download/v0.2.0/purple%20memo.exe",
+    "https://github.com/minlulin/PurpleMemo/releases/download/v0.2.0/purple.memo.exe",
+  );
+  assert.equal(
+    releaseAssetUrl(
+      "minlulin/PurpleMemo",
+      "v0.2.0",
+      "Purple Memo_0.2.0_x64-setup.exe",
+    ),
+    "https://github.com/minlulin/PurpleMemo/releases/download/v0.2.0/Purple.Memo_0.2.0_x64-setup.exe",
   );
   assert.throws(
     () => releaseAssetUrl("minlulin/PurpleMemo", "v0.2.0", ""),

@@ -90,7 +90,8 @@ npm run tauri -- signer generate -w .keys/updater.key
    ```
 
    `scripts/make-latest-json.mjs` derives the asset name from the file you
-   pass to `--asset`, so the manifest URL always matches the uploaded asset.
+   pass to `--asset` and rewrites the spaces GitHub rewrites, so the manifest
+   URL matches the asset that is actually stored (see the space gotcha below).
 
    `tauri build` does **not** write `latest.json` — upstream only generates it
    inside the GitHub Action this project does not use.
@@ -104,7 +105,8 @@ npm run tauri -- signer generate -w .keys/updater.key
      --notes-file RELEASE_NOTES.md
    ```
 
-   (The script URL-encodes the asset name, so a space in `Purple Memo` is fine.)
+   The `Purple Memo` space is handled for you: GitHub stores it as a dot, and
+   the script builds the URL from that stored name.
 
    Pick **one** installer format and stay with it: the `url` in the manifest
    and the uploaded asset must be the same file, and the `signature` must be
@@ -146,8 +148,24 @@ npm run tauri -- signer generate -w .keys/updater.key
   update the user already has.
 - **Signature mismatch** (wrong keypair, or a manifest paired with another
   build's `.sig`) fails at install time with `signature verification failed`.
+- **GitHub rewrites spaces in asset names, and the manifest must agree.**
+  Uploading `Purple Memo_0.1.1_x64-setup.exe` stores it as
+  `Purple.Memo_0.1.1_x64-setup.exe`; the API refuses to rename it back to the
+  spaced form. A manifest URL built from the on-disk name therefore 404s, the
+  updater has nothing to download, and the failure is silent from the app's
+  side. v0.1.0 and v0.1.1 both shipped that broken URL before it was caught.
+  Before trusting a release, probe the manifest's own `url`:
+
+  ```bash
+  curl -sSL https://github.com/minlulin/PurpleMemo/releases/latest/download/latest.json \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).platforms["windows-x86_64"].url))'
+  ```
+
+  and then `curl -sIL "<that url>"` — it must be 200/206, never 404.
 - **Replacing assets after publishing** invalidates anything already cached on
-  a user's machine — publish a new version instead.
+  a user's machine — publish a new version instead. (Correcting a wrong
+  `latest.json` is the exception: it is the only way to fix a release whose
+  manifest points at a URL that does not exist.)
 - The `pubkey` in `tauri.conf.json` is the public half only; there is no
   signing secret in this repository and no hosted secret store.
 - **Schema migrations are forward-only, and downgrading is unsupported.** The

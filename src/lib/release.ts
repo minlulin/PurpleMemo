@@ -48,6 +48,19 @@ export function assertVersion(version: string): void {
   }
 }
 
+/**
+ * The name GitHub actually stores an upload under. Both `gh release create`
+ * and the API replace spaces with dots and refuse to rename them back, so the
+ * on-disk name `Purple Memo_0.1.1_x64-setup.exe` is published as
+ * `Purple.Memo_0.1.1_x64-setup.exe`. A URL built from the on-disk name 404s,
+ * and the updater then has nothing to download — v0.1.0 and v0.1.1 both
+ * shipped that bug. The rewrite happens before encoding, so the `%20` form is
+ * never produced.
+ */
+export function githubAssetName(filename: string): string {
+  return filename.replace(/ /g, ".");
+}
+
 /** Direct GitHub asset URL for a tag — the URL the manifest's platforms use. */
 export function releaseAssetUrl(
   repo: string,
@@ -57,7 +70,8 @@ export function releaseAssetUrl(
   if (filename.length === 0) {
     throw new Error("an asset filename is required");
   }
-  return `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(filename)}`;
+  const asset = githubAssetName(filename);
+  return `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(asset)}`;
 }
 
 /**
