@@ -14,9 +14,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+// Tray icons and menus are desktop-only in Tauri 2 (`cfg(desktop)`), so a
+// mobile build must not name them at all.
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
+#[cfg(desktop)]
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
+// Only the desktop close-to-tray watcher reads window events.
+#[cfg(desktop)]
 use tauri::WindowEvent;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -87,18 +93,24 @@ fn retire_watchdog() {
     WATCHDOG_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // MUST stay first. A second launch is turned away before this app
-        // reaches `setup` — and therefore before `boot` — which is what keeps
-        // two copies from racing the database. That race was not cosmetic:
-        // both could reach `load_or_mint_db_key` while the database file did
-        // not yet exist, both would mint a different key, and the loser's
-        // `set_password` would overwrite the only credential-store slot with a
-        // key that cannot open the database the winner just created.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            focus_main_window(app);
-        }))
+    let builder = tauri::Builder::default();
+    // MUST stay first. A second launch is turned away before this app
+    // reaches `setup` — and therefore before `boot` — which is what keeps
+    // two copies from racing the database. That race was not cosmetic:
+    // both could reach `load_or_mint_db_key` while the database file did
+    // not yet exist, both would mint a different key, and the loser's
+    // `set_password` would overwrite the only credential-store slot with a
+    // key that cannot open the database the winner just created.
+    // Desktop only: there is no "second instance" on Android, where the OS
+    // owns app lifetime. Gated rather than removed, so the desktop order the
+    // `single_instance_is_registered_before_setup` pin protects is unchanged.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        focus_main_window(app);
+    }));
+    builder
         // Cancels any navigation away from the app's own origin;
         // external links go to the system browser instead (MarkdownLink).
         .plugin(navigation::init())
@@ -552,6 +564,7 @@ const CLOSE_TO_TRAY_KEY: &str = "close_to_tray";
 /// Show the window from, so hiding on close would strand an invisible process.
 /// If the tray cannot be built, close keeps today's behaviour (it quits) and
 /// the reason goes to stderr.
+#[cfg(desktop)]
 fn start_session_chrome(app: &tauri::AppHandle) {
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     if INSTALLED.load(Ordering::SeqCst) {
@@ -565,9 +578,15 @@ fn start_session_chrome(app: &tauri::AppHandle) {
     INSTALLED.store(true, Ordering::SeqCst);
 }
 
+/// Mobile has no tray and no close-to-tray: Android owns the app's lifetime
+/// (task switcher, back gesture), so there is no session chrome to install.
+#[cfg(mobile)]
+fn start_session_chrome(_app: &tauri::AppHandle) {}
+
 /// The tray icon: the existing app icon and exactly two menu items —
 /// "Show Purple Memo" (restore the window) and "Quit" (full exit). No new
 /// artwork, no other actions (plan §B.2.3 / §B.2.5).
+#[cfg(desktop)]
 fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
     let icon = app
         .default_window_icon()
@@ -599,6 +618,7 @@ fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
 /// Close-to-tray (plan §B.2.1): while the toggle says so, closing the main
 /// window hides it instead of destroying it, so the process — and the
 /// reminder poll with it — keeps running.
+#[cfg(desktop)]
 fn watch_close_to_tray(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
@@ -624,6 +644,7 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
 /// "on": the default is to keep the process alive, and the paths that could
 /// not read the setting are exactly the paths where quitting silently would be
 /// the worst surprise.
+#[cfg(desktop)]
 fn close_to_tray_enabled(app: &tauri::AppHandle) -> bool {
     let Some(state) = app.try_state::<db::AppState>() else {
         return true;
@@ -680,6 +701,9 @@ fn focus_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
     };
+    // `unminimize` is desktop-only; raising the window is all a mobile second
+    // launch can ask for.
+    #[cfg(desktop)]
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();

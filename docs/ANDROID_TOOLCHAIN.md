@@ -34,6 +34,69 @@ ANDROID_NDK_HOME = %LOCALAPPDATA%\Android\Sdk\ndk\27.3.13750724
 
 A shell started before the install keeps the old environment; open a new one.
 
+## Building the debug APK on Windows
+
+The command is:
+
+```
+npx tauri android build --debug --target aarch64 --apk
+```
+
+The Rust half of that build is **not** plain `cargo`: SQLCipher is compiled with
+`bundled-sqlcipher-vendored-openssl`, so the OpenSSL C sources are cross-compiled
+by the NDK during the build. On Windows that step needs three things that a
+plain Git-Bash shell does not provide, which is why the raw command fails out of
+the box. The recipe that works on this PC (Session 2, proven end to end):
+
+1. **A perl that both emits Unix paths and has the modules OpenSSL's `Configure`
+   needs** (`Locale::Maketext::Simple`, `ExtUtils::MakeMaker`, `Pod::Usage`).
+   Git-Bash's perl is Unix-path-correct but stripped; Strawberry Perl has the
+   modules but refuses (MSWin32 paths). Resolution used: keep Git-Bash's perl and
+   expose the missing modules from Strawberry through `PERL5LIB`.
+2. **A `make`.** OpenSSL builds with `make`, which Git-Bash does not ship;
+   Strawberry provides `gmake`.
+3. **Bare toolchain names, not paths.** `openssl-src` hands the compiler to a
+   generated Makefile that `/usr/bin/sh` executes; a Windows path
+   (`C:\...\bin\clang.exe`) loses its backslashes there and the build dies on
+   `C:Userspurpl...binclang.exe`. Passing the NDK compiler, `ar` and `ranlib` as
+   **bare names with the NDK bin directory on PATH** avoids it entirely.
+
+Concretely, with `NDKBIN=%ANDROID_NDK_HOME%\toolchains\llvm\prebuilt\windows-x86_64\bin`:
+
+```
+PATH             = <NDKBIN>;<make-shim>;<jdk17>\bin;%PATH%
+CC_aarch64-linux-android = aarch64-linux-android24-clang
+AR_aarch64-linux-android = llvm-ar
+RANLIB_aarch64-linux-android = llvm-ranlib
+PERL5LIB         = <local perl lib with the three modules>
+```
+
+`PERL5LIB` must be kept out of MSYS2's path conversion
+(`MSYS2_ENV_CONV_EXCL`), or the value is rewritten into a Windows path that
+Git-Bash's perl cannot use.
+
+**Gradle also needs an `npm.bat`.** The generated `BuildTask.kt` invokes
+`npm`, falling back to `npm.cmd` and then `npm.bat`; this Node installation
+ships only `npm.cmd`, so the frontend step fails inside Gradle unless an
+`npm.bat` exists earlier on PATH (a one-line forwarder to `npm.cmd` is enough).
+
+These three shims live outside the repo (in `%TEMP%`), so a fresh machine needs
+them recreated. If the SQLCipher/OpenSSL step keeps costing time, MSYS2 is the
+cleaner substitute: its perl has the modules and Unix paths, and it provides
+`make` — items 1 and 2 stop being local hacks, and only item 3 remains.
+
+## Mobile entry point
+
+`run()` in `src-tauri/src/lib.rs` is annotated
+`#[cfg_attr(mobile, tauri::mobile_entry_point)]`. Without it the CLI rejects the
+built library with *"does not include required runtime symbols"* while
+packaging the APK — the Rust build itself still succeeds, so the error only
+appears at the app-assembly step.
+
+Desktop-only plugins are target-gated with `#[cfg(desktop)]` (tray, menu,
+single-instance, `unminimize`) and `start_session_chrome` has a no-op mobile
+counterpart. Desktop behaviour is unchanged; `npm run verify` stays the proof.
+
 ## Generated Android project
 
 `src-tauri/gen/android` is committed to git despite the general `src-tauri/gen/`
@@ -50,9 +113,16 @@ rule (which now covers `gen/schemas/` and `gen/apple/` only):
 - **Never committed:** signing material of any kind. The debug build uses the
   debug keystore in `%USERPROFILE%\.android\`; release signing is Phase B.
 
-## Open item
+## Known gaps (from the Session 2 device run)
 
-The generated `app/build.gradle.kts` still has Tauri's default `minSdk = 24`.
-Decision 11 in `docs/ANDROID_DESIGN.md` pins the support envelope at **min API 26**
-(Android 8.0) with arm64-v8a only. Not changed in Session 2 — the Phase 0
-feasibility build runs on the generated default.
+1. **The app does not reach its first screen yet.** It builds, installs and
+   launches, and the webview frontend runs, but `boot` fails at the first
+   platform seam: `keyring` has no Android backend, so the app shows its own
+   "Purple Memo can't start — keyring entry unavailable: No default store has
+   been set" dialog with Quit/Retry. Replacing that key store with Android
+   Keystore is the Phase 0/A item, not a Session 2 change; the dialog proving
+   visible and answerable is the useful part of this feasibility build.
+2. **`minSdk` is still Tauri's default 24.** Decision 11 in
+   `docs/ANDROID_DESIGN.md` pins the support envelope at **min API 26**
+   (Android 8.0) with arm64-v8a only. Left as generated so far — the debug
+   build runs on the Redmi either way.
