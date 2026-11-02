@@ -127,3 +127,36 @@ work — guard the working code.
      generations).
    - Conflict losers go to trash (Oct 26 rule); trash is extended beyond its
      current five types to hold budget/vault losers.
+
+### Batch 2 — Security (decided 2026-11-02)
+
+5. **Attachments/links: omitted on mobile.** Notes/jobs referencing photos
+   show an "available on desktop" placeholder; links to excluded entities
+   (Contacts/Journal/Memories) are not rendered. No leak surface.
+6. **Key/lock policy:**
+   - DEK wrapped by Android Keystore (non-exportable), hardware-backed
+     (StrongBox/TEE) where available, software fallback otherwise.
+   - App PIN on mobile, same setup flow as desktop, stored in mobile-local
+     settings (settings do not sync).
+   - Background lock grace period: **1 minute**.
+   - **FLAG_SECURE** on the whole app (no screenshots anywhere).
+   - Key loss → fail closed → wipe mobile data → re-pair from desktop
+     (desktop is the source of truth).
+   - App data excluded from Android auto-backup.
+7. **Clipboard: best-effort ~30s auto-clear** with sensitive-content marking
+   and an honest UI disclosure of the limitation.
+8. **Pairing transport:** QR primary + numeric-code fallback (Oct 26),
+   accepting the review's constraints as design requirements — pinned
+   long-term device keys, revocation, rate-limited short-lived numeric codes,
+   server-side table/operation allowlists, listener lifetime tied to
+   manual sync/lock/reset.
+
+### Interaction model refinement (his words 2026-11-02)
+
+Mobile is **portable quick capture**: **view + add**, plus **mark-done
+toggles**. Concretely:
+- CREATE new records in all 8 modules.
+- TOGGLE only: task done/undone, shopping item bought/unbought, habit
+  check-in. No other edits from mobile in v1 (this narrows the earlier
+  "field-level LWW" to single-field toggles, where LWW is safe).
+- Conflict losers (toggles) go to trash per the Oct 26 rule.
