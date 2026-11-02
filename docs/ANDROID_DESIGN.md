@@ -92,13 +92,53 @@ Conflict rule: different records/fields → auto-merge; same field →
 last-successful-sync watermark; device authentication via the pairing secret
 is mandatory (write access, unlike the read-only LAN share).
 
-## 6. Phases
+## 6. Phases (revised per the design review — gated, no mocks with real data)
 
-- **Phase A** — Android shell + the 10 sections rendering with real local data
-  (platform seams stubbed/mocked); NDK/SQLCipher cross-compile proven.
-- **Phase B** — Keystore, notifications/AlarmManager reminders, background
-  behavior, clipboard auto-clear, camera/scope storage as needed.
-- **Phase C** — LAN pair + subset sync (the §5 protocol).
+### Phase 0 — Contract and feasibility proof (no personal data)
+
+Write matrix (§8), sync/restore/key contracts, pinned toolchain (JDK, Android
+SDK/Build Tools, NDK, Rust targets, min API 26, arm64-v8a). Generate the
+Android project and prove on a device/emulator: mobile entry point with
+desktop plugins target-gated; SQLCipher create/open/migrate/reopen with a
+real Keystore-wrapped DEK; Keystore wrap/unwrap, denial/loss handling, reset;
+notification scheduling + permission fallback; sensitive clipboard write;
+raw-IPC probe (or explicit desktop-only isolation); debug APK install/launch;
+desktop regression build green.
+**Exit gate:** documented contracts, reproducible native build, encrypted
+vertical-slice prototype, no mock key path in any personal-data build.
+
+### Phase A — Secure encrypted vertical slice
+
+Mobile shell + a small set of real flows (Notes, Tasks, Shopping — not ten
+mocked sections). Real Keystore protection from the first personal record,
+lock/background behavior (1-min grace, FLAG_SECURE), Android back, bottom
+sheets, safe areas, migrations, repository-level tests.
+**Exit gate:** offline create/toggle works; process death and background lock
+pass; key loss fails closed; reset removes all owned state; desktop tests
+green; no excluded-module data in search/dashboard.
+
+### Phase B — Complete offline companion
+
+Remaining approved sections, mobile Settings, reminders (creating device
+notifies; exact-alarm with fallback disclosure), clipboard auto-clear,
+accessibility (48dp, TalkBack, keyboard-aware sheets), empty states, signed
+APK distribution + update/rollback docs. Pairing UI may be prototyped;
+**writable sync stays disabled**.
+**Exit gate:** all approved offline flows pass on the device matrix;
+permission denial, reboot, timezone change, TalkBack, process death covered;
+limitations disclosed; signed install/upgrade reproducible.
+
+### Phase C — Staged sync, narrow first
+
+Protocol spec + failure-injection harness approved before UI completion.
+Order: Notes/Tasks/Shopping/Habits under the write matrix → append-only
+Budget entries + create-only Business/Loans → Vault last, one-way and
+generation-aware. Each expansion needs its own invariant tests; never enable
+broad two-way financial/Vault editing just because the narrow subset works.
+**Exit gate:** two populated devices converge; retries idempotent;
+interrupted apply/reset/restore cannot lose acknowledged writes; tombstones
+propagate; counters reconcile; Vault never mixes generations; revoked peers
+rejected; desktop-only rows never leave desktop.
 
 ## 7. Non-goals
 
@@ -160,3 +200,20 @@ toggles**. Concretely:
   check-in. No other edits from mobile in v1 (this narrows the earlier
   "field-level LWW" to single-field toggles, where LWW is safe).
 - Conflict losers (toggles) go to trash per the Oct 26 rule.
+
+### Batch 3 — Platform (decided 2026-11-02)
+
+9. **Reminders:** standalone rows as the schema has them (no task-linked
+   redesign). **The creating device notifies**; delivery state is
+   device-local (no cross-device notification sync in v1). Exact-alarm
+   permission requested, inexact fallback with honest UI disclosure.
+10. **Restore/reset:** desktop is the backup/restore authority; mobile does
+    no full backups in v1. If desktop restores an old backup, mobile cursors
+    are stale → **re-pair required**. Pairing keys, cursors, and delivery
+    state are device-local and never enter the backup payload.
+11. **Support envelope:** min API 26 (Android 8.0), arm64-v8a only, new APK
+    signing key, sideload first (Play later if wanted), rollback = reinstall
+    the previous APK.
+12. **Desktop compatibility:** behavior-preserving shared changes accepted;
+    the Windows `npm run verify` gate must stay green; schema migrations
+    tested against populated v6 databases and real backup fixtures.
