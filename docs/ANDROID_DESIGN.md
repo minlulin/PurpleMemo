@@ -105,3 +105,25 @@ is mandatory (write access, unlike the read-only LAN share).
 Full desktop parity; auto-sync; cloud backup; multi-user; Play Store
 release (sideload first). The desktop app is not to be destabilized by mobile
 work — guard the working code.
+
+## 8. Owner decisions (decided 2026-11-02, from the design review)
+
+### Batch 1 — Sync core
+
+1. **Write matrix: narrow 17-table core.** `expense_limits`,
+   `recurring_payments`, and `payables` stay desktop-only in v1
+   (configuration work, not quick-capture). The other 17 tables sync two-way.
+2. **Vault: lookup/copy only on mobile (v1).** No item creation, no password
+   change, no setup on mobile. (Resolves the §2/§4 contradiction.)
+3. **First pairing: empty-mobile bootstrap.** The phone starts empty and pulls
+   from desktop. Guard: if the phone holds unsynced records at pair time,
+   pairing is blocked until the user resets or exports the mobile data.
+4. **Conflict policy per aggregate:**
+   - Notes / Tasks / Shopping / Habits → field-level LWW.
+   - Budget entries → mobile append-only (no edit/delete from mobile in v1).
+   - Business / Loans → mobile create-only; job payments and loan repayments
+     are desktop-only in v1.
+   - Vault → one-way desktop→mobile, generation-aware (never mix password
+     generations).
+   - Conflict losers go to trash (Oct 26 rule); trash is extended beyond its
+     current five types to hold budget/vault losers.
