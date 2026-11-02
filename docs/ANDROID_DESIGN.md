@@ -219,3 +219,118 @@ toggles**. Concretely:
 12. **Desktop compatibility:** behavior-preserving shared changes accepted;
     the Windows `npm run verify` gate must stay green; schema migrations
     tested against populated v6 databases and real backup fixtures.
+
+### Cross-device UID contract (decided 2026-11-02, Session 3)
+
+Applies to all synced tables (the 17-table narrow core); Phase A only needs
+Notes/Tasks/Shopping/Habits identity, but the contract is defined once and reused
+by Budget/Business/Loans/Vault when their sync stages arrive.
+
+1. **Format.** UUID **v4** (random), canonical textual form `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`
+   (lowercase, 36 chars incl. hyphens), stored as `TEXT`. Recommended over v7: v4 carries no
+timestamp and no ordering semantics, which prevents it being misused as a cursor or ordering
+key (see item 5); it needs no clock and no coordination; and both sides can mint it offline via a
+CSPRNG (`crypto.randomUUID()` on the TS/web side, `uuid` crate on the Rust side). v7 is
+acceptable in principle but rejected here to keep the identity value deliberately opaque.
+
+   *Assumption (flagged):* column name is `uid TEXT NOT NULL UNIQUE` on each synced table,
+distinct from any existing local integer primary key/rowid. Existing desktop rows are
+backfilled with freshly minted v4 UIDs in a schema migration; mobile never observes a null
+`uid`.
+
+2. **Generation points.** Every synced record gets a UID **at creation time, on the creating
+   client**, from Phase A onward - including records created offline with no pairing yet and
+   records created on desktop. Concretely the 17 tables:
+   `collections`, `notes`; `tasks`, `reminders`; `wallets`, `income_categories`,
+   `expense_categories`, `income_entries`, `expense_entries`; `shops`, `jobs`; `loans`;
+   `habits`, `habit_logs`; `shopping_lists`, `shopping_items`; `vault_items`.
+   Desktop-only tables (`expense_limits`, `recurring_payments`, `payables`, and everything
+   outside the 8 modules) do **not** get a cross-device UID. Tombstones also carry the UID of
+   the deleted record.
+
+3. **Uniqueness guarantee.** UUID v4 provides 122 random bits; with a CSPRNG on each device the
+   probability of collision is negligible without any central allocator, counter, or
+   coordination. Generation is fully local and works offline, so a phone can mint UIDs before
+   it has ever paired.
+
+4. **First-pair adoption.** Desktop accepts mobile-minted UIDs as **new records** at first
+   pairing (upload as new entries, no mobile data wipe). Desktop inserts a row iff its `uid` is
+   not already present; a repeated upload of the same `uid` is an **idempotent accept** (no
+   duplicate, no error) and the existing row is left in place (reconciliation/field merge then
+   follows the aggregate conflict policy). A coincidental UID collision between a mobile-minted
+   and desktop-minted record is treated as the same record and resolved by LWW on
+   `updated_at` per the conflict policy; in practice this cannot happen.
+
+5. **What UIDs are NOT.** They are not sync cursors (cursors are per-peer high-water marks),
+   not ordering keys (ordering stays on existing `created_at`/`updated_at` semantics), not
+   user-visible (never rendered in UI), and not auth tokens. Conflict resolution remains LWW on
+   `updated_at` per the Batch 1 conflict policy; the UID is identity only.
+
+### Sync / restore / key contracts (protocol sketch, Session 3)
+
+1. **Sync protocol sketch.**
+   - **Trigger:** manual only (Settings -> Sync). No auto-sync, no background sync in v1;
+     listener lifetime is tied to manual sync / lock / reset.
+   - **Per-peer cursors:** each side stores a cursor per peer (last applied change position)
+     in device-local state; cursors are never shared in the backup payload.
+   - **Durable outbox:** every mutation appends to an outbox in the **same DB transaction** as
+     the mutation; the outbox survives process death and retries until acknowledged.
+   - **Tombstones:** deletes are represented as tombstone rows, including tombstones for
+     cascaded children (e.g. a deleted collection cascades to its notes), and propagate
+     idempotently. *Assumption (flagged):* tombstone GC happens only after all known peers
+     have acknowledged them.
+   - **17-table allowlist** with per-operation authority (Batch 1):
+     - Narrow core two-way on shared subset: `collections`, `notes`, `tasks`, `reminders`,
+       `wallets`, `income_categories`, `expense_categories`, `income_entries`,
+       `expense_entries`, `shops`, `jobs`, `loans`, `habits`, `habit_logs`,
+       `shopping_lists`, `shopping_items`, `vault_items`.
+     - Desktop-only, never leave desktop: `expense_limits`, `recurring_payments`, `payables`,
+       plus `settings`, `links`, `trash_items`, `photos`, `photo_refs`, `notes_fts`.
+     - Authority: Notes/Tasks/Shopping/Habits toggles LWW; Budget entries mobile append-only;
+       Business/Loans mobile create-only; Vault one-way desktop->mobile, generation-aware;
+       Wallets/categories and reminder definitions desktop-owned.
+   - **Operation allowlist:** only approved per-table operations cross the wire (no arbitrary
+     SQL / `db_execute`); server-side schema validation on every apply.
+   - **Pinned device keys + revocation:** revoked peers are rejected before any data flows.
+
+2. **First-pair adoption flow.**
+   1. Initiate pairing (QR primary, numeric-code fallback); devices exchange and pin long-term
+      device keys; user confirms fingerprints.
+   2. Desktop sends an initial snapshot of the 17 sync tables to mobile; mobile applies it
+      transactionally (rebuild local state from snapshot).
+   3. Mobile uploads offline-created records (those whose `uid` is absent from the desktop
+      snapshot) as new entries, using their client-generated UIDs.
+   4. Desktop inserts iff `uid` is new (idempotent accept); returns acknowledgements.
+   5. Both sides initialize per-peer cursors to the post-adoption positions.
+   - **Failure: pairing interrupted mid-upload.** Outbox retains pending uploads; on retry each
+     `uid` is accepted idempotently, so no duplicate and no data loss.
+   - **Failure: duplicate adoption attempt** (re-pair without prior wipe). Desktop treats
+     already-present `uid`s as adopted and skips them; cursor state is reset and a fresh
+     snapshot is re-applied. *Assumption (flagged):* if mobile holds unacknowledged writes at
+     re-pair time, they are lost unless desktop already accepted them - mobile should push its
+     outbox before any re-pair is initiated.
+
+3. **Backup payload rules.**
+   - **In:** user data (desktop backup covers all desktop tables; the 17 sync tables at
+     minimum) + schema version.
+   - **Never in payload (device-local):** pairing keys, per-peer cursors, delivery state,
+     Keystore-wrapped DEK, app PIN / mobile-local settings, notification scheduling.
+   - Mobile performs **no full backups in v1**.
+
+4. **Restore + re-pair rules.**
+   - Desktop is the backup/restore authority. Restoring an old backup on desktop replaces
+     desktop data and bumps the data generation.
+   - A generation bump invalidates mobile cursors => **re-pair required**. Mobile detects the
+     stale generation and refuses to sync until re-paired; re-pair wipes/re-bootstraps mobile
+     from the desktop snapshot.
+   - Mobile does no full backups in v1.
+
+5. **Key contract (summary only - implementation is a later Phase 0 session).**
+   - DEK wrapped by Android Keystore (non-exportable), hardware-backed (StrongBox/TEE) where
+     available, software fallback otherwise.
+   - App PIN is mobile-local; same setup flow as desktop; settings do not sync.
+   - Background lock grace period: 1 minute.
+   - `FLAG_SECURE` on the whole app (no screenshots).
+   - Key loss => fail closed => wipe mobile data => re-pair from desktop (desktop is source of
+     truth).
+   - App data excluded from Android auto-backup.

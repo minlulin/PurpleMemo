@@ -14,23 +14,23 @@ nothing moves to the next phase until its exit gate passes.
 - [x] Pairing transport decided: QR primary + numeric fallback, pinned
   device keys, revocation, allowlists
 - [x] Support envelope decided: min API 26, arm64-v8a, sideload, rollback
-- [ ] Sync/restore/key **contracts written** (protocol sketch, backup
+- [x] Sync/restore/key **contracts written** (protocol sketch, backup
   payload rules, restore generation, re-pair rules, first-pair mobile record adoption)
-- [ ] Cross-device UID contract defined (UUIDs generated on record creation
+- [x] Cross-device UID contract defined (UUIDs generated on record creation
   from Phase A onward so offline-created data is sync-ready)
-- [ ] Toolchain pinned: JDK, Android SDK/Build Tools, NDK, Rust targets
-- [ ] Android project generated and curated in git (despite `gen/` ignore;
+- [x] Toolchain pinned: JDK, Android SDK/Build Tools, NDK, Rust targets
+- [x] Android project generated and curated in git (despite `gen/` ignore;
   exclude build outputs, SDK paths, signing material)
-- [ ] Mobile entry point; tray / single-instance / updater / desktop window
+- [x] Mobile entry point; tray / single-instance / updater / desktop window (updater plugin gating still open)
   behavior target-gated
-- [ ] SQLCipher + OpenSSL cross-compile via NDK proven
+- [x] SQLCipher + OpenSSL cross-compile via NDK proven
 - [ ] SQLCipher create/open/migrate/reopen with a real Keystore-wrapped DEK
   **on a device**
 - [ ] Keystore wrap/unwrap, denial/loss handling, reset proven on device
 - [ ] Notification scheduling + permission fallback proven on device
 - [ ] Sensitive clipboard write proven on device
 - [ ] Raw-IPC probe done (or explicit desktop-only isolation recorded)
-- [ ] Debug APK installs and launches; desktop regression build green
+- [x] Debug APK installs and launches; desktop regression build green (keyring-seam caveat: keyring crate refuses Android; Keystore seam open)
 
 **Exit gate:** documented contracts (including UID and first-pair adoption rules),
 reproducible native build, encrypted vertical-slice prototype, no mock key path in
