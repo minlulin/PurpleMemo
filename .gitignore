@@ -3,8 +3,17 @@ node_modules/
 dist/
 target/
 
-# Generated Tauri schemas
-src-tauri/gen/
+# Generated Tauri ACL schemas (rebuilt on every build) — never committed
+src-tauri/gen/schemas/
+
+# Generated Apple projects are unused by this project
+src-tauri/gen/apple/
+
+# The generated Android Studio project IS committed (curated, decision 2026-11-02).
+# Its build outputs, local SDK paths and signing material are excluded by the
+# project's own ignore file (src-tauri/gen/android/.gitignore), which covers
+# build/, .gradle/, local.properties, key.properties, keystore.properties and
+# the per-build tauri.* glue files.
 
 # Signing keys — never committed
 .keys/
