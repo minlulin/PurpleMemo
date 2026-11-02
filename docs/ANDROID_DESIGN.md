@@ -68,8 +68,8 @@ button aesthetic) — one brand, no relearning. **Mobile-native layout:**
 ### FAB speed-dial (the mobile signature)
 
 Floating button, expands to: Add note, Add task, Add income, Add expense,
-Add shopping item, Habit check-in. (Job / loan / vault-item creation lives on
-their pages — less frequent.)
+Add shopping item. (Habit check-in lives directly on Dashboard and Habits page
+as 1-tap toggles; Job / loan creation lives on their pages — less frequent.)
 
 ### Quick-capture principle
 
@@ -155,9 +155,10 @@ work — guard the working code.
    (configuration work, not quick-capture). The other 17 tables sync two-way.
 2. **Vault: lookup/copy only on mobile (v1).** No item creation, no password
    change, no setup on mobile. (Resolves the §2/§4 contradiction.)
-3. **First pairing: empty-mobile bootstrap.** The phone starts empty and pulls
-   from desktop. Guard: if the phone holds unsynced records at pair time,
-   pairing is blocked until the user resets or exports the mobile data.
+3. **First pairing: mobile bootstrap and adoption.** The phone pulls initial data
+   from desktop. If the phone already holds offline-created records from Phase A/B,
+   first pairing safely uploads them to desktop as new records (using their
+   client-generated UIDs) without requiring a mobile data wipe.
 4. **Conflict policy per aggregate:**
    - Notes / Tasks / Shopping / Habits → field-level LWW.
    - Budget entries → mobile append-only (no edit/delete from mobile in v1).
@@ -165,8 +166,9 @@ work — guard the working code.
      are desktop-only in v1.
    - Vault → one-way desktop→mobile, generation-aware (never mix password
      generations).
-   - Conflict losers go to trash (Oct 26 rule); trash is extended beyond its
-     current five types to hold budget/vault losers.
+   - Conflict losers go to trash (Oct 26 rule); trash is used for mutable
+     entities (Notes/Tasks/Shopping). Append-only Budget and read-only Vault do
+     not produce conflict losers in v1.
 
 ### Batch 2 — Security (decided 2026-11-02)
 

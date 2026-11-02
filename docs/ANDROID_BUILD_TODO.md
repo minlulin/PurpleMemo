@@ -15,7 +15,9 @@ nothing moves to the next phase until its exit gate passes.
   device keys, revocation, allowlists
 - [x] Support envelope decided: min API 26, arm64-v8a, sideload, rollback
 - [ ] Sync/restore/key **contracts written** (protocol sketch, backup
-  payload rules, restore generation, re-pair rules)
+  payload rules, restore generation, re-pair rules, first-pair mobile record adoption)
+- [ ] Cross-device UID contract defined (UUIDs generated on record creation
+  from Phase A onward so offline-created data is sync-ready)
 - [ ] Toolchain pinned: JDK, Android SDK/Build Tools, NDK, Rust targets
 - [ ] Android project generated and curated in git (despite `gen/` ignore;
   exclude build outputs, SDK paths, signing material)
@@ -30,16 +32,20 @@ nothing moves to the next phase until its exit gate passes.
 - [ ] Raw-IPC probe done (or explicit desktop-only isolation recorded)
 - [ ] Debug APK installs and launches; desktop regression build green
 
-**Exit gate:** documented contracts, reproducible native build, encrypted
-vertical-slice prototype, no mock key path in any personal-data build.
+**Exit gate:** documented contracts (including UID and first-pair adoption rules),
+reproducible native build, encrypted vertical-slice prototype, no mock key path in
+any personal-data build.
 
 ## Phase A — Secure encrypted vertical slice
 
 - [ ] Mobile shell: bottom tabs (Dashboard|Tasks|Budget|Shopping|More),
   More sheet, Android back stack
+- [ ] FAB speed-dial for creation only (Add Note, Add Task, Add Income,
+  Add Expense, Add Shopping Item — habit check-ins live on Dashboard/Habits)
 - [ ] Bottom sheets, safe-area insets, keyboard-aware layouts
 - [ ] Real Keystore protection from the first personal record (never mocked)
 - [ ] Lock/background: 1-min grace, FLAG_SECURE, cache eviction on pause
+- [ ] Stable cross-device UIDs generated on record creation from day one
 - [ ] Notes: view + create
 - [ ] Tasks: view + create + mark done
 - [ ] Shopping: view + create + toggle bought
@@ -53,11 +59,12 @@ lock pass; key loss fails closed; reset removes all owned state; desktop
 
 ## Phase B — Complete offline companion
 
-- [ ] Dashboard: in-hand money (recorded balance) + tasks + pinned notes
-- [ ] Budget: wallet views + append-only entry forms
+- [ ] Dashboard: in-hand money (recorded balance) + tasks + pinned notes +
+  today's habit check-ins
+- [ ] Budget: wallet views + append-only entry forms (via FAB & Budget tab)
 - [ ] Business: view + create jobs (no payment fields on mobile)
 - [ ] Loans: view + create (no repayment fields on mobile)
-- [ ] Habits: check-ins
+- [ ] Habits: 1-tap check-ins on Dashboard & Habits page
 - [ ] Vault: lookup + copy, clipboard auto-clear ~30s, UI disclosure
 - [ ] Mobile Settings: sync status, pairing UI prototype, permissions,
   lock/security, diagnostics (no desktop tray/key-export/updater controls)
@@ -75,11 +82,14 @@ signed install/upgrade reproducible.
 ## Phase C — Staged sync, narrow first
 
 - [ ] Protocol specification + failure-injection harness approved
-- [ ] Schema work: stable cross-device UIDs, durable outbox (same
-  transaction as mutation), tombstones incl. cascaded children, device
-  identity, per-peer cursors
-- [ ] Pairing: QR + numeric fallback, pinned keys, revocation, re-pair
-- [ ] Trash extended to hold conflict losers beyond the current five types
+- [ ] Schema & storage work: durable outbox (same transaction as mutation),
+  tombstones incl. cascaded children, device identity, per-peer cursors
+  (UIDs already established in Phase A)
+- [ ] Pairing & bootstrap: QR + numeric fallback, pinned keys, revocation,
+  re-pair; **first-pair adoption** pushes offline mobile-created records to
+  desktop as new entries without data wipe
+- [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
+  no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
