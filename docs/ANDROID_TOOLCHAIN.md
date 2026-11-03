@@ -170,6 +170,76 @@ rule (which now covers `gen/schemas/` and `gen/apple/` only):
 - **Never committed:** signing material of any kind. The debug build uses the
   debug keystore in `%USERPROFILE%\.android\`; release signing is Phase B.
 
+## Emulator for UI testing (no Android Studio)
+
+Command-line tools only: the emulator lives in the same SDK
+(`%LOCALAPPDATA%\Android\Sdk`) beside the pinned build toolchain. Nothing
+pinned above was changed, reinstalled or re-pinned.
+
+| Item | Version |
+|---|---|
+| Emulator | **37.2.13.0** (build `16740729`) |
+| System image | `system-images;android-36;google_apis;x86_64` rev **7** — Android 16, API 36 |
+| Hypervisor driver | AEHD **2.2** (`extras;google;Android_Emulator_Hypervisor_Driver`), service `aehd` running |
+
+AVD **`purple_memo_test`** — Pixel 7 profile, portrait, 1080x2400 @ 420 dpi,
+4 cores, 2560 MB RAM, 10 GB data partition, `x86_64`.
+
+Boot headless (agent runs) and wait for the boot to finish:
+
+```
+%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe -avd purple_memo_test ^
+  -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
+adb -s emulator-5554 wait-for-device shell
+  'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done'
+```
+
+Measured on this PC: **81 s** from launch to `sys.boot_completed=1` headless.
+Drop `-no-window` for a visible window. Stop it with
+`adb -s emulator-5554 emu kill` — the process is not a service and does not
+survive a reboot.
+
+### Acceleration without Hyper-V
+
+`emulator -accel-check` reports *Android Emulator hypervisor driver is not
+installed*, and Windows Hypervisor Platform is **disabled** on this PC. Turning
+WHPX on needs a Windows feature change plus a reboot, so the emulator instead
+uses Google's AEHD 2.2 kernel driver: installed as administrator from
+`extras\google\Android_Emulator_Hypervisor_Driver\silent_install.bat`, and
+`sc query aehd` then reports `RUNNING` — no reboot required. Do not enable WHPX
+while AEHD is installed; if Hyper-V is ever enabled, remove AEHD with
+`silent_install.bat -u` first.
+
+### adb targeting rule
+
+With two devices attached a bare `adb` fails loudly with *more than one
+device/emulator*, so **every** emulator call passes `-s`:
+
+- Emulator serials are `emulator-5554`, `emulator-5556`, … (a second instance
+  needs `-port 5556`).
+- The guest `ro.serialno` is the same generic `EMULATOR37X2X13X0` on every
+  instance — target by the **adb serial**, never by that property.
+- The Redmi keeps its own serial `4c61bf7a`; when it is not plugged in,
+  `adb -s 4c61bf7a …` answers *device '4c61bf7a' not found* rather than falling
+  through to an emulator.
+
+### Phase A note — ABI mismatch with the release build
+
+The release APK is **arm64-v8a only** (decision 11), so it will **not** install
+on this x86_64 emulator. UI testing on the emulator needs either an x86_64 test
+build variant (Rust target `x86_64-linux-android`, which the NDK ships) or a slow
+arm64 AVD. Neither is implemented here; it is a Phase A decision.
+
+### When sdkmanager stalls (worked around here)
+
+`sdkmanager` hung on the 1.7 GB system-image download — zero bytes and no
+progress after seven minutes — while `curl` from the same host pulled the same
+URL at 2.4–4 MB/s. To recover: take the URL sdkmanager prints, `curl -L` the
+archive, and unzip it into the matching `system-images/<api>/<tag>/<abi>`
+directory; `sdkmanager --list_installed` then lists it as installed (that is how
+rev 7 got here). Also note that `sdkmanager` and `avdmanager` split package ids
+containing `;` when they are passed inline — use `--package_file=` instead.
+
 ## Known gaps (from the Session 2 device run)
 
 1. **The app does not reach its first screen yet.** It builds, installs and
