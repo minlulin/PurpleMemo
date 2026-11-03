@@ -56,6 +56,11 @@ import {
   vaultRepo,
 } from "./data/app.ts";
 import {
+  ANDROID_REMINDER_SYNC_MS,
+  isAndroidPlatform,
+  syncAndroidReminders,
+} from "./lib/android-reminders.ts";
+import {
   classifyPin,
   DEFAULT_AUTO_LOCK_MINUTES,
   isIdle,
@@ -207,6 +212,53 @@ function useReminderPoll(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    // Android delivers reminders through the OS alarm clock, not this poll: the
+    // process gets Dozed or killed, so a webview timer cannot fire. The bridge
+    // reconciles the armed alarms with the pending rows and hands back the ids
+    // that fired since the last sync; those settle here, without a second
+    // notification. Desktop keeps the poll below unchanged.
+    if (isAndroidPlatform()) {
+      let denialReported = false;
+      const sync = async () => {
+        try {
+          const granted = await ensureNotifyPermission();
+          if (cancelled) return;
+          if (!granted) {
+            if (!denialReported) {
+              denialReported = true;
+              setNotifyNote(permissionDeniedNote);
+            }
+            return;
+          }
+          const rows = await tasksRepo.listReminders(false);
+          if (cancelled) return;
+          const preview = await settingsRepo
+            .getNotificationPreview()
+            .catch(() => false);
+          const { outcomes } = await syncAndroidReminders(
+            rows,
+            preview,
+            localISODateTime(new Date()),
+          );
+          if (cancelled) return;
+          if (outcomes.length > 0) {
+            await tasksRepo.settleReminders(outcomes);
+            if (!cancelled) onFired();
+          }
+        } catch {
+          // Best-effort, like the desktop poll: the rows stay listed.
+        }
+      };
+      void sync();
+      const nativeTimer = setInterval(
+        () => void sync(),
+        ANDROID_REMINDER_SYNC_MS,
+      );
+      return () => {
+        cancelled = true;
+        clearInterval(nativeTimer);
+      };
+    }
     const tick = createReminderTicker({
       messages,
       now: () => localISODateTime(new Date()),

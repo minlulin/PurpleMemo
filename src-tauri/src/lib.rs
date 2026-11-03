@@ -5,6 +5,7 @@ mod key_store;
 mod lifecycle;
 mod navigation;
 mod photos;
+mod reminders;
 mod reset;
 mod safety_copy;
 mod schema;
@@ -111,12 +112,18 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
         focus_main_window(app);
     }));
+    // Desktop-only surfaces, gated at registration: a phone sideloads its APK
+    // and opens links through the system browser, so the mobile build must not
+    // expose an updater or an opener command at all. Gating here (not only in
+    // the UI) is what keeps the surface from leaking into the webview.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
     builder
         // Cancels any navigation away from the app's own origin;
         // external links go to the system browser instead (MarkdownLink).
         .plugin(navigation::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -159,6 +166,11 @@ pub fn run() {
             commands::share_publish,
             commands::factory_reset,
             commands::app_restart,
+            reminders::reminder_sync,
+            reminders::reminder_exact_state,
+            reminders::reminder_open_exact_alarm_settings,
+            reminders::clipboard_copy_sensitive,
+            reminders::clipboard_probe_read,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| report_run_failure(&e.to_string()));

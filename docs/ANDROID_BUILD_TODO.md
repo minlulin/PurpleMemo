@@ -37,9 +37,25 @@ nothing moves to the next phase until its exit gate passes.
   full local wipe (no crash, no fallback key, no wrong-key decryption), and reset
   removes the blob *and* the Keystore entry. StrongBox is requested and refused
   on this phone, so the DEK is wrapped by a **TEE**-backed key.
-- [ ] Notification scheduling + permission fallback proven on device
-- [ ] Sensitive clipboard write proven on device
-- [ ] Raw-IPC probe done (or explicit desktop-only isolation recorded)
+- [x] Notification scheduling + permission fallback proven on device: real
+  AlarmManager alarms (exact when the grant is held, `setAndAllowWhileIdle`
+  otherwise) posted by a broadcast receiver with the app closed. Measured on
+  the Redmi: an exact reminder fired **1.9 s** after its due time; with the
+  exact-alarm grant denied (the phone's default) the same reminder fired via
+  the inexact path **more than 65 s late**, and the Tasks page said so before
+  it fired. A reboot drops every alarm, and the boot receiver re-armed the
+  pending one (`re-armed 1 reminder(s) after boot`), which then fired — so
+  reminders are carried, not lost. Delivery state is device-local: the app
+  settles rows from the ids the phone reports as fired, so nothing is
+  notified twice.
+- [x] Sensitive clipboard write proven on device: the copy marks the clip
+  `IS_SENSITIVE` (Android 13+ hides it from the copy preview), kept it for a
+  measured **30.012 s**, then cleared it. Best effort, and the UI says so: when
+  the app was killed before the timer, the value stayed on the clipboard (the
+  test value survived force-stop + relaunch).
+- [x] Raw-IPC probe done — see `docs/ANDROID_IPC_SURFACE.md`: every mobile
+  command invoked on the device, and the tray / single-instance / updater /
+  opener surfaces verified absent from the mobile build.
 - [x] Debug APK installs and launches; desktop regression build green (DB key
   comes from the platform key-store seam; `keyring` is desktop-only and never
   linked on Android)

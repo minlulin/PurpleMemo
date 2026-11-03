@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Reminders: the notification itself, the exact-alarm grant the UI
+         falls back from when it is missing, and the boot listener that
+         re-arms alarms (AlarmManager does not keep them across a reboot). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -33,5 +39,22 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Posts the reminder notification when the alarm fires, whether or
+             not Purple Memo is running. Not exported: only our PendingIntent
+             may target it. -->
+        <receiver
+          android:name=".ReminderReceiver"
+          android:exported="false" />
+
+        <!-- Re-arms persisted reminders after a reboot; the OS drops every
+             alarm when the phone restarts. -->
+        <receiver
+          android:name=".BootReceiver"
+          android:exported="false">
+          <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED" />
+          </intent-filter>
+        </receiver>
     </application>
 </manifest>

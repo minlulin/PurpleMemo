@@ -105,9 +105,25 @@ export function NoteReaderDialog({
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(note.content);
-      setCopied(true);
-      toast.success(t("notes.copied"));
+      // Android: note text is sensitive, so the copy goes through the marked,
+      // auto-clearing path instead of the plain web clipboard. Desktop keeps
+      // `navigator.clipboard` exactly as it was.
+      const { copySensitive, isAndroidPlatform } = await import(
+        "../lib/android-reminders.ts"
+      );
+      if (isAndroidPlatform()) {
+        const delay = await copySensitive(note.content);
+        setCopied(true);
+        // Best effort, said out loud: the clear rides this process's timer, so
+        // closing the app first leaves the value on the clipboard.
+        toast.success(
+          `Copied — clears in ${Math.round(delay / 1000)} s (best effort)`,
+        );
+      } else {
+        await navigator.clipboard.writeText(note.content);
+        setCopied(true);
+        toast.success(t("notes.copied"));
+      }
       if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => {
         copyTimerRef.current = null;

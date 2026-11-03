@@ -1,0 +1,78 @@
+// The Android reminder seam has no device here, but its rules are pure and
+// worth pinning: no reminder text in the alarm with previews off, and an alarm
+// that already fired must settle its row exactly like the desktop ticker would.
+
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import {
+  deliveredOutcomes,
+  isAndroidPlatform,
+  reminderSyncRows,
+} from "./android-reminders.ts";
+import type { ReminderRow } from "./types.ts";
+
+function row(over: Partial<ReminderRow> = {}): ReminderRow {
+  return {
+    id: 1,
+    title: "Water the plants",
+    remind_at: "2026-11-03T14:05",
+    repeat: "none",
+    note: "kitchen + balcony",
+    fired: 0,
+    created_at: "2026-11-01T08:00",
+    ...over,
+  };
+}
+
+test("with previews off the alarm carries no reminder text", () => {
+  const [payload] = reminderSyncRows([row()], false);
+  assert.ok(payload);
+  assert.equal(payload.title, "Reminder due");
+  assert.equal(payload.body, "Open Purple Memo to see the reminder.");
+  assert.ok(!JSON.stringify(payload).includes("plants"), "no title leak");
+  assert.ok(!JSON.stringify(payload).includes("balcony"), "no note leak");
+  assert.equal(payload.due, "2026-11-03T14:05");
+});
+
+test("with previews on the alarm carries the reminder text", () => {
+  const [payload] = reminderSyncRows([row()], true);
+  assert.equal(payload?.title, "Reminder: Water the plants");
+  assert.equal(payload?.body, "kitchen + balcony");
+});
+
+test("an already-fired row is not armed again", () => {
+  assert.deepEqual(reminderSyncRows([row({ fired: 1 })], true), []);
+});
+
+test("a delivered one-shot settles as fired; a repeating one re-arms", () => {
+  const outcomes = deliveredOutcomes(
+    [
+      row({ id: 4 }),
+      row({ id: 9, repeat: "daily", remind_at: "2026-11-01T09:00" }),
+    ],
+    [4, 9],
+    "2026-11-03T14:10",
+  );
+  assert.deepEqual(outcomes, [
+    { id: 4, nextRemindAt: null },
+    // The next occurrence strictly after "now": the 09:00 slot on the 3rd has
+    // already passed at 14:10, so the walk lands on the 4th.
+    { id: 9, nextRemindAt: "2026-11-04T09:00" },
+  ]);
+});
+
+test("ids that did not fire, and rows another path settled, are untouched", () => {
+  assert.deepEqual(
+    deliveredOutcomes([row({ id: 2 })], [], "2026-11-03T14:10"),
+    [],
+  );
+  assert.deepEqual(
+    deliveredOutcomes([row({ id: 3, fired: 1 })], [3], "2026-11-03T14:10"),
+    [],
+    "an acknowledged reminder must not be resurrected by a stale report",
+  );
+});
+
+test("the platform check is false outside the Android webview", () => {
+  assert.equal(isAndroidPlatform(), false);
+});

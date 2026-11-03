@@ -126,6 +126,22 @@ is refused, and `run-as com.minlulin.purplememo cat boot-error.log` holds the
 text of the last failed boot. For the WebView console, forward
 `localabstract:webview_devtools_remote_<pid>` (underscore, not colon) to 9222.
 
+### Testing reminders and the clipboard on the phone
+
+- Exact alarms are **denied by default** on this phone, which is how the
+  inexact fallback gets exercised; grant it to test the exact path:
+  `adb -s <serial> shell appops set com.minlulin.purplememo SCHEDULE_EXACT_ALARM allow`
+  (`ignore` revokes it again). `appops get … SCHEDULE_EXACT_ALARM` reports the
+  current mode, and `reminder_exact_state` in the webview reports what the app
+  sees.
+- `dumpsys alarm | grep purplememo` shows whether an alarm is still armed, and
+  `dumpsys notification --noredact | grep pkg=com.minlulin.purplememo` shows a
+  posted reminder — both without touching the phone's screen.
+- The debug build exposes `clipboard_probe_read`, so the auto-clear can be
+  measured without installing a second clipboard app.
+- After a reboot the WebView devtools socket has a **new pid**: re-run
+  `adb forward` before the next CDP call, and expect the app to start locked.
+
 ## Mobile entry point
 
 `run()` in `src-tauri/src/lib.rs` is annotated
