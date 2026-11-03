@@ -22,7 +22,6 @@ tauri-plugin-notification = "2.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
-keyring = "4.2.0"
 sha2 = "0.11.0"
 # Only for O_NOFOLLOW / O_EXCL on the key-file temp write (review P3-5). Already
 # in the tree as a transitive dependency, so this declares an existing pin
@@ -35,6 +34,22 @@ tauri-plugin-opener = "2.7.2"
 # One running copy per user. Registered FIRST in `run` - a second
 # launch must be turned away before anything touches the database.
 tauri-plugin-single-instance = "2.5.4"
+
+# Desktop only: the OS credential store (`keyring`) has no Android backend -
+# its default implementation refuses that target outright - so on mobile the
+# database key is wrapped by the Android Keystore instead
+# (`src/key_store/android.rs`). Target-gated rather than feature-gated, so the
+# Android build cannot link or call it at all.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = "4.2.0"
+
+# Android only: the platform seam talks to the Android Keystore through JNI.
+# Both crates are already in the dependency graph (transitively, through
+# Tauri's own Android stack), so this declares existing pins rather than
+# adding new ones.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+ndk-context = "0.1.1"
 
 [profile.release]
 codegen-units = 1

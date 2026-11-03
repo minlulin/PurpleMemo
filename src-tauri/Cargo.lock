@@ -3153,8 +3153,10 @@ name = "purple-memo"
 version = "0.1.1"
 dependencies = [
  "getrandom 0.4.3",
+ "jni 0.21.1",
  "keyring",
  "libc",
+ "ndk-context",
  "rusqlite",
  "serde",
  "serde_json",

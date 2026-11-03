@@ -1,4 +1,4 @@
-//! Encrypted DB core: SQLCipher via rusqlite, keyring key,
+//! Encrypted DB core: SQLCipher via rusqlite, platform key-store key,
 //! one mutex-serialized connection, baseline schema.
 //!
 //! Connection model: a single SQLCipher connection behind a mutex —
@@ -22,8 +22,6 @@ use crate::schema;
 /// Database file name inside the app data dir.
 pub const DB_FILE_NAME: &str = "purple-memo.db";
 
-const KEYRING_SERVICE: &str = "com.minlulin.purplememo";
-const KEYRING_ACCOUNT: &str = "db-encryption-key";
 const KEY_HEX_LEN: usize = 64;
 
 /// How long a write waits for a lock held elsewhere before giving up.
@@ -81,7 +79,7 @@ pub struct ExecuteOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Key management — mint-once into the OS credential store
+// Key management — mint-once into the platform key store
 // ---------------------------------------------------------------------------
 
 /// Mint a fresh random 256-bit key as lowercase hex.
@@ -101,16 +99,14 @@ pub fn validate_stored_key(key: &str) -> Result<String, String> {
     }
 }
 
-/// Read the DB key back out of the OS credential store for the Settings
+/// Read the DB key back out of the platform key store for the Settings
 /// key-export step. Read-only: unlike [`load_or_mint_db_key`]
 /// it never mints — a missing entry is an error, not a fresh key.
 pub fn read_db_key() -> Result<String, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    match entry.get_password() {
-        Ok(key) => validate_stored_key(&key),
-        Err(keyring::Error::NoEntry) => Err("no DB encryption key stored".to_string()),
-        Err(e) => Err(format!("failed to read DB key from credential store: {e}")),
+    match crate::key_store::read() {
+        Ok(Some(key)) => validate_stored_key(&key),
+        Ok(None) => Err("no DB encryption key stored".to_string()),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -136,7 +132,14 @@ pub enum KeyLoadError {
     /// user can recover by restoring an exported key file; nothing is ever
     /// minted over the existing database.
     MissingKeyForExistingDb(String),
-    /// Everything else: keyring unavailable, stored key malformed, and so on.
+    /// The platform key that protected an existing database is gone (Android
+    /// Keystore removal, rotation, or device key loss). No retry and no other
+    /// key can recover it, so the documented outcome is fail closed, wipe the
+    /// mobile copy, and re-pair from desktop. Android-only: desktop uses
+    /// [`Self::MissingKeyForExistingDb`] instead, because there the key can
+    /// also be restored from an exported file.
+    KeyLost(String),
+    /// Everything else: key store unreachable, stored key malformed, and so on.
     Other(String),
 }
 
@@ -144,9 +147,9 @@ impl KeyLoadError {
     /// The user-facing message, whichever class this error is.
     pub fn message(&self) -> &str {
         match self {
-            KeyLoadError::MissingKeyForExistingDb(message) | KeyLoadError::Other(message) => {
-                message
-            }
+            KeyLoadError::MissingKeyForExistingDb(message)
+            | KeyLoadError::KeyLost(message)
+            | KeyLoadError::Other(message) => message,
         }
     }
 
@@ -155,11 +158,30 @@ impl KeyLoadError {
     pub fn is_missing_key_for_existing_db(&self) -> bool {
         matches!(self, KeyLoadError::MissingKeyForExistingDb(_))
     }
+
+    /// True when the key material is unrecoverable, so `boot` must wipe the
+    /// local copy rather than offer choices that cannot work.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn is_key_lost(&self) -> bool {
+        matches!(self, KeyLoadError::KeyLost(_))
+    }
 }
 
 impl From<String> for KeyLoadError {
     fn from(message: String) -> Self {
         KeyLoadError::Other(message)
+    }
+}
+
+impl From<crate::key_store::KeyStoreError> for KeyLoadError {
+    fn from(error: crate::key_store::KeyStoreError) -> Self {
+        use crate::key_store::KeyStoreError;
+        match error {
+            KeyStoreError::Lost(message) => KeyLoadError::KeyLost(message),
+            KeyStoreError::Unavailable(message) | KeyStoreError::Failed(message) => {
+                KeyLoadError::Other(message)
+            }
+        }
     }
 }
 
@@ -178,18 +200,17 @@ impl From<String> for KeyLoadError {
 /// [`KeyLoadError::MissingKeyForExistingDb`] class, which the boot-failure
 /// dialog turns into the restore offer.
 pub fn load_or_mint_db_key(db_path: &Path) -> Result<DbKey, KeyLoadError> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    match entry.get_password() {
-        Ok(key) => Ok(DbKey {
+    match crate::key_store::read()? {
+        Some(key) => Ok(DbKey {
             hex: validate_stored_key(&key)?,
             freshly_minted: false,
         }),
-        Err(keyring::Error::NoEntry) => {
+        None => {
             if db_file_exists(db_path) {
-                return Err(KeyLoadError::MissingKeyForExistingDb(
-                    missing_key_for_existing_db(db_path),
-                ));
+                // A database with no key is never re-keyed. Which class that
+                // refusal takes depends on whether this platform can still
+                // produce the key at all — see [`separated_db_and_key`].
+                return Err(separated_db_and_key(db_path));
             }
             let key = mint_key_hex()?;
             store_db_key(&key)?;
@@ -198,22 +219,17 @@ pub fn load_or_mint_db_key(db_path: &Path) -> Result<DbKey, KeyLoadError> {
                 freshly_minted: true,
             })
         }
-        Err(e) => Err(format!("failed to read DB key from credential store: {e}").into()),
     }
 }
 
-/// Write `key` into the OS credential store's single slot — the same slot
+/// Write `key` into the platform key store's single slot — the same slot
 /// [`load_or_mint_db_key`] mints into on first run, and the slot the
 /// exported-key restore path fills after a successful open.
 pub fn store_db_key(key: &str) -> Result<(), String> {
     // Never store something that is not a key: the slot is one entry deep and
     // a malformed value would block every later run.
     validate_stored_key(key)?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    entry
-        .set_password(key)
-        .map_err(|e| format!("failed to store DB key in credential store: {e}"))
+    crate::key_store::write(key).map_err(|e| e.to_string())
 }
 
 /// Escape a filesystem path so it is safe to embed in ONE audit-log line
@@ -322,9 +338,7 @@ pub fn restore_db_key_from_file(
 /// [`remove_abandoned_new_db`]: discarding the key while the freshly created
 /// file stays would strand a database whose only key is gone (E9).
 pub fn discard_minted_key() {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        let _ = entry.delete_credential();
-    }
+    let _ = crate::key_store::delete();
 }
 
 /// Undo a first run that failed after creating its database (E9).
@@ -589,6 +603,36 @@ pub fn missing_key_for_existing_db(db_path: &Path) -> String {
          Purple Memo will not generate a new key over existing data. Choose Restore exported \
          key… and pick the key file you exported in Settings (Backup & key), or move the \
          database aside to start fresh — doing so discards the data in it.",
+        db_path.display()
+    )
+}
+
+/// Which failure class "an encrypted database exists but the platform key store
+/// holds no key for it" takes on this platform.
+///
+/// Desktop: recoverable — the user may still have the exported key file, so
+/// boot offers the restore path and touches nothing.
+///
+/// Android: not recoverable — the wrapping key exists only in this device's
+/// Keystore, so this is key loss: fail closed, wipe the mobile copy, re-pair
+/// from desktop (design decision 6).
+fn separated_db_and_key(db_path: &Path) -> KeyLoadError {
+    if crate::key_store::MISSING_KEY_IS_RECOVERABLE {
+        KeyLoadError::MissingKeyForExistingDb(missing_key_for_existing_db(db_path))
+    } else {
+        KeyLoadError::KeyLost(key_lost_for_existing_db(db_path))
+    }
+}
+
+/// The refusal for the key-loss class: the copy on the phone is unrecoverable,
+/// so say so and say what fixes it.
+pub fn key_lost_for_existing_db(db_path: &Path) -> String {
+    format!(
+        "the database {} exists but the Android Keystore no longer holds the key that protected \
+         its encryption key (the key was removed, rotated, or the device lost it). Purple Memo \
+         will not open this copy with anything else and will not mint a replacement key over it. \
+         The phone's local copy is wiped so the data cannot be left stranded, and the phone must \
+         be paired with the desktop app again.",
         db_path.display()
     )
 }
@@ -870,7 +914,7 @@ pub fn reconcile_open_txn(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete the DB encryption key from the OS credential store — factory reset
+/// Delete the DB encryption key from the platform key store — factory reset
 /// only.
 ///
 /// Returns `Ok(true)` when a key was removed and `Ok(false)` when there was
@@ -880,16 +924,9 @@ pub fn reconcile_open_txn(conn: &Connection) -> Result<(), String> {
 /// its key. This is deliberately not used anywhere else; nothing but a reset
 /// may remove the key.
 pub fn delete_db_key() -> Result<bool, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(true),
-        // No key stored: already absent, which the reset reports as success.
-        Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(format!(
-            "failed to delete the DB key from the credential store: {e}"
-        )),
-    }
+    // `Ok(false)` means "no key stored": already absent, which a reset reports
+    // as success. On Android the same call also removes the wrapped key blob.
+    crate::key_store::delete().map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

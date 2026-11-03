@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod file_write;
+mod key_store;
 mod lifecycle;
 mod navigation;
 mod photos;
@@ -164,7 +165,7 @@ pub fn run() {
 }
 
 /// Encrypted DB core (P1) — everything the app needs before the frontend can use
-/// it: app-data dir -> keyring key (mint-once) -> SQLCipher open with
+/// it: app-data dir -> platform key-store key (mint-once) -> SQLCipher open with
 /// verify-before-use -> baseline schema -> managed state.
 ///
 /// Takes an `AppHandle` rather than the `App` so the same work can be re-run
@@ -223,7 +224,12 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     // uncommitted, which is what makes removing it (rather than stranding it
     // without its key) the safe move.
     let database_preexisted = db::db_file_exists(&db_path);
-    let key = db::load_or_mint_db_key(&db_path)?;
+    let key = match db::load_or_mint_db_key(&db_path) {
+        Ok(key) => key,
+        // Fail-closed handling of a lost key happens before anything is
+        // opened, so no data is ever decrypted with the wrong key.
+        Err(failure) => return Err(handle_key_load_failure(&data_dir, failure)),
+    };
     // A key this process minted is only correct if the database it opens with
     // it verifies. If the very first run fails anyway, undo what the attempt
     // created and then take the key back out — in that order (E9): discarding
@@ -282,6 +288,57 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     // re-enabled silently by a restart.
     app.manage(share::ShareState::with_lifecycle(lifecycle));
     Ok(())
+}
+
+/// What `boot` must do about a failed key load, on this platform.
+///
+/// Desktop: nothing — the caller reports it, and the boot-failure dialog
+/// decides (Retry, or restore an exported key file).
+///
+/// Android: a lost Keystore key is unrecoverable, and the design decision is
+/// fail closed → wipe the mobile copy → re-pair from desktop. The wipe runs
+/// through the same factory-reset engine Settings uses, so it removes exactly
+/// the owned surface (database files, photos, safety copies, logs, and the
+/// wrapped key plus its Keystore entry) and reports each component.
+#[cfg(not(target_os = "android"))]
+fn handle_key_load_failure(
+    _data_dir: &std::path::Path,
+    failure: db::KeyLoadError,
+) -> db::KeyLoadError {
+    failure
+}
+
+#[cfg(target_os = "android")]
+fn handle_key_load_failure(
+    data_dir: &std::path::Path,
+    failure: db::KeyLoadError,
+) -> db::KeyLoadError {
+    if !failure.is_key_lost() {
+        return failure;
+    }
+    eprintln!("purple-memo: {}", failure.message());
+    // No LAN server and no open connection exist this early in boot, so those
+    // two seams are already-absent/no-op.
+    let outcome = reset::run_factory_reset(
+        reset::fault_injection(),
+        || Ok(false),
+        || Ok(()),
+        data_dir,
+        db::delete_db_key,
+    );
+    let detail = if outcome.complete {
+        "the phone's local copy has been wiped; pairing with the desktop app is required to \
+         use Purple Memo on this device again"
+            .to_string()
+    } else {
+        format!(
+            "wiping the phone's local copy was blocked ({}); nothing further was touched, so no \
+             copy can be opened until this is fixed — free whatever is holding those files and \
+             try again",
+            reset::blocked_summary(&outcome)
+        )
+    };
+    db::KeyLoadError::KeyLost(format!("{}. {detail}", failure.message()))
 }
 
 /// Debug-only fault injection: `kind` (every attempt fails) or `kind:N` (the
@@ -895,7 +952,7 @@ fn format_timestamp_utc(secs: u64) -> String {
 /// App-data dir without a running app. The remembered value wins once `boot`
 /// has resolved it; the environment fallback exists only for the paths that
 /// run before that (or after it failed).
-fn dirs_next_to_db() -> Option<std::path::PathBuf> {
+pub(crate) fn dirs_next_to_db() -> Option<std::path::PathBuf> {
     if let Some(dir) = DATA_DIR.get() {
         return Some(dir.clone());
     }

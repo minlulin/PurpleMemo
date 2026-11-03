@@ -85,6 +85,47 @@ them recreated. If the SQLCipher/OpenSSL step keeps costing time, MSYS2 is the
 cleaner substitute: its perl has the modules and Unix paths, and it provides
 `make` — items 1 and 2 stop being local hacks, and only item 3 remains.
 
+### Rebuilding the shims after a `%TEMP%` cleanup
+
+Windows clears `%TEMP%`, which deletes the shims and with them the recipe above
+(Session 4 hit exactly that). Recreate them before building:
+
+1. `make.exe` — copy Strawberry's `gmake.exe`; a shell-script `make` dies with
+   OS error 216.
+2. `npm.bat` — write it from a heredoc (`@echo off`, then
+   `call "C:\Program Files\nodejs\npm.cmd" %*`). Do not build it with `printf`
+   and escaped backslashes: a half-eaten `\n` splits the path across lines and
+   Gradle then fails with `'"C:\Program Files' is not recognized`.
+3. The `PERL5LIB` module tree — copy each module OpenSSL's `Configure` reports
+   missing from Strawberry's `perl/lib`, `perl/site/lib` and `perl/vendor/lib`
+   into the `PERL5LIB` directory, then re-run `./Configure` until it passes.
+   Nineteen modules were needed: `ExtUtils::MakeMaker` with its `MM_*` family,
+   `Pod::Usage`, `Pod::Text`, `Pod::Simple` and `Locale::Maketext::Simple`.
+   Strawberry's perl cannot be used directly — `Configure` rejects it with
+   *“does not produce Unix like paths”* (MSWin32).
+
+`cc` also reports `Compiler family detection failed … "aarch64-linux-android24-clang":
+program not found` on every build. That warning is expected here: the NDK ships
+that name as a shell script (plus a `.cmd`) which a native Windows `cc` cannot
+spawn, while `openssl-src` only writes the bare name into a Makefile that
+`/usr/bin/sh` runs, where the script resolves normally.
+
+### Reading the device key-store result
+
+`adb logcat -s PurpleMemo` records which backing the phone actually used:
+
+```
+created the Keystore wrapping key purple_memo_db_key_wrap_v1:
+  strongbox_requested=true, backing=TEE
+```
+
+StrongBox is requested first and refused on the Redmi Note 14 Pro+, so the key
+ends up TEE-backed; `strongbox_requested=false` means the fallback path ran.
+`adb logcat -s System.err` carries the Java exception whenever a Keystore call
+is refused, and `run-as com.minlulin.purplememo cat boot-error.log` holds the
+text of the last failed boot. For the WebView console, forward
+`localabstract:webview_devtools_remote_<pid>` (underscore, not colon) to 9222.
+
 ## Mobile entry point
 
 `run()` in `src-tauri/src/lib.rs` is annotated

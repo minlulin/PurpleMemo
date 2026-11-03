@@ -24,13 +24,25 @@ nothing moves to the next phase until its exit gate passes.
 - [x] Mobile entry point; tray / single-instance / updater / desktop window (updater plugin gating still open)
   behavior target-gated
 - [x] SQLCipher + OpenSSL cross-compile via NDK proven
-- [ ] SQLCipher create/open/migrate/reopen with a real Keystore-wrapped DEK
-  **on a device**
-- [ ] Keystore wrap/unwrap, denial/loss handling, reset proven on device
+- [x] SQLCipher create/open/migrate/reopen with a real Keystore-wrapped DEK
+  **on a device**: create, close, reopen after `am force-stop`, and reopen
+  across an APK update all proven on the Redmi from the same wrapped blob. The
+  5→6 migration itself was not replayed there: the only v5 artefact available is
+  a `user_version` stamp on an already-v6 schema, and re-running the step
+  correctly fails on `idx_notes_browse already exists` and rolls back. This is
+  also the recorded proof that a failed migration never boots half-applied; a
+  real v5 database is needed for the migration replay.
+- [x] Keystore wrap/unwrap, denial/loss handling, reset proven on device:
+  tampered blob and missing alias both fail closed with a named message and a
+  full local wipe (no crash, no fallback key, no wrong-key decryption), and reset
+  removes the blob *and* the Keystore entry. StrongBox is requested and refused
+  on this phone, so the DEK is wrapped by a **TEE**-backed key.
 - [ ] Notification scheduling + permission fallback proven on device
 - [ ] Sensitive clipboard write proven on device
 - [ ] Raw-IPC probe done (or explicit desktop-only isolation recorded)
-- [x] Debug APK installs and launches; desktop regression build green (keyring-seam caveat: keyring crate refuses Android; Keystore seam open)
+- [x] Debug APK installs and launches; desktop regression build green (DB key
+  comes from the platform key-store seam; `keyring` is desktop-only and never
+  linked on Android)
 
 **Exit gate:** documented contracts (including UID and first-pair adoption rules),
 reproducible native build, encrypted vertical-slice prototype, no mock key path in
