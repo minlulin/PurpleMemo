@@ -66,20 +66,20 @@ any personal-data build.
 
 ## Phase A — Secure encrypted vertical slice
 
-- [ ] Mobile shell: bottom tabs (Dashboard|Tasks|Budget|Shopping|More),
+- [x] Mobile shell: bottom tabs (Dashboard|Tasks|Budget|Shopping|More),
   More sheet, Android back stack
-- [ ] FAB speed-dial for creation only (Add Note, Add Task, Add Income,
+- [x] FAB speed-dial for creation only (Add Note, Add Task, Add Income,
   Add Expense, Add Shopping Item — habit check-ins live on Dashboard/Habits)
-- [ ] Bottom sheets, safe-area insets, keyboard-aware layouts
-- [ ] Real Keystore protection from the first personal record (never mocked)
-- [ ] Lock/background: 1-min grace, FLAG_SECURE, cache eviction on pause
-- [ ] Stable cross-device UIDs generated on record creation from day one
-- [ ] Notes: view + create
-- [ ] Tasks: view + create + mark done
-- [ ] Shopping: view + create + toggle bought
-- [ ] Mobile migrations run clean on a fresh install
-- [ ] Repository-level tests for the three flows
-- [ ] Search/dashboard show no excluded-module data (allowlist enforced)
+- [x] Bottom sheets, safe-area insets, keyboard-aware layouts
+- [x] Real Keystore protection from the first personal record (never mocked)
+- [x] Lock/background: 1-min grace, FLAG_SECURE, cache eviction on pause
+- [x] Stable cross-device UIDs generated on record creation from day one (emulator proof: note/task/shopping rows and seeded wallets all carry UUID-v4 UIDs; duplicate UID rejected by UNIQUE index)
+- [x] Notes: view + create (emulator proof: explicit note form and Dashboard quick capture)
+- [x] Tasks: view + create + mark done (emulator proof: task moved to COMPLETED and persisted)
+- [x] Shopping: view + create + toggle bought (emulator proof: list/item created and bought state persisted)
+- [x] Mobile migrations run clean on a fresh install (emulator proof: onboarding booted clean with PRAGMA user_version=7, 17 UID indexes, and five seeded wallets backfilled)
+- [x] Repository-level tests for the three flows (npm run verify: JS 879 tests and Rust 196 tests)
+- [x] Search/dashboard show no excluded-module data (SQL allowlist + emulator probe: journal/contact/memory rows excluded; note/task rows returned)
 
 **Exit gate:** offline create/toggle works; process death and background
 lock pass; key loss fails closed; reset removes all owned state; desktop

@@ -117,7 +117,9 @@ export function NoteReaderDialog({
         // Best effort, said out loud: the clear rides this process's timer, so
         // closing the app first leaves the value on the clipboard.
         toast.success(
-          `Copied — clears in ${Math.round(delay / 1000)} s (best effort)`,
+          t("notes.copyBestEffort", {
+            seconds: String(Math.round(delay / 1000)),
+          }),
         );
       } else {
         await navigator.clipboard.writeText(note.content);

@@ -7,13 +7,24 @@
 // `ContactRow.birthday` is `yyyy-mm-dd` or yearless `mm-dd`. Domain objects
 // mirror rows — major units appear only at display/parse edges.
 
-export interface CollectionRow {
+/**
+ * Cross-device identity (docs/ANDROID_DESIGN.md, "Cross-device UID contract").
+ * Every synced table has this column and every creation path mints one; it is
+ * optional on the row types because a projection with an explicit column list
+ * (`listNotes`, the title picker) does not select it, and fixtures written
+ * before schema v7 carry none.
+ */
+interface SyncedRow {
+  uid?: string | null;
+}
+
+export interface CollectionRow extends SyncedRow {
   id: number;
   name: string;
   created_at: string;
 }
 
-export interface NoteRow {
+export interface NoteRow extends SyncedRow {
   id: number;
   title: string;
   content: string;
@@ -138,13 +149,13 @@ export interface LoanRow {
   created_at: string;
 }
 
-export interface ShoppingListRow {
+export interface ShoppingListRow extends SyncedRow {
   id: number;
   name: string;
   created_at: string;
 }
 
-export interface ShoppingItemRow {
+export interface ShoppingItemRow extends SyncedRow {
   id: number;
   list_id: number;
   text: string;
@@ -152,20 +163,20 @@ export interface ShoppingItemRow {
   sort_order: number;
 }
 
-export interface HabitRow {
+export interface HabitRow extends SyncedRow {
   id: number;
   name: string;
   created_at: string;
 }
 
-export interface HabitLogRow {
+export interface HabitLogRow extends SyncedRow {
   id: number;
   habit_id: number;
   log_date: string;
   done: number; // 0 | 1
 }
 
-export interface TaskRow {
+export interface TaskRow extends SyncedRow {
   id: number;
   title: string;
   due_date: string | null;
@@ -239,7 +250,7 @@ export interface RelatedItem {
   gone: boolean;
 }
 
-export interface ReminderRow {
+export interface ReminderRow extends SyncedRow {
   id: number;
   title: string;
   remind_at: string; // local `yyyy-mm-ddTHH:mm`, not a date-only day

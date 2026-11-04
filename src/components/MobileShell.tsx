@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FAB_ACTIONS,
+  type FabActionId,
   historyStateFor,
   MOBILE_LANDING,
   MOBILE_TABS,
@@ -38,6 +39,15 @@ import {
   IconTasks,
   IconVault,
 } from "./icons.tsx";
+import {
+  DashboardScreen,
+  NoteCompose,
+  NotesScreen,
+  ShoppingItemCompose,
+  ShoppingScreen,
+  TaskCompose,
+  TasksScreen,
+} from "./MobileScreens.tsx";
 import { useT } from "./useTranslation.ts";
 
 const TAB_ICONS: Record<MobileTabKey, typeof IconDashboard> = {
@@ -195,13 +205,16 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
 
       <main className="mobile-main" id="main-content" tabIndex={-1}>
         {composeAction !== null ? (
-          <section className="mobile-page">
-            <EmptyState>
-              {t("mobile.compose.body", { what: t(composeAction.label) })}
-            </EmptyState>
-          </section>
+          <ComposeBody
+            id={composeAction.id}
+            label={t(composeAction.label)}
+            onDone={goBack}
+          />
         ) : route.page !== null ? (
-          <SectionBody page={route.page} />
+          <SectionBody
+            page={route.page}
+            onCompose={(id) => go(routeForCompose(id))}
+          />
         ) : route.tab === "more" ? (
           <section className="mobile-page">
             <EmptyState>{t("mobile.more.subtitle")}</EmptyState>
@@ -209,7 +222,7 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
         ) : (
           <SectionBody
             page={route.tab}
-            quickCapture={route.tab === "dashboard"}
+            onCompose={(id) => go(routeForCompose(id))}
           />
         )}
       </main>
@@ -322,45 +335,58 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
 }
 
 /**
- * A section's placeholder screen: the right title, the right empty state, and —
- * on the Dashboard only — one input, so the keyboard layout can be proven before
- * any data flow exists.
+ * A section's body. The three Phase A flows render their real screens; the
+ * rest keep the honest placeholder, because their data screens are later work
+ * and a half-built one would be worse than none.
  */
 function SectionBody({
   page,
-  quickCapture = false,
+  onCompose,
 }: {
   page: PageKey;
-  quickCapture?: boolean;
+  onCompose: (id: "note" | "task" | "shopping") => void;
 }) {
   const t = useT();
   const label = t(sectionLabel(page));
+  if (page === "notes")
+    return <NotesScreen onCompose={() => onCompose("note")} />;
+  if (page === "tasks")
+    return <TasksScreen onCompose={() => onCompose("task")} />;
+  if (page === "shopping") {
+    return <ShoppingScreen onCompose={() => onCompose("shopping")} />;
+  }
+  if (page === "dashboard") return <DashboardScreen />;
   return (
     <section className="mobile-page">
       <p className="mobile-section-kicker">{label}</p>
-      {quickCapture ? (
-        <div className="mobile-quick">
-          <label className="mobile-quick-label" htmlFor="mobile-quick-capture">
-            {t("mobile.quickCapture")}
-          </label>
-          <input
-            id="mobile-quick-capture"
-            className="input"
-            type="text"
-            placeholder={t("mobile.quickCapturePlaceholder")}
-            onFocus={(event) => {
-              const field = event.currentTarget;
-              requestAnimationFrame(() =>
-                field.scrollIntoView({ block: "center" }),
-              );
-            }}
-          />
-          <p className="muted">{t("mobile.quickCaptureHint")}</p>
-        </div>
-      ) : null}
       <EmptyState>
         {t("mobile.placeholder.empty", { section: label })}
       </EmptyState>
+    </section>
+  );
+}
+
+/**
+ * The create screen a FAB action (or a section button) opens. The two Budget
+ * actions stay placeholders until the Budget flows ship; a note, task or
+ * shopping item saves for real and returns to where it was opened from.
+ */
+function ComposeBody({
+  id,
+  label,
+  onDone,
+}: {
+  id: FabActionId;
+  label: string;
+  onDone: () => void;
+}) {
+  const t = useT();
+  if (id === "note") return <NoteCompose onDone={onDone} />;
+  if (id === "task") return <TaskCompose onDone={onDone} />;
+  if (id === "shopping") return <ShoppingItemCompose onDone={onDone} />;
+  return (
+    <section className="mobile-page">
+      <EmptyState>{t("mobile.compose.body", { what: label })}</EmptyState>
     </section>
   );
 }

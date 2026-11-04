@@ -32,6 +32,7 @@ const OFF_SHARE = {
 const SQLITE_TASKS_FIXTURE = `
 CREATE TABLE tasks (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   due_date   TEXT,
   done       INTEGER NOT NULL DEFAULT 0,

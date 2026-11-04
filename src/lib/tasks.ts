@@ -13,6 +13,7 @@ import {
 } from "./dates.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { ReminderRow, TaskRow } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /**
  * Hard cap on catch-up steps in {@link nextReminderAt}'s walk (an unparseable
@@ -181,14 +182,15 @@ export function createTasksRepo(
 
     async createTask(input: TaskInput): Promise<number> {
       const r = await driver.execute(
-        `INSERT INTO tasks (title, due_date, done, repeat, note, created_at)
-         VALUES (?, ?, 0, ?, ?, ?)`,
+        `INSERT INTO tasks (title, due_date, done, repeat, note, created_at, uid)
+         VALUES (?, ?, 0, ?, ?, ?, ?)`,
         [
           input.title,
           input.dueDate ?? null,
           input.repeat ?? "none",
           input.note ?? "",
           todayLocal(),
+          newUid(),
         ],
       );
       return r.lastInsertRowid;
@@ -299,14 +301,15 @@ export function createTasksRepo(
 
     async createReminder(input: ReminderInput): Promise<number> {
       const r = await driver.execute(
-        `INSERT INTO reminders (title, remind_at, repeat, note, fired, created_at)
-         VALUES (?, ?, ?, ?, 0, ?)`,
+        `INSERT INTO reminders (title, remind_at, repeat, note, fired, created_at, uid)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
         [
           input.title,
           input.remindAt,
           input.repeat ?? "none",
           input.note ?? "",
           todayLocal(),
+          newUid(),
         ],
       );
       return r.lastInsertRowid;

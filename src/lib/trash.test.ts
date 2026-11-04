@@ -21,11 +21,13 @@ import {
 const FIXTURE = `
 CREATE TABLE notes (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL,
+  uid       TEXT,
   tags TEXT NOT NULL, collection_id INTEGER, pinned INTEGER NOT NULL,
   archived INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, due_date TEXT, done INTEGER NOT NULL,
+  uid       TEXT,
   repeat TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE contacts (
@@ -165,8 +167,11 @@ function sqliteDriver(): DataDriver & {
 }
 
 function seedNote(db: DatabaseSync, id = 1, title = "A note") {
+  // Named columns on purpose: the identity column is not this fixture's
+  // business, and a positional INSERT would have to be re-counted every time
+  // the real table grows one.
   db.prepare(
-    "INSERT INTO notes VALUES (?, ?, 'body', '', NULL, 0, 0, '2026-01-01', '2026-01-01')",
+    "INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at) VALUES (?, ?, 'body', '', NULL, 0, 0, '2026-01-01', '2026-01-01')",
   ).run(id, title);
 }
 
@@ -175,7 +180,7 @@ async function seedRecycledPair(driver: ReturnType<typeof sqliteDriver>) {
   const { db } = driver;
   seedNote(db, 1, "original note");
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'original task', NULL, 0, 'none', '', '2026-01-01')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'original task', NULL, 0, 'none', '', '2026-01-01')",
   ).run();
   db.prepare(
     "INSERT INTO links VALUES (1, 'related', 'note', 1, 'task', 1, '2026-01-01')",
@@ -186,7 +191,7 @@ async function seedRecycledPair(driver: ReturnType<typeof sqliteDriver>) {
   // SQLite recycles the freed number: id 1 now belongs to an unrelated task
   // while the original is still in Trash.
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'unrelated task', NULL, 0, 'none', '', '2026-01-02')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'unrelated task', NULL, 0, 'none', '', '2026-01-02')",
   ).run();
   return trash;
 }
@@ -196,7 +201,7 @@ test("note Trash round-trip remaps IDs and restores links, photos, and Inbox ref
   const { db } = driver;
   seedNote(db);
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
   ).run();
   db.prepare(
     "INSERT INTO photos VALUES (1, 'photos/n.jpg', 'hash', 'jpg', 3, NULL, '', '2026-01-01')",
@@ -342,7 +347,7 @@ test("a failed source deletion rolls back its Trash snapshot and link removal", 
   const { db } = driver;
   seedNote(db);
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
   ).run();
   db.prepare(
     "INSERT INTO links VALUES (1, 'related', 'note', 1, 'task', 1, '2026-01-01')",
@@ -399,7 +404,7 @@ test("links stay hidden while either endpoint is trashed and return after both r
   const { db } = driver;
   seedNote(db);
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
   ).run();
   db.prepare(
     "INSERT INTO links VALUES (1, 'related', 'note', 1, 'task', 1, '2026-01-01')",
@@ -503,7 +508,7 @@ test("permanent deletion removes the relationship from the other Trash snapshot"
   const { db } = driver;
   seedNote(db);
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'task', NULL, 0, 'none', '', '2026-01-01')",
   ).run();
   db.prepare(
     "INSERT INTO links VALUES (1, 'related', 'note', 1, 'task', 1, '2026-01-01')",
@@ -556,7 +561,7 @@ test("task and memory snapshots restore source fields and memory photo refs", as
   const driver = sqliteDriver();
   const { db } = driver;
   db.prepare(
-    "INSERT INTO tasks VALUES (1, 'task', NULL, 0, 'weekly', 'details', '2026-01-01')",
+    "INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at) VALUES (1, 'task', NULL, 0, 'weekly', 'details', '2026-01-01')",
   ).run();
   db.prepare(
     "INSERT INTO memories VALUES (1, 'memory', '2026-01-02', 'details', '2026-01-01')",

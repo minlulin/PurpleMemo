@@ -4,6 +4,7 @@
 import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import type { ShoppingItemRow, ShoppingListRow } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /**
  * Move an item one step up/down in the manual order. Returns the
@@ -37,8 +38,8 @@ export function createShoppingRepo(driver: DataDriver) {
 
     async createList(name: string): Promise<number> {
       const r = await driver.execute(
-        "INSERT INTO shopping_lists (name, created_at) VALUES (?, ?)",
-        [name, todayLocal()],
+        "INSERT INTO shopping_lists (name, created_at, uid) VALUES (?, ?, ?)",
+        [name, todayLocal(), newUid()],
       );
       return r.lastInsertRowid;
     },
@@ -69,8 +70,8 @@ export function createShoppingRepo(driver: DataDriver) {
       );
       const nextOrder = (maxRows[0]?.max_order ?? -1) + 1;
       const r = await driver.execute(
-        "INSERT INTO shopping_items (list_id, text, done, sort_order) VALUES (?, ?, 0, ?)",
-        [listId, text, nextOrder],
+        "INSERT INTO shopping_items (list_id, text, done, sort_order, uid) VALUES (?, ?, 0, ?, ?)",
+        [listId, text, nextOrder, newUid()],
       );
       return r.lastInsertRowid;
     },

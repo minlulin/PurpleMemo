@@ -1,7 +1,7 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 32 tables at `PRAGMA user_version = 6`: 31 regular tables + the
+//! 32 tables at `PRAGMA user_version = 7`: 31 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
 //! shadow tables are FTS internals, not part of the 31).
 //!
@@ -18,7 +18,9 @@
 //! land on the current version in one step — a test asserts the two agree.
 
 /// The schema version this build expects and stamps.
-pub const SCHEMA_VERSION: i64 = 6;
+use std::sync::OnceLock;
+
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -192,6 +194,80 @@ CREATE TABLE inbox_items (
 CREATE INDEX idx_inbox_items_status ON inbox_items(status, id);
 "#;
 
+/// Cross-device identity for the 17 synced tables
+/// (docs/ANDROID_DESIGN.md, "Cross-device UID contract").
+///
+/// Each row gets a UUID v4 the client that creates it mints locally, so an
+/// offline phone and a desktop can both create records without coordination
+/// and pair later without renumbering anything.
+///
+/// The column is added as NULLABLE, then backfilled, then given a UNIQUE
+/// index. It is NOT `NOT NULL` like the contract asks, for one concrete
+/// reason: SQLite refuses `ALTER TABLE ... ADD COLUMN` with UNIQUE, and it
+/// refuses NOT NULL without a default — so the faithful shape needs the
+/// 12-step table rebuild for all 17 tables, and a DROP TABLE on a parent
+/// (`shopping_lists`, `habits`, `collections`) fires its children's
+/// ON DELETE CASCADE the moment it runs. Rebuilding them to gain a constraint
+/// would delete the data it was meant to protect. NULL is therefore permitted
+/// by the schema and forbidden by the repositories: every create path supplies
+/// a uid, and `uid.test.ts` / the repo tests pin it. The unique index still
+/// gives what sync identity actually needs — no two rows share a uid.
+///
+/// The seeded wallets and categories are records too, so the baseline mints
+/// their uids as well rather than leaving the five defaults NULL forever.
+pub const UID_V4_SQL: &str = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))";
+
+/// Schema v7, built from [`UID_TABLES`] so the table list and the DDL cannot
+/// drift: three statements per table — add the column (NULLABLE, see the note
+/// above), backfill every existing row with its own v4, then make duplicates
+/// impossible.
+///
+/// Built once and cached (`OnceLock`, not `LazyLock`: the crate pins an MSRV
+/// older than 1.80). Returned as `&'static str` because that is what
+/// `db::migration_step` hands to the migration runner.
+pub fn migration_6_7() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| {
+        UID_TABLES
+            .iter()
+            .map(|table| {
+                format!(
+                    "ALTER TABLE {table} ADD COLUMN uid TEXT;\n\
+                     UPDATE {table} SET uid = {UID_V4_SQL} WHERE uid IS NULL;\n\
+                     CREATE UNIQUE INDEX idx_{table}_uid ON {table}(uid);"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    })
+}
+
+/// The 17 tables that carry a cross-device UID (the narrow sync core).
+///
+/// One list, not three copies: `MIGRATION_6_7`, the baseline's unique indexes
+/// and the database tests that build pre-v7 fixtures all describe the same 17
+/// tables, and a table missing from one of them would only show up as a sync
+/// bug months later.
+pub const UID_TABLES: [&str; 17] = [
+    "collections",
+    "notes",
+    "tasks",
+    "reminders",
+    "wallets",
+    "income_categories",
+    "expense_categories",
+    "income_entries",
+    "expense_entries",
+    "shops",
+    "jobs",
+    "loans",
+    "habits",
+    "habit_logs",
+    "shopping_lists",
+    "shopping_items",
+    "vault_items",
+];
+
 /// The full baseline DDL + seed data. Applied inside a single transaction by
 /// `db::init_schema`, which then stamps `user_version`.
 pub const BASELINE_SQL: &str = r#"
@@ -200,12 +276,14 @@ pub const BASELINE_SQL: &str = r#"
 -- ============================================================
 CREATE TABLE collections (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE notes (
   id            INTEGER PRIMARY KEY,
+  uid           TEXT,
   title         TEXT NOT NULL DEFAULT '',
   content       TEXT NOT NULL DEFAULT '',
   tags          TEXT NOT NULL DEFAULT '',
@@ -313,24 +391,28 @@ CREATE TABLE journal_entries (
 -- ============================================================
 CREATE TABLE wallets (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE income_categories (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE expense_categories (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE income_entries (
   id           INTEGER PRIMARY KEY,
+  uid          TEXT,
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
   category_id  INTEGER NOT NULL REFERENCES income_categories(id),
   wallet_id    INTEGER NOT NULL REFERENCES wallets(id),
@@ -341,6 +423,7 @@ CREATE TABLE income_entries (
 
 CREATE TABLE expense_entries (
   id           INTEGER PRIMARY KEY,
+  uid          TEXT,
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
   category_id  INTEGER NOT NULL REFERENCES expense_categories(id),
   wallet_id    INTEGER NOT NULL REFERENCES wallets(id),
@@ -374,6 +457,7 @@ CREATE TABLE recurring_payments (
 -- ============================================================
 CREATE TABLE shops (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL,
   phone      TEXT NOT NULL DEFAULT '',
   address    TEXT NOT NULL DEFAULT '',
@@ -383,6 +467,7 @@ CREATE TABLE shops (
 
 CREATE TABLE jobs (
   id            INTEGER PRIMARY KEY,
+  uid           TEXT,
   title         TEXT NOT NULL,
   shop_id       INTEGER REFERENCES shops(id),
   total_cents   INTEGER NOT NULL CHECK (total_cents > 0),
@@ -410,6 +495,7 @@ CREATE TABLE payables (
 -- ============================================================
 CREATE TABLE loans (
   id           INTEGER PRIMARY KEY,
+  uid          TEXT,
   counterparty TEXT NOT NULL,
   direction    TEXT NOT NULL CHECK (direction IN ('lent', 'borrowed')),
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
@@ -424,12 +510,14 @@ CREATE TABLE loans (
 -- ============================================================
 CREATE TABLE shopping_lists (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE shopping_items (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   list_id    INTEGER NOT NULL REFERENCES shopping_lists(id) ON DELETE CASCADE,
   text       TEXT NOT NULL,
   done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
@@ -441,12 +529,14 @@ CREATE TABLE shopping_items (
 -- ============================================================
 CREATE TABLE habits (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE habit_logs (
   id       INTEGER PRIMARY KEY,
+  uid      TEXT,
   habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
   log_date TEXT NOT NULL,
   done     INTEGER NOT NULL DEFAULT 1 CHECK (done IN (0, 1)),
@@ -455,6 +545,7 @@ CREATE TABLE habit_logs (
 
 CREATE TABLE tasks (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   due_date   TEXT,
   done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
@@ -465,6 +556,7 @@ CREATE TABLE tasks (
 
 CREATE TABLE reminders (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   remind_at  TEXT NOT NULL,
   repeat     TEXT NOT NULL DEFAULT 'none' CHECK (repeat IN ('none', 'daily', 'weekly', 'monthly')),
@@ -533,6 +625,7 @@ CREATE TABLE photo_refs (
 -- ============================================================
 CREATE TABLE vault_items (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   ciphertext TEXT NOT NULL,
   salt       TEXT NOT NULL,
@@ -599,6 +692,30 @@ CREATE INDEX idx_jobs_shop ON jobs(shop_id);
 CREATE INDEX idx_payables_paid_due ON payables(paid, due_date);
 CREATE INDEX idx_shopping_order ON shopping_items(list_id, sort_order);
 
+
+-- Cross-device identity (docs/ANDROID_DESIGN.md, UID contract). One UUID v4
+-- per synced row, minted by the client that creates it; NULL only for rows a
+-- test fixture inserted without one, which is why the column is nullable
+-- rather than NOT NULL — SQLite cannot add a NOT NULL column to a populated
+-- table without rebuilding it (see MIGRATION_6_7).
+CREATE UNIQUE INDEX idx_collections_uid ON collections(uid);
+CREATE UNIQUE INDEX idx_notes_uid ON notes(uid);
+CREATE UNIQUE INDEX idx_tasks_uid ON tasks(uid);
+CREATE UNIQUE INDEX idx_reminders_uid ON reminders(uid);
+CREATE UNIQUE INDEX idx_wallets_uid ON wallets(uid);
+CREATE UNIQUE INDEX idx_income_categories_uid ON income_categories(uid);
+CREATE UNIQUE INDEX idx_expense_categories_uid ON expense_categories(uid);
+CREATE UNIQUE INDEX idx_income_entries_uid ON income_entries(uid);
+CREATE UNIQUE INDEX idx_expense_entries_uid ON expense_entries(uid);
+CREATE UNIQUE INDEX idx_shops_uid ON shops(uid);
+CREATE UNIQUE INDEX idx_jobs_uid ON jobs(uid);
+CREATE UNIQUE INDEX idx_loans_uid ON loans(uid);
+CREATE UNIQUE INDEX idx_habits_uid ON habits(uid);
+CREATE UNIQUE INDEX idx_habit_logs_uid ON habit_logs(uid);
+CREATE UNIQUE INDEX idx_shopping_lists_uid ON shopping_lists(uid);
+CREATE UNIQUE INDEX idx_shopping_items_uid ON shopping_items(uid);
+CREATE UNIQUE INDEX idx_vault_items_uid ON vault_items(uid);
+
 -- ============================================================
 -- Seed data : default wallets + seeded categories. One-time
 -- baseline seeds only — user deletions stick, nothing re-seeds later.
@@ -624,4 +741,10 @@ INSERT INTO income_categories (name, created_at) VALUES
   ('Salary',   strftime('%Y-%m-%d', 'now', 'localtime')),
   ('Gift',     strftime('%Y-%m-%d', 'now', 'localtime')),
   ('Other',    strftime('%Y-%m-%d', 'now', 'localtime'));
+
+-- Seeded rows are records: give them the identity every synced row carries
+-- (the same UUID v4 expression MIGRATION_6_7 backfills with).
+UPDATE wallets SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
+UPDATE expense_categories SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
+UPDATE income_categories SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
 "#;

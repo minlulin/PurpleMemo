@@ -10,6 +10,7 @@ import { cellValue } from "./csv.ts";
 import { isValidISODate, todayLocal } from "./dates.ts";
 import type { MessageKey } from "./i18n.ts";
 import type { TaskRow } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /** Common header spellings accepted for Tasks CSV imports. */
 export const TASK_CSV_ALIASES: Record<string, string> = {
@@ -130,8 +131,8 @@ export async function insertTasks(
   const createdAt = todayLocal();
   await driver.batch(
     rows.map((row) => ({
-      sql: `INSERT INTO tasks (title, due_date, done, repeat, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO tasks (title, due_date, done, repeat, note, created_at, uid)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
       params: [
         row.title,
         row.due_date,
@@ -139,6 +140,9 @@ export async function insertTasks(
         row.repeat,
         row.note,
         createdAt,
+        // Imported rows are created here, so they are as sync-ready as a
+        // hand-typed task.
+        newUid(),
       ],
     })),
   );

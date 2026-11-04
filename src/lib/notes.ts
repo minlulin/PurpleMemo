@@ -11,6 +11,7 @@ import type {
   NoteRow,
   NoteTitleRow,
 } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 export interface NoteInput {
   title: string;
@@ -218,8 +219,8 @@ export function createNotesRepo(
      */
     async createCollection(name: string): Promise<number> {
       const r = await driver.execute(
-        "INSERT INTO collections (name, created_at) VALUES (?, ?)",
-        [name, todayLocal()],
+        "INSERT INTO collections (name, created_at, uid) VALUES (?, ?, ?)",
+        [name, todayLocal(), newUid()],
       );
       return r.lastInsertRowid;
     },
@@ -277,9 +278,11 @@ export function createNotesRepo(
 
     async createNote(input: NoteInput): Promise<number> {
       const today = todayLocal();
+      // The uid is minted here, on the client that creates the record, so this
+      // note is sync-ready before the app has ever paired.
       const r = await driver.execute(
-        `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
+        `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at, uid)
+         VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?)`,
         [
           input.title,
           input.content,
@@ -287,6 +290,7 @@ export function createNotesRepo(
           input.collectionId ?? null,
           today,
           today,
+          newUid(),
         ],
       );
       return r.lastInsertRowid;

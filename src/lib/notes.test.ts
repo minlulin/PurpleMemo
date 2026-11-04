@@ -257,9 +257,10 @@ test("every cut offset in a mixed-script body lands on a cluster boundary (K11)"
 // + FK enforcement), so it carries its own small driver like the other suites.
 
 const COLLECTION_FIXTURE = `
-CREATE TABLE collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE collections (id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE notes (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
+  uid       TEXT,
   tags TEXT NOT NULL DEFAULT '',
   collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
   pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,

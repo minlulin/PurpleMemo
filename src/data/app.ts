@@ -17,6 +17,7 @@ import { createInboxRepo } from "../lib/inbox.ts";
 import { createJournalRepo } from "../lib/journal.ts";
 import { createLoansRepo } from "../lib/loans.ts";
 import { createMemoriesRepo } from "../lib/memories.ts";
+import { mobileSearch } from "../lib/mobileSearch.ts";
 import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
 import { createShareRepo } from "../lib/share.ts";
@@ -108,4 +109,13 @@ export const shareRepo = createShareRepo(driver, {
 
 export function searchWorkspace(input: string, options?: SearchOptions) {
   return globalSearch(driver, input, options);
+}
+
+/**
+ * The phone's search, scoped to its allowlist (`lib/mobileSearch.ts`). Bound to
+ * the same one driver here so no component ever holds the driver itself; the
+ * allowlist is applied inside the query, not to its results.
+ */
+export function searchMobileWorkspace(input: string) {
+  return mobileSearch(driver, input);
 }

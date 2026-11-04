@@ -113,12 +113,41 @@ export const en = {
   "mobile.fab.shopping": "Add shopping item",
   "mobile.quickCapture": "Quick capture",
   "mobile.quickCapturePlaceholder": "Jot something down…",
-  "mobile.quickCaptureHint":
-    "This field proves the keyboard layout; saving arrives with the Notes flow.",
+  "mobile.quickCaptureHint": "Saved straight to Notes — no title needed.",
   "mobile.placeholder.empty":
     "Nothing to show in {section} yet — its data screens arrive in the next build stage.",
-  "mobile.compose.body":
-    "The {what} form arrives with the data flows. This screen proves the create path.",
+  "mobile.compose.body": "The {what} form is not part of this build stage yet.",
+  "mobile.addItem": "Add item",
+  "mobile.markDone": "Mark done",
+  "mobile.markNotDone": "Mark not done",
+  "mobile.markBought": "Mark bought",
+  "mobile.markNotBought": "Mark not bought",
+  "mobile.noteTitlePlaceholder": "Title (optional)",
+  "mobile.noteSaved": "Saved to Notes.",
+  "mobile.loadFailed": "Could not load this screen. Try again.",
+  "mobile.shoppingNoLists":
+    "No lists yet — create one below to start your shopping list.",
+  "mobile.shoppingEmpty": "Nothing on this list yet.",
+  "mobile.shoppingItemsAria": "Shopping items",
+  "mobile.shoppingNewList": "New list…",
+  "mobile.shoppingCreateList": "Create list",
+  "mobile.shoppingListName": "List name",
+  "mobile.shoppingListLabel": "List",
+  "mobile.shoppingItemLabel": "Item",
+  "mobile.shoppingItemPlaceholder": "e.g. Milk",
+  "mobile.searchLabel": "Search",
+  "mobile.searchPlaceholder": "Search notes and tasks…",
+  "mobile.searchHint": "The phone searches notes and tasks only.",
+  "mobile.searchNoResults": "Nothing found in notes or tasks.",
+  "mobile.searchResultsAria": "Search results",
+
+  "reminders.noticeExact":
+    "Reminders are scheduled on this phone and fire even when Purple Memo is closed.",
+  "reminders.noticeInexact":
+    "Exact alarms are not allowed on this phone, so reminders may arrive a few minutes late.",
+  "reminders.noticeUnknown":
+    "Reminders are scheduled on this phone; this device could not report whether they are exact.",
+  "reminders.allowExact": "Allow exact alarms",
   "markdown.linkFailed":
     "Could not open {url} — this system has no handler for it.",
 
@@ -364,6 +393,7 @@ export const en = {
   "notes.nextNote": "Next note",
   "notes.copyMarkdown": "Copy Markdown",
   "notes.copied": "Copied to clipboard",
+  "notes.copyBestEffort": "Copied — clears in {seconds} s (best effort)",
   "notes.collapseCollections": "Collapse collections",
   "notes.expandCollections": "Expand collections",
 
@@ -813,12 +843,40 @@ export const my: Record<MessageKey, string> = {
   "mobile.fab.shopping": "ဈေးဝယ်ပစ္စည်းထည့်ရန်",
   "mobile.quickCapture": "အမြန်မှတ်တမ်း",
   "mobile.quickCapturePlaceholder": "တစ်ခုခု ချရေးပါ…",
-  "mobile.quickCaptureHint":
-    "ဤကွက်လပ်က ကီးဘုတ်အပြင်အဆင်ကို သက်သေပြသည်; သိမ်းဆည်းခြင်းသည် Notes လုပ်ငန်းစဉ်နှင့်အတူ လာမည်။",
+  "mobile.quickCaptureHint": "မှတ်စုများထဲသို့ တိုက်ရိုက် သိမ်းဆည်းသည် — ခေါင်းစဉ် မလိုအပ်ပါ။",
   "mobile.placeholder.empty":
     "{section} တွင် ပြသရန် မရှိသေးပါ — ၎င်း၏ ဒေတာစာမျက်နှာများ နောက်အဆင့်တွင် လာမည်။",
-  "mobile.compose.body":
-    "{what} ဖောင်သည် ဒေတာလုပ်ငန်းစဉ်များနှင့်အတူ လာမည်။ ဤစာမျက်နှာက ဖန်တီးလမ်းကြောင်းကို သက်သေပြသည်။",
+  "mobile.compose.body": "{what} ဖောင်သည် ဤအဆင့်တွင် မပါဝင်သေးပါ။",
+  "mobile.addItem": "ပစ္စည်းထည့်ရန်",
+  "mobile.markDone": "ပြီးစီးအဖြစ် မှတ်ရန်",
+  "mobile.markNotDone": "မပြီးစီးအဖြစ် ပြန်ထားရန်",
+  "mobile.markBought": "ဝယ်ပြီးအဖြစ် မှတ်ရန်",
+  "mobile.markNotBought": "မဝယ်ရသေးအဖြစ် ပြန်ထားရန်",
+  "mobile.noteTitlePlaceholder": "ခေါင်းစဉ် (မဖြစ်မနေ မဟုတ်)",
+  "mobile.noteSaved": "မှတ်စုများထဲသို့ သိမ်းပြီးပါပြီ။",
+  "mobile.loadFailed": "ဤစာမျက်နှာကို ဖွင့်၍မရပါ။ ထပ်ကြိုးစားပါ။",
+  "mobile.shoppingNoLists": "စာရင်း မရှိသေးပါ — အောက်တွင် တစ်ခု ဖန်တီးပြီး စတင်ပါ။",
+  "mobile.shoppingEmpty": "ဤစာရင်းတွင် မည်သည့်အရာမှ မရှိသေးပါ။",
+  "mobile.shoppingItemsAria": "ဈေးဝယ်စာရင်း ပစ္စည်းများ",
+  "mobile.shoppingNewList": "စာရင်းအသစ်…",
+  "mobile.shoppingCreateList": "စာရင်း ဖန်တီးရန်",
+  "mobile.shoppingListName": "စာရင်းအမည်",
+  "mobile.shoppingListLabel": "စာရင်း",
+  "mobile.shoppingItemLabel": "ပစ္စည်း",
+  "mobile.shoppingItemPlaceholder": "ဥပမာ နို့",
+  "mobile.searchLabel": "ရှာဖွေရန်",
+  "mobile.searchPlaceholder": "မှတ်စုနှင့် လုပ်ငန်းများကို ရှာပါ…",
+  "mobile.searchHint": "ဖုန်းတွင် မှတ်စုနှင့် လုပ်ငန်းများကိုသာ ရှာသည်။",
+  "mobile.searchNoResults": "မှတ်စုနှင့် လုပ်ငန်းများထဲတွင် မတွေ့ပါ။",
+  "mobile.searchResultsAria": "ရှာဖွေမှု ရလဒ်များ",
+
+  "reminders.noticeExact":
+    "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသောကြောင့် Purple Memo ပိတ်ထားလည်း အချိန်တိုင်း အသိပေးပါမည်။",
+  "reminders.noticeInexact":
+    "ဤဖုန်းတွင် တိကျသော နှိုးဆော်ချက် (exact alarm) ခွင့်မပြုထားပါ၊ ထို့ကြောင့် သတိပေးချက်များ မိနစ်အနည်းငယ် နောက်ကျနိုင်သည်။",
+  "reminders.noticeUnknown":
+    "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသည်; သို့သော် တိကျမှုကို ဤစက်က မဖော်ပြနိုင်ပါ။",
+  "reminders.allowExact": "တိကျသော နှိုးဆော်ချက်ကို ခွင့်ပြုရန်",
   "markdown.linkFailed": "{url} ကို ဖွင့်၍မရပါ — ဤစနစ်တွင် ကိုင်တွယ်သည့် အက်ပ်မရှိပါ။",
 
   "shortcuts.esc": "ဒိုင်ယာလော့ဂ်တစ်ခုကို ပိတ်မည်",
@@ -1060,6 +1118,7 @@ export const my: Record<MessageKey, string> = {
   "notes.nextNote": "နောက် မှတ်စု",
   "notes.copyMarkdown": "Markdown ကူးယူရန်",
   "notes.copied": "ကူးယူပြီးပါပြီ",
+  "notes.copyBestEffort": "ကူးယူပြီးပါပြီ — {seconds} စက္ကန့်အတွင်း ရှင်းပါမည် (အတတ်နိုင်ဆုံး)",
   "notes.collapseCollections": "စုစည်းမှုများ ချုံ့မည်",
   "notes.expandCollections": "စုစည်းမှုများ ချဲ့မည်",
 

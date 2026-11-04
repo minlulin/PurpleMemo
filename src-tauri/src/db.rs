@@ -755,6 +755,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         3 => Some(schema::MIGRATION_3_4),
         4 => Some(schema::MIGRATION_4_5),
         5 => Some(schema::MIGRATION_5_6),
+        6 => Some(schema::migration_6_7()),
         _ => None,
     }
 }
@@ -2163,6 +2164,20 @@ mod tests {
 
     // -- Sequential, forward-only migrations --------
 
+    /// Remove the v7 identity columns so a fixture can be an honest pre-v7
+    /// database. The indexes go first: SQLite refuses to drop an indexed
+    /// column, and the fixture's job is to look like an older install.
+    fn strip_uid_columns(conn: &Connection) {
+        let mut sql = String::new();
+        for table in schema::UID_TABLES {
+            sql.push_str(&format!("DROP INDEX idx_{table}_uid;\n"));
+        }
+        for table in schema::UID_TABLES {
+            sql.push_str(&format!("ALTER TABLE {table} DROP COLUMN uid;\n"));
+        }
+        conn.execute_batch(&sql).expect("strip v7 uid columns");
+    }
+
     /// A database that looks exactly like a version-1 install: the current
     /// baseline with everything version 2 and later added removed again, stamped
     /// 1.
@@ -2208,6 +2223,7 @@ mod tests {
              END;",
         )
         .expect("strip v2+ additions");
+        strip_uid_columns(&conn);
         conn.pragma_update(None, "user_version", 1i64)
             .expect("stamp v1");
         conn.execute_batch(
@@ -2433,6 +2449,141 @@ mod tests {
         );
     }
 
+    /// A version-6 database: the baseline with the v7 identity columns stripped
+    /// again, stamped 6, holding rows in the tables Phase A writes so the
+    /// backfill has something real to stamp.
+    fn seeded_v6(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_uid_columns(&conn);
+        conn.pragma_update(None, "user_version", 6i64)
+            .expect("stamp v6");
+        conn.execute_batch(
+            "INSERT INTO notes (title, content, tags, created_at, updated_at)
+               VALUES ('Pre-v7 note', 'body', 'a', '2026-01-01', '2026-01-02');
+             INSERT INTO collections (name, created_at) VALUES ('Work', '2026-01-01');
+             INSERT INTO tasks (title, due_date, done, repeat, note, created_at)
+               VALUES ('Pre-v7 task', '2026-01-05', 0, 'none', '', '2026-01-01');
+             INSERT INTO shopping_lists (name, created_at) VALUES ('Groceries', '2026-01-01');
+             INSERT INTO shopping_items (list_id, text, done, sort_order)
+               VALUES (1, 'milk', 0, 0);",
+        )
+        .expect("seed pre-v7 rows");
+        (dir, conn)
+    }
+
+    /// Canonical UUID v4 text: 36 lowercase chars, the version and variant
+    /// nibbles in the right places. Hand-checked rather than regexed because the
+    /// crate would be a dependency for one assertion.
+    fn is_uuid_v4(value: &str) -> bool {
+        let chars: Vec<char> = value.chars().collect();
+        if chars.len() != 36 {
+            return false;
+        }
+        for (index, ch) in chars.iter().enumerate() {
+            let hyphen = matches!(index, 8 | 13 | 18 | 23);
+            if hyphen {
+                if *ch != '-' {
+                    return false;
+                }
+                continue;
+            }
+            if !(*ch).is_ascii_hexdigit() || (*ch).is_ascii_uppercase() {
+                return false;
+            }
+        }
+        chars[14] == '4' && matches!(chars[19], '8' | '9' | 'a' | 'b')
+    }
+
+    #[test]
+    fn migration_6_7_stamps_uid_v4_on_every_synced_row_and_matches_the_baseline() {
+        let (_dir, migrated) = seeded_v6("uid-migration");
+        init_schema(&migrated).expect("migrate 6 -> 7");
+        let version: i64 = migrated
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        // One expression, two callers: the migration backfills with it and the
+        // baseline seeds mint with it, so a seed row is stamped exactly like a
+        // migrated one instead of being left NULL.
+        assert!(
+            schema::BASELINE_SQL.contains(schema::UID_V4_SQL),
+            "the baseline seeds must use the same UUID expression as the migration"
+        );
+
+        for table in schema::UID_TABLES {
+            let missing = scalar_i64(
+                &migrated,
+                &format!("SELECT count(*) FROM {table} WHERE uid IS NULL"),
+            );
+            assert_eq!(missing, 0, "{table}: a pre-v7 row was left without a uid");
+            let sql = format!("SELECT uid FROM {table}");
+            let mut statement = migrated.prepare(&sql).expect("prepare uid read");
+            let uids: Vec<String> = statement
+                .query_map([], |row| row.get::<_, Option<String>>(0))
+                .expect("query uids")
+                .map(|row| row.expect("uid read").expect("uid present"))
+                .collect();
+            for uid in &uids {
+                assert!(is_uuid_v4(uid), "{table}: {uid} is not a UUID v4");
+            }
+        }
+
+        // Not vacuous: the seeded Phase A rows are among the stamped rows.
+        assert_eq!(
+            scalar_i64(
+                &migrated,
+                "SELECT count(*) FROM notes WHERE uid IS NOT NULL"
+            ),
+            1,
+            "the pre-v7 note must have been backfilled"
+        );
+        assert_eq!(
+            scalar_i64(
+                &migrated,
+                "SELECT count(*) FROM shopping_items WHERE uid IS NOT NULL"
+            ),
+            1,
+            "the pre-v7 shopping item must have been backfilled"
+        );
+
+        // The identity is unique: reusing a minted uid is refused by the index.
+        let duplicate = migrated.execute(
+            "INSERT INTO notes (title, content, tags, created_at, updated_at, uid)
+             VALUES ('clone', '', '', '2026-01-01', '2026-01-01', (SELECT uid FROM notes LIMIT 1))",
+            [],
+        );
+        assert!(duplicate.is_err(), "a duplicate uid must be refused");
+
+        // And the migrated indexes are exactly the fresh baseline's.
+        let (_fresh_dir, fresh) = open_baseline("uid-baseline");
+        for table in schema::UID_TABLES {
+            let name = format!("idx_{table}_uid");
+            let fresh_sql: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .expect("fresh structure");
+            let migrated_sql: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .expect("migrated structure");
+            assert_eq!(
+                normalize_sql(&fresh_sql),
+                normalize_sql(&migrated_sql),
+                "{name} differs between fresh baseline and migration"
+            );
+        }
+    }
+
     /// SQLite records the DDL as it was typed, so two textually different but
     /// equivalent definitions compare equal here and not in `assert_eq!`. Comments
     /// are dropped too: the two copies of this DDL sit under different explanatory
@@ -2591,6 +2742,7 @@ mod tests {
                  END;",
             )
             .expect("strip v2+");
+            strip_uid_columns(&conn);
             conn.pragma_update(None, "user_version", 1i64)
                 .expect("stamp v1");
             conn.execute_batch(
@@ -2716,6 +2868,7 @@ mod tests {
              END;",
         )
         .expect("strip v3 additions");
+        strip_uid_columns(&conn);
         conn.pragma_update(None, "user_version", 2i64)
             .expect("stamp v2");
         conn.execute_batch(
@@ -2769,6 +2922,7 @@ mod tests {
              END;",
         )
         .expect("strip v4 addition");
+        strip_uid_columns(&conn);
         conn.pragma_update(None, "user_version", 3i64)
             .expect("stamp v3");
         (dir, conn)
@@ -2849,6 +3003,7 @@ mod tests {
              END;",
         )
         .expect("strip v5 additions");
+        strip_uid_columns(&conn);
         conn.pragma_update(None, "user_version", 4i64)
             .expect("stamp v4");
         conn.execute_batch(

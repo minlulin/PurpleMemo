@@ -4,6 +4,7 @@
 import type { DataDriver } from "../data/driver.ts";
 import { addDays, todayLocal } from "./dates.ts";
 import type { HabitLogRow, HabitRow } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /** Current streak: consecutive logged days ending today or yesterday. */
 export function currentStreak(dates: string[], today: string): number {
@@ -54,8 +55,8 @@ export function createHabitsRepo(driver: DataDriver) {
 
     async createHabit(name: string): Promise<number> {
       const r = await driver.execute(
-        "INSERT INTO habits (name, created_at) VALUES (?, ?)",
-        [name, todayLocal()],
+        "INSERT INTO habits (name, created_at, uid) VALUES (?, ?, ?)",
+        [name, todayLocal(), newUid()],
       );
       return r.lastInsertRowid;
     },
@@ -85,8 +86,8 @@ export function createHabitsRepo(driver: DataDriver) {
         return false;
       }
       await driver.execute(
-        "INSERT INTO habit_logs (habit_id, log_date, done) VALUES (?, ?, 1)",
-        [habitId, logDate],
+        "INSERT INTO habit_logs (habit_id, log_date, done, uid) VALUES (?, ?, 1, ?)",
+        [habitId, logDate, newUid()],
       );
       return true;
     },

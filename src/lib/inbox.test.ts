@@ -64,6 +64,7 @@ CREATE TABLE inbox_items (
 );
 CREATE TABLE notes (
   id          INTEGER PRIMARY KEY,
+  uid       TEXT,
   title       TEXT NOT NULL DEFAULT '',
   content     TEXT NOT NULL DEFAULT '',
   tags        TEXT NOT NULL DEFAULT '',
@@ -75,6 +76,7 @@ CREATE TABLE notes (
 );
 CREATE TABLE tasks (
   id         INTEGER PRIMARY KEY,
+  uid       TEXT,
   title      TEXT NOT NULL,
   due_date   TEXT,
   done       INTEGER NOT NULL DEFAULT 0,

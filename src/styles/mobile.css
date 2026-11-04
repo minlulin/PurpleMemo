@@ -268,3 +268,158 @@
     transition: none;
   }
 }
+
+/* Data screens (Phase A Session 3) ---------------------------------------- */
+
+.mobile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.mobile-actions .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mobile-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-card-border);
+  border-radius: var(--radius-lg);
+}
+
+.mobile-card-title {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+}
+
+.mobile-card-body {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-muted, var(--color-text));
+  font-size: var(--text-sm);
+  /* Two lines of preview: enough to recognise a note, never the whole body. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.mobile-card-meta {
+  margin: 0;
+  color: var(--color-text-muted, var(--color-text));
+  font-size: var(--text-xs);
+  opacity: 0.75;
+}
+
+.mobile-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  /* 44pt minimum touch target, as the design language asks. */
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-card-border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+
+.mobile-row input[type="checkbox"] {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.mobile-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.mobile-row-meta {
+  color: var(--color-text-muted, var(--color-text));
+  font-size: var(--text-xs);
+}
+
+.mobile-row.is-done .mobile-row-text {
+  color: var(--color-text-muted, var(--color-text));
+  text-decoration: line-through;
+}
+
+.mobile-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.mobile-chip {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-card-border);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+
+.mobile-chip.is-active {
+  background: var(--color-accent, var(--color-surface-hover));
+  border-color: var(--color-accent, var(--color-card-border));
+  color: var(--color-on-accent, var(--color-text));
+}
+
+.mobile-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.mobile-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.mobile-textarea {
+  min-height: 8rem;
+  resize: vertical;
+}
+
+.mobile-error {
+  margin: 0;
+  color: var(--color-danger, var(--color-text));
+  font-size: var(--text-sm);
+}
+
+.mobile-saved {
+  margin: 0;
+  color: var(--color-text-muted, var(--color-text));
+  font-size: var(--text-sm);
+}
+
+.mobile-link-btn {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--color-accent, var(--color-text));
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  cursor: pointer;
+}

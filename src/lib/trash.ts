@@ -12,6 +12,7 @@ import type {
   TrashEntityType,
   TrashItemRow,
 } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 // The row types live in types.ts with every other table's (docs/AUDIT.md
 // SCHEMA-02); these re-exports keep the call sites that already import them
@@ -54,6 +55,11 @@ const TABLES: Record<TrashEntityType, string> = {
 const COLUMNS: Record<TrashEntityType, string[]> = {
   note: [
     "id",
+    // Identity travels with the snapshot, so a restore brings the record back
+    // as the same record instead of a copy (UID contract). Snapshots written
+    // before schema v7 have no `uid`; restore mints one for those instead of
+    // rejecting a Trash item the user can see on screen.
+    "uid",
     "title",
     "content",
     "tags",
@@ -63,7 +69,16 @@ const COLUMNS: Record<TrashEntityType, string[]> = {
     "created_at",
     "updated_at",
   ],
-  task: ["id", "title", "due_date", "done", "repeat", "note", "created_at"],
+  task: [
+    "id",
+    "uid",
+    "title",
+    "due_date",
+    "done",
+    "repeat",
+    "note",
+    "created_at",
+  ],
   contact: ["id", "name", "address", "birthday", "notes", "created_at"],
   memory: ["id", "title", "memory_date", "note", "created_at"],
   journal_entry: ["id", "entry_date", "content", "created_at", "updated_at"],
@@ -292,7 +307,9 @@ export function validateTrashPayload(
     const snapshot = asSnapshot(row.snapshot);
     if (
       Number(snapshot.entity.id) !== entityId ||
-      COLUMNS[type].some((column) => !(column in snapshot.entity))
+      COLUMNS[type].some(
+        (column) => column !== "uid" && !(column in snapshot.entity),
+      )
     ) {
       throw new Error("Backup contains an incomplete Trash snapshot.");
     }
@@ -524,6 +541,9 @@ export function createTrashRepo(driver: DataDriver) {
     if (rootId === undefined)
       throw new Error("Could not allocate a restore ID.");
     const restored: Row = { ...snapshot.entity, id: rootId };
+    if (columns.includes("uid") && restored.uid === undefined) {
+      restored.uid = newUid();
+    }
     if (type === "note" && restored.collection_id !== null) {
       const collections = await driver.query<{ id: number }>(
         "SELECT id FROM collections WHERE id = ?",

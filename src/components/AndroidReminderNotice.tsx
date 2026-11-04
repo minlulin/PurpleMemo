@@ -14,10 +14,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { isAndroidPlatform } from "../lib/android-reminders.ts";
+import { useT } from "./useTranslation.ts";
 
 type ExactState = "exact" | "inexact" | "unknown";
 
 export function AndroidReminderNotice() {
+  const t = useT();
   const [state, setState] = useState<ExactState | null>(null);
   const [opening, setOpening] = useState(false);
 
@@ -53,28 +55,21 @@ export function AndroidReminderNotice() {
   return (
     <p className="alert alert-note" role="status">
       {state === "exact" ? (
-        <>
-          Reminders are scheduled on this phone and fire even when Purple Memo
-          is closed.
-        </>
+        <>{t("reminders.noticeExact")}</>
       ) : state === "inexact" ? (
         <>
-          Exact alarms are not allowed on this phone, so reminders may arrive a
-          few minutes late.{" "}
+          {t("reminders.noticeInexact")}{" "}
           <button
             type="button"
             className="btn btn-ghost"
             disabled={opening}
             onClick={() => void openSettings()}
           >
-            Allow exact alarms
+            {t("reminders.allowExact")}
           </button>
         </>
       ) : (
-        <>
-          Reminders are scheduled on this phone; this device could not report
-          whether they are exact.
-        </>
+        <>{t("reminders.noticeUnknown")}</>
       )}
     </p>
   );
