@@ -223,12 +223,40 @@ device/emulator*, so **every** emulator call passes `-s`:
   `adb -s 4c61bf7a …` answers *device '4c61bf7a' not found* rather than falling
   through to an emulator.
 
-### Phase A note — ABI mismatch with the release build
+### x86_64 debug variant (emulator only)
 
-The release APK is **arm64-v8a only** (decision 11), so it will **not** install
-on this x86_64 emulator. UI testing on the emulator needs either an x86_64 test
-build variant (Rust target `x86_64-linux-android`, which the NDK ships) or a slow
-arm64 AVD. Neither is implemented here; it is a Phase A decision.
+The release APK is **arm64-v8a only** (decision 11) and will not install on this
+x86_64 emulator, so there is a debug-only x86_64 build for `purple_memo_test`:
+
+```
+npx tauri android build --debug --target x86_64 --apk
+```
+
+The environment preamble is the one above, with the compiler variables named for
+this target. They must be passed through `env`, never `export`: bash rejects a
+hyphenated identifier, so `export CC_x86_64-linux-android=…` fails and leaves the
+variable unset — openssl-src then falls back to the NDK's `.cmd` wrapper, whose
+Windows path `/usr/bin/sh` mangles into `C:Userspurpl…clang.exe`:
+
+```
+env CC_x86_64-linux-android=x86_64-linux-android24-clang \
+    AR_x86_64-linux-android=llvm-ar \
+    RANLIB_x86_64-linux-android=llvm-ranlib \
+    npx tauri android build --debug --target x86_64 --apk
+```
+
+The APK lands beside the arm64 one
+(`app/build/outputs/apk/universal/debug/app-universal-debug.apk`) and contains
+`lib/x86_64/libpurple_memo_lib.so` only. Install it with an explicit serial:
+`adb -s emulator-5554 install -r <apk>`.
+
+**It never ships.** `app/build.gradle.kts` checks the ABI set at configuration
+time and fails any release build that is not exactly `arm64-v8a`: `--release
+--target x86_64` and a release build with no `--target` (which would default to
+all four ABIs) both stop with an explicit error instead of packaging an extra
+ABI. The per-ABI flavors themselves come from the generated `RustPlugin`, which
+builds one Rust target per ABI; nothing in the release path is changed by the
+debug variant.
 
 ### When sdkmanager stalls (worked around here)
 
@@ -242,14 +270,7 @@ containing `;` when they are passed inline — use `--package_file=` instead.
 
 ## Known gaps (from the Session 2 device run)
 
-1. **The app does not reach its first screen yet.** It builds, installs and
-   launches, and the webview frontend runs, but `boot` fails at the first
-   platform seam: `keyring` has no Android backend, so the app shows its own
-   "Purple Memo can't start — keyring entry unavailable: No default store has
-   been set" dialog with Quit/Retry. Replacing that key store with Android
-   Keystore is the Phase 0/A item, not a Session 2 change; the dialog proving
-   visible and answerable is the useful part of this feasibility build.
-2. **`minSdk` is still Tauri's default 24.** Decision 11 in
+1. **`minSdk` is still Tauri's default 24.** Decision 11 in
    `docs/ANDROID_DESIGN.md` pins the support envelope at **min API 26**
    (Android 8.0) with arm64-v8a only. Left as generated so far — the debug
    build runs on the Redmi either way.
