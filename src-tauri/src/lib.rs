@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod external_links;
 mod file_write;
 mod key_store;
 mod lifecycle;
@@ -166,6 +167,7 @@ pub fn run() {
             commands::share_publish,
             commands::factory_reset,
             commands::app_restart,
+            external_links::open_external_url,
             reminders::reminder_sync,
             reminders::reminder_exact_state,
             reminders::reminder_open_exact_alarm_settings,

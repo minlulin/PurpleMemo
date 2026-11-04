@@ -8,9 +8,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AnchorHTMLAttributes, HTMLAttributes, ReactNode } from "react";
 import { createElement, useRef } from "react";
 import type { Components } from "react-markdown";
+import { isAndroidPlatform } from "../lib/android-reminders.ts";
+import { openExternalUrl } from "../lib/externalLinks.ts";
 import { createHeadingIdScope } from "../lib/headingIds.ts";
 import { routeLink } from "../lib/links.ts";
 import { useToast } from "./Toast.tsx";
+import { useT } from "./useTranslation.ts";
 
 interface MarkdownLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
   children?: ReactNode;
@@ -18,6 +21,7 @@ interface MarkdownLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
 
 export function MarkdownLink({ href, children, title }: MarkdownLinkProps) {
   const toast = useToast();
+  const t = useT();
   const route = routeLink(href);
   // Hand a normalized URL to the opener: `new URL(href).href` lowercases the
   // scheme (and host) so an uppercase `HTTPS://…` matches the opener's
@@ -34,10 +38,13 @@ export function MarkdownLink({ href, children, title }: MarkdownLinkProps) {
         if (route === "hash") return;
         event.preventDefault();
         if (external === undefined) return;
-        void openUrl(external).catch(() => {
-          toast.error(
-            `Could not open ${external} — this system has no handler for it.`,
-          );
+        // Android has no opener plugin (docs/ANDROID_IPC_SURFACE.md finding #3):
+        // the phone hands the URL to its own VIEW-intent command instead.
+        const opening = isAndroidPlatform()
+          ? openExternalUrl(external)
+          : openUrl(external);
+        void opening.catch(() => {
+          toast.error(t("markdown.linkFailed", { url: external }));
         });
       }}
       title={

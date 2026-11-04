@@ -98,6 +98,30 @@ export const en = {
   "nav.more": "All tools",
   "nav.settings": "Settings",
 
+  "settings.pinUpdated": "PIN updated.",
+  "mobile.moreTab": "More",
+  "mobile.more.title": "More tools",
+  "mobile.more.subtitle":
+    "The remaining tools open from here — Notes, Business, Loans, Habits, Vault and Settings.",
+  "mobile.more.close": "Close the tools sheet",
+  "mobile.fab.open": "Create something",
+  "mobile.fab.close": "Close the create menu",
+  "mobile.fab.note": "Add note",
+  "mobile.fab.task": "Add task",
+  "mobile.fab.income": "Add income",
+  "mobile.fab.expense": "Add expense",
+  "mobile.fab.shopping": "Add shopping item",
+  "mobile.quickCapture": "Quick capture",
+  "mobile.quickCapturePlaceholder": "Jot something down…",
+  "mobile.quickCaptureHint":
+    "This field proves the keyboard layout; saving arrives with the Notes flow.",
+  "mobile.placeholder.empty":
+    "Nothing to show in {section} yet — its data screens arrive in the next build stage.",
+  "mobile.compose.body":
+    "The {what} form arrives with the data flows. This screen proves the create path.",
+  "markdown.linkFailed":
+    "Could not open {url} — this system has no handler for it.",
+
   "shortcuts.esc": "Close a dialog",
   "shortcuts.tab": "Move inside a dialog, never behind it",
   "shortcuts.tabFirst": "First stop skips straight to the content",
@@ -773,6 +797,29 @@ export const my: Record<MessageKey, string> = {
   "nav.vault": "လျှို့ဝှက်သေတ္တာ",
   "nav.more": "ကိရိယာအားလုံး",
   "nav.settings": "ဆက်တင်များ",
+
+  "settings.pinUpdated": "PIN ကို အပ်ဒိတ်လုပ်ပြီးပါပြီ။",
+  "mobile.moreTab": "အခြား",
+  "mobile.more.title": "ကိရိယာများ",
+  "mobile.more.subtitle":
+    "ကျန်သည့်ကိရိယာများကို ဤနေရာမှ ဖွင့်သည် — မှတ်စုများ၊ လုပ်ငန်း၊ ချေးငွေ၊ အလေ့အထ၊ Vault နှင့် ဆက်တင်များ။",
+  "mobile.more.close": "ကိရိယာစာရွက်ကို ပိတ်ပါ",
+  "mobile.fab.open": "အသစ်ဖန်တီးရန်",
+  "mobile.fab.close": "ဖန်တီးမီနူးကို ပိတ်ပါ",
+  "mobile.fab.note": "မှတ်စုထည့်ရန်",
+  "mobile.fab.task": "လုပ်ငန်းထည့်ရန်",
+  "mobile.fab.income": "ဝင်ငွေထည့်ရန်",
+  "mobile.fab.expense": "အသုံးစရိတ်ထည့်ရန်",
+  "mobile.fab.shopping": "ဈေးဝယ်ပစ္စည်းထည့်ရန်",
+  "mobile.quickCapture": "အမြန်မှတ်တမ်း",
+  "mobile.quickCapturePlaceholder": "တစ်ခုခု ချရေးပါ…",
+  "mobile.quickCaptureHint":
+    "ဤကွက်လပ်က ကီးဘုတ်အပြင်အဆင်ကို သက်သေပြသည်; သိမ်းဆည်းခြင်းသည် Notes လုပ်ငန်းစဉ်နှင့်အတူ လာမည်။",
+  "mobile.placeholder.empty":
+    "{section} တွင် ပြသရန် မရှိသေးပါ — ၎င်း၏ ဒေတာစာမျက်နှာများ နောက်အဆင့်တွင် လာမည်။",
+  "mobile.compose.body":
+    "{what} ဖောင်သည် ဒေတာလုပ်ငန်းစဉ်များနှင့်အတူ လာမည်။ ဤစာမျက်နှာက ဖန်တီးလမ်းကြောင်းကို သက်သေပြသည်။",
+  "markdown.linkFailed": "{url} ကို ဖွင့်၍မရပါ — ဤစနစ်တွင် ကိုင်တွယ်သည့် အက်ပ်မရှိပါ။",
 
   "shortcuts.esc": "ဒိုင်ယာလော့ဂ်တစ်ခုကို ပိတ်မည်",
   "shortcuts.tab": "ဒိုင်ယာလော့ဂ်အတွင်း ရွေ့သွားမည်၊ နောက်ဘက်သို့ ဘယ်တော့မှ မရောက်ပါ",

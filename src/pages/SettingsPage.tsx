@@ -324,7 +324,7 @@ export default function SettingsPage(p: SettingsPageProps) {
       // the lock screen verifies against, and without this the next lock
       // rejected the PIN just set and accepted the previous one.
       if (securityReloadNeeded(changes.map((c) => c.key))) p.onChanged();
-      toast.success("PIN updated.");
+      toast.success(t("settings.pinUpdated"));
     } catch (e) {
       setError(errText(e));
     } finally {

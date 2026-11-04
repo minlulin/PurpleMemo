@@ -43,6 +43,7 @@ import {
   LockScreen,
   SetupScreen,
 } from "./components/LockScreens.tsx";
+import { MobileShell } from "./components/MobileShell.tsx";
 import { ResetResultScreen } from "./components/ResetScreen.tsx";
 import { Skeleton } from "./components/Skeleton.tsx";
 import { ToastProvider, useToast } from "./components/Toast.tsx";
@@ -686,6 +687,20 @@ function AppShell() {
   }, [shareStopFailed, toast]);
 
   /**
+   * Cache eviction on pause (decision 6): when the phone goes to the background
+   * nothing decrypted may linger in memory, even inside the 1-minute grace that
+   * keeps the session itself unlocked. Best-effort — the timer that decides the
+   * lock must not depend on this succeeding.
+   */
+  const evictCachesOnBackground = useCallback(() => {
+    try {
+      vaultRepo.lockVault();
+    } catch (e) {
+      toast.error(errText(e));
+    }
+  }, [toast]);
+
+  /**
    * Entering the shell always re-reads the security state first,
    * and may only do so on a SUCCESSFUL read (review P2-2).
    *
@@ -911,6 +926,15 @@ function AppShell() {
         answerHash={boot.answerHash}
         onUnlock={enterWorkspace}
       />
+    );
+  }
+
+  // Android runs the mobile shell — bottom tabs, the More sheet, the creation
+  // FAB and the 1-minute background grace. Desktop keeps the sidebar workspace
+  // exactly as it was, so nothing below this branch changes there.
+  if (isAndroidPlatform()) {
+    return (
+      <MobileShell onLock={lockNow} onBackground={evictCachesOnBackground} />
     );
   }
 
