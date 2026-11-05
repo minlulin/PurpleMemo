@@ -81,9 +81,47 @@ any personal-data build.
 - [x] Repository-level tests for the three flows (npm run verify: JS 879 tests and Rust 196 tests)
 - [x] Search/dashboard show no excluded-module data (SQL allowlist + emulator probe: journal/contact/memory rows excluded; note/task rows returned)
 
-**Exit gate:** offline create/toggle works; process death and background
-lock pass; key loss fails closed; reset removes all owned state; desktop
-`npm run verify` green.
+**Exit gate — PASS, 2026-11-05** (emulator `emulator-5554`, fresh x86_64
+debug APK from `aba467b`):
+
+- [x] **Offline create/toggle works.** A note, a task and a shopping item were
+  created through the UI without a network; the task moved to COMPLETED and
+  the item to bought. Read back through `db_query`: note `3982e797…`, task
+  `212301c3…` (`done=1`), list `655fe677…`, item `42c8e8de…` (`done=1`),
+  `PRAGMA user_version=7`.
+- [x] **Process death passes.** `am force-stop` then relaunch landed on the
+  PIN screen; after unlock the same UIDs and both `done=1` states were there —
+  no data loss, no crash.
+- [x] **Background lock passes.** HOME for 30 s resumed straight into the
+  Dashboard; HOME for 75 s showed the "Session Locked" PIN screen. FLAG_SECURE
+  is on the activity window (`fl=… SECURE …`), and `screencap` of the focused
+  app was black (2,830 non-black pixels of 2,592,000 — the status bar only;
+  704,243 when a system dialog sat over it).
+- [x] **Key loss fails closed, both runs.** (1) Tampered `db-key.wrapped`:
+  boot refused with *"the wrapped database key … could not be unwrapped (the
+  wrapped key file is not a blob this build understands); the Android
+  Keystore key that protected it is gone"*, wiped DB + WAL/SHM + blob + logs
+  and the Keystore entry (`Keystore entry removed=true`), and stayed alive
+  (pid 5054) with the wipe/re-pair sentence in `boot-error.log`.
+  (2) Blob intact, alias removed from `persistent.sqlite` with `keystore2`
+  stopped: boot named the missing key (*"the Keystore key
+  purple_memo_db_key_wrap_v1 that wrapped the database key is gone"*), wiped
+  the same surface (`Keystore entry removed=false`), stayed alive (pid 5388).
+  Each following launch was a clean first run.
+- [x] **Reset removes all owned state.** `factory_reset` with data present
+  returned `"complete":true` — database/logs/keyring_key `removed`,
+  share/photos/backups `already_absent`; no `purple-memo.db*`, no
+  `db-key.wrapped`, no `boot-error.log` remained, and the Keystore alias row
+  count went 1 → 0. The next launch was the first-run setup screen. (The
+  surviving `app_webview/` and `cache/` dirs are platform WebView caches, not
+  part of the reset contract; a grep for the test note's text found no
+  personal data in them.)
+- [x] **Desktop `npm run verify` green.** exit 0: lint, typecheck, JS 879/879,
+  Rust 196/196, clippy, fmt:check and build.
+
+Note: the emulator has no StrongBox/TEE, so its wrapping key is
+`backing=software`; the Redmi's Phase 0 run was TEE-backed. Same code path,
+weaker hardware.
 
 ## Phase B — Complete offline companion
 
