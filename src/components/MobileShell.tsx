@@ -45,6 +45,7 @@ import {
   BusinessScreen,
   DashboardScreen,
   EntryCompose,
+  HabitsScreen,
   JobCompose,
   LoanCompose,
   LoansScreen,
@@ -55,6 +56,7 @@ import {
   ShoppingScreen,
   TaskCompose,
   TasksScreen,
+  VaultScreen,
 } from "./MobileScreens.tsx";
 import { useT } from "./useTranslation.ts";
 
@@ -376,6 +378,8 @@ function SectionBody({
     return <BusinessScreen onCompose={() => onCompose("job")} />;
   if (page === "loans")
     return <LoansScreen onCompose={() => onCompose("loan")} />;
+  if (page === "habits") return <HabitsScreen />;
+  if (page === "vault") return <VaultScreen />;
   if (page === "dashboard") return <DashboardScreen onOpenNote={onOpenNote} />;
   return (
     <section className="mobile-page">

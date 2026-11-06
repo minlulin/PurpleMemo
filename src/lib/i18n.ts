@@ -231,6 +231,27 @@ export const en = {
   "mobile.loan.dueLabel": "Due date (optional)",
   "mobile.loan.save": "Save loan",
 
+  "mobile.habits.listAria": "Habits",
+  "mobile.habits.empty": "No habits yet. Habits are created on the desktop.",
+  "mobile.habits.noCreate":
+    "Habits are created on the desktop — this phone can only check them in.",
+  "mobile.habits.streak": "Current streak (days): {count}",
+  "mobile.habits.best": "Best (days): {count}",
+  "mobile.vault.listAria": "Vault items",
+  "mobile.vault.notSetUp":
+    "There is no vault on this phone yet. Set up the vault password on the desktop, then come back — this screen never creates one.",
+  "mobile.vault.lockedHint": "Enter the vault password to look up a secret.",
+  "mobile.vault.noCreate":
+    "Lookup and copy only: adding, editing and deleting secrets stay on the desktop.",
+  "mobile.vault.empty":
+    "This vault holds no secrets yet. Secrets are added on the desktop.",
+  "mobile.vault.revealHint": "Tap a secret to reveal it.",
+  "mobile.vault.copy": "Copy",
+  "mobile.vault.copyDisclosure":
+    "Copying clears the clipboard after about {seconds} seconds — best effort. If the app is closed first, the value stays.",
+  "mobile.vault.missing": "That secret no longer exists.",
+  "mobile.vault.decryptFailed": "Could not decrypt this secret.",
+
   "reminders.noticeExact":
     "Reminders are scheduled on this phone and fire even when Purple Memo is closed.",
   "reminders.noticeInexact":
@@ -1047,6 +1068,26 @@ export const my: Record<MessageKey, string> = {
   "mobile.loan.amountPlaceholder": "ဥပမာ 20,000",
   "mobile.loan.dueLabel": "ပြန်ဆပ်ရက် (မဖြစ်မနေ မဟုတ်)",
   "mobile.loan.save": "ချေးငွေ သိမ်းရန်",
+
+  "mobile.habits.listAria": "အလေ့အထများ",
+  "mobile.habits.empty": "အလေ့အထ မရှိသေးပါ။ အလေ့အထများကို ကွန်ပျူတာပေါ်တွင် ဖန်တီးသည်။",
+  "mobile.habits.noCreate":
+    "အလေ့အထများကို ကွန်ပျူတာပေါ်တွင် ဖန်တီးသည် — ဤဖုန်းတွင် အမှတ်အသား လုပ်နိုင်သည် သာ။",
+  "mobile.habits.streak": "လက်ရှိ ဆက်တိုက်: {count} ရက်",
+  "mobile.habits.best": "အကောင်းဆုံး: {count} ရက်",
+  "mobile.vault.listAria": "လျှို့ဝှက်သေတ္တာ အရာများ",
+  "mobile.vault.notSetUp":
+    "ဤဖုန်းတွင် လျှို့ဝှက်သေတ္တာ မရှိသေးပါ။ ကွန်ပျူတာပေါ်တွင် စကားဝှက် သတ်မှတ်ပြီး ပြန်လာပါ — ဤနေရာတွင် ဖန်တီးမပေးပါ။",
+  "mobile.vault.lockedHint": "လျှို့ဝှက်ချက် ကြည့်ရန် လျှို့ဝှက်သေတ္တာ စကားဝှက် ထည့်ပါ။",
+  "mobile.vault.noCreate":
+    "ကြည့်ရှုခြင်းနှင့် ကူးယူခြင်းသာ — ထည့်ခြင်း၊ ပြင်ဆင်ခြင်း၊ ဖျက်ခြင်းတို့ကို ကွန်ပျူတာပေါ်တွင် ပြုလုပ်သည်။",
+  "mobile.vault.empty": "ဤလျှို့ဝှက်သေတ္တာတွင် လျှို့ဝှက်ချက် မရှိသေးပါ။ ကွန်ပျူတာပေါ်တွင် ထည့်သည်။",
+  "mobile.vault.revealHint": "လျှို့ဝှက်ချက်ကို ကြည့်ရန် နှိပ်ပါ။",
+  "mobile.vault.copy": "ကူးယူမည်",
+  "mobile.vault.copyDisclosure":
+    "ကူးယူပြီးနောက် ခန့်မှန်းခြေ {seconds} စက္ကန့်အကြာ ကလစ်ဘုတ်မှ ရှင်းပါမည် — အတတ်နိုင်ဆုံးသာ။ အက်ပ်ကို အရင်ပိတ်လိုက်ပါက တန်ဖိုးသည် ကျန်နေနိုင်သည်။",
+  "mobile.vault.missing": "ထိုလျှို့ဝှက်ချက် မရှိတော့ပါ။",
+  "mobile.vault.decryptFailed": "ဤလျှို့ဝှက်ချက်ကို ဖွင့်၍မရပါ။",
 
   "reminders.noticeExact":
     "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသောကြောင့် Purple Memo ပိတ်ထားလည်း အချိန်တိုင်း အသိပေးပါမည်။",

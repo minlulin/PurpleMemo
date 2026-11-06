@@ -469,3 +469,12 @@
   line-height: var(--leading-relaxed, 1.6);
   overflow-wrap: anywhere;
 }
+
+/* A revealed vault secret: it must wrap, never be clipped like a preview. */
+.mobile-secret {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

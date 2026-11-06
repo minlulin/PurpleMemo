@@ -22,7 +22,9 @@ import {
   searchMobileWorkspace,
   shoppingRepo,
   tasksRepo,
+  vaultRepo,
 } from "../data/app.ts";
+import { copySensitive, isAndroidPlatform } from "../lib/android-reminders.ts";
 import type { WalletEntryRow } from "../lib/budget.ts";
 import { todayLocal } from "../lib/dates.ts";
 import type { SearchGroup } from "../lib/globalSearch.ts";
@@ -44,6 +46,7 @@ import type {
   ShoppingItemRow,
   ShoppingListRow,
   TaskRow,
+  VaultItemRow,
 } from "../lib/types.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import { markdownComponents, markdownUrlTransform } from "./MarkdownLink.tsx";
@@ -986,6 +989,372 @@ export function LoanCompose({ onDone }: { onDone: () => void }) {
           </button>
         </div>
       </form>
+    </section>
+  );
+}
+
+// -- Habits: 1-tap check-ins, no creation -------------------------------------
+
+/**
+ * The Habits page: every habit with today's check-in and its streak.
+ *
+ * The checkbox reads the same `week` the Dashboard reads (both go through
+ * `habitDoneToday` over `habitProgressList`), so one habit has one truth. A
+ * toggle writes today's `habit_logs` row (with its UUID v4 `uid`) or removes
+ * it; there is no add-habit form here, because habits are created on the
+ * desktop and the FAB deliberately has no habit action.
+ */
+export function HabitsScreen() {
+  const t = useT();
+  const today = todayLocal();
+  const load = useCallback(() => habitsRepo.habitProgressList(today), [today]);
+  const { data, failed, reload } = useLoad(load);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [writeFailed, setWriteFailed] = useState(false);
+
+  const toggle = async (habitId: number) => {
+    setBusyId(habitId);
+    setWriteFailed(false);
+    try {
+      await habitsRepo.toggleLog(habitId, today);
+      reload();
+    } catch {
+      setWriteFailed(true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const habits = data ?? [];
+
+  return (
+    <section className="mobile-page">
+      <p className="mobile-section-kicker">{t("nav.habits")}</p>
+      <p className="muted">{t("mobile.habits.noCreate")}</p>
+      <LoadMessage failed={failed || writeFailed} />
+      {data !== null && habits.length === 0 ? (
+        <EmptyState>{t("mobile.habits.empty")}</EmptyState>
+      ) : null}
+      <ul className="mobile-list" aria-label={t("mobile.habits.listAria")}>
+        {habits.map((progress) => {
+          const done = habitDoneToday(progress.week, today);
+          return (
+            <li key={progress.habit.id}>
+              <label className={done ? "mobile-row is-done" : "mobile-row"}>
+                <input
+                  type="checkbox"
+                  checked={done}
+                  disabled={busyId === progress.habit.id}
+                  aria-label={
+                    done ? t("mobile.markNotDone") : t("mobile.markDone")
+                  }
+                  onChange={() => void toggle(progress.habit.id)}
+                />
+                <span className="mobile-row-text">
+                  {progress.habit.name}
+                  <span className="mobile-row-meta">
+                    {t("mobile.habits.streak", {
+                      count: String(progress.current),
+                    })}
+                    {" · "}
+                    {t("mobile.habits.best", {
+                      count: String(progress.best),
+                    })}
+                  </span>
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      <button
+        type="button"
+        className="mobile-link-btn"
+        onClick={reload}
+        hidden={!failed}
+      >
+        {t("common.tryAgain")}
+      </button>
+    </section>
+  );
+}
+
+// -- Vault: lookup + copy only -----------------------------------------------
+
+type VaultPhase = "loading" | "error" | "unset" | "locked" | "open";
+
+/** Seconds the sensitive clipboard holds the value (the bridge reports it). */
+const VAULT_CLIPBOARD_SECONDS = 30;
+
+/**
+ * The Vault: titles only until the vault password is entered, then reveal +
+ * copy per item.
+ *
+ * Decision 2: lookup and copy only. There is no add, edit, delete or
+ * change-password control on this surface, and no setup form — a phone whose
+ * vault was never set up says so and points at the desktop. Decrypted values
+ * live only in this component's state, are dropped when the app goes to the
+ * background or the screen closes, and the vault's key cache is locked with
+ * them.
+ */
+export function VaultScreen() {
+  const t = useT();
+  const [phase, setPhase] = useState<VaultPhase>("loading");
+  const [items, setItems] = useState<
+    Omit<VaultItemRow, "ciphertext" | "salt" | "iv">[]
+  >([]);
+  const [password, setPassword] = useState<string | null>(null);
+  const [unlockPwd, setUnlockPwd] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [revealedId, setRevealedId] = useState<number | null>(null);
+  const [revealedValue, setRevealedValue] = useState<string | null>(null);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // Metadata only: the list never carries a ciphertext, let alone a secret.
+  useEffect(() => {
+    void reloadKey; // the counter is the reason this effect re-runs
+    let cancelled = false;
+    setPhase("loading");
+    (async () => {
+      const setUp = await vaultRepo.isSetUp();
+      if (cancelled) return;
+      if (!setUp) {
+        setItems([]);
+        setPhase("unset");
+        return;
+      }
+      const rows = await vaultRepo.listItems();
+      if (cancelled) return;
+      setItems(rows);
+      setPhase("locked");
+    })().catch(() => {
+      if (!cancelled) setPhase("error");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  // A backgrounded app must not keep a decrypted secret (or a decrypting key)
+  // in memory. The shell's one-minute grace applies to the notebook; the vault
+  // re-locks the moment it leaves the foreground.
+  useEffect(() => {
+    const onHidden = () => {
+      if (!document.hidden) return;
+      vaultRepo.lockVault();
+      setPassword(null);
+      setRevealedId(null);
+      setRevealedValue(null);
+      setCopyNotice(null);
+      setUnlockPwd("");
+      setPhase((current) => (current === "open" ? "locked" : current));
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      document.removeEventListener("visibilitychange", onHidden);
+      vaultRepo.lockVault();
+    };
+  }, []);
+
+  const unlock = async () => {
+    if (unlockPwd === "" || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await vaultRepo.unlock(unlockPwd);
+      setPassword(unlockPwd);
+      setItems(await vaultRepo.listItems());
+      setUnlockPwd("");
+      setPhase("open");
+    } catch (e) {
+      setError(
+        e instanceof Error && e.name === "WrongPasswordError"
+          ? t("vault.error.wrongPassword")
+          : t("mobile.loadFailed"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleReveal = async (id: number) => {
+    if (revealedId === id) {
+      setRevealedId(null);
+      setRevealedValue(null);
+      setCopyNotice(null);
+      return;
+    }
+    if (password === null) return;
+    setError(null);
+    setCopyNotice(null);
+    try {
+      const got = await vaultRepo.getItem(id, password);
+      if (!got) {
+        setError(t("mobile.vault.missing"));
+        return;
+      }
+      setRevealedId(id);
+      setRevealedValue(got.plaintext);
+    } catch {
+      setRevealedId(null);
+      setRevealedValue(null);
+      setError(t("mobile.vault.decryptFailed"));
+    }
+  };
+
+  const copy = async (value: string) => {
+    setError(null);
+    try {
+      if (isAndroidPlatform()) {
+        // The one proven sensitive path: IS_SENSITIVE-marked, cleared by the
+        // native timer. The notice repeats that the clear is best effort.
+        const delay = await copySensitive(value);
+        setCopyNotice(
+          t("notes.copyBestEffort", {
+            seconds: String(Math.round(delay / 1000)),
+          }),
+        );
+      } else {
+        await navigator.clipboard.writeText(value);
+        setCopyNotice(t("notes.copied"));
+      }
+    } catch {
+      setError(t("common.tryAgain"));
+    }
+  };
+
+  return (
+    <section className="mobile-page">
+      <p className="mobile-section-kicker">{t("nav.vault")}</p>
+      <p className="muted">{t("mobile.vault.noCreate")}</p>
+
+      {phase === "error" ? (
+        <>
+          <LoadMessage failed />
+          <button
+            type="button"
+            className="mobile-link-btn"
+            onClick={() => setReloadKey((value) => value + 1)}
+          >
+            {t("common.tryAgain")}
+          </button>
+        </>
+      ) : null}
+
+      {phase === "unset" ? (
+        <EmptyState>{t("mobile.vault.notSetUp")}</EmptyState>
+      ) : null}
+
+      {phase === "locked" ? (
+        <>
+          <p className="muted">{t("mobile.vault.lockedHint")}</p>
+          {items.length === 0 ? (
+            <p className="muted">{t("mobile.vault.empty")}</p>
+          ) : (
+            <ul className="mobile-list" aria-label={t("mobile.vault.listAria")}>
+              {items.map((item) => (
+                <li key={item.id} className="mobile-card">
+                  <span className="mobile-card-title">{item.title}</span>
+                  <span className="mobile-card-meta">{item.updated_at}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="mobile-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void unlock();
+            }}
+          >
+            <label className="mobile-field">
+              <span>{t("vault.password")}</span>
+              <input
+                className="input"
+                type="password"
+                value={unlockPwd}
+                autoComplete="current-password"
+                onChange={(event) => setUnlockPwd(event.currentTarget.value)}
+              />
+            </label>
+            {error !== null ? (
+              <p className="mobile-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <div className="mobile-actions">
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={busy || unlockPwd === ""}
+              >
+                {busy ? t("vault.unlocking") : t("vault.unlock")}
+              </button>
+            </div>
+          </form>
+        </>
+      ) : null}
+
+      {phase === "open" ? (
+        <>
+          {items.length === 0 ? (
+            <EmptyState>{t("mobile.vault.empty")}</EmptyState>
+          ) : (
+            <p className="muted">{t("mobile.vault.revealHint")}</p>
+          )}
+          <ul className="mobile-list" aria-label={t("mobile.vault.listAria")}>
+            {items.map((item) => {
+              const open = revealedId === item.id;
+              return (
+                <li key={item.id} className="mobile-card">
+                  <button
+                    type="button"
+                    className="mobile-card-btn"
+                    aria-expanded={open}
+                    onClick={() => void toggleReveal(item.id)}
+                  >
+                    <span className="mobile-card-title">{item.title}</span>
+                    <span className="mobile-card-meta">
+                      {open ? t("vault.hide") : t("vault.reveal")}
+                    </span>
+                  </button>
+                  {open && revealedValue !== null ? (
+                    <>
+                      <p className="mobile-secret">{revealedValue}</p>
+                      <div className="mobile-actions">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => void copy(revealedValue)}
+                        >
+                          {t("mobile.vault.copy")}
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="muted">
+            {t("mobile.vault.copyDisclosure", {
+              seconds: String(VAULT_CLIPBOARD_SECONDS),
+            })}
+          </p>
+          {copyNotice !== null ? (
+            <p className="mobile-saved" role="status">
+              {copyNotice}
+            </p>
+          ) : null}
+          {error !== null ? (
+            <p className="mobile-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </section>
   );
 }

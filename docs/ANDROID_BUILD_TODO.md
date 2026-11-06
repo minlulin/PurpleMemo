@@ -152,8 +152,24 @@ weaker hardware.
   death with UUID-v4 `uid`s, `repaid_cents = 0`, direction and remaining
   balances intact. Form fields are direction, name, amount, due date — no
   repayment control exists on the mobile Loans surface.
-- [ ] Habits: 1-tap check-ins on Dashboard & Habits page
-- [ ] Vault: lookup + copy, clipboard auto-clear ~30s, UI disclosure
+- [x] Habits: 1-tap check-ins on Dashboard & Habits page — emulator proof:
+  checking in on the Habits page showed checked + “Current streak (days): 1”
+  and wrote `habit_logs` (2026-11-06, uid
+  `40875a7c-12ed-4f08-bd3b-ca0bbcfb5900`); the Dashboard row then read
+  checked; unchecking it on the Dashboard left 0 log rows and the Habits page
+  read unchecked; after `am force-stop` + relaunch both surfaces read checked
+  again. No add-habit control exists and the FAB has no habit action.
+- [x] Vault: lookup + copy, clipboard auto-clear ~30s, UI disclosure —
+  emulator proof: the locked list showed only the title (`Email login`, no
+  secret rendered); a wrong password read “Wrong password — nothing was
+  unlocked.”; the right password revealed `s3cret-8842!` beside a Copy button
+  and the best-effort disclosure. Copy returned “clears in 30 s”; logcat:
+  `sensitive clipboard set; will clear in 30000 ms` 11:02:03.886 →
+  `cleared after 30000 ms` 11:02:33.889 (30.003 s), and the probe read returned
+  the value and then `""`. The row is real AES-256-GCM material (40-byte
+  ciphertext, base64 salt/iv) beside `vault_setup` + `vault_verify`; only
+  Unlock / reveal / Copy controls exist — no create, edit, delete or
+  change-password anywhere on the mobile Vault surface.
 - [ ] Mobile Settings: sync status, pairing UI prototype, permissions,
   lock/security, diagnostics (no desktop tray/key-export/updater controls)
 - [ ] Reminders: creating device notifies; exact-alarm permission +
