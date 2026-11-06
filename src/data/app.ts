@@ -18,6 +18,7 @@ import { createJournalRepo } from "../lib/journal.ts";
 import { createLoansRepo } from "../lib/loans.ts";
 import { createMemoriesRepo } from "../lib/memories.ts";
 import { mobileSearch } from "../lib/mobileSearch.ts";
+import { databaseBytes } from "../lib/mobileSettings.ts";
 import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
 import { createShareRepo } from "../lib/share.ts";
@@ -118,4 +119,41 @@ export function searchWorkspace(input: string, options?: SearchOptions) {
  */
 export function searchMobileWorkspace(input: string) {
   return mobileSearch(driver, input);
+}
+
+/**
+ * The database facts the phone's Settings screen reports.
+ *
+ * Read from SQLite's own counters rather than by touching a file: the driver
+ * is the only thing that may talk to the database, and `page_count *
+ * page_size` is the size SQLite itself believes it occupies. Nothing here is
+ * user data, and an unreadable counter answers zero rather than failing the
+ * whole screen.
+ */
+export interface MobileDiagnostics {
+  schemaVersion: number;
+  databaseBytes: number;
+}
+
+export async function readMobileDiagnostics(): Promise<MobileDiagnostics> {
+  const [version] = await driver.query<{ user_version: number }>(
+    "PRAGMA user_version",
+  );
+  // The table-valued forms, not `PRAGMA page_size`: under SQLCipher the
+  // pragma's column is named `cipher_page_size` and comes back as a string,
+  // so the plain pragma read "0 B" while the database was 384 KB. These forms
+  // keep the documented column names and are parsed with `Number`.
+  const [pages] = await driver.query<{ page_count: number | string }>(
+    "SELECT page_count FROM pragma_page_count",
+  );
+  const [size] = await driver.query<{ page_size: number | string }>(
+    "SELECT page_size FROM pragma_page_size",
+  );
+  return {
+    schemaVersion: Number(version?.user_version ?? 0),
+    databaseBytes: databaseBytes(
+      Number(pages?.page_count ?? 0),
+      Number(size?.page_size ?? 0),
+    ),
+  };
 }

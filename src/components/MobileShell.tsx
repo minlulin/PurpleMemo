@@ -52,6 +52,7 @@ import {
   NoteCompose,
   NoteReaderScreen,
   NotesScreen,
+  SettingsScreen,
   ShoppingItemCompose,
   ShoppingScreen,
   TaskCompose,
@@ -380,6 +381,7 @@ function SectionBody({
     return <LoansScreen onCompose={() => onCompose("loan")} />;
   if (page === "habits") return <HabitsScreen />;
   if (page === "vault") return <VaultScreen />;
+  if (page === "settings") return <SettingsScreen />;
   if (page === "dashboard") return <DashboardScreen onOpenNote={onOpenNote} />;
   return (
     <section className="mobile-page">

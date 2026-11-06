@@ -108,6 +108,23 @@ pub fn clipboard_copy_sensitive(text: String) -> Result<u64, String> {
     }
 }
 
+/// `"software"`, `"TEE"`, `"StrongBox"` or `"unknown"` — the backing that
+/// actually wrapped the database key, read from the wrapped blob's header.
+/// Diagnostics only; no key material is returned.
+#[tauri::command]
+pub fn keystore_backing() -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::key_store::backing()
+            .map(str::to_string)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(DESKTOP_REFUSAL.to_string())
+    }
+}
+
 /// Debug-only probe: read the current clipboard so a device test can prove the
 /// value is gone after the timer. Release builds refuse.
 #[tauri::command]

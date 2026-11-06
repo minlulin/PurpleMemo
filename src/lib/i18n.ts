@@ -252,6 +252,71 @@ export const en = {
   "mobile.vault.missing": "That secret no longer exists.",
   "mobile.vault.decryptFailed": "Could not decrypt this secret.",
 
+  "mobile.reminders.heading": "Reminders",
+  "mobile.reminders.subtitle":
+    "Scheduled with this phone's own alarm clock, so a reminder fires even when Purple Memo is closed. This phone schedules and notifies its own reminders; it does not receive the desktop's.",
+  "mobile.reminders.empty": "No reminders yet.",
+  "mobile.reminders.listAria": "Reminders",
+  "mobile.reminders.title": "What to remind you about",
+  "mobile.reminders.when": "When",
+  "mobile.reminders.repeat": "Repeat",
+  "mobile.reminders.repeatNone": "Once",
+  "mobile.reminders.repeatDaily": "Daily",
+  "mobile.reminders.repeatWeekly": "Weekly",
+  "mobile.reminders.repeatMonthly": "Monthly",
+  "mobile.reminders.add": "Add reminder",
+  "mobile.reminders.incomplete": "A title and a time are both required.",
+  "mobile.reminders.past": "That time has already passed. Pick a later one.",
+  "mobile.reminders.added":
+    "Reminder saved. This phone will notify you at that time.",
+  "mobile.reminders.addFailed": "Could not save the reminder.",
+  "mobile.reminders.notifyBlocked":
+    "Notifications are blocked, so this reminder is saved but cannot notify. Allow notifications in Settings.",
+
+  "mobile.settings.syncHeading": "Sync",
+  "mobile.settings.syncOff":
+    "Off. This phone is local-only: nothing leaves it, and there is no account to sync with yet.",
+  "mobile.settings.pairHeading": "Pairing (prototype)",
+  "mobile.settings.pairBody":
+    "This shows what pairing will look like. It does nothing: no code is sent, no key is stored and no network request is made.",
+  "mobile.settings.pairCodeLabel": "Pairing code",
+  "mobile.settings.pairNumeric": "Type this code on the desktop: {code}",
+  "mobile.settings.pairRefresh": "New code",
+  "mobile.settings.permissionsHeading": "Permissions",
+  "mobile.settings.notifications": "Notifications",
+  "mobile.settings.notificationsOn":
+    "Allowed. Reminders can show a notification.",
+  "mobile.settings.notificationsOff":
+    "Not allowed. Reminders are saved, but nothing appears when they are due.",
+  "mobile.settings.notificationsUnknown":
+    "This build could not read the notification permission.",
+  "mobile.settings.enableNotifications": "Allow notifications",
+  "mobile.settings.exactAlarms": "Exact alarms",
+  "mobile.settings.exactOn":
+    "Allowed. Reminders fire at the time you set them.",
+  "mobile.settings.exactOff":
+    "Not allowed. Reminders may arrive a few minutes late.",
+  "mobile.settings.exactUnknown":
+    "This phone did not report whether exact alarms are allowed.",
+  "mobile.settings.openExact": "Allow exact alarms",
+  "mobile.settings.securityHeading": "Lock & security",
+  "mobile.settings.pinStored":
+    "An app PIN is set. One minute in the background locks the app.",
+  "mobile.settings.pinAbsent": "No app PIN is set on this phone.",
+  "mobile.settings.pinUnreadable": "The app PIN setting could not be read.",
+  "mobile.settings.screenshots":
+    "Screenshots and the recent-apps preview are blocked.",
+  "mobile.settings.encryption":
+    "The database is encrypted with SQLCipher, and its key is wrapped by the Android Keystore — it is never written in the clear.",
+  "mobile.settings.keyLoss":
+    "If the Keystore key is lost — a factory reset, a restored backup, cleared app data — the database cannot be opened. It is wiped so the phone can be paired again; that data is not recoverable.",
+  "mobile.settings.diagnosticsHeading": "Diagnostics",
+  "mobile.settings.schemaVersion": "Database schema version",
+  "mobile.settings.databaseSize": "Database size",
+  "mobile.settings.keystoreBacking": "Keystore backing",
+  "mobile.settings.diagnosticsFailed": "Could not read diagnostics.",
+  "mobile.settings.unknown": "unknown",
+
   "reminders.noticeExact":
     "Reminders are scheduled on this phone and fire even when Purple Memo is closed.",
   "reminders.noticeInexact":
@@ -1088,6 +1153,66 @@ export const my: Record<MessageKey, string> = {
     "ကူးယူပြီးနောက် ခန့်မှန်းခြေ {seconds} စက္ကန့်အကြာ ကလစ်ဘုတ်မှ ရှင်းပါမည် — အတတ်နိုင်ဆုံးသာ။ အက်ပ်ကို အရင်ပိတ်လိုက်ပါက တန်ဖိုးသည် ကျန်နေနိုင်သည်။",
   "mobile.vault.missing": "ထိုလျှို့ဝှက်ချက် မရှိတော့ပါ။",
   "mobile.vault.decryptFailed": "ဤလျှို့ဝှက်ချက်ကို ဖွင့်၍မရပါ။",
+
+  "mobile.reminders.heading": "သတိပေးချက်များ",
+  "mobile.reminders.subtitle":
+    "ဤဖုန်း၏ နှိုးစက်ဖြင့် အချိန်သတ်မှတ်ထားသဖြင့် Purple Memo ပိတ်ထားလည်း သတိပေးချက် အလုပ်လုပ်ပါသည်။ ဤဖုန်းက မိမိ၏ သတိပေးချက်များကိုသာ အသိပေးပါသည်၊ ကွန်ပျူတာမှ သတိပေးချက်များ ဤနေရာတွင် မြည်မည် မဟုတ်ပါ။",
+  "mobile.reminders.empty": "သတိပေးချက် မရှိသေးပါ။",
+  "mobile.reminders.listAria": "သတိပေးချက်များ",
+  "mobile.reminders.title": "သတိပေးရန် အကြောင်းအရာ",
+  "mobile.reminders.when": "အချိန်",
+  "mobile.reminders.repeat": "ထပ်ခါတလဲလဲ",
+  "mobile.reminders.repeatNone": "တစ်ကြိမ်",
+  "mobile.reminders.repeatDaily": "နေ့စဉ်",
+  "mobile.reminders.repeatWeekly": "အပတ်စဉ်",
+  "mobile.reminders.repeatMonthly": "လစဉ်",
+  "mobile.reminders.add": "သတိပေးချက် ထည့်ရန်",
+  "mobile.reminders.incomplete": "ခေါင်းစဉ်နှင့် အချိန် နှစ်ခုလုံး လိုအပ်ပါသည်။",
+  "mobile.reminders.past": "ထိုအချိန် ကုန်ဆုံးသွားပါပြီ။ နောက်ပိုင်း အချိန်ကို ရွေးပါ။",
+  "mobile.reminders.added": "သတိပေးချက် သိမ်းပြီးပါပြီ။ ထိုအချိန်တွင် ဤဖုန်းက အသိပေးပါမည်။",
+  "mobile.reminders.addFailed": "သတိပေးချက်ကို သိမ်း၍ မရပါ။",
+  "mobile.reminders.notifyBlocked":
+    "အသိပေးချက် ခွင့်မပြုထားပါ၊ ထို့ကြောင့် သတိပေးချက် သိမ်းသော်လည်း အသိပေး၍ မရပါ။ ဆက်တင်တွင် အသိပေးချက်ကို ခွင့်ပြုပါ။",
+
+  "mobile.settings.syncHeading": "စန့် (Sync)",
+  "mobile.settings.syncOff":
+    "ပိတ်ထားသည်။ ဤဖုန်းသည် ဒေသတွင်းသာ ဖြစ်သည် — မည်သည့်အရာမှ ပြင်ပသို့ မထွက်ပါ၊ စန့်လုပ်ရန် အကောင့်လည်း မရှိသေးပါ။",
+  "mobile.settings.pairHeading": "တွဲချိတ်ခြင်း (ရှေ့ပြေး)",
+  "mobile.settings.pairBody":
+    "တွဲချိတ်ခြင်း မည်သို့ ဖြစ်မည်ကို ပြသခြင်းသာ ဖြစ်သည်။ ဘာမှ မလုပ်ပါ — ကုဒ် မပို့ပါ၊ ကီး မသိမ်းပါ၊ ကွန်ရက် တောင်းဆိုမှု မပြုပါ။",
+  "mobile.settings.pairCodeLabel": "တွဲချိတ်ကုဒ်",
+  "mobile.settings.pairNumeric": "ဤကုဒ်ကို ကွန်ပျူတာတွင် ရိုက်ထည့်ပါ — {code}",
+  "mobile.settings.pairRefresh": "ကုဒ်အသစ်",
+  "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
+  "mobile.settings.notifications": "အသိပေးချက်များ",
+  "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",
+  "mobile.settings.notificationsOff":
+    "ခွင့်မပြုထားပါ။ သတိပေးချက် သိမ်းသော်လည်း အချိန်ရောက်လျှင် ဘာမှ မပေါ်ပါ။",
+  "mobile.settings.notificationsUnknown": "ဤဗားရှင်းက အသိပေးချက် ခွင့်ပြုချက်ကို မဖတ်နိုင်ပါ။",
+  "mobile.settings.enableNotifications": "အသိပေးချက်ကို ခွင့်ပြုရန်",
+  "mobile.settings.exactAlarms": "တိကျသော နှိုးဆော်ချက်များ",
+  "mobile.settings.exactOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ သတ်မှတ်ချိန်တွင် အလုပ်လုပ်ပါသည်။",
+  "mobile.settings.exactOff": "ခွင့်မပြုထားပါ။ သတိပေးချက်များ မိနစ်အနည်းငယ် နောက်ကျနိုင်သည်။",
+  "mobile.settings.exactUnknown":
+    "တိကျသော နှိုးဆော်ချက် ခွင့်ပြုထားခြင်း ရှိ/မရှိ ဤဖုန်းက မဖော်ပြနိုင်ပါ။",
+  "mobile.settings.openExact": "တိကျသော နှိုးဆော်ချက်ကို ခွင့်ပြုရန်",
+  "mobile.settings.securityHeading": "လော့ခ်နှင့် လုံခြုံရေး",
+  "mobile.settings.pinStored":
+    "အက်ပ် PIN သတ်မှတ်ထားသည်။ နောက်ခံတွင် တစ်မိနစ် နေလျှင် အက်ပ် ပြန်လော့ခ်ချပါမည်။",
+  "mobile.settings.pinAbsent": "ဤဖုန်းတွင် အက်ပ် PIN မသတ်မှတ်ထားပါ။",
+  "mobile.settings.pinUnreadable": "အက်ပ် PIN သတ်မှတ်ချက်ကို မဖတ်နိုင်ပါ။",
+  "mobile.settings.screenshots":
+    "ဖန်သားပြင်ဓာတ်ပုံနှင့် မကြာသေးမီ အက်ပ်များ ကြိုတင်ကြည့်ခြင်းကို ပိတ်ထားသည်။",
+  "mobile.settings.encryption":
+    "ဒေတာဘေ့စ်ကို SQLCipher ဖြင့် စာဝှက်ထားသည်၊ ၎င်း၏ ကီးကို Android Keystore က ခြုံထားပြီး ရှင်းလင်းစွာ ဘယ်တော့မှ မရေးပါ။",
+  "mobile.settings.keyLoss":
+    "Keystore ကီး ပျောက်ဆုံးလျှင် — စက်ရုံ ပြန်လည်သတ်မှတ်ခြင်း၊ ဘက်အပ် ပြန်ထည့်ခြင်း၊ အက်ပ် ဒေတာ ရှင်းလင်းခြင်း — ဒေတာဘေ့စ်ကို ဖွင့်၍ မရပါ။ ပြန်တွဲချိတ်နိုင်ရန် ၎င်းကို ဖျက်ပစ်ပါမည်၊ ထို ဒေတာကို ပြန်လည် ရယူနိုင်မည် မဟုတ်ပါ။",
+  "mobile.settings.diagnosticsHeading": "စစ်ဆေးမှု အချက်အလက်",
+  "mobile.settings.schemaVersion": "ဒေတာဘေ့စ် စကီးမာ ဗားရှင်း",
+  "mobile.settings.databaseSize": "ဒေတာဘေ့စ် အရွယ်အစား",
+  "mobile.settings.keystoreBacking": "Keystore အနောက်ခံ",
+  "mobile.settings.diagnosticsFailed": "စစ်ဆေးမှု အချက်အလက်ကို မဖတ်နိုင်ပါ။",
+  "mobile.settings.unknown": "မသိ",
 
   "reminders.noticeExact":
     "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသောကြောင့် Purple Memo ပိတ်ထားလည်း အချိန်တိုင်း အသိပေးပါမည်။",

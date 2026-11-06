@@ -170,10 +170,40 @@ weaker hardware.
   ciphertext, base64 salt/iv) beside `vault_setup` + `vault_verify`; only
   Unlock / reveal / Copy controls exist — no create, edit, delete or
   change-password anywhere on the mobile Vault surface.
-- [ ] Mobile Settings: sync status, pairing UI prototype, permissions,
-  lock/security, diagnostics (no desktop tray/key-export/updater controls)
-- [ ] Reminders: creating device notifies; exact-alarm permission +
-  inexact fallback disclosure
+- [x] Mobile Settings: sync status, pairing UI prototype, permissions,
+  lock/security, diagnostics (no desktop tray/key-export/updater controls) —
+  emulator proof: SYNC read “Off. This phone is local-only: nothing leaves it,
+  and there is no account to sync with yet.” The pairing block drew the QR
+  placeholder and a live 6-digit code, and pressing “New code” left the
+  `settings` row count unchanged (0 rows written) — nothing sent, nothing
+  stored, no network call. PERMISSIONS read the OS: notifications “Allowed”,
+  exact alarms “Not allowed. Reminders may arrive a few minutes late.” with the
+  “Allow exact alarms” action; the row flipped to “Allowed. Reminders fire at
+  the time you set them.” after `appops set … SCHEDULE_EXACT_ALARM allow` and
+  back to “Not allowed” after `ignore`. LOCK & SECURITY reported “An app PIN is
+  set. One minute in the background locks the app.”, the screenshot/recents
+  block, SQLCipher + Android Keystore wrapping, and the key-loss ⇒ wipe ⇒
+  re-pair rule. DIAGNOSTICS showed schema version **7**, database size
+  **384.0 KB** (96 × 4096-byte pages) and Keystore backing **software** — the
+  new `keystore_backing` command reads the wrapped blob's own header. Size
+  needed the table-valued pragmas: under SQLCipher `PRAGMA page_size` reports
+  `cipher_page_size` as a string, which read as `0 B` until fixed. No tray,
+  key-export or updater control exists on this surface.
+- [x] Reminders: creating device notifies; exact-alarm permission +
+  inexact fallback disclosure — emulator proof: the Tasks page lists pending
+  rows under the disclosure (“fires even when Purple Memo is closed … this phone
+  schedules and notifies its own reminders; it does not receive the desktop's”).
+  A reminder created through the form (`uid
+  7f93f2b3-bc70-46b7-9ab7-bdc044b8701f`) logged `armed reminder … (exact)` with
+  `exactAllowReason=permission` in `dumpsys alarm`; with the process killed
+  (`am kill`) the alarm still fired — logcat `delivered reminder 2 at
+  1793941560363` (11:36:00.363), a real notification posted on
+  `purple_memo_reminders` (“Reminder due”), and the row read `fired=1` after
+  relaunch. With the grant denied (`SCHEDULE_EXACT_ALARM ignore`) the bridge
+  reported `exact=false` and armed `reminder 3 … (inexact)` with
+  `window=+1m51s`. A cold boot re-armed the pending row: `re-armed 1 reminder(s)
+  after boot` plus the 12:32 alarm back in `dumpsys alarm` at its original
+  time, so reminders survive a reboot.
 - [ ] Accessibility: 48dp targets, TalkBack labels, reduced motion
 - [ ] Empty states + first-run (no wallet/category → guided, never invented)
 - [ ] Signed APK distribution + update/rollback documentation

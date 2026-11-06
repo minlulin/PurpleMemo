@@ -126,6 +126,33 @@ pub fn write(key: &str) -> Result<(), KeyStoreError> {
     Ok(())
 }
 
+/// Which backing produced the Keystore key that wrapped the DEK, read from the
+/// wrapped blob's own header. This reports what actually happened on this
+/// device, not what the device might support, and touches no key material.
+pub fn backing() -> Result<&'static str, KeyStoreError> {
+    let path = wrapped_key_path()?;
+    let blob = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(KeyStoreError::Unavailable(
+                "no wrapped database key exists yet".to_string(),
+            ))
+        }
+        Err(e) => {
+            return Err(KeyStoreError::Unavailable(format!(
+                "could not read {}: {e}",
+                path.display()
+            )))
+        }
+    };
+    let (backing, _, _) = decode_blob(&blob).ok_or_else(|| {
+        KeyStoreError::Failed(
+            "the wrapped key file is not a blob this build understands".to_string(),
+        )
+    })?;
+    Ok(backing_name(backing))
+}
+
 pub fn delete() -> Result<bool, KeyStoreError> {
     let path = wrapped_key_path()?;
     let mut removed = false;

@@ -11,6 +11,11 @@
 // the three flows below can create a record and flip exactly the one boolean
 // the design allows. No other edit exists here on purpose.
 
+import { invoke } from "@tauri-apps/api/core";
+import {
+  isPermissionGranted,
+  requestPermission,
+} from "@tauri-apps/plugin-notification";
 import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -19,14 +24,21 @@ import {
   habitsRepo,
   loansRepo,
   notesRepo,
+  readMobileDiagnostics,
   searchMobileWorkspace,
+  settingsRepo,
   shoppingRepo,
   tasksRepo,
   vaultRepo,
 } from "../data/app.ts";
-import { copySensitive, isAndroidPlatform } from "../lib/android-reminders.ts";
+import {
+  copySensitive,
+  isAndroidPlatform,
+  syncAndroidReminders,
+} from "../lib/android-reminders.ts";
+import { classifyPin } from "../lib/appLock.ts";
 import type { WalletEntryRow } from "../lib/budget.ts";
-import { todayLocal } from "../lib/dates.ts";
+import { localISODateTime, todayLocal } from "../lib/dates.ts";
 import type { SearchGroup } from "../lib/globalSearch.ts";
 import { entryFormReady, recordedBalanceCents } from "../lib/mobileBudget.ts";
 import {
@@ -39,8 +51,14 @@ import {
   pinnedNotes,
   urgentTasks,
 } from "../lib/mobileDashboard.ts";
+import {
+  formatBytes,
+  reminderDraftReady,
+  reminderIsFuture,
+} from "../lib/mobileSettings.ts";
 import { formatMMK, parseMMK } from "../lib/money.ts";
 import { SEARCH_DEBOUNCE_MS } from "../lib/searchContract.ts";
+import { SETTING_KEYS } from "../lib/settings.ts";
 import type {
   LoanDirection,
   ShoppingItemRow,
@@ -206,6 +224,413 @@ export function NoteCompose({ onDone }: { onDone: () => void }) {
   );
 }
 
+// -- Reminders ---------------------------------------------------------------
+
+type ReminderRepeat = "none" | "daily" | "weekly" | "monthly";
+
+const REMINDER_REPEATS: readonly ReminderRepeat[] = [
+  "none",
+  "daily",
+  "weekly",
+  "monthly",
+];
+
+const REPEAT_LABEL_KEYS: Record<
+  ReminderRepeat,
+  | "mobile.reminders.repeatNone"
+  | "mobile.reminders.repeatDaily"
+  | "mobile.reminders.repeatWeekly"
+  | "mobile.reminders.repeatMonthly"
+> = {
+  none: "mobile.reminders.repeatNone",
+  daily: "mobile.reminders.repeatDaily",
+  weekly: "mobile.reminders.repeatWeekly",
+  monthly: "mobile.reminders.repeatMonthly",
+};
+
+/**
+ * Reminders on the Tasks page (Phase B session 4).
+ *
+ * The list is the pending rows the OS has been handed; creating one arms it
+ * immediately instead of waiting for the app's next reconcile pass, because
+ * this device is the one that notifies and the user just asked for that time.
+ * There is no edit and no delete here — mobile is view + add only.
+ */
+export function RemindersPanel() {
+  const t = useT();
+  const load = useCallback(() => tasksRepo.listReminders(false), []);
+  const { data, failed, reload } = useLoad(load);
+  const [title, setTitle] = useState("");
+  const [remindAt, setRemindAt] = useState("");
+  const [repeat, setRepeat] = useState<ReminderRepeat>("none");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const add = async () => {
+    if (busy) return;
+    setError(null);
+    setNotice(null);
+    const draft = { title, remindAt };
+    if (!reminderDraftReady(draft)) {
+      setError(t("mobile.reminders.incomplete"));
+      return;
+    }
+    if (!reminderIsFuture(draft.remindAt, localISODateTime(new Date()))) {
+      setError(t("mobile.reminders.past"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await tasksRepo.createReminder({
+        title: title.trim(),
+        remindAt: draft.remindAt,
+        repeat,
+        note: "",
+      });
+      const granted = await isPermissionGranted().catch(() => false);
+      if (isAndroidPlatform()) {
+        // Hand the OS the new alarm now. A reconcile failure keeps the row —
+        // the next app tick arms it — so it must not fail the save.
+        try {
+          const rows = await tasksRepo.listReminders(false);
+          const preview = await settingsRepo
+            .getNotificationPreview()
+            .catch(() => false);
+          const { outcomes } = await syncAndroidReminders(
+            rows,
+            preview,
+            localISODateTime(new Date()),
+          );
+          if (outcomes.length > 0) await tasksRepo.settleReminders(outcomes);
+        } catch {
+          // Best effort, exactly like the app-level sync.
+        }
+      }
+      setTitle("");
+      setRemindAt("");
+      setRepeat("none");
+      setNotice(
+        granted
+          ? t("mobile.reminders.added")
+          : t("mobile.reminders.notifyBlocked"),
+      );
+      reload();
+    } catch {
+      setError(t("mobile.reminders.addFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p className="mobile-section-kicker">{t("mobile.reminders.heading")}</p>
+      <p className="mobile-note">{t("mobile.reminders.subtitle")}</p>
+      <LoadMessage failed={failed} />
+      {data !== null && data.length === 0 ? (
+        <EmptyState>{t("mobile.reminders.empty")}</EmptyState>
+      ) : null}
+      <ul className="mobile-list" aria-label={t("mobile.reminders.listAria")}>
+        {(data ?? []).map((reminder) => (
+          <li key={reminder.id} className="mobile-row">
+            <span className="mobile-row-text">
+              {reminder.title}
+              <span className="mobile-row-meta">
+                {reminder.remind_at} · {t(REPEAT_LABEL_KEYS[reminder.repeat])}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      <div className="mobile-card">
+        <label className="mobile-field">
+          <span>{t("mobile.reminders.title")}</span>
+          <input
+            type="text"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.reminders.when")}</span>
+          <input
+            type="datetime-local"
+            value={remindAt}
+            onChange={(event) => setRemindAt(event.target.value)}
+          />
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.reminders.repeat")}</span>
+          <select
+            value={repeat}
+            onChange={(event) =>
+              setRepeat(event.target.value as ReminderRepeat)
+            }
+          >
+            {REMINDER_REPEATS.map((value) => (
+              <option key={value} value={value}>
+                {t(REPEAT_LABEL_KEYS[value])}
+              </option>
+            ))}
+          </select>
+        </label>
+        {error !== null ? (
+          <p className="mobile-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {notice !== null ? (
+          <p className="alert alert-note" role="status">
+            {notice}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void add()}
+        >
+          {t("mobile.reminders.add")}
+        </button>
+      </div>
+    </>
+  );
+}
+
+// -- Settings ----------------------------------------------------------------
+
+type ExactState = "exact" | "inexact" | "unknown";
+
+type PinFact = "stored" | "absent" | "unreadable";
+
+interface SettingsFacts {
+  schemaVersion: number | null;
+  databaseBytes: number | null;
+  backing: string | null;
+  exact: ExactState;
+  notifications: boolean | null;
+  pin: PinFact | null;
+}
+
+const EMPTY_FACTS: SettingsFacts = {
+  schemaVersion: null,
+  databaseBytes: null,
+  backing: null,
+  exact: "unknown",
+  notifications: null,
+  pin: null,
+};
+
+/**
+ * Six digits for the pairing prototype, drawn from the OS CSPRNG and shown
+ * only. Nothing is stored, sent, or derived from it: pairing is not built.
+ */
+function pairingCode(): string {
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => String(byte % 10)).join("");
+}
+
+/**
+ * The phone's Settings (Phase B session 4, H.1).
+ *
+ * Every claim here is read from the device, never assumed: the sync status is
+ * honestly off, the pairing block is a labelled prototype, the permission rows
+ * ask the OS, and the diagnostics come from SQLite's counters and the wrapped
+ * key's own header. Controls that belong to the desktop (tray, key export,
+ * updater) are absent rather than disabled.
+ */
+export function SettingsScreen() {
+  const t = useT();
+  const [facts, setFacts] = useState<SettingsFacts>(EMPTY_FACTS);
+  const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);
+  const [code, setCode] = useState(pairingCode);
+  const [asking, setAsking] = useState(false);
+  const [opening, setOpening] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDiagnosticsFailed(false);
+    // One fact per promise: a permission or diagnostic that cannot be read
+    // must not blank the ones that can.
+    void (async () => {
+      const [diagnostics, backing, exact, permission, rawPin] =
+        await Promise.all([
+          readMobileDiagnostics().catch(() => null),
+          invoke<string>("keystore_backing").catch(() => null),
+          invoke<string>("reminder_exact_state").catch(() => null),
+          isPermissionGranted().catch(() => null),
+          settingsRepo.getRaw(SETTING_KEYS.pinHash).then(
+            (value) => value,
+            () => null,
+          ),
+        ]);
+      if (cancelled) return;
+      setDiagnosticsFailed(diagnostics === null);
+      setFacts({
+        schemaVersion: diagnostics?.schemaVersion ?? null,
+        databaseBytes: diagnostics?.databaseBytes ?? null,
+        backing,
+        exact: exact === "exact" || exact === "inexact" ? exact : "unknown",
+        notifications: permission,
+        pin: rawPin === null ? "unreadable" : classifyPin(rawPin).kind,
+      });
+    })().catch(() => {
+      if (!cancelled) setDiagnosticsFailed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const askNotifications = async () => {
+    setAsking(true);
+    try {
+      const answer = await requestPermission();
+      setFacts((current) => ({
+        ...current,
+        notifications: answer === "granted",
+      }));
+    } catch {
+      setFacts((current) => ({ ...current, notifications: null }));
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  const openExact = async () => {
+    setOpening(true);
+    try {
+      await invoke("reminder_open_exact_alarm_settings");
+    } catch {
+      // The OS screen may refuse; the disclosure already told the truth.
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const pinText =
+    facts.pin === null
+      ? ""
+      : facts.pin === "stored"
+        ? t("mobile.settings.pinStored")
+        : facts.pin === "absent"
+          ? t("mobile.settings.pinAbsent")
+          : t("mobile.settings.pinUnreadable");
+
+  return (
+    <section className="mobile-page">
+      <p className="mobile-section-kicker">
+        {t("mobile.settings.syncHeading")}
+      </p>
+      <div className="mobile-card">
+        <p className="mobile-row-text">{t("mobile.settings.syncOff")}</p>
+      </div>
+
+      <p className="mobile-section-kicker">
+        {t("mobile.settings.pairHeading")}
+      </p>
+      <div className="mobile-card">
+        <p className="mobile-note">{t("mobile.settings.pairBody")}</p>
+        <div
+          className="mobile-pair-qr"
+          role="img"
+          aria-label={t("mobile.settings.pairCodeLabel")}
+        >
+          <span aria-hidden="true">QR</span>
+        </div>
+        <p className="mobile-row-text">
+          {t("mobile.settings.pairNumeric", { code })}
+        </p>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => setCode(pairingCode())}
+        >
+          {t("mobile.settings.pairRefresh")}
+        </button>
+      </div>
+
+      <p className="mobile-section-kicker">
+        {t("mobile.settings.permissionsHeading")}
+      </p>
+      <div className="mobile-card">
+        <p className="mobile-fact-term">{t("mobile.settings.notifications")}</p>
+        <p className="mobile-row-text">
+          {facts.notifications === null
+            ? t("mobile.settings.notificationsUnknown")
+            : facts.notifications
+              ? t("mobile.settings.notificationsOn")
+              : t("mobile.settings.notificationsOff")}
+        </p>
+        {facts.notifications === false ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={asking}
+            onClick={() => void askNotifications()}
+          >
+            {t("mobile.settings.enableNotifications")}
+          </button>
+        ) : null}
+      </div>
+      <div className="mobile-card">
+        <p className="mobile-fact-term">{t("mobile.settings.exactAlarms")}</p>
+        <p className="mobile-row-text">
+          {facts.exact === "exact"
+            ? t("mobile.settings.exactOn")
+            : facts.exact === "inexact"
+              ? t("mobile.settings.exactOff")
+              : t("mobile.settings.exactUnknown")}
+        </p>
+        {facts.exact === "inexact" ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={opening}
+            onClick={() => void openExact()}
+          >
+            {t("mobile.settings.openExact")}
+          </button>
+        ) : null}
+      </div>
+
+      <p className="mobile-section-kicker">
+        {t("mobile.settings.securityHeading")}
+      </p>
+      <ul className="mobile-list">
+        {pinText !== "" ? <li className="mobile-row-text">{pinText}</li> : null}
+        <li className="mobile-row-text">{t("mobile.settings.screenshots")}</li>
+        <li className="mobile-row-text">{t("mobile.settings.encryption")}</li>
+        <li className="mobile-row-text">{t("mobile.settings.keyLoss")}</li>
+      </ul>
+
+      <p className="mobile-section-kicker">
+        {t("mobile.settings.diagnosticsHeading")}
+      </p>
+      {diagnosticsFailed ? (
+        <p className="mobile-error" role="alert">
+          {t("mobile.settings.diagnosticsFailed")}
+        </p>
+      ) : null}
+      <dl className="mobile-facts">
+        <dt>{t("mobile.settings.schemaVersion")}</dt>
+        <dd>{facts.schemaVersion ?? t("mobile.settings.unknown")}</dd>
+        <dt>{t("mobile.settings.databaseSize")}</dt>
+        <dd>
+          {facts.databaseBytes === null
+            ? t("mobile.settings.unknown")
+            : formatBytes(facts.databaseBytes)}
+        </dd>
+        <dt>{t("mobile.settings.keystoreBacking")}</dt>
+        <dd>{facts.backing ?? t("mobile.settings.unknown")}</dd>
+      </dl>
+    </section>
+  );
+}
+
 // -- Tasks -------------------------------------------------------------------
 
 export function TasksScreen({ onCompose }: { onCompose: () => void }) {
@@ -286,6 +711,7 @@ export function TasksScreen({ onCompose }: { onCompose: () => void }) {
           </ul>
         </>
       ) : null}
+      <RemindersPanel />
     </section>
   );
 }

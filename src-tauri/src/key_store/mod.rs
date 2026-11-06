@@ -90,3 +90,12 @@ pub fn write(key: &str) -> Result<(), KeyStoreError> {
 pub fn delete() -> Result<bool, KeyStoreError> {
     platform::delete()
 }
+
+/// Which backing actually protects the DEK, as the platform recorded it.
+///
+/// Android only: the desktop credential store has no hardware backing to
+/// report, and its diagnostics screen is not this one.
+#[cfg(target_os = "android")]
+pub fn backing() -> Result<&'static str, KeyStoreError> {
+    platform::backing()
+}

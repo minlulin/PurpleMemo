@@ -478,3 +478,48 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+/* Settings' readable disclosure text: quieter than a row, never clipped. */
+.mobile-note {
+  margin: 0;
+  color: var(--color-text-muted, var(--color-text));
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed, 1.6);
+}
+
+/* Settings' short fact list: term on the left, value on the right. */
+.mobile-facts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.mobile-facts dt {
+  color: var(--color-text-muted, var(--color-text));
+}
+
+.mobile-facts dd {
+  margin: 0;
+  text-align: right;
+}
+
+/* A fact's label inside a Settings card. */
+.mobile-fact-term {
+  margin: 0;
+  font-weight: var(--weight-semibold, 600);
+}
+
+/* Pairing's QR placeholder: a shape, deliberately not a code. */
+.mobile-pair-qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  max-width: calc(var(--space-10) * 4);
+  border: var(--border-width) dashed currentColor;
+  border-radius: var(--radius-lg);
+  opacity: 0.55;
+  letter-spacing: 0.2em;
+}

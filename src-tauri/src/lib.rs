@@ -173,6 +173,7 @@ pub fn run() {
             reminders::reminder_open_exact_alarm_settings,
             reminders::clipboard_copy_sensitive,
             reminders::clipboard_probe_read,
+            reminders::keystore_backing,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| report_run_failure(&e.to_string()));
