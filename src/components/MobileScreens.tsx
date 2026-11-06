@@ -15,7 +15,9 @@ import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   budgetRepo,
+  businessRepo,
   habitsRepo,
+  loansRepo,
   notesRepo,
   searchMobileWorkspace,
   shoppingRepo,
@@ -26,6 +28,11 @@ import { todayLocal } from "../lib/dates.ts";
 import type { SearchGroup } from "../lib/globalSearch.ts";
 import { entryFormReady, recordedBalanceCents } from "../lib/mobileBudget.ts";
 import {
+  jobFormReady,
+  loanFormReady,
+  loanStateKey,
+} from "../lib/mobileCreate.ts";
+import {
   habitDoneToday,
   pinnedNotes,
   urgentTasks,
@@ -33,6 +40,7 @@ import {
 import { formatMMK, parseMMK } from "../lib/money.ts";
 import { SEARCH_DEBOUNCE_MS } from "../lib/searchContract.ts";
 import type {
+  LoanDirection,
   ShoppingItemRow,
   ShoppingListRow,
   TaskRow,
@@ -590,6 +598,391 @@ export function ShoppingItemCompose({ onDone }: { onDone: () => void }) {
             disabled={busy || text.trim() === ""}
           >
             {busy ? t("notes.saving") : t("mobile.addItem")}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+// -- Business: jobs, create-only ---------------------------------------------
+
+/**
+ * The Business screen: the shop's jobs with shop, total and status.
+ *
+ * Create-only (decision 4): the only control here is "New job". There is no
+ * amount-paid field and no mark-paid action anywhere on this surface — job
+ * payments are recorded on the desktop, and a job created on the phone stays
+ * open with its full total outstanding.
+ */
+export function BusinessScreen({ onCompose }: { onCompose: () => void }) {
+  const t = useT();
+  const locale = useLocale();
+  const load = useCallback(async () => {
+    const [jobs, shops] = await Promise.all([
+      businessRepo.listJobs(),
+      businessRepo.listShops(),
+    ]);
+    return { jobs, shops };
+  }, []);
+  const { data, failed, reload } = useLoad(load);
+
+  const jobs = data?.jobs ?? [];
+  const shopNames = new Map(
+    (data?.shops ?? []).map((shop) => [shop.id, shop.name]),
+  );
+
+  return (
+    <section className="mobile-page">
+      <p className="mobile-section-kicker">{t("nav.business")}</p>
+      <div className="mobile-actions">
+        <button type="button" className="btn btn-primary" onClick={onCompose}>
+          {t("mobile.job.new")}
+        </button>
+      </div>
+      <p className="muted">{t("mobile.job.noPayment")}</p>
+      <LoadMessage failed={failed} />
+      {data !== null && jobs.length === 0 ? (
+        <EmptyState>{t("mobile.job.empty")}</EmptyState>
+      ) : null}
+      <ul className="mobile-list" aria-label={t("mobile.job.listAria")}>
+        {jobs.map((job) => (
+          <li key={job.id} className="mobile-card">
+            <span className="mobile-wallet-line">
+              <span className="mobile-card-title">{job.title}</span>
+              <span className="mobile-card-title">
+                {formatMMK(job.total_cents, locale)}
+              </span>
+            </span>
+            <span className="mobile-card-meta">
+              {job.shop_id === null
+                ? t("mobile.job.noShop")
+                : (shopNames.get(job.shop_id) ?? t("mobile.job.deletedShop"))}
+              {" · "}
+              {job.job_date}
+              {" · "}
+              {job.status === "open"
+                ? t("mobile.job.statusOpen")
+                : t("mobile.job.statusPaid")}
+            </span>
+            {job.status === "open" ? (
+              <span className="mobile-card-meta">
+                {t("mobile.job.outstanding", {
+                  amount: formatMMK(job.total_cents - job.paid_cents, locale),
+                })}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="mobile-link-btn"
+        onClick={reload}
+        hidden={!failed}
+      >
+        {t("common.tryAgain")}
+      </button>
+    </section>
+  );
+}
+
+/**
+ * The job create form, opened from the FAB speed-dial or the Business screen.
+ * It has no payment field: a saved job is open, unpaid, and worth its total.
+ */
+export function JobCompose({ onDone }: { onDone: () => void }) {
+  const t = useT();
+  const load = useCallback(() => businessRepo.listShops(), []);
+  const { data, failed } = useLoad(load);
+  const [title, setTitle] = useState("");
+  const [shopId, setShopId] = useState<number | null>(null);
+  const [total, setTotal] = useState("");
+  const [jobDate, setJobDate] = useState(() => todayLocal());
+  const [busy, setBusy] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+
+  const shops = data ?? [];
+  const totalCents = parseMMK(total);
+  const ready = jobFormReady({ title, totalCents });
+  const amountProblem =
+    total.trim() !== "" && (totalCents === null || totalCents <= 0);
+
+  const save = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setSaveFailed(false);
+    try {
+      await businessRepo.createJob({
+        title: title.trim(),
+        shopId,
+        totalCents: totalCents ?? 0,
+        jobDate: jobDate === "" ? todayLocal() : jobDate,
+      });
+      onDone();
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="mobile-page">
+      <p className="muted">{t("mobile.job.noPayment")}</p>
+      <LoadMessage failed={failed} />
+      <form
+        className="mobile-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <label className="mobile-field">
+          <span>{t("mobile.job.titleLabel")}</span>
+          <input
+            className="input"
+            type="text"
+            value={title}
+            placeholder={t("mobile.job.titlePlaceholder")}
+            onChange={(event) => setTitle(event.currentTarget.value)}
+          />
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.job.totalLabel")}</span>
+          <input
+            className="input"
+            type="text"
+            inputMode="decimal"
+            value={total}
+            placeholder={t("mobile.job.totalPlaceholder")}
+            aria-invalid={amountProblem}
+            onChange={(event) => setTotal(event.currentTarget.value)}
+          />
+        </label>
+        {amountProblem ? (
+          <p className="mobile-error" role="alert">
+            {t("mobile.entry.invalidAmount")}
+          </p>
+        ) : null}
+        <label className="mobile-field">
+          <span>{t("mobile.job.shopLabel")}</span>
+          <select
+            className="input"
+            value={String(shopId ?? "")}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setShopId(value === "" ? null : Number(value));
+            }}
+          >
+            <option value="">{t("mobile.job.shopNone")}</option>
+            {shops.map((shop) => (
+              <option key={shop.id} value={shop.id}>
+                {shop.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.job.dateLabel")}</span>
+          <input
+            className="input"
+            type="date"
+            value={jobDate}
+            onChange={(event) => setJobDate(event.currentTarget.value)}
+          />
+        </label>
+        <LoadMessage failed={saveFailed} />
+        <div className="mobile-actions">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={busy || !ready}
+          >
+            {busy ? t("notes.saving") : t("mobile.job.save")}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+// -- Loans: view + create, no repayments -------------------------------------
+
+/**
+ * The Loans screen: lent and borrowed loans with counterparty, amount and
+ * direction.
+ *
+ * Create-only (decision 4): no repayment control exists here. Repayments are
+ * recorded on the desktop; this screen never offers to move money.
+ */
+export function LoansScreen({ onCompose }: { onCompose: () => void }) {
+  const t = useT();
+  const locale = useLocale();
+  const load = useCallback(
+    () => loansRepo.listLoansWithState(todayLocal()),
+    [],
+  );
+  const { data, failed, reload } = useLoad(load);
+  const loans = data ?? [];
+
+  return (
+    <section className="mobile-page">
+      <p className="mobile-section-kicker">{t("nav.loans")}</p>
+      <div className="mobile-actions">
+        <button type="button" className="btn btn-primary" onClick={onCompose}>
+          {t("mobile.loan.new")}
+        </button>
+      </div>
+      <p className="muted">{t("mobile.loan.noRepayment")}</p>
+      <LoadMessage failed={failed} />
+      {data !== null && loans.length === 0 ? (
+        <EmptyState>{t("mobile.loan.empty")}</EmptyState>
+      ) : null}
+      <ul className="mobile-list" aria-label={t("mobile.loan.listAria")}>
+        {loans.map((loan) => (
+          <li key={loan.id} className="mobile-card">
+            <span className="mobile-wallet-line">
+              <span className="mobile-card-title">{loan.counterparty}</span>
+              <span className="mobile-card-title">
+                {formatMMK(loan.amount_cents, locale)}
+              </span>
+            </span>
+            <span className="mobile-card-meta">
+              {loan.direction === "lent"
+                ? t("mobile.loan.lent")
+                : t("mobile.loan.borrowed")}
+              {" · "}
+              {t(loanStateKey(loan.state))}
+              {loan.due_date !== null
+                ? ` · ${t("mobile.loan.due", { date: loan.due_date })}`
+                : ""}
+            </span>
+            {loan.state !== "closed" ? (
+              <span className="mobile-card-meta">
+                {t("mobile.loan.remaining", {
+                  amount: formatMMK(loan.remaining_cents, locale),
+                })}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="mobile-link-btn"
+        onClick={reload}
+        hidden={!failed}
+      >
+        {t("common.tryAgain")}
+      </button>
+    </section>
+  );
+}
+
+/** The loan create form. No repayment field: a saved loan starts unpaid. */
+export function LoanCompose({ onDone }: { onDone: () => void }) {
+  const t = useT();
+  const [direction, setDirection] = useState<LoanDirection>("lent");
+  const [counterparty, setCounterparty] = useState("");
+  const [amount, setAmount] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+
+  const amountCents = parseMMK(amount);
+  const ready = loanFormReady({ counterparty, amountCents });
+  const amountProblem =
+    amount.trim() !== "" && (amountCents === null || amountCents <= 0);
+
+  const save = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setSaveFailed(false);
+    try {
+      await loansRepo.createLoan({
+        counterparty: counterparty.trim(),
+        direction,
+        amountCents: amountCents ?? 0,
+        dueDate: dueDate === "" ? null : dueDate,
+      });
+      onDone();
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="mobile-page">
+      <p className="muted">{t("mobile.loan.noRepayment")}</p>
+      <form
+        className="mobile-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <label className="mobile-field">
+          <span>{t("mobile.loan.directionLabel")}</span>
+          <select
+            className="input"
+            value={direction}
+            onChange={(event) => {
+              setDirection(
+                event.currentTarget.value === "borrowed" ? "borrowed" : "lent",
+              );
+            }}
+          >
+            <option value="lent">{t("mobile.loan.lent")}</option>
+            <option value="borrowed">{t("mobile.loan.borrowed")}</option>
+          </select>
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.loan.counterpartyLabel")}</span>
+          <input
+            className="input"
+            type="text"
+            value={counterparty}
+            placeholder={t("mobile.loan.counterpartyPlaceholder")}
+            onChange={(event) => setCounterparty(event.currentTarget.value)}
+          />
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.loan.amountLabel")}</span>
+          <input
+            className="input"
+            type="text"
+            inputMode="decimal"
+            value={amount}
+            placeholder={t("mobile.loan.amountPlaceholder")}
+            aria-invalid={amountProblem}
+            onChange={(event) => setAmount(event.currentTarget.value)}
+          />
+        </label>
+        {amountProblem ? (
+          <p className="mobile-error" role="alert">
+            {t("mobile.entry.invalidAmount")}
+          </p>
+        ) : null}
+        <label className="mobile-field">
+          <span>{t("mobile.loan.dueLabel")}</span>
+          <input
+            className="input"
+            type="date"
+            value={dueDate}
+            onChange={(event) => setDueDate(event.currentTarget.value)}
+          />
+        </label>
+        <LoadMessage failed={saveFailed} />
+        <div className="mobile-actions">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={busy || !ready}
+          >
+            {busy ? t("notes.saving") : t("mobile.loan.save")}
           </button>
         </div>
       </form>

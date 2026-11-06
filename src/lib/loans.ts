@@ -7,6 +7,7 @@ import { todayLocal } from "./dates.ts";
 import { applyPayment, formatMMK } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import type { LoanDirection, LoanRow, LoanState } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 export interface LoanInput {
   counterparty: string;
@@ -48,10 +49,14 @@ export function createLoansRepo(driver: DataDriver) {
     },
 
     async createLoan(input: LoanInput): Promise<number> {
+      // Cross-device UID at creation (docs/ANDROID_DESIGN.md, Phase A
+      // contract) — a loan created offline on the phone carries its identity
+      // before it ever pairs.
       const r = await driver.execute(
-        `INSERT INTO loans (counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at)
-         VALUES (?, ?, ?, 0, ?, ?, ?)`,
+        `INSERT INTO loans (uid, counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
         [
+          newUid(),
           input.counterparty,
           input.direction,
           input.amountCents,

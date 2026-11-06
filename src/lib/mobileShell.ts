@@ -154,10 +154,17 @@ export function routeForNote(id: number): MobileRoute {
 
 /**
  * What the FAB can create. Creation only — habit check-ins are 1-tap toggles on
- * Dashboard/Habits (his correction, 2026-11-02), and jobs/loans are created on
- * their own pages.
+ * Dashboard/Habits (his correction, 2026-11-02). Jobs and loans are also
+ * reachable from their own pages, per the Phase B Session 2 order.
  */
-export type FabActionId = "note" | "task" | "income" | "expense" | "shopping";
+export type FabActionId =
+  | "note"
+  | "task"
+  | "income"
+  | "expense"
+  | "shopping"
+  | "job"
+  | "loan";
 
 export interface FabAction {
   id: FabActionId;
@@ -172,6 +179,8 @@ export const FAB_ACTIONS: readonly FabAction[] = [
   { id: "income", label: "mobile.fab.income", page: "budget" },
   { id: "expense", label: "mobile.fab.expense", page: "budget" },
   { id: "shopping", label: "mobile.fab.shopping", page: "shopping" },
+  { id: "job", label: "mobile.fab.job", page: "business" },
+  { id: "loan", label: "mobile.fab.loan", page: "loans" },
 ];
 
 const FAB_IDS: readonly FabActionId[] = [
@@ -180,6 +189,8 @@ const FAB_IDS: readonly FabActionId[] = [
   "income",
   "expense",
   "shopping",
+  "job",
+  "loan",
 ];
 
 /** The route a FAB action lands on: the owning section, with its create form. */

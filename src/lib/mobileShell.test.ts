@@ -82,10 +82,20 @@ test("a note reader route survives history and is never the landing state", () =
   assert.deepEqual(routeFromHistoryState({ noteId: "12" }), MOBILE_LANDING);
 });
 
-test("the FAB creates five things and never checks a habit in", () => {
+test("the FAB creates seven things and never checks a habit in", () => {
   assert.deepEqual(
     FAB_ACTIONS.map((action) => action.id),
-    ["note", "task", "income", "expense", "shopping"],
+    ["note", "task", "income", "expense", "shopping", "job", "loan"],
+  );
+  // Phase B Session 2: jobs and loans are reachable from the speed-dial as well
+  // as from their own screens.
+  assert.equal(
+    FAB_ACTIONS.find((action) => action.id === "job")?.page,
+    "business",
+  );
+  assert.equal(
+    FAB_ACTIONS.find((action) => action.id === "loan")?.page,
+    "loans",
   );
   assert.ok(
     FAB_ACTIONS.every((action) => action.page !== "habits"),

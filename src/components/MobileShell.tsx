@@ -42,8 +42,12 @@ import {
 } from "./icons.tsx";
 import {
   BudgetScreen,
+  BusinessScreen,
   DashboardScreen,
   EntryCompose,
+  JobCompose,
+  LoanCompose,
+  LoansScreen,
   NoteCompose,
   NoteReaderScreen,
   NotesScreen,
@@ -345,9 +349,9 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
 }
 
 /**
- * A section's body. The three Phase A flows render their real screens; the
- * rest keep the honest placeholder, because their data screens are later work
- * and a half-built one would be worse than none.
+ * A section's body. The screens with real data render themselves; the rest keep
+ * the honest placeholder, because their screens are later work and a half-built
+ * one would be worse than none.
  */
 function SectionBody({
   page,
@@ -368,6 +372,10 @@ function SectionBody({
     return <ShoppingScreen onCompose={() => onCompose("shopping")} />;
   }
   if (page === "budget") return <BudgetScreen onCompose={onCompose} />;
+  if (page === "business")
+    return <BusinessScreen onCompose={() => onCompose("job")} />;
+  if (page === "loans")
+    return <LoansScreen onCompose={() => onCompose("loan")} />;
   if (page === "dashboard") return <DashboardScreen onOpenNote={onOpenNote} />;
   return (
     <section className="mobile-page">
@@ -380,9 +388,8 @@ function SectionBody({
 }
 
 /**
- * The create screen a FAB action (or a section button) opens. The two Budget
- * actions stay placeholders until the Budget flows ship; a note, task or
- * shopping item saves for real and returns to where it was opened from.
+ * The create screen a FAB action (or a section button) opens. Every action now
+ * saves for real and returns to where it was opened from.
  */
 function ComposeBody({
   id,
@@ -400,6 +407,8 @@ function ComposeBody({
   if (id === "income" || id === "expense") {
     return <EntryCompose kind={id} onDone={onDone} />;
   }
+  if (id === "job") return <JobCompose onDone={onDone} />;
+  if (id === "loan") return <LoanCompose onDone={onDone} />;
   return (
     <section className="mobile-page">
       <EmptyState>{t("mobile.compose.body", { what: label })}</EmptyState>

@@ -10,6 +10,7 @@ import { deleteLinkedEntity } from "./gallery.ts";
 import { applyPayment, formatMMK, outstandingCents } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import type { JobRow, JobStatus, PayableRow, ShopRow } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 export interface ShopInput {
   name: string;
@@ -240,10 +241,14 @@ export function createBusinessRepo(driver: DataDriver) {
 
     // -- Jobs -------------------------------------------------------------
     async createJob(input: JobInput): Promise<number> {
+      // Cross-device UID at creation (docs/ANDROID_DESIGN.md, Phase A
+      // contract): a job typed on the phone is as sync-ready as one typed on
+      // the desktop.
       const r = await driver.execute(
-        `INSERT INTO jobs (title, shop_id, total_cents, paid_cents, job_date, warranty_days, status, note, created_at)
-         VALUES (?, ?, ?, 0, ?, ?, 'open', ?, ?)`,
+        `INSERT INTO jobs (uid, title, shop_id, total_cents, paid_cents, job_date, warranty_days, status, note, created_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?, 'open', ?, ?)`,
         [
+          newUid(),
           input.title,
           input.shopId ?? null,
           input.totalCents,

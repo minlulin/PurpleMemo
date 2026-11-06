@@ -139,8 +139,19 @@ weaker hardware.
   UUID-v4 `uid`s (0 NULL uids in either ledger table), and Cash moved
   1,000.00 → 1,450.00 exactly. No edit/delete control exists in the wallet
   entry list — only the append-only disclosure.
-- [ ] Business: view + create jobs (no payment fields on mobile)
-- [ ] Loans: view + create (no repayment fields on mobile)
+- [x] Business: view + create jobs (no payment fields on mobile) — emulator
+  proof: one job (45,000.00, “Printer board repair”) created from the Business
+  screen and one (18,000.00, “Outlet rewiring”) through the FAB speed-dial;
+  both persisted across `am force-stop` + relaunch with UUID-v4 `uid`s,
+  `paid_cents = 0`, `status = 'open'`, each showing its full total as
+  outstanding. Only New job / Save job controls exist — no amount-paid field,
+  no mark-paid action.
+- [x] Loans: view + create (no repayment fields on mobile) — emulator proof:
+  one lent loan (Daw Hla, 20,000.00) from the Loans screen and one borrowed
+  loan (Ko Aung, 12,000.00) through the FAB; both persisted across process
+  death with UUID-v4 `uid`s, `repaid_cents = 0`, direction and remaining
+  balances intact. Form fields are direction, name, amount, due date — no
+  repayment control exists on the mobile Loans surface.
 - [ ] Habits: 1-tap check-ins on Dashboard & Habits page
 - [ ] Vault: lookup + copy, clipboard auto-clear ~30s, UI disclosure
 - [ ] Mobile Settings: sync status, pairing UI prototype, permissions,
