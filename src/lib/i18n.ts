@@ -141,6 +141,53 @@ export const en = {
   "mobile.searchNoResults": "Nothing found in notes or tasks.",
   "mobile.searchResultsAria": "Search results",
 
+  "mobile.dashboard.recordedBalance": "Recorded balance",
+  "mobile.dashboard.walletsAria": "Wallet balances",
+  "mobile.dashboard.noWallets":
+    "No wallets yet. They are created on the desktop — a balance with no records is not shown as zero.",
+  "mobile.dashboard.tasksHeading": "Due today",
+  "mobile.dashboard.tasksAria": "Tasks due today or overdue",
+  "mobile.dashboard.noTasks": "Nothing due today.",
+  "mobile.dashboard.pinnedHeading": "Pinned notes",
+  "mobile.dashboard.pinnedAria": "Pinned notes",
+  "mobile.dashboard.noPinned": "No pinned notes yet.",
+  "mobile.dashboard.openNote": "Open note",
+  "mobile.dashboard.habitsHeading": "Today's habits",
+  "mobile.dashboard.habitsAria": "Today's habit check-ins",
+  "mobile.dashboard.noHabits":
+    "No habits yet. Habits are created on the desktop.",
+  "mobile.noteReader.title": "Note",
+  "mobile.noteReader.empty": "This note is empty.",
+  "mobile.noteReader.notFound":
+    "That note no longer exists — it may have been deleted.",
+
+  "mobile.budget.walletsAria": "Wallets",
+  "mobile.budget.noWallets":
+    "No wallets yet. Create one on the desktop, then come back — nothing is invented here.",
+  "mobile.budget.entriesHeading": "Entries",
+  "mobile.budget.entriesAria": "Wallet entries",
+  "mobile.budget.noEntries": "No entries in this wallet yet.",
+  "mobile.budget.showEntries": "Tap for entries",
+  "mobile.budget.hideEntries": "Hide entries",
+  "mobile.budget.appendOnly":
+    "Entries are append-only on the phone: you can add a record here, but never edit or delete one.",
+  "mobile.entry.amountLabel": "Amount (MMK)",
+  "mobile.entry.amountPlaceholder": "e.g. 12,500",
+  "mobile.entry.invalidAmount": "Enter an amount greater than zero.",
+  "mobile.entry.walletLabel": "Wallet",
+  "mobile.entry.categoryLabel": "Category",
+  "mobile.entry.dateLabel": "Date",
+  "mobile.entry.noteLabel": "Note (optional)",
+  "mobile.entry.notePlaceholder": "What was it for?",
+  "mobile.entry.noWalletGuide":
+    "No wallet exists yet. Create one on the desktop, then come back — this form never invents one.",
+  "mobile.entry.noCategoryGuide":
+    "No {kind} category exists yet. Create one on the desktop, then come back.",
+  "mobile.entry.kindIncome": "Income",
+  "mobile.entry.kindExpense": "Expense",
+  "mobile.entry.saveIncome": "Save income",
+  "mobile.entry.saveExpense": "Save expense",
+
   "reminders.noticeExact":
     "Reminders are scheduled on this phone and fire even when Purple Memo is closed.",
   "reminders.noticeInexact":
@@ -869,6 +916,51 @@ export const my: Record<MessageKey, string> = {
   "mobile.searchHint": "ဖုန်းတွင် မှတ်စုနှင့် လုပ်ငန်းများကိုသာ ရှာသည်။",
   "mobile.searchNoResults": "မှတ်စုနှင့် လုပ်ငန်းများထဲတွင် မတွေ့ပါ။",
   "mobile.searchResultsAria": "ရှာဖွေမှု ရလဒ်များ",
+
+  "mobile.dashboard.recordedBalance": "မှတ်တမ်းရှိ လက်ကျန်ငွေ",
+  "mobile.dashboard.walletsAria": "ပိုက်ဆံအိတ် လက်ကျန်များ",
+  "mobile.dashboard.noWallets":
+    "ပိုက်ဆံအိတ် မရှိသေးပါ။ ၎င်းတို့ကို ကွန်ပျူတာပေါ်တွင် ဖန်တီးသည် — မှတ်တမ်းမရှိသော လက်ကျန်ကို သုညအဖြစ် မပြပါ။",
+  "mobile.dashboard.tasksHeading": "ယနေ့ လုပ်ရမည့်အရာများ",
+  "mobile.dashboard.tasksAria": "ယနေ့ သို့မဟုတ် ကျော်လွန်နေသော လုပ်ငန်းများ",
+  "mobile.dashboard.noTasks": "ယနေ့ လုပ်ရန် မရှိပါ။",
+  "mobile.dashboard.pinnedHeading": "ပင်ထားသော မှတ်စုများ",
+  "mobile.dashboard.pinnedAria": "ပင်ထားသော မှတ်စုများ",
+  "mobile.dashboard.noPinned": "ပင်ထားသော မှတ်စု မရှိသေးပါ။",
+  "mobile.dashboard.openNote": "မှတ်စုကို ဖွင့်ရန်",
+  "mobile.dashboard.habitsHeading": "ယနေ့ အလေ့အထများ",
+  "mobile.dashboard.habitsAria": "ယနေ့ အလေ့အထ မှတ်တမ်းများ",
+  "mobile.dashboard.noHabits": "အလေ့အထ မရှိသေးပါ။ အလေ့အထများကို ကွန်ပျူတာပေါ်တွင် ဖန်တီးသည်။",
+  "mobile.noteReader.title": "မှတ်စု",
+  "mobile.noteReader.empty": "ဤမှတ်စုသည် အလွတ်ဖြစ်သည်။",
+  "mobile.noteReader.notFound": "ထိုမှတ်စု မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+
+  "mobile.budget.walletsAria": "ပိုက်ဆံအိတ်များ",
+  "mobile.budget.noWallets":
+    "ပိုက်ဆံအိတ် မရှိသေးပါ။ ကွန်ပျူတာပေါ်တွင် တစ်ခု ဖန်တီးပြီး ပြန်လာပါ — ဤနေရာတွင် ဘာမှ ဖန်တီးမပေးပါ။",
+  "mobile.budget.entriesHeading": "မှတ်တမ်းများ",
+  "mobile.budget.entriesAria": "ပိုက်ဆံအိတ် မှတ်တမ်းများ",
+  "mobile.budget.noEntries": "ဤပိုက်ဆံအိတ်တွင် မှတ်တမ်း မရှိသေးပါ။",
+  "mobile.budget.showEntries": "မှတ်တမ်းများ ကြည့်ရန်",
+  "mobile.budget.hideEntries": "မှတ်တမ်းများ ပိတ်ရန်",
+  "mobile.budget.appendOnly":
+    "ဖုန်းတွင် မှတ်တမ်းများကို ထပ်ဖြည့်သာ ပြုနိုင်သည် — ဤနေရာတွင် ထည့်၍ရသော်လည်း ပြင်ဆင်ခြင်း သို့မဟုတ် ဖျက်ခြင်း မပြုနိုင်ပါ။",
+  "mobile.entry.amountLabel": "ပမာဏ (ကျပ်)",
+  "mobile.entry.amountPlaceholder": "ဥပမာ 12,500",
+  "mobile.entry.invalidAmount": "သုညထက် ကြီးသော ပမာဏ ထည့်ပါ။",
+  "mobile.entry.walletLabel": "ပိုက်ဆံအိတ်",
+  "mobile.entry.categoryLabel": "အမျိုးအစား",
+  "mobile.entry.dateLabel": "ရက်စွဲ",
+  "mobile.entry.noteLabel": "မှတ်ချက် (မဖြစ်မနေ မဟုတ်)",
+  "mobile.entry.notePlaceholder": "ဘာအတွက်လဲ။",
+  "mobile.entry.noWalletGuide":
+    "ပိုက်ဆံအိတ် မရှိသေးပါ။ ကွန်ပျူတာပေါ်တွင် တစ်ခု ဖန်တီးပြီး ပြန်လာပါ — ဤဖောင်က ဘာမှ ဖန်တီးမပေးပါ။",
+  "mobile.entry.noCategoryGuide":
+    "{kind} အမျိုးအစား မရှိသေးပါ။ ကွန်ပျူတာပေါ်တွင် တစ်ခု ဖန်တီးပြီး ပြန်လာပါ။",
+  "mobile.entry.kindIncome": "ဝင်ငွေ",
+  "mobile.entry.kindExpense": "အသုံးစရိတ်",
+  "mobile.entry.saveIncome": "ဝင်ငွေ သိမ်းရန်",
+  "mobile.entry.saveExpense": "အသုံးစရိတ် သိမ်းရန်",
 
   "reminders.noticeExact":
     "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသောကြောင့် Purple Memo ပိတ်ထားလည်း အချိန်တိုင်း အသိပေးပါမည်။",

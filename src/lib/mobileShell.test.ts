@@ -3,12 +3,14 @@ import { test } from "node:test";
 import {
   BACKGROUND_LOCK_GRACE_MS,
   FAB_ACTIONS,
+  historyStateFor,
   isLanding,
   MOBILE_LANDING,
   MOBILE_SECTIONS,
   MOBILE_TABS,
   MORE_SHEET_ITEMS,
   routeForCompose,
+  routeForNote,
   routeForPage,
   routeForTab,
   routeFromHistoryState,
@@ -68,6 +70,16 @@ test("only the landing state may leave the app on back", () => {
   assert.equal(isLanding(routeForTab("tasks")), false);
   assert.equal(isLanding(routeForPage("notes")), false);
   assert.equal(isLanding(routeForCompose("note")), false);
+  assert.equal(isLanding(routeForNote(7)), false);
+});
+
+test("a note reader route survives history and is never the landing state", () => {
+  const route = routeForNote(12);
+  assert.deepEqual(routeFromHistoryState(historyStateFor(route)), route);
+  assert.equal(route.noteId, 12);
+  assert.deepEqual(routeFromHistoryState({ noteId: 0 }), MOBILE_LANDING);
+  assert.deepEqual(routeFromHistoryState({ noteId: 2.5 }), MOBILE_LANDING);
+  assert.deepEqual(routeFromHistoryState({ noteId: "12" }), MOBILE_LANDING);
 });
 
 test("the FAB creates five things and never checks a habit in", () => {

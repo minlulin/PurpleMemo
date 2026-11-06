@@ -125,9 +125,20 @@ weaker hardware.
 
 ## Phase B — Complete offline companion
 
-- [ ] Dashboard: in-hand money (recorded balance) + tasks + pinned notes +
-  today's habit check-ins
-- [ ] Budget: wallet views + append-only entry forms (via FAB & Budget tab)
+- [x] Dashboard: in-hand money (recorded balance) + tasks + pinned notes +
+  today's habit check-ins — emulator proof: one wallet with entries (1,200.00
+  in, 200.00 out) showed **မှတ်တမ်းရှိ လက်ကျန်ငွေ / Recorded balance 1,000.00**
+  and `Cash 1,000.00`; one task due today, one pinned note and one habit showed
+  exactly those rows and no others; the task's mark-done and the habit's
+  check-in both persisted across `am force-stop` + relaunch (`tasks.done=1`,
+  `habit_logs` row with uid). No wallet → the guided empty state, not `0.00`
+  invented as a balance.
+- [x] Budget: wallet views + append-only entry forms (via FAB & Budget tab) —
+  emulator proof: one income (500.00) and one expense (30.00) added through the
+  FAB speed-dial, one expense (20.00) through the Budget tab; all three carry
+  UUID-v4 `uid`s (0 NULL uids in either ledger table), and Cash moved
+  1,000.00 → 1,450.00 exactly. No edit/delete control exists in the wallet
+  entry list — only the append-only disclosure.
 - [ ] Business: view + create jobs (no payment fields on mobile)
 - [ ] Loans: view + create (no repayment fields on mobile)
 - [ ] Habits: 1-tap check-ins on Dashboard & Habits page

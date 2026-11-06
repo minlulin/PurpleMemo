@@ -53,13 +53,15 @@ test("recordJobPayment: partial payment keeps the job open and records income (c
   assert.deepEqual(jobUpdate.params, [40_000, "open", 1]);
   const income = at(batch, 1, "batch");
   assert.match(income.sql, /INSERT INTO income_entries/);
-  assert.deepEqual(income.params, [
+  // Minted at creation, so the uid is checked by shape only.
+  assert.match(String(income.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(income.params.slice(1), [
     40_000,
     4,
     2,
     "2026-10-10",
     "Job: Fix roof",
-    income.params[5],
+    income.params[6],
   ]);
 });
 
@@ -94,13 +96,14 @@ test("recordJobPayment: paid in full -> status paid + Business income entry", as
   assert.deepEqual(at(batch, 0, "batch").params, [100_000, "paid", 1]);
   const incomeInsert = at(batch, 1, "batch");
   assert.match(incomeInsert.sql, /INSERT INTO income_entries/);
-  assert.deepEqual(incomeInsert.params, [
+  assert.match(String(incomeInsert.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(incomeInsert.params.slice(1), [
     40_000,
     4,
     2,
     "2026-10-10",
     "Job: Fix roof",
-    incomeInsert.params[5],
+    incomeInsert.params[6],
   ]);
 });
 
@@ -133,7 +136,7 @@ test("recordJobPayment: overpayment is clamped — outstanding never negative", 
   }[];
   assert.deepEqual(at(batch, 0, "batch").params, [10_000, "paid", 1]);
   assert.equal(
-    at(batch, 1, "batch").params[0],
+    at(batch, 1, "batch").params[1],
     2_000,
     "income counts only the cash that arrived",
   );
@@ -256,13 +259,14 @@ test("markPayablePaid creates the expense entry", async () => {
   assert.match(at(batch, 0, "batch").sql, /UPDATE payables SET paid = 1/);
   const expenseInsert = at(batch, 1, "batch");
   assert.match(expenseInsert.sql, /INSERT INTO expense_entries/);
-  assert.deepEqual(expenseInsert.params, [
+  assert.match(String(expenseInsert.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(expenseInsert.params.slice(1), [
     80_000,
     7,
     1,
     "2026-10-10",
     "Wood",
-    expenseInsert.params[5],
+    expenseInsert.params[6],
   ]);
 });
 

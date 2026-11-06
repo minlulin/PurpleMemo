@@ -110,29 +110,46 @@ export interface MobileRoute {
   tab: MobileTabKey;
   page: PageKey | null;
   compose: FabActionId | null;
+  /**
+   * The note the reader is showing, or null. It is a route (not local state)
+   * so the Android back gesture closes the reader instead of leaving the app.
+   */
+  noteId: number | null;
 }
 
 export const MOBILE_LANDING: MobileRoute = {
   tab: "dashboard",
   page: null,
   compose: null,
+  noteId: null,
 };
 
 /** The only state from which a back press leaves the app. */
 export function isLanding(route: MobileRoute): boolean {
   return (
-    route.tab === "dashboard" && route.page === null && route.compose === null
+    route.tab === "dashboard" &&
+    route.page === null &&
+    route.compose === null &&
+    route.noteId === null
   );
 }
 
 /** Pressing a tab shows that tab's own screen. */
 export function routeForTab(tab: MobileTabKey): MobileRoute {
-  return { tab, page: null, compose: null };
+  return { tab, page: null, compose: null, noteId: null };
 }
 
 /** Opening a section keeps the tab that owns it, so the tab bar stays truthful. */
 export function routeForPage(page: PageKey): MobileRoute {
-  return { tab: tabForPage(page), page, compose: null };
+  return { tab: tabForPage(page), page, compose: null, noteId: null };
+}
+
+/**
+ * Opening a note in the reader. Pinned notes are previewed on the Dashboard,
+ * so the reader sits on that tab and back returns to it.
+ */
+export function routeForNote(id: number): MobileRoute {
+  return { tab: "dashboard", page: null, compose: null, noteId: id };
 }
 
 /**
@@ -173,6 +190,7 @@ export function routeForCompose(id: FabActionId): MobileRoute {
     tab: tabForPage(action.page),
     page: action.page,
     compose: action.id,
+    noteId: null,
   };
 }
 
@@ -191,6 +209,7 @@ export function routeFromHistoryState(state: unknown): MobileRoute {
     tab?: unknown;
     page?: unknown;
     compose?: unknown;
+    noteId?: unknown;
   };
   if (typeof raw.tab !== "string" || !MOBILE_TAB_KEYS.includes(raw.tab)) {
     return MOBILE_LANDING;
@@ -212,8 +231,20 @@ export function routeFromHistoryState(state: unknown): MobileRoute {
   // A compose route without a page cannot be shown; a page that belongs to a
   // different tab would make the tab bar lie, so the tab is derived from it.
   if (compose !== null && page === null) return MOBILE_LANDING;
-  if (page !== null) return { tab: tabForPage(page), page, compose };
-  return { tab, page: null, compose: null };
+  if (page !== null)
+    return { tab: tabForPage(page), page, compose, noteId: null };
+  const noteId =
+    typeof raw.noteId === "number" &&
+    Number.isInteger(raw.noteId) &&
+    raw.noteId > 0
+      ? raw.noteId
+      : null;
+  if (noteId !== null) {
+    return page === null && compose === null
+      ? routeForNote(noteId)
+      : { tab, page, compose, noteId };
+  }
+  return { tab, page: null, compose: null, noteId: null };
 }
 
 /** The value written to `history.state` for a route. */
@@ -223,6 +254,7 @@ export function historyStateFor(route: MobileRoute): Record<string, unknown> {
     tab: route.tab,
     page: route.page,
     compose: route.compose,
+    noteId: route.noteId,
   };
 }
 

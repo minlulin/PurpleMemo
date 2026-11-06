@@ -16,6 +16,7 @@ import type {
   RecurringPaymentRow,
   WalletRow,
 } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /** Hard cap on catch-up occurrences per mark-paid call. */
 export const CATCHUP_MAX_OCCURRENCES = 60;
@@ -47,7 +48,7 @@ export type LedgerKind = "income" | "expense";
 
 /** A ledger insert, ready for `driver.execute` or a `driver.batch` array. */
 export interface LedgerInsert extends BatchStatement {
-  /** amount, category, wallet, entry date, note, created_at. */
+  /** uid, amount, category, wallet, entry date, note, created_at. */
   params: (string | number)[];
 }
 
@@ -61,16 +62,22 @@ export interface LedgerInsert extends BatchStatement {
  *
  * `createdAt` defaults to today's local date; batch callers pass one stamp for
  * every row they write so a multi-row catch-up cannot straddle midnight.
+ *
+ * The `uid` is minted here, at creation, for the same reason every other
+ * creation path mints one (docs/ANDROID_DESIGN.md, UID contract): a ledger row
+ * typed on the phone offline must already carry the identity it will sync
+ * under. A caller that already has one (a retry, a fixture) may pass it in.
  */
 export function ledgerInsertStatement(
   kind: LedgerKind,
-  entry: EntryInput & { createdAt?: string },
+  entry: EntryInput & { createdAt?: string; uid?: string },
 ): LedgerInsert {
   const table = kind === "income" ? "income_entries" : "expense_entries";
   return {
-    sql: `INSERT INTO ${table} (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO ${table} (uid, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
     params: [
+      entry.uid ?? newUid(),
       entry.amountCents,
       entry.categoryId,
       entry.walletId,
@@ -87,6 +94,16 @@ export function ledgerInsertStatement(
  * `types.ts` like every other table's (docs/AUDIT.md SCHEMA-02).
  */
 export type DayEntry = ExpenseEntryRow & { kind: LedgerKind };
+
+/**
+ * One wallet's ledger row — the same two tables, read by wallet instead of by
+ * day, with the cross-device `uid` in the projection (the phone shows what the
+ * record says, and identity is part of what a record has).
+ */
+export interface WalletEntryRow extends ExpenseEntryRow {
+  kind: LedgerKind;
+  uid: string | null;
+}
 
 /**
  * One day's money in and out, aggregated rather than listed (I3).
@@ -749,6 +766,29 @@ export function createBudgetRepo(driver: DataDriver) {
         incomeCents: row?.income_cents ?? 0,
         expenseCents: row?.expense_cents ?? 0,
       };
+    },
+
+    /**
+     * One wallet's entries, newest first — the phone's wallet detail.
+     *
+     * Read-only by construction: there is no edit or delete counterpart on the
+     * mobile surface, and this method only ever SELECTs. `limit` is applied in
+     * SQL so a busy wallet transfers a screenful, not its whole history.
+     */
+    async listWalletEntries(
+      walletId: number,
+      limit = 50,
+    ): Promise<WalletEntryRow[]> {
+      return driver.query<WalletEntryRow>(
+        `SELECT 'income' AS kind, id, uid, amount_cents, category_id, wallet_id, entry_date, note, created_at
+           FROM income_entries WHERE wallet_id = ?
+         UNION ALL
+         SELECT 'expense' AS kind, id, uid, amount_cents, category_id, wallet_id, entry_date, note, created_at
+           FROM expense_entries WHERE wallet_id = ?
+         ORDER BY entry_date DESC, id DESC
+         LIMIT ?`,
+        [walletId, walletId, limit],
+      );
     },
 
     /** Both entry kinds for one day — the daily list view. */

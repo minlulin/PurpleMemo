@@ -423,3 +423,49 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* Dashboard + Budget data screens (Phase B Session 1) --------------------- */
+
+.mobile-balance {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight, normal);
+}
+
+.mobile-wallet-line {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.mobile-card-btn {
+  width: 100%;
+  text-align: left;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.mobile-card-btn.is-open {
+  border-color: var(--color-border-strong);
+}
+
+.mobile-reader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mobile-reader-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+}
+
+.mobile-reader-body {
+  color: var(--color-text);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed, 1.6);
+  overflow-wrap: anywhere;
+}

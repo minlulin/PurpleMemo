@@ -16,6 +16,7 @@ import {
   type MobileRoute,
   type MobileTabKey,
   routeForCompose,
+  routeForNote,
   routeForPage,
   routeForTab,
   routeFromHistoryState,
@@ -40,8 +41,11 @@ import {
   IconVault,
 } from "./icons.tsx";
 import {
+  BudgetScreen,
   DashboardScreen,
+  EntryCompose,
   NoteCompose,
+  NoteReaderScreen,
   NotesScreen,
   ShoppingItemCompose,
   ShoppingScreen,
@@ -170,16 +174,18 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
   const tabLabel =
     MOBILE_TABS.find((tab) => tab.key === route.tab)?.label ?? "mobile.moreTab";
   const heading =
-    composeAction !== null
-      ? t(composeAction.label)
-      : route.page !== null
-        ? t(sectionLabel(route.page))
-        : t(tabLabel);
+    route.noteId !== null
+      ? t("mobile.noteReader.title")
+      : composeAction !== null
+        ? t(composeAction.label)
+        : route.page !== null
+          ? t(sectionLabel(route.page))
+          : t(tabLabel);
 
   return (
     <div className="mobile-shell">
       <header className="mobile-header">
-        {route.page !== null ? (
+        {route.page !== null || route.noteId !== null ? (
           <button
             type="button"
             className="mobile-icon-btn"
@@ -204,7 +210,9 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
       </header>
 
       <main className="mobile-main" id="main-content" tabIndex={-1}>
-        {composeAction !== null ? (
+        {route.noteId !== null ? (
+          <NoteReaderScreen noteId={route.noteId} />
+        ) : composeAction !== null ? (
           <ComposeBody
             id={composeAction.id}
             label={t(composeAction.label)}
@@ -214,6 +222,7 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
           <SectionBody
             page={route.page}
             onCompose={(id) => go(routeForCompose(id))}
+            onOpenNote={(id) => go(routeForNote(id))}
           />
         ) : route.tab === "more" ? (
           <section className="mobile-page">
@@ -223,6 +232,7 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
           <SectionBody
             page={route.tab}
             onCompose={(id) => go(routeForCompose(id))}
+            onOpenNote={(id) => go(routeForNote(id))}
           />
         )}
       </main>
@@ -342,9 +352,11 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
 function SectionBody({
   page,
   onCompose,
+  onOpenNote,
 }: {
   page: PageKey;
-  onCompose: (id: "note" | "task" | "shopping") => void;
+  onCompose: (id: FabActionId) => void;
+  onOpenNote: (id: number) => void;
 }) {
   const t = useT();
   const label = t(sectionLabel(page));
@@ -355,7 +367,8 @@ function SectionBody({
   if (page === "shopping") {
     return <ShoppingScreen onCompose={() => onCompose("shopping")} />;
   }
-  if (page === "dashboard") return <DashboardScreen />;
+  if (page === "budget") return <BudgetScreen onCompose={onCompose} />;
+  if (page === "dashboard") return <DashboardScreen onOpenNote={onOpenNote} />;
   return (
     <section className="mobile-page">
       <p className="mobile-section-kicker">{label}</p>
@@ -384,6 +397,9 @@ function ComposeBody({
   if (id === "note") return <NoteCompose onDone={onDone} />;
   if (id === "task") return <TaskCompose onDone={onDone} />;
   if (id === "shopping") return <ShoppingItemCompose onDone={onDone} />;
+  if (id === "income" || id === "expense") {
+    return <EntryCompose kind={id} onDone={onDone} />;
+  }
   return (
     <section className="mobile-page">
       <EmptyState>{t("mobile.compose.body", { what: label })}</EmptyState>

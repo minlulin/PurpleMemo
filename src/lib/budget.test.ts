@@ -98,7 +98,15 @@ test("createExpenseEntry stores integer cents", async () => {
   });
   const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
   assert.match(sql, /INSERT INTO expense_entries/);
-  assert.deepEqual(params, [1500, 1, 2, "2026-10-10", "lunch", params[5]]);
+  assert.match(String(params[0]), /^[0-9a-f-]{36}$/, "uid is minted here");
+  assert.deepEqual(params.slice(1), [
+    1500,
+    1,
+    2,
+    "2026-10-10",
+    "lunch",
+    params[6],
+  ]);
 });
 
 test("a cleared entry date saves and refreshes against the same local day", async () => {
@@ -115,7 +123,7 @@ test("a cleared entry date saves and refreshes against the same local day", asyn
   await budget.listDayEntries(entryDate);
 
   const [, insertParams] = argsOf(driver, "execute") as [string, unknown[]];
-  assert.equal(insertParams[3], "2026-10-11");
+  assert.equal(insertParams[4], "2026-10-11");
   const dayQuery = driver.callsTo("query")[0];
   assert.ok(dayQuery);
   assert.deepEqual(dayQuery.args[1], ["2026-10-11", "2026-10-11"]);
@@ -194,13 +202,14 @@ test("markRecurringPaid creates one expense per occurrence + advances due, batch
   const firstInsert = at(batch, 0, "batch");
   const dueUpdate = at(batch, 2, "batch");
   assert.match(firstInsert.sql, /INSERT INTO expense_entries/);
-  assert.deepEqual(firstInsert.params, [
+  assert.match(String(firstInsert.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(firstInsert.params.slice(1), [
     9000,
     2,
     3,
     "2026-09-10",
     "Net",
-    firstInsert.params[5],
+    firstInsert.params[6],
   ]);
   assert.match(dueUpdate.sql, /UPDATE recurring_payments SET next_due_date/);
   assert.deepEqual(
@@ -238,13 +247,14 @@ test("markRecurringPaid falls back for category/wallet when the rule has none", 
     params: unknown[];
   }[];
   const insert = at(batch, 0, "batch");
-  assert.deepEqual(insert.params, [
+  assert.match(String(insert.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(insert.params.slice(1), [
     1000,
     5,
     6,
     "2026-10-05",
     "Bus",
-    insert.params[5],
+    insert.params[6],
   ]);
 });
 
@@ -410,7 +420,9 @@ test("ledgerInsertStatement is the one shape for both ledger tables", () => {
     createdAt: "2026-10-21",
   });
   assert.match(income.sql, /INSERT INTO income_entries/);
-  assert.deepEqual(income.params, [
+  // The uid is minted at creation, so the parameter is checked by shape.
+  assert.match(String(income.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(income.params.slice(1), [
     500,
     3,
     4,
@@ -425,8 +437,8 @@ test("ledgerInsertStatement is the one shape for both ledger tables", () => {
     entryDate: "2026-10-20",
   });
   assert.match(expense.sql, /INSERT INTO expense_entries/);
-  assert.equal(expense.params[4], "", "note defaults to empty, never NULL");
-  assert.match(String(expense.params[5]), /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(expense.params[5], "", "note defaults to empty, never NULL");
+  assert.match(String(expense.params[6]), /^\d{4}-\d{2}-\d{2}$/);
 });
 
 test("updateIncomeEntry writes only the provided fields", async () => {
