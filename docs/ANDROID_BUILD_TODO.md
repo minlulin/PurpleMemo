@@ -232,17 +232,49 @@ weaker hardware.
   every transition report `1e-05s` (the global 0.01ms rule), with
   `.mobile-shell`’s height transition switched off outright; back to `1` and
   the shell transition reads `0.12s` again.
-- [ ] Empty states + first-run (no wallet/category → guided, never invented) —
-  **partially proven on the final build**: after `pm clear` the first launch
-  showed the guided setup (“Welcome to Purple Memo … Set a local PIN … Your
-  security question … is the only way back in”). The populated surfaces were
-  re-read on the same build (Dashboard money/tasks/pinned/habits, Budget,
-  Business, Loans, Habits, Vault), and the guided empty text is wired for every
-  one of them (Dashboard’s muted placeholders were promoted to `EmptyState` in
-  this session). The **post-setup empty walk was not completed**: driving the
-  setup form over CDP updated the inputs but never satisfied React’s submit
-  (“A security question is required — it is your only recovery”), so the
-  database stayed at first run. Left unticked rather than claimed.
+- [x] Empty states + first-run (no wallet/category → guided, never invented) —
+  **walked end to end on a fresh install (Session 6, `emulator-5554`)**. Setup was
+  completed with genuine input events, never CDP value assignment: `pm clear`,
+  launch, tap the PIN field, `input text` for PIN / confirm / question / answer,
+  TAB to “Set PIN and continue”, ENTER. Proof the setup landed: the app left the
+  form for the Dashboard, the next launch demanded the PIN, and the database read
+  `PRAGMA user_version = 7` with `pin_hash`, `security_question` and
+  `security_answer_hash` in `settings`, every data table empty and the five
+  seeded wallets present. Every surface was then opened with real taps, and its
+  empty state recorded verbatim:
+
+  | Surface | Empty state shown on the fresh install |
+  |---|---|
+  | Dashboard | `RECORDED BALANCE 0.00` with the five seeded wallets at `0.00` — rows that exist in the database, nothing invented; `DUE TODAY` “Nothing due today.”; `PINNED NOTES` “No pinned notes yet.”; `TODAY'S HABITS` “No habits yet. Habits are created on the desktop.” |
+  | Tasks | “Nothing due — enjoy it.”, then the REMINDERS disclosure (“Scheduled with this phone's own alarm clock … it does not receive the desktop's.”) and “No reminders yet.” above the add-reminder form |
+  | Budget | “Entries are append-only on the phone: you can add a record here, but never edit or delete one.”; every seeded wallet reads `0.00` / “Tap for entries” |
+  | Shopping | “No lists yet — create one below to start your shopping list.” beside `Create list` |
+  | Notes | “No notes yet — create your first note.” beside `New note` |
+  | Business | “No jobs yet. Add one here, or record it on the desktop — nothing is invented here.” |
+  | Loans | “No loans yet. Add one here, or record it on the desktop — nothing is invented here.” |
+  | Habits | “No habits yet. Habits are created on the desktop.” |
+  | Vault | “There is no vault on this phone yet. Set up the vault password on the desktop, then come back — this screen never creates one.” |
+  | Settings | no empty state to walk (sync, pairing, permissions, lock, diagnostics all populated): SYNC reads “Off. This phone is local-only …”, DIAGNOSTICS schema version `7`, Keystore backing `software` |
+
+  No surface showed a bare list, a crash, a failing “Try again”, or a row from an
+  earlier install; no balance was printed that the database does not hold. Honest
+  caveats, recorded rather than smoothed over: the three Dashboard section
+  placeholders (“Nothing due today.”, “No pinned notes yet.”) and “No reminders
+  yet.” are terse — labelled rather than guided — and each sits beside a working
+  create control (Quick capture, `New task`, the reminder form), so the copy was
+  left as written rather than reworded in a verification session; and the
+  “no wallet at all” branch cannot be reached on a fresh install because the
+  schema seeds five wallets, whose zero balances are real rows, not invention.
+
+  Harness note for later sessions: `adb shell input tap` did **nothing** while
+  the first-run `GrantPermissionsActivity` (POST_NOTIFICATIONS) dialog sat on top,
+  and again while a stale `InputMethod` window reported `mIsInputViewShown=true`
+  with `mInputShown=false`. Taps only land once the dialog is dismissed
+  (`pm grant … POST_NOTIFICATIONS` then BACK) and `dumpsys input_method` shows
+  `mIsInputViewShown=false`; key events still reached the WebView throughout,
+  which is what made the failure look like a React problem. CDP was used only to
+  read text and geometry, never to write a value.
+
 - [ ] Signed APK distribution + update/rollback documentation — docs written
   (`docs/ANDROID_DISTRIBUTION.md`: key creation, `key.properties`, the
   arm64-only release build, `apksigner verify`/`sha256sum` checks, the Redmi
@@ -265,7 +297,8 @@ weaker hardware.
 change, TalkBack, low-memory/process-death covered; limitations disclosed;
 signed install/upgrade reproducible.
 
-**Phase B exit gate — NOT PASSED (2026-11-07).** Only `emulator-5554` was
+**Phase B exit gate — PASSES EXCEPT THE SIGNED RELEASE APK (2026-11-07;
+empty-state item closed in Session 6).** Only `emulator-5554` was
 used (x86_64, software Keystore backing); everything below is emulator truth,
 and the Redmi (arm64, TEE-backed Keystore, signed-APK install) has proved
 nothing in this session.
@@ -296,8 +329,12 @@ nothing in this session.
 - **Signed install/upgrade reproducible — FAIL / BLOCKED** (see the Signed APK
   item: rustc ICE on the aarch64 release build, and no release keystore yet).
 
-Phase B therefore stays open on two items: the fresh-install empty-state walk
-and the signed release artefact.
+- **Empty states + first-run — PASS (Session 6).** Fresh install, setup
+  completed through real input events, every surface walked and its guided
+  empty text recorded verbatim (see the item above).
+
+Phase B therefore stays open on one item: the signed release artefact
+(Blocker 2, a separate toolchain track). The phase is not closed.
 
 ## Phase C — Staged sync, narrow first
 
