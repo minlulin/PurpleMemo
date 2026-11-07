@@ -31,8 +31,9 @@
 .mobile-header-spacer,
 .mobile-icon-btn {
   flex: none;
-  width: 2.75rem;
-  height: 2.75rem;
+  /* 3rem = 48dp: the accessibility floor for a touch target (Phase B I.1). */
+  width: 3rem;
+  height: 3rem;
 }
 
 .mobile-icon-btn {
@@ -183,6 +184,10 @@
 }
 
 .mobile-fab-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 3rem;
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-full);
@@ -248,7 +253,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-height: 2.75rem;
+  min-height: 3rem;
   padding: var(--space-3);
   border: 0;
   border-radius: var(--radius-md);
@@ -263,9 +268,21 @@
   background: var(--color-surface-hover);
 }
 
+/* Reduced motion (Phase B I.1). The global rule in app.css shortens every
+ * animation to 0.01ms; the shell's height transition and the FAB/sheet chrome
+ * are switched off outright so the OS "Remove animations" setting leaves the
+ * phone static rather than nearly-instant. */
 @media (prefers-reduced-motion: reduce) {
   .mobile-shell {
     transition: none;
+  }
+
+  .mobile-fab,
+  .mobile-fab-action,
+  .mobile-sheet,
+  .mobile-sheet-item {
+    transition: none;
+    animation: none;
   }
 }
 
@@ -276,6 +293,13 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
+}
+
+/* 48dp floor for the shared controls inside the phone shell (Phase B I.1):
+ * the desktop control geometry is too small for a thumb. */
+.mobile-shell .btn,
+.mobile-shell .input {
+  min-height: 3rem;
 }
 
 .mobile-actions .input {
@@ -329,8 +353,8 @@
   display: flex;
   gap: var(--space-3);
   align-items: center;
-  /* 44pt minimum touch target, as the design language asks. */
-  min-height: 2.75rem;
+  /* 3rem = 48dp, the Android touch-target floor (Phase B I.1). */
+  min-height: 3rem;
   padding: var(--space-2) var(--space-3);
   background: var(--color-surface-raised);
   border: var(--border-width) solid var(--color-card-border);
@@ -368,6 +392,10 @@
 }
 
 .mobile-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
   padding: var(--space-2) var(--space-3);
   background: var(--color-surface-raised);
   border: var(--border-width) solid var(--color-card-border);
@@ -414,8 +442,11 @@
 }
 
 .mobile-link-btn {
+  display: inline-flex;
+  align-items: center;
   align-self: flex-start;
-  padding: 0;
+  min-height: 3rem;
+  padding: 0 var(--space-2);
   background: none;
   border: none;
   color: var(--color-accent, var(--color-text));

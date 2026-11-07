@@ -204,14 +204,100 @@ weaker hardware.
   `window=+1m51s`. A cold boot re-armed the pending row: `re-armed 1 reminder(s)
   after boot` plus the 12:32 alarm back in `dumpsys alarm` at its original
   time, so reminders survive a reboot.
-- [ ] Accessibility: 48dp targets, TalkBack labels, reduced motion
-- [ ] Empty states + first-run (no wallet/category → guided, never invented)
-- [ ] Signed APK distribution + update/rollback documentation
-- [ ] Writable sync stays **disabled** (pairing UI may exist, sync does not run)
+- [x] Accessibility: 48dp targets, TalkBack labels, reduced motion —
+  measured on `emulator-5554` with a scripted audit of every interactive
+  element on Dashboard, Tasks, Budget, Shopping, the More sheet, Notes,
+  Business, Loans, Habits, Vault, Settings and the open FAB menu. Before:
+  header/back/lock buttons **44dp**, More-sheet items **44dp**, list rows
+  **44dp**, chips **~36dp**, FAB actions **~43dp**, “Try again” links
+  **~19dp**, and every shared `.btn`/`.input` **35dp** (the desktop geometry).
+  After the fixes: `.mobile-icon-btn` **48×48**, `.mobile-sheet-item`
+  **48**, `.mobile-row` **48**, `.mobile-chip` **48**, `.mobile-fab-action`
+  **48**, `.mobile-link-btn` **48**, `.mobile-shell .btn/.input` **48**;
+  FAB **56×56** and tabs **60** were already above the floor. Under-48
+  findings on the final build: **4**, all of them the raw 20dp checkbox glyph,
+  which sits inside a 48dp `.mobile-row` label so the tap target is the row.
+  TalkBack: enabled and bound on the emulator
+  (`com.google.android.marvin.talkback/…TalkBackService`, `Bound services:
+  {Service[label=TalkBack …]}`), and the WebView's accessibility tree (what
+  TalkBack reads) exposes labels and state — e.g. Dashboard: `RootWebArea |
+  Purple Memo`, `button | Lock workspace`, `button | Create something`,
+  `navigation | Sections`, `button | Tasks`, `textbox | Quick capture`,
+  `searchbox | Search`, `checkbox | Mark done: Morning walk [checked=false]`;
+  locked: `heading | Purple Memo is locked`, `textbox | PIN`, `button |
+  Unlock`, `button | Forgot PIN?`. Toggle labels now carry the record
+  (`Mark done: {title}`, `Mark bought: {title}`) instead of a bare verb, in
+  English and Burmese. Reduced motion: `settings put global
+  animator_duration_scale 0` made `(prefers-reduced-motion: reduce)` match and
+  every transition report `1e-05s` (the global 0.01ms rule), with
+  `.mobile-shell`’s height transition switched off outright; back to `1` and
+  the shell transition reads `0.12s` again.
+- [ ] Empty states + first-run (no wallet/category → guided, never invented) —
+  **partially proven on the final build**: after `pm clear` the first launch
+  showed the guided setup (“Welcome to Purple Memo … Set a local PIN … Your
+  security question … is the only way back in”). The populated surfaces were
+  re-read on the same build (Dashboard money/tasks/pinned/habits, Budget,
+  Business, Loans, Habits, Vault), and the guided empty text is wired for every
+  one of them (Dashboard’s muted placeholders were promoted to `EmptyState` in
+  this session). The **post-setup empty walk was not completed**: driving the
+  setup form over CDP updated the inputs but never satisfied React’s submit
+  (“A security question is required — it is your only recovery”), so the
+  database stayed at first run. Left unticked rather than claimed.
+- [ ] Signed APK distribution + update/rollback documentation — docs written
+  (`docs/ANDROID_DISTRIBUTION.md`: key creation, `key.properties`, the
+  arm64-only release build, `apksigner verify`/`sha256sum` checks, the Redmi
+  install checklist, the upgrade path and the lossy rollback). **The signed
+  artefact was not produced**: the aarch64 release build aborts with a rustc
+  ICE — `error: the compiler unexpectedly panicked. This is a bug` while
+  compiling `icu_locale_core` 2.3.0 with `-C opt-level=s -C panic=abort`,
+  rustc 1.95.0, NDK 27.3 clang linker (exit 101). There is also no release
+  keystore on this PC and no `key.properties` (both gitignored and absent), so
+  signing has to be set up before the first distribution. Left unticked: this
+  needs a toolchain/scope decision, not a code fix in this session.
+- [x] Writable sync stays **disabled** (pairing UI may exist, sync does not run)
+  — re-proved on the final build: “New code” on the Settings pairing block
+  left the `settings` row count at **5 → 5**, no key is exchanged and no
+  network call is made. With the exact-alarm grant denied
+  (`SCHEDULE_EXACT_ALARM ignore`) the bridge reports `inexact` and the Settings
+  row discloses the delay; restoring `allow` reports `exact` again.
 
 **Exit gate:** device-matrix pass; permission denial, reboot, timezone
 change, TalkBack, low-memory/process-death covered; limitations disclosed;
 signed install/upgrade reproducible.
+
+**Phase B exit gate — NOT PASSED (2026-11-07).** Only `emulator-5554` was
+used (x86_64, software Keystore backing); everything below is emulator truth,
+and the Redmi (arm64, TEE-backed Keystore, signed-APK install) has proved
+nothing in this session.
+
+- **Permission denial — PASS.** `SCHEDULE_EXACT_ALARM ignore` +
+  notification-blocked: `reminder_exact_state` returns `inexact`, the Settings
+  row says so, and reminders still arm (Session 4 measured the inexact window
+  at `+1m51s`); the app keeps working. Restored to `allow` afterwards.
+- **Reboot — PASS (Session 4, same alarm path).** Cold boot re-armed the
+  pending row (`re-armed 1 reminder(s) after boot`) at its original time.
+  This session changed no alarm code.
+- **Timezone change — PASS with a caveat.** `persist.sys.timezone`
+  Asia/Yangon → Asia/Tokyo moved the system clock (`Sat Nov 7 14:30 JST`) and
+  every `reminders.remind_at` value was **unchanged**; no reminder was lost
+  and no due time shifted. The WebView keeps its original zone for the life of
+  the process (`Date` still reported GMT+0630) and follows the new one on the
+  next launch — so a zone change needs an app restart before new reminders are
+  read in the new zone. Not a data bug; worth a note in the release notes.
+- **TalkBack — PASS** (see the Accessibility item).
+- **Low-memory / process death — PASS.** Repeated `am force-stop` and the
+  appops-driven kills throughout this session: relaunch always came back to the
+  PIN screen, and after unlock the records and toggle states were intact (the
+  earlier sessions' `done=1` rows survived; no crash in `logcat`).
+- **Limitations disclosed — PASS.** Emulator software Keystore (`backing`
+  reads `software` on Settings), inexact fallback and its delay, pairing
+  prototype writing nothing, reminders being device-local, Vault clipboard
+  clear being best effort: each is stated where the user meets it.
+- **Signed install/upgrade reproducible — FAIL / BLOCKED** (see the Signed APK
+  item: rustc ICE on the aarch64 release build, and no release keystore yet).
+
+Phase B therefore stays open on two items: the fresh-install empty-state walk
+and the signed release artefact.
 
 ## Phase C — Staged sync, narrow first
 

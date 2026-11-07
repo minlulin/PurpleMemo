@@ -348,6 +348,7 @@ export function RemindersPanel() {
         <label className="mobile-field">
           <span>{t("mobile.reminders.title")}</span>
           <input
+            className="input"
             type="text"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -356,6 +357,7 @@ export function RemindersPanel() {
         <label className="mobile-field">
           <span>{t("mobile.reminders.when")}</span>
           <input
+            className="input"
             type="datetime-local"
             value={remindAt}
             onChange={(event) => setRemindAt(event.target.value)}
@@ -364,6 +366,7 @@ export function RemindersPanel() {
         <label className="mobile-field">
           <span>{t("mobile.reminders.repeat")}</span>
           <select
+            className="input"
             value={repeat}
             onChange={(event) =>
               setRepeat(event.target.value as ReminderRepeat)
@@ -673,7 +676,7 @@ export function TasksScreen({ onCompose }: { onCompose: () => void }) {
                 type="checkbox"
                 checked={false}
                 disabled={busyId === task.id}
-                aria-label={t("mobile.markDone")}
+                aria-label={t("mobile.markDoneOf", { title: task.title })}
                 onChange={() => void toggle(task)}
               />
               <span className="mobile-row-text">
@@ -701,7 +704,9 @@ export function TasksScreen({ onCompose }: { onCompose: () => void }) {
                     type="checkbox"
                     checked
                     disabled={busyId === task.id}
-                    aria-label={t("mobile.markNotDone")}
+                    aria-label={t("mobile.markNotDoneOf", {
+                      title: task.title,
+                    })}
                     onChange={() => void toggle(task)}
                   />
                   <span className="mobile-row-text">{task.title}</span>
@@ -900,8 +905,8 @@ export function ShoppingScreen({ onCompose }: { onCompose: () => void }) {
                 disabled={busyId === item.id}
                 aria-label={
                   item.done === 1
-                    ? t("mobile.markNotBought")
-                    : t("mobile.markBought")
+                    ? t("mobile.markNotBoughtOf", { title: item.text })
+                    : t("mobile.markBoughtOf", { title: item.text })
                 }
                 onChange={() => void toggleItem(item)}
               />
@@ -1472,7 +1477,11 @@ export function HabitsScreen() {
                   checked={done}
                   disabled={busyId === progress.habit.id}
                   aria-label={
-                    done ? t("mobile.markNotDone") : t("mobile.markDone")
+                    done
+                      ? t("mobile.markNotDoneOf", {
+                          title: progress.habit.name,
+                        })
+                      : t("mobile.markDoneOf", { title: progress.habit.name })
                   }
                   onChange={() => void toggle(progress.habit.id)}
                 />
@@ -1677,7 +1686,7 @@ export function VaultScreen() {
         <>
           <p className="muted">{t("mobile.vault.lockedHint")}</p>
           {items.length === 0 ? (
-            <p className="muted">{t("mobile.vault.empty")}</p>
+            <EmptyState>{t("mobile.vault.empty")}</EmptyState>
           ) : (
             <ul className="mobile-list" aria-label={t("mobile.vault.listAria")}>
               {items.map((item) => (
@@ -2225,7 +2234,7 @@ export function DashboardScreen({
           {t("mobile.dashboard.recordedBalance")}
         </p>
         {data !== null && balances.length === 0 ? (
-          <p className="muted">{t("mobile.dashboard.noWallets")}</p>
+          <EmptyState>{t("mobile.dashboard.noWallets")}</EmptyState>
         ) : (
           <>
             <p className="mobile-balance">
@@ -2253,7 +2262,7 @@ export function DashboardScreen({
           {t("mobile.dashboard.tasksHeading")}
         </p>
         {data !== null && tasks.length === 0 ? (
-          <p className="muted">{t("mobile.dashboard.noTasks")}</p>
+          <EmptyState>{t("mobile.dashboard.noTasks")}</EmptyState>
         ) : null}
         <ul
           className="mobile-list"
@@ -2266,7 +2275,7 @@ export function DashboardScreen({
                   type="checkbox"
                   checked={false}
                   disabled={busyKey === `task:${task.id}`}
-                  aria-label={t("mobile.markDone")}
+                  aria-label={t("mobile.markDoneOf", { title: task.title })}
                   onChange={() => void completeTask(task)}
                 />
                 <span className="mobile-row-text">
@@ -2290,7 +2299,7 @@ export function DashboardScreen({
           {t("mobile.dashboard.pinnedHeading")}
         </p>
         {data !== null && pinned.length === 0 ? (
-          <p className="muted">{t("mobile.dashboard.noPinned")}</p>
+          <EmptyState>{t("mobile.dashboard.noPinned")}</EmptyState>
         ) : null}
         <ul
           className="mobile-list"
@@ -2323,7 +2332,7 @@ export function DashboardScreen({
           {t("mobile.dashboard.habitsHeading")}
         </p>
         {data !== null && habits.length === 0 ? (
-          <p className="muted">{t("mobile.dashboard.noHabits")}</p>
+          <EmptyState>{t("mobile.dashboard.noHabits")}</EmptyState>
         ) : null}
         <ul
           className="mobile-list"
@@ -2339,7 +2348,11 @@ export function DashboardScreen({
                     checked={done}
                     disabled={busyKey === `habit:${progress.habit.id}`}
                     aria-label={
-                      done ? t("mobile.markNotDone") : t("mobile.markDone")
+                      done
+                        ? t("mobile.markNotDoneOf", {
+                            title: progress.habit.name,
+                          })
+                        : t("mobile.markDoneOf", { title: progress.habit.name })
                     }
                     onChange={() => void toggleHabit(progress.habit.id, today)}
                   />
