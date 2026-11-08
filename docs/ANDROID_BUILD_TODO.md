@@ -333,12 +333,37 @@ nothing in this session.
   completed through real input events, every surface walked and its guided
   empty text recorded verbatim (see the item above).
 
-Phase B therefore stays open on one item: the signed release artefact
-(Blocker 2, a separate toolchain track). The phase is not closed.
+**Phase B is closed (2026-11-07).** MinLulin closed it on 2026-11-07:
+Session 6 (`a02b5c9`), exit gate "PASSES EXCEPT THE SIGNED RELEASE APK",
+gate FULL GREEN (TS 898 + Rust 196). The signed release artefact (Blocker 2,
+a separate toolchain track) is parked as a **release-time item** — a rustc ICE
+on the aarch64 release build and no release keystore yet, see
+`docs/ANDROID_DISTRIBUTION.md` — and is **not** a Phase B gate item, so it no
+longer holds the phase open.
 
 ## Phase C — Staged sync, narrow first
 
-- [ ] Protocol specification + failure-injection harness approved
+- [x] Protocol specification + failure-injection harness — **written
+  2026-11-08, awaiting MinLulin's approval** (approval is his call after he reads
+  the spec; this tick records delivery, not sign-off). Spec: protocol v1 in
+  `docs/ANDROID_SYNC_PROTOCOL.md`, superseding `ANDROID_DESIGN.md` §5 wherever
+  they conflict (`updated_at` LWW + watermark replaced by Lamport version
+  stamps and transactional cursors).
+  **Harness:** `src/lib/sync/protocol.ts` (pure rules),
+  `src/lib/sync/harness.ts` (two-peer simulator, fault injection, oracles),
+  `src/lib/sync/harness.test.ts` (verdicts).
+  **Injections implemented (9):** `mid-apply-kill`, `duplicate-delivery`,
+  `clock-skew`, `conflicting-offline-edits`, `delete-vs-edit`,
+  `cascaded-child-delete`, `revoked-peer`, `old-backup-restore`,
+  `desktop-only-leak`. **Invariant tests pending on Stage 1's engine (6):** two
+  populated peers converge; retry idempotent; interrupted apply loses no
+  acknowledged write; tombstones propagate incl. cascades; revoked peer
+  rejected; desktop-only rows never appear on the peer — each skipped with its
+  reason and clause, never passing on a stub.
+  **Open decision for MinLulin:** §13.1 `reminder-definition-owner` (Option A
+  recommended: reminder definitions two-way, `created_by_device_id`, the
+  creating device notifies). §13.2 (conflict losers → per-device local trash)
+  is confirmed, not open.
 - [ ] Schema & storage work: durable outbox (same transaction as mutation),
   tombstones incl. cascaded children, device identity, per-peer cursors
   (UIDs already established in Phase A)
