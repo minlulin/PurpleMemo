@@ -1,27 +1,33 @@
 /**
- * Envelope tests — real keys, real ciphertext (task O.4.1–O.4.2).
+ * Envelope tests — real keys, real ciphertext (tasks O.4.1–O.4.2, ephemeral
+ * rework in Session 5b).
  *
  * Round trips run in both directions between two independently generated
- * keypairs, and every refusal is exercised on real bytes. The cross-language
- * vector at the end is ciphertext produced by the **Rust** implementation
- * (`src-tauri/src/sync/envelope.rs`): if the two sides ever disagree about the
- * header bytes, the nonce layout or the wire shape, one of these tests fails.
+ * keypairs, every refusal is exercised on real bytes, and the vector writer at
+ * the end produces the file the Rust suite opens. If the two sides ever
+ * disagree about the header bytes (now including `eph`), the HKDF salt or info,
+ * the nonce layout or the wire shape, one of these tests fails.
  */
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   ENVELOPE_VERSION,
   fromHex,
   generateKeyPair,
   headerBytes,
+  KEY_BYTES,
   open,
+  openKey,
+  publicKeyOf,
   seal,
-  sharedKey,
+  sealKey,
   toHex,
 } from "./envelope.ts";
 
 const DESKTOP = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PHONE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const PAIRING = "pair-1";
 
 function pair() {
   const desktop = generateKeyPair();
@@ -40,6 +46,7 @@ test("a sealed message opens on the other side, and only there", () => {
     messageId: "msg-1",
     counter: 1,
     message: { hello: "world", version: 1 },
+    pairingId: PAIRING,
   });
 
   const opened = open({
@@ -48,13 +55,14 @@ test("a sealed message opens on the other side, and only there", () => {
     localDeviceId: PHONE,
     expectedFrom: DESKTOP,
     lastCounter: 0,
+    pairingId: PAIRING,
     raw: sealed,
   });
   assert.ok(opened.ok, "the phone must open what the desktop sealed");
   assert.deepEqual(opened.opened.message, { hello: "world", version: 1 });
   assert.equal(opened.opened.header.from, DESKTOP);
 
-  // The reverse direction is a different key agreement, so it is tested too.
+  // The reverse direction is a different pairing of keys, so it is tested too.
   const back = seal({
     secretKey: phone.secretKey,
     peerPublicKey: desktop.publicKey,
@@ -63,6 +71,7 @@ test("a sealed message opens on the other side, and only there", () => {
     messageId: "msg-2",
     counter: 1,
     message: { pong: true },
+    pairingId: PAIRING,
   });
   const openedBack = open({
     secretKey: desktop.secretKey,
@@ -70,16 +79,67 @@ test("a sealed message opens on the other side, and only there", () => {
     localDeviceId: DESKTOP,
     expectedFrom: PHONE,
     lastCounter: 0,
+    pairingId: PAIRING,
     raw: back,
   });
   assert.ok(openedBack.ok);
   assert.deepEqual(openedBack.opened.message, { pong: true });
+});
 
-  // Both sides derive the same agreement key; that is what makes the seal work.
-  assert.equal(
-    toHex(sharedKey(desktop.secretKey, phone.publicKey) ?? new Uint8Array()),
-    toHex(sharedKey(phone.secretKey, desktop.publicKey) ?? new Uint8Array()),
+test("both sides derive the same message key from the ephemeral and static agreements", () => {
+  const { desktop, phone } = pair();
+  const ephemeral = generateKeyPair();
+  const sender = sealKey(
+    desktop.secretKey,
+    phone.publicKey,
+    ephemeral.secretKey,
+    DESKTOP,
+    PHONE,
+    PAIRING,
   );
+  const receiver = openKey(
+    phone.secretKey,
+    desktop.publicKey,
+    ephemeral.publicKey,
+    DESKTOP,
+    PHONE,
+    PAIRING,
+  );
+  assert.ok(sender && receiver, "both sides must derive a key");
+  assert.equal(toHex(sender), toHex(receiver));
+  assert.equal(sender.length, KEY_BYTES);
+});
+
+test("a fresh ephemeral key means a fresh message key, even with one nonce", () => {
+  const { desktop, phone } = pair();
+  const nonce = new Uint8Array(24).fill(7);
+  const sealOnce = () =>
+    seal({
+      secretKey: desktop.secretKey,
+      peerPublicKey: phone.publicKey,
+      from: DESKTOP,
+      to: PHONE,
+      messageId: "msg-1",
+      counter: 1,
+      message: { same: "message" },
+      pairingId: PAIRING,
+      nonce,
+    });
+  const first = sealOnce();
+  const second = sealOnce();
+  assert.notEqual(first, second, "a reused key would repeat the ciphertext");
+  for (const wire of [first, second]) {
+    const opened = open({
+      secretKey: phone.secretKey,
+      peerPublicKey: desktop.publicKey,
+      localDeviceId: PHONE,
+      expectedFrom: DESKTOP,
+      lastCounter: 0,
+      pairingId: PAIRING,
+      raw: wire,
+    });
+    assert.ok(opened.ok, "a fresh ephemeral key must still open");
+  }
 });
 
 test("an altered envelope is refused, whichever part was altered", () => {
@@ -92,28 +152,30 @@ test("an altered envelope is refused, whichever part was altered", () => {
     messageId: "msg-1",
     counter: 1,
     message: { amount: 100 },
+    pairingId: PAIRING,
   });
   const wire = JSON.parse(sealed) as {
     header: Record<string, unknown>;
     body: string;
   };
 
-  const openWith = (raw: string) =>
+  const openWith = (raw: string, pairingId = PAIRING) =>
     open({
       secretKey: phone.secretKey,
       peerPublicKey: desktop.publicKey,
       localDeviceId: PHONE,
       expectedFrom: DESKTOP,
       lastCounter: 0,
+      pairingId,
       raw,
     });
+  const flip = (hex: string) =>
+    `${hex.slice(0, -2)}${hex.endsWith("00") ? "01" : "00"}`;
 
   // A flipped ciphertext byte.
-  const flipped = `${wire.body.slice(0, -2)}${wire.body.endsWith("00") ? "01" : "00"}`;
   const ciphertextTamper = openWith(
-    JSON.stringify({ header: wire.header, body: flipped }),
+    JSON.stringify({ header: wire.header, body: flip(wire.body) }),
   );
-  assert.equal(ciphertextTamper.ok, false);
   assert.equal(
     ciphertextTamper.ok === false ? ciphertextTamper.reason : "",
     "unauthenticated",
@@ -128,16 +190,36 @@ test("an altered envelope is refused, whichever part was altered", () => {
     "unauthenticated",
   );
 
-  // A flipped nonce.
-  const nonce = String(wire.header.nonce);
-  const badNonce = `${nonce.slice(0, -2)}${nonce.endsWith("00") ? "01" : "00"}`;
+  // A flipped nonce: it is both the AAD and the cipher's IV.
   const nonceTamper = openWith(
     JSON.stringify({
-      header: { ...wire.header, nonce: badNonce },
+      header: { ...wire.header, nonce: flip(String(wire.header.nonce)) },
       body: wire.body,
     }),
   );
   assert.equal(nonceTamper.ok, false);
+
+  // A forged ephemeral key: it feeds the HKDF, so the tag must fail.
+  const ephTamper = openWith(
+    JSON.stringify({
+      header: { ...wire.header, eph: flip(String(wire.header.eph)) },
+      body: wire.body,
+    }),
+  );
+  assert.equal(
+    ephTamper.ok === false ? ephTamper.reason : "",
+    "unauthenticated",
+    "a forged ephemeral key must be refused, not used",
+  );
+
+  // An ephemeral key that is not 32 bytes is malformed, not a tag failure.
+  const shortEph = openWith(
+    JSON.stringify({
+      header: { ...wire.header, eph: "0011" },
+      body: wire.body,
+    }),
+  );
+  assert.equal(shortEph.ok === false ? shortEph.reason : "", "malformed");
 
   // Not sealed under the pinned key at all: a stranger with their own keypair.
   const stranger = generateKeyPair();
@@ -149,9 +231,17 @@ test("an altered envelope is refused, whichever part was altered", () => {
     messageId: "msg-9",
     counter: 1,
     message: { forged: true },
+    pairingId: PAIRING,
   });
   const forged = openWith(strangerSealed);
   assert.equal(forged.ok === false ? forged.reason : "", "unauthenticated");
+
+  // The pairing id is part of the derived key.
+  const otherPairing = openWith(sealed, "pair-2");
+  assert.equal(
+    otherPairing.ok === false ? otherPairing.reason : "",
+    "unauthenticated",
+  );
 
   // Garbage is a refusal, never an exception escaping to the caller.
   assert.equal(openWith("not json").ok, false);
@@ -168,6 +258,7 @@ test("a replayed envelope, a foreign recipient and a foreign sender are refused"
     messageId: "msg-1",
     counter: 7,
     message: { note: "once" },
+    pairingId: PAIRING,
   });
   const first = open({
     secretKey: phone.secretKey,
@@ -175,6 +266,7 @@ test("a replayed envelope, a foreign recipient and a foreign sender are refused"
     localDeviceId: PHONE,
     expectedFrom: DESKTOP,
     lastCounter: 0,
+    pairingId: PAIRING,
     raw: sealed,
   });
   assert.ok(first.ok);
@@ -186,6 +278,7 @@ test("a replayed envelope, a foreign recipient and a foreign sender are refused"
     localDeviceId: PHONE,
     expectedFrom: DESKTOP,
     lastCounter: 7,
+    pairingId: PAIRING,
     raw: sealed,
   });
   assert.equal(replay.ok === false ? replay.reason : "", "replayed");
@@ -196,6 +289,7 @@ test("a replayed envelope, a foreign recipient and a foreign sender are refused"
     localDeviceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     expectedFrom: DESKTOP,
     lastCounter: 0,
+    pairingId: PAIRING,
     raw: sealed,
   });
   assert.equal(
@@ -209,6 +303,7 @@ test("a replayed envelope, a foreign recipient and a foreign sender are refused"
     localDeviceId: PHONE,
     expectedFrom: PHONE,
     lastCounter: 0,
+    pairingId: PAIRING,
     raw: sealed,
   });
   assert.equal(
@@ -219,8 +314,8 @@ test("a replayed envelope, a foreign recipient and a foreign sender are refused"
 
 test("the wire format is the one the Rust side writes", () => {
   // Fixed inputs: the same fields produce the same header bytes on both sides.
-  const secret = new Uint8Array(32).fill(1);
   const nonce = new Uint8Array(24).fill(2);
+  const eph = new Uint8Array(32).fill(3);
   const header = {
     v: ENVELOPE_VERSION,
     from: DESKTOP,
@@ -228,10 +323,62 @@ test("the wire format is the one the Rust side writes", () => {
     messageId: "msg-vector",
     counter: 3,
     nonce: toHex(nonce),
+    eph: toHex(eph),
   };
   assert.equal(
     new TextDecoder().decode(headerBytes(header)),
-    `{"v":1,"from":"${DESKTOP}","to":"${PHONE}","messageId":"msg-vector","counter":3,"nonce":"${"02".repeat(24)}"}`,
+    `{"v":1,"from":"${DESKTOP}","to":"${PHONE}","messageId":"msg-vector","counter":3,"nonce":"${"02".repeat(24)}","eph":"${"03".repeat(32)}"}`,
   );
-  assert.deepEqual(fromHex(toHex(secret)), secret, "hex round-trips exactly");
+  assert.deepEqual(fromHex(toHex(eph)), eph, "hex round-trips exactly");
+});
+
+/**
+ * Cross-language proof, this direction: this test writes the vector the Rust
+ * suite opens (`an_envelope_written_by_the_typescript_side_opens_here`).
+ *
+ * Fixed secrets, nonce and ephemeral secret, so the file is byte-for-byte the
+ * same on every run; writing it every time keeps the committed vector from
+ * drifting away from this implementation.
+ */
+test("write the vector the Rust side opens", () => {
+  const desktopSecret = new Uint8Array(KEY_BYTES).fill(0x11);
+  const phoneSecret = new Uint8Array(KEY_BYTES).fill(0x22);
+  const ephemeralSecret = new Uint8Array(KEY_BYTES).fill(0x66);
+  const wire = seal({
+    secretKey: desktopSecret,
+    peerPublicKey: publicKeyOf(phoneSecret),
+    from: DESKTOP,
+    to: PHONE,
+    messageId: "msg-1",
+    counter: 1,
+    message: { from: "typescript", n: 1 },
+    pairingId: PAIRING,
+    nonce: new Uint8Array(24).fill(0x33),
+    ephemeralSecret,
+  });
+
+  // The line below proves the fixture this file writes is a real envelope,
+  // not a string that happens to have the right shape.
+  const opened = open({
+    secretKey: phoneSecret,
+    peerPublicKey: publicKeyOf(desktopSecret),
+    localDeviceId: PHONE,
+    expectedFrom: DESKTOP,
+    lastCounter: 0,
+    pairingId: PAIRING,
+    raw: wire,
+  });
+  assert.ok(opened.ok);
+  assert.deepEqual(opened.opened.message, { from: "typescript", n: 1 });
+
+  const fixture = {
+    secret: toHex(phoneSecret),
+    peer_public: toHex(publicKeyOf(desktopSecret)),
+    pairingId: PAIRING,
+    wire,
+  };
+  writeFileSync(
+    new URL("./__fixtures__/envelope-from-ts.json", import.meta.url),
+    `${JSON.stringify(fixture, null, 2)}\n`,
+  );
 });

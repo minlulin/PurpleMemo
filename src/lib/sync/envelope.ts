@@ -1,34 +1,45 @@
 /**
- * The sealed envelope — protocol §11.6.1 (Phase C Session 5, task O.2).
+ * The sealed envelope — protocol §11.6.1 (Phase C Session 5, ephemeral rework
+ * in Session 5b).
  *
- * The TypeScript half of one wire format; `src-tauri/src/sync/envelope.rs` is
- * the Rust half, and the two are tested against each other's bytes rather than
+ * The TypeScript half of one wire format; `src-tauri/src/envelope.rs` is the
+ * Rust half, and the two are tested against each other's bytes rather than
  * against their own.
  *
- * **What is encrypted, and under which key.** Both peers hold a long-term
- * X25519 keypair (`@noble/curves`); the public half travels in the offer and is
- * pinned (§11.2). A message is sealed under `X25519(my_secret, peer_public)`
- * with XChaCha20-Poly1305, a fresh 24-byte nonce, and the canonical header as
- * associated data. Only the two pinned keys can derive that key, so a peer
- * without the pinned secret cannot produce an openable message — that is the
- * §11.6 "authenticated encryption under the pinned key" property.
+ * **The construction (§11.6.1, as built).**
  *
- * **Deviation, stated rather than hidden:** §11.6.1 describes an *ephemeral*
- * X25519 exchange. Composing an ephemeral and a static DH into one
- * authenticated key needs a KDF of its own, and §11.6 forbids inventing one;
- * this build therefore uses the static-static agreement, which is the whole
- * security boundary minus forward secrecy. The gap is recorded in the todo as
- * pending MinLulin's decision.
+ * ```text
+ * header    = {v:1, from, to, messageId, counter, nonce:<48 hex>, eph:<64 hex>}
+ * dh_eph    = X25519(ephemeralSecret, receiverLongPublic)   // fresh per message
+ * dh_static = X25519(senderLongSecret, receiverLongPublic)
+ * salt      = pairing id bytes          (32 zero bytes only when there is none)
+ * info      = "purple-memo-envelope-v1" 0x00 from 0x00 to 0x00 pairingId
+ * key       = HKDF-SHA256(ikm = dh_eph || dh_static, salt, info, 32)
+ * sealed    = XChaCha20-Poly1305(key, nonce, aad = headerBytes).encrypt(json)
+ * wire      = {header, body:"<hex sealed>"}
+ * ```
+ *
+ * The sender mints a fresh ephemeral keypair per message; its public half rides
+ * in the authenticated header, so a forged `eph` changes the derived key and
+ * fails the tag instead of being used. The long-term keys stay pinned (§11.2):
+ * only a peer holding the pinned secret can produce an openable envelope, and
+ * the ephemeral half is what adds forward secrecy — the message key depends on a
+ * secret the sender throws away after one message.
  *
  * The header is authenticated but not secret: it carries the routing and
  * replay facts a receiver must check before spending a decryption.
  */
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { x25519 } from "@noble/curves/ed25519.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 export const ENVELOPE_VERSION = 1;
 export const NONCE_BYTES = 24;
 export const KEY_BYTES = 32;
+
+/** The fixed prefix of the HKDF `info` (§11.6.1). */
+export const KDF_INFO_PREFIX = "purple-memo-envelope-v1";
 
 export interface KeyPair {
   /** Never leaves the device, never logged, never in a backup (§10.3). */
@@ -48,6 +59,8 @@ export interface EnvelopeHeader {
   counter: number;
   /** 24-byte nonce, lowercase hex. */
   nonce: string;
+  /** The sender's per-message ephemeral X25519 public key, lowercase hex. */
+  eph: string;
 }
 
 export interface OpenedMessage {
@@ -93,7 +106,7 @@ export function fromHex(hex: string): Uint8Array | null {
 }
 
 /**
- * The agreement key. A low-order peer key yields an all-zero secret, which
+ * One X25519 agreement. A low-order peer key yields an all-zero secret, which
  * every X25519 implementation warns about; it is refused rather than used.
  */
 export function sharedKey(
@@ -102,6 +115,79 @@ export function sharedKey(
 ): Uint8Array | null {
   const shared = x25519.getSharedSecret(secretKey, peerPublicKey);
   return shared.every((byte) => byte === 0) ? null : shared;
+}
+
+/**
+ * The pairing id as HKDF salt. A flow with no pairing id salts with 32 zero
+ * bytes — the spec names that branch, and a window with no pairing id refuses
+ * every hello, so it seals nothing in practice.
+ */
+function kdfSalt(pairingId: string | undefined): Uint8Array {
+  if (pairingId === undefined) return new Uint8Array(KEY_BYTES);
+  return new TextEncoder().encode(pairingId);
+}
+
+/**
+ * The HKDF `info`: a fixed prefix then the sender, receiver and pairing id,
+ * each preceded by a NUL byte so the fields cannot be re-split ambiguously.
+ */
+function kdfInfo(
+  from: string,
+  to: string,
+  pairingId: string | undefined,
+): Uint8Array {
+  const text = `${KDF_INFO_PREFIX}\u0000${from}\u0000${to}\u0000${pairingId ?? ""}`;
+  return new TextEncoder().encode(text);
+}
+
+/** HKDF-SHA256 over `dh_eph || dh_static` (§11.6.1). */
+function combineKey(
+  dhEph: Uint8Array,
+  dhStatic: Uint8Array,
+  from: string,
+  to: string,
+  pairingId: string | undefined,
+): Uint8Array {
+  const ikm = new Uint8Array(KEY_BYTES * 2);
+  ikm.set(dhEph, 0);
+  ikm.set(dhStatic, KEY_BYTES);
+  return hkdf(
+    sha256,
+    ikm,
+    kdfSalt(pairingId),
+    kdfInfo(from, to, pairingId),
+    KEY_BYTES,
+  );
+}
+
+/** The sender's message key: its ephemeral and long-term agreements. */
+export function sealKey(
+  senderSecret: Uint8Array,
+  receiverPublic: Uint8Array,
+  ephemeralSecret: Uint8Array,
+  from: string,
+  to: string,
+  pairingId: string | undefined,
+): Uint8Array | null {
+  const dhEph = sharedKey(ephemeralSecret, receiverPublic);
+  const dhStatic = sharedKey(senderSecret, receiverPublic);
+  if (!dhEph || !dhStatic) return null;
+  return combineKey(dhEph, dhStatic, from, to, pairingId);
+}
+
+/** The receiver's message key: the same two agreements from its side. */
+export function openKey(
+  receiverSecret: Uint8Array,
+  senderPublic: Uint8Array,
+  ephemeralPublic: Uint8Array,
+  from: string,
+  to: string,
+  pairingId: string | undefined,
+): Uint8Array | null {
+  const dhEph = sharedKey(receiverSecret, ephemeralPublic);
+  const dhStatic = sharedKey(receiverSecret, senderPublic);
+  if (!dhEph || !dhStatic) return null;
+  return combineKey(dhEph, dhStatic, from, to, pairingId);
 }
 
 /** The exact bytes both sides authenticate as associated data. Field order is
@@ -115,6 +201,7 @@ export function headerBytes(header: EnvelopeHeader): Uint8Array {
       messageId: header.messageId,
       counter: header.counter,
       nonce: header.nonce,
+      eph: header.eph,
     }),
   );
 }
@@ -127,13 +214,27 @@ export interface SealInput {
   messageId: string;
   counter: number;
   message: unknown;
+  /** The pairing this message belongs to: the HKDF salt and part of its info. */
+  pairingId?: string;
   /** Injected only so a test vector can be reproduced exactly. */
   nonce?: Uint8Array;
+  /** Injected only so a test vector can be reproduced exactly; production
+   * mints a fresh ephemeral keypair per message. */
+  ephemeralSecret?: Uint8Array;
 }
 
 /** Seal one message. Returns the wire string: `{"header":…,"body":"<hex>"}`. */
 export function seal(input: SealInput): string {
-  const key = sharedKey(input.secretKey, input.peerPublicKey);
+  const ephemeralSecret =
+    input.ephemeralSecret ?? x25519.utils.randomSecretKey();
+  const key = sealKey(
+    input.secretKey,
+    input.peerPublicKey,
+    ephemeralSecret,
+    input.from,
+    input.to,
+    input.pairingId,
+  );
   if (!key) throw new Error("peer public key is not a usable X25519 point");
   const nonce =
     input.nonce ?? crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
@@ -144,6 +245,7 @@ export function seal(input: SealInput): string {
     messageId: input.messageId,
     counter: input.counter,
     nonce: toHex(nonce),
+    eph: toHex(publicKeyOf(ephemeralSecret)),
   };
   const plaintext = new TextEncoder().encode(JSON.stringify(input.message));
   const sealed = xchacha20poly1305(key, nonce, headerBytes(header)).encrypt(
@@ -176,7 +278,9 @@ function parseWire(
     typeof header.counter !== "number" ||
     typeof header.nonce !== "string" ||
     !fromHex(header.nonce) ||
-    (fromHex(header.nonce)?.length ?? 0) !== NONCE_BYTES
+    (fromHex(header.nonce)?.length ?? 0) !== NONCE_BYTES ||
+    typeof header.eph !== "string" ||
+    (fromHex(header.eph)?.length ?? 0) !== KEY_BYTES
   ) {
     return null;
   }
@@ -192,6 +296,8 @@ export interface OpenInput {
   expectedFrom: string;
   /** The highest counter already accepted from this peer, or 0. */
   lastCounter: number;
+  /** The pairing this message belongs to: the HKDF salt and part of its info. */
+  pairingId?: string;
   raw: string;
 }
 
@@ -237,9 +343,26 @@ export function open(input: OpenInput): OpenResult {
       message: `message ${header.messageId} was already accepted; envelopes are single-use (§7.2).`,
     };
   }
-  const key = sharedKey(input.secretKey, input.peerPublicKey);
+  const ephemeralPublic = fromHex(header.eph);
   const nonce = fromHex(header.nonce);
-  if (!key || !nonce) {
+  if (!ephemeralPublic || !nonce) {
+    return {
+      ok: false,
+      reason: "malformed",
+      message: "the envelope's key material is unusable.",
+    };
+  }
+  // A low-order point cannot take part in a sealed envelope, so it is malformed
+  // rather than an authentication failure.
+  const key = openKey(
+    input.secretKey,
+    input.peerPublicKey,
+    ephemeralPublic,
+    header.from,
+    header.to,
+    input.pairingId,
+  );
+  if (!key) {
     return {
       ok: false,
       reason: "malformed",

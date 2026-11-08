@@ -603,13 +603,40 @@ Chosen here, as §11.6 requires. **Framing:** length-prefixed UTF-8 JSON
 messages over HTTP/1.1 on the LAN — `tiny_http` on the desktop (already a
 dependency, the same listener the read-only share page uses), `fetch` on the
 phone — bound to the pairing window only (§11.5). After pairing, every message
-is a sealed envelope: an ephemeral X25519 exchange authenticated by the pinned
-long-term keys, then XChaCha20-Poly1305 with a per-message 24-byte nonce and the
-message header as associated data. **Libraries:** `@noble/curves` (X25519) and
+is a sealed envelope: a fresh ephemeral X25519 keypair per message, combined
+with the pinned long-term agreement through HKDF-SHA256, then
+XChaCha20-Poly1305 with a per-message 24-byte nonce and the message header as
+associated data. **Libraries:** `@noble/curves` (X25519) and
 `@noble/ciphers` 2.4.0 (XChaCha20-Poly1305, already a dependency and already
 vendored for the share page) in the webviews; `x25519-dalek` and
 `chacha20poly1305` on the desktop listener’s Rust side; `qrcode` 1.5.4 to render
 the offer and `jsqr` 1.4.0 to scan it.
+
+**The construction, as built (Session 5b).** The envelope is not static-static
+and carries no recorded deviation from this section:
+
+- The sender mints a **fresh X25519 keypair per message**. Its public key rides
+  in the authenticated header as `eph` (32 bytes, lowercase hex), so a forged
+  one is refused with the envelope rather than used.
+- Two agreements against the receiver’s long-term public key:
+  `dh_eph = X25519(ephemeral_secret, receiver_public)` and
+  `dh_static = X25519(sender_secret, receiver_public)`. The receiver computes
+  the same pair from its own secret — `X25519(receiver_secret, eph)` and
+  `X25519(receiver_secret, sender_public)`.
+- `IKM = dh_eph || dh_static` — 64 bytes, ephemeral first, fixed order.
+- `salt` = the pairing id’s UTF-8 bytes. **32 zero bytes only when the flow has
+  no pairing id**; a window with no pairing id refuses every hello, so that
+  branch seals nothing in practice.
+- `info` = `purple-memo-envelope-v1`, then `0x00` + the sender id, `0x00` + the
+  receiver id, `0x00` + the pairing id (empty when absent). NUL separators, so
+  the four fields cannot be re-split ambiguously.
+- `key = HKDF-SHA256(IKM, salt, info, 32)`; the header (with `eph`) is the AEAD
+  associated data.
+- A low-order point yields an all-zero agreement and is refused as malformed.
+
+Because the message key depends on a secret the sender destroys after one
+message, a later compromise of both long-term keys does not open recorded
+envelopes — the forward secrecy this section asks for.
 
 How each property is met:
 

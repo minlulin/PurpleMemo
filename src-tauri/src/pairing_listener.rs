@@ -627,6 +627,8 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         local_device_id: &gate.local_device_id,
         expected_from: &pin.device_id,
         last_counter: *last_counter,
+        // §11.6.1's HKDF salt and info: the key is bound to this pairing.
+        pairing_id: gate.pairing_id.as_deref(),
         raw: &text,
     })
     .map_err(RefusalReply::from_envelope)?;
@@ -716,7 +718,9 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         message_id: &format!("ack:{}", opened.header.message_id),
         counter,
         message: &ack,
+        pairing_id: gate.pairing_id.as_deref(),
         nonce: None,
+        ephemeral_secret: None,
     })
     .map_err(|message| RefusalReply {
         code: "internal",
@@ -796,7 +800,9 @@ mod tests {
             message_id: &format!("hello-{counter}"),
             counter,
             message: &message,
+            pairing_id: Some("pair-1"),
             nonce: None,
+            ephemeral_secret: None,
         })
         .expect("seal the hello")
     }
@@ -865,6 +871,7 @@ mod tests {
             local_device_id: PHONE_ID,
             expected_from: DESKTOP_ID,
             last_counter: 0,
+            pairing_id: Some("pair-1"),
             raw: wire,
         })
         .expect("the phone must open the ack the desktop sealed");

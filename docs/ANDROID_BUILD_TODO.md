@@ -452,17 +452,22 @@ longer holds the phase open.
   wired today, and the lock/background call sites arrive with the pairing
   panel — 14
   loopback tests prove an accept while open and a refused connection after
-  stop, lock and reset. **Two interpretations awaiting MinLulin's approval:**
-  (1) §11.6.1 says *ephemeral* X25519; composing ephemeral and static
-  agreements into one authenticated key needs a custom KDF, which §11.6
-  forbids, so this build uses the static-static agreement — everything §11.6
-  requires except forward secrecy, recorded rather than changed in the spec;
-  (2) a changed peer key is refused as `unauthenticated`, not `key-mismatch`,
-  because naming the presented key would mean accepting an unpinned envelope
-  (§11.2). Still open in this item: the desktop QR panel wiring and the phone's
-  camera/numeric entry (next session — this listener admits a *pinned* peer, so
-  first pairing is the code-confirmed flow that UI drives); and the two-device
-  run (no emulator attached, and the Redmi stays off-limits).
+  stop, lock and reset. **Both interpretations settled 2026-11-08 (MinLulin
+  delegated them to Muus; Session 5b implemented them):** (1) §11.6.1’s
+  *ephemeral* X25519 is what the code now does — a fresh ephemeral keypair per
+  message, combined with the static agreement through `HKDF-SHA256(dh_eph ||
+  dh_static)`, `salt` = the pairing id and `info` = protocol + sender + receiver
+  + pairing (Session 5b; the static-static deviation is gone, so no recorded
+  gap remains); (2) a changed peer key is still refused as `unauthenticated`,
+  accepted as implemented, because naming the presented key would mean
+  accepting an unpinned envelope (§11.2). Added dependencies: `hkdf` 0.13.0
+  (Rust, HKDF-SHA256 — already a transitive pin in `Cargo.lock`) and
+  `@noble/hashes` 2.4.0 (TypeScript HKDF — already in the tree through
+  `@noble/ciphers`). Still open in this item: the desktop QR panel wiring and
+  the phone’s camera/numeric entry (next session — this listener admits a
+  *pinned* peer, so first pairing is the code-confirmed flow that UI drives);
+  and the two-device run (no emulator attached, and the Redmi stays
+  off-limits).
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync

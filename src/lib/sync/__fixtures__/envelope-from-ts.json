@@ -1,5 +1,6 @@
 {
   "secret": "2222222222222222222222222222222222222222222222222222222222222222",
   "peer_public": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
-  "wire": "{\"header\":{\"v\":1,\"from\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"to\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"messageId\":\"msg-from-ts\",\"counter\":1,\"nonce\":\"333333333333333333333333333333333333333333333333\"},\"body\":\"51a181b9055d867f68efcb1b4ea849ebb32ee5fad10395ac60da47837fa3e2280cf7617acf1f73388c15a7\"}"
+  "pairingId": "pair-1",
+  "wire": "{\"header\":{\"v\":1,\"from\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"to\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"messageId\":\"msg-1\",\"counter\":1,\"nonce\":\"333333333333333333333333333333333333333333333333\",\"eph\":\"219e4d800da968d2a5fcb009c784f4746c7138edb9ee4844b739e830b05cf424\"},\"body\":\"a7660f6cc5ff96ea54fdd53c02c30509b4c5bfb5fc90673600802490b36be69aa4ac5afe4c81e6aac528e8\"}"
 }
