@@ -597,6 +597,47 @@ replay protection; no homemade cryptography; table/operation allowlists enforced
 server-side. The library and framing are chosen in the pairing session and must
 satisfy these properties; the properties are not negotiable.
 
+#### §11.6.1 The choice (Phase C Session 4)
+
+Chosen here, as §11.6 requires. **Framing:** length-prefixed UTF-8 JSON
+messages over HTTP/1.1 on the LAN — `tiny_http` on the desktop (already a
+dependency, the same listener the read-only share page uses), `fetch` on the
+phone — bound to the pairing window only (§11.5). After pairing, every message
+is a sealed envelope: an ephemeral X25519 exchange authenticated by the pinned
+long-term keys, then XChaCha20-Poly1305 with a per-message 24-byte nonce and the
+message header as associated data. **Libraries:** `@noble/curves` (X25519) and
+`@noble/ciphers` 2.4.0 (XChaCha20-Poly1305, already a dependency and already
+vendored for the share page) in the webviews; `x25519-dalek` and
+`chacha20poly1305` on the desktop listener’s Rust side; `qrcode` 1.5.4 to render
+the offer and `jsqr` 1.4.0 to scan it.
+
+How each property is met:
+
+- **Authenticated encryption under the pinned key** — the envelope’s X25519
+  exchange is signed/confirmed against the pin from §11.2, so a peer without the
+  pinned private key cannot produce an openable envelope.
+- **Single-use pairing secret** — the 120 s / 5-attempt code of §11.1 gates the
+  *rendezvous only*. It is never the encryption key; the human confirms the
+  pinned key by fingerprint, which is what keeps a 6-digit code from becoming a
+  bearer password (F7). No PAKE is required because the code authenticates no
+  data.
+- **Replay protection** — XChaCha20-Poly1305 with a fresh nonce per message plus
+the `(device_id, seq)` operation identity and per-peer cursors of §1.3/§6.4; a
+replayed envelope is either undecryptable (nonce reuse is refused) or a
+no-op (§7.2).
+- **No homemade cryptography** — every primitive is a published library; this
+document fixes *what* is encrypted and *which* key authenticates it, never how
+any primitive is built.
+- **Server-side allowlists** — the desktop validates table, op kind and field set
+  (§2.2/§2.3) before any effect, so a phone cannot talk its way past the
+  boundary by sending a shape the app never produces.
+
+**Implementation status:** the QR half is implemented and tested
+(`src/lib/sync/qr.ts`, render → decode → `parseOffer`). The listener, the
+envelope and the long-term key storage are **not** implemented yet; the open
+lines and their reasons are recorded in `ANDROID_BUILD_TODO.md` under
+“Pairing & bootstrap”.
+
 ---
 
 ## 12. Stage boundaries

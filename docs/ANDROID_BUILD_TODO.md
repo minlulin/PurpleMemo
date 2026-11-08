@@ -416,11 +416,18 @@ longer holds the phase open.
   re-pair zeroes cursors and clears the revocation; adoption keeps every row
   (counted on both sides) and uploads new UIDs only; bounded
   aggregate-safe snapshot; interrupted snapshot re-taken; trash only for
-  mutable entities. **STILL OPEN IN THIS ITEM:** the LAN pairing listener
-(only its state value exists — no socket), the desktop QR rendering, the
-  phone's camera/numeric entry (its Settings block still says pairing is not
-  built), and the two-device run. §11.6's crypto/transport library choice is
-  unresolved, so nothing was invented here.
+  **SESSION 4 (2026-11-08): the §11.6 library + framing choice is recorded
+  in the spec (§11.6.1), and the QR path is built and proven** —
+  `src/lib/sync/qr.ts` turns the offer into an SVG or RGBA pixels and decodes
+  it back through `parseOffer` (`qrcode` 1.5.4, `jsqr` 1.4.0, `@types/qrcode`
+  1.5.6; 3 tests, a real encoder → decoder round trip). **STILL OPEN IN THIS
+  ITEM, and why:** the LAN pairing listener (no socket was written — `adb
+  devices` shows no emulator, and the envelope needs X25519 long-term keys
+  stored device-local plus the Rust `x25519-dalek` / `chacha20poly1305`
+  crates, which nothing imports yet); the desktop QR rendering (a code that
+  advertises an endpoint nobody serves would be a lie); the phone's
+  camera/numeric entry; and the two-device run — no emulator attached, and
+  the Redmi stays off-limits.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
