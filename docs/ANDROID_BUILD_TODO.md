@@ -389,9 +389,9 @@ longer holds the phase open.
   stay pending. Still open by design: nothing calls the store (no
   engine yet), and `applyBackup` does not bump the generation — that
   belongs to the "Backup payload rules" item.
-- [x] Pairing & bootstrap — **written 2026-11-08, pairing tests green,
-  Stage 1 not started** (core only: no transport, no QR rendering, no
-  device run yet — see the last paragraph). CORE:
+- [x] Pairing & bootstrap — **written 2026-11-08; core, sealed envelope and
+  LAN listener green, Stage 1 not started** (no QR rendering and no device
+  run yet — see the last paragraph). CORE:
   `src/lib/sync/pairing.ts` — offer + QR payload (`purplememo-pair://v1`),
   6-digit code with a **120 s lifetime** and a **5-attempt lockout**
   (single-use; malformed input costs no attempt), key fingerprints for the
@@ -420,14 +420,47 @@ longer holds the phase open.
   in the spec (§11.6.1), and the QR path is built and proven** —
   `src/lib/sync/qr.ts` turns the offer into an SVG or RGBA pixels and decodes
   it back through `parseOffer` (`qrcode` 1.5.4, `jsqr` 1.4.0, `@types/qrcode`
-  1.5.6; 3 tests, a real encoder → decoder round trip). **STILL OPEN IN THIS
-  ITEM, and why:** the LAN pairing listener (no socket was written — `adb
-  devices` shows no emulator, and the envelope needs X25519 long-term keys
-  stored device-local plus the Rust `x25519-dalek` / `chacha20poly1305`
-  crates, which nothing imports yet); the desktop QR rendering (a code that
-  advertises an endpoint nobody serves would be a lie); the phone's
-  camera/numeric entry; and the two-device run — no emulator attached, and
-  the Redmi stays off-limits.
+  **SESSION 5 (2026-11-08): the envelope, the device keys and the listener are
+  built and proven** — `src-tauri/src/envelope.rs` + `src/lib/sync/envelope.ts`
+  implement one wire format (`{"header":{…},"body":"<hex>"}`, the header as
+  AEAD associated data, a 24-byte nonce, lowercase hex) with `x25519-dalek` 2 +
+  `chacha20poly1305` 0.10 in Rust and `@noble/curves` 2.4.0 + `@noble/ciphers`
+  2.4.0 in TypeScript — two crates and one package, each a published primitive
+  §11.6 names. **Cross-tested both directions on the exact bytes the other side
+  produced**: `__fixtures__/envelope-from-ts.json` is opened by the Rust test,
+  and `envelope-from-rust.json` is written by the Rust test and opened by
+  TypeScript, so neither side proves itself against its own output. Refusals run
+  on real bytes — flipped ciphertext, altered counter, altered nonce, a
+  stranger's key, replay, foreign recipient, foreign sender, garbage — and each
+  names its reason. The long-term keypair lives in `pairing_key.rs` over the
+  key-store seam: keyring entry `pairing-identity-key` on desktop,
+  `pairing-key.wrapped` with its own non-exportable Keystore alias (magic
+  `PMPK1`) on Android; the secret is never serialized and never printable (its
+  `Debug` shows the fingerprint), a stored value that is not a key fails closed
+  instead of being replaced, and a factory reset deletes the slot so the next
+  launch mints a new keypair and device id. The listener is
+  `src-tauri/src/pairing_listener.rs`: `tiny_http`, `POST /pair/hello`, a
+  four-byte big-endian length-prefixed UTF-8 JSON body (the phone's half is
+  `src/lib/sync/frame.ts`, pinned to the same `00000011` vector on both sides),
+  admission in §7.1 order (revoked → unpaired → envelope version/recipient/
+  sender/replay/tag → message-kind allowlist → pairing id → protocol → schema →
+  data line), an ack sealed back to the peer, and **no effect on any refusal**
+  (the only effect of an accepted hello is advancing the replay counter).
+  Lifetime is a property of the socket, not a flag: `stop` joins the accept
+  thread; the reset path is wired today, and the lock/background call sites
+  arrive with the pairing panel — 14
+  loopback tests prove an accept while open and a refused connection after
+  stop, lock and reset. **Two interpretations awaiting MinLulin's approval:**
+  (1) §11.6.1 says *ephemeral* X25519; composing ephemeral and static
+  agreements into one authenticated key needs a custom KDF, which §11.6
+  forbids, so this build uses the static-static agreement — everything §11.6
+  requires except forward secrecy, recorded rather than changed in the spec;
+  (2) a changed peer key is refused as `unauthenticated`, not `key-mismatch`,
+  because naming the presented key would mean accepting an unpinned envelope
+  (§11.2). Still open in this item: the desktop QR panel wiring and the phone's
+  camera/numeric entry (next session — this listener admits a *pinned* peer, so
+  first pairing is the code-confirmed flow that UI drives); and the two-device
+  run (no emulator attached, and the Redmi stays off-limits).
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync

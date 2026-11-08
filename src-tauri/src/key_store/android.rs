@@ -7,10 +7,11 @@
 //!   the device offers one, software otherwise) and can never be exported. Its
 //!   only uses are `PURPOSE_ENCRYPT` and `PURPOSE_DECRYPT`, so a copy of the app
 //!   data dir is useless without the device.
-//! * The DEK itself is minted by `db::mint_key_hex` (OS CSPRNG) and immediately
-//!   wrapped with AES-256-GCM under that Keystore key. Only the wrapped blob is
-//!   written to disk (`db-key.wrapped`, app-private, mode 0600), so the DEK is
-//!   never stored in the clear.
+//! * Each secret (the DEK, and since Phase C Session 5 the pairing identity) is
+//!   minted by the OS CSPRNG and immediately wrapped with AES-256-GCM under that
+//!   Keystore key. Only the wrapped blob is written to disk (app-private, mode
+//!   0600; `db-key.wrapped` / `pairing-key.wrapped`, each with its own magic and
+//!   its own Keystore alias), so neither secret is ever stored in the clear.
 //! * The blob's header records which backing actually produced the wrapping key,
 //!   so the answer to "was this device StrongBox-backed?" survives on disk.
 //!
@@ -35,23 +36,18 @@ use std::path::{Path, PathBuf};
 use jni::objects::{JByteArray, JObject, JObjectArray, JValue};
 use jni::{JNIEnv, JavaVM};
 
-use super::KeyStoreError;
+use super::{KeyStoreError, Slot};
 
-/// The Keystore alias holding the non-exportable wrapping key. Versioned so a
-/// future rotation can mint a second alias instead of reusing this one.
-const KEK_ALIAS: &str = "purple_memo_db_key_wrap_v1";
-
-/// The wrapped DEK, written next to the database in the app's private data
-/// dir. Removed by the reset path along with the Keystore alias.
-pub const WRAPPED_KEY_FILE: &str = "db-key.wrapped";
-
-const BLOB_MAGIC: &[u8; 5] = b"PMKW1";
+/// Length of the blob magic (`PMKW1` / `PMPK1`); the bytes themselves come from
+/// the slot, so a blob written for one secret cannot be opened as the other.
+const MAGIC_LEN: usize = 5;
 /// magic + backing byte + IV length byte.
-const HEADER_LEN: usize = BLOB_MAGIC.len() + 2;
+const HEADER_LEN: usize = MAGIC_LEN + 2;
 const IV_LEN: usize = 12;
 const GCM_TAG_BITS: i32 = 128;
 const GCM_TAG_LEN: usize = 16;
-const DEK_LEN: usize = 32;
+/// Neither secret this module wraps is any other length.
+const KEY_LEN: usize = 32;
 /// `KeyProperties.PURPOSE_ENCRYPT` / `PURPOSE_DECRYPT`.
 const PURPOSE_ENCRYPT: i32 = 1;
 const PURPOSE_DECRYPT: i32 = 2;
@@ -70,8 +66,8 @@ pub const MISSING_KEY_IS_RECOVERABLE: bool = false;
 // Public seam
 // ---------------------------------------------------------------------------
 
-pub fn read() -> Result<Option<String>, KeyStoreError> {
-    let path = wrapped_key_path()?;
+pub fn read(slot: Slot) -> Result<Option<String>, KeyStoreError> {
+    let path = wrapped_key_path(slot)?;
     let blob = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -82,45 +78,51 @@ pub fn read() -> Result<Option<String>, KeyStoreError> {
             )))
         }
     };
-    let (_, iv, ciphertext) = decode_blob(&blob).ok_or_else(|| {
+    let (_, iv, ciphertext) = decode_blob(slot, &blob).ok_or_else(|| {
         lost(
+            slot,
             &path,
             "the wrapped key file is not a blob this build understands",
         )
     })?;
-    let dek = match with_env(|env| unwrap_dek(env, iv, ciphertext)) {
-        Ok(dek) => dek,
+    let key = match with_env(|env| unwrap_dek(env, slot, iv, ciphertext)) {
+        Ok(key) => key,
         // A store that cannot be reached at all is retryable and must never
         // cost the user their data.
         Err(KeyStoreError::Unavailable(message)) => {
             return Err(KeyStoreError::Unavailable(message))
         }
         // Everything else here means the Keystore key is gone or refuses this
-        // blob: the DEK can never be recovered.
-        Err(other) => return Err(lost(&path, other.message())),
+        // blob: the wrapped secret can never be recovered.
+        Err(other) => return Err(lost(slot, &path, other.message())),
     };
-    if dek.len() != DEK_LEN {
-        return Err(lost(&path, "the unwrapped key has the wrong length"));
+    if key.len() != KEY_LEN {
+        return Err(lost(slot, &path, "the unwrapped key has the wrong length"));
     }
     log(
         ANDROID_LOG_INFO,
-        "unwrapped the database key with the Android Keystore",
+        &format!("unwrapped the {} with the Android Keystore", slot.label()),
     );
-    Ok(Some(crate::bytes_to_hex(&dek)))
+    Ok(Some(crate::bytes_to_hex(&key)))
 }
 
-pub fn write(key: &str) -> Result<(), KeyStoreError> {
-    let dek = decode_key_hex(key).ok_or_else(|| {
-        KeyStoreError::Failed("refusing to wrap a malformed DB encryption key".to_string())
+pub fn write(slot: Slot, value: &str) -> Result<(), KeyStoreError> {
+    let secret = decode_key_hex(value).ok_or_else(|| {
+        KeyStoreError::Failed(format!(
+            "refusing to wrap a malformed {} value",
+            slot.label()
+        ))
     })?;
-    let path = wrapped_key_path()?;
-    let (blob, backing) = with_env(|env| wrap_dek(env, &dek))?;
-    write_blob(&path, &blob)?;
+    let path = wrapped_key_path(slot)?;
+    let (blob, backing) = with_env(|env| wrap_dek(env, slot, &secret))?;
+    write_blob(slot, &path, &blob)?;
     log(
         ANDROID_LOG_INFO,
         &format!(
-            "wrapped the database key with a {}-backed Keystore key ({KEK_ALIAS})",
-            backing_name(backing)
+            "wrapped the {} with a {}-backed Keystore key ({})",
+            slot.label(),
+            backing_name(backing),
+            slot.alias()
         ),
     );
     Ok(())
@@ -129,14 +131,15 @@ pub fn write(key: &str) -> Result<(), KeyStoreError> {
 /// Which backing produced the Keystore key that wrapped the DEK, read from the
 /// wrapped blob's own header. This reports what actually happened on this
 /// device, not what the device might support, and touches no key material.
-pub fn backing() -> Result<&'static str, KeyStoreError> {
-    let path = wrapped_key_path()?;
+pub fn backing(slot: Slot) -> Result<&'static str, KeyStoreError> {
+    let path = wrapped_key_path(slot)?;
     let blob = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(KeyStoreError::Unavailable(
-                "no wrapped database key exists yet".to_string(),
-            ))
+            return Err(KeyStoreError::Unavailable(format!(
+                "no wrapped {} exists yet",
+                slot.label()
+            )))
         }
         Err(e) => {
             return Err(KeyStoreError::Unavailable(format!(
@@ -145,7 +148,7 @@ pub fn backing() -> Result<&'static str, KeyStoreError> {
             )))
         }
     };
-    let (backing, _, _) = decode_blob(&blob).ok_or_else(|| {
+    let (backing, _, _) = decode_blob(slot, &blob).ok_or_else(|| {
         KeyStoreError::Failed(
             "the wrapped key file is not a blob this build understands".to_string(),
         )
@@ -153,8 +156,8 @@ pub fn backing() -> Result<&'static str, KeyStoreError> {
     Ok(backing_name(backing))
 }
 
-pub fn delete() -> Result<bool, KeyStoreError> {
-    let path = wrapped_key_path()?;
+pub fn delete(slot: Slot) -> Result<bool, KeyStoreError> {
+    let path = wrapped_key_path(slot)?;
     let mut removed = false;
     match std::fs::remove_file(&path) {
         Ok(()) => removed = true,
@@ -168,25 +171,29 @@ pub fn delete() -> Result<bool, KeyStoreError> {
     }
     let alias_removed = with_env(|env| {
         let store = open_key_store(env)?;
-        delete_alias(env, &store, KEK_ALIAS)
+        delete_alias(env, &store, slot.alias())
     })?;
     if removed || alias_removed {
         log(
             ANDROID_LOG_INFO,
             &format!(
-                "removed the database key ({KEK_ALIAS}): wrapped blob removed={removed}, \
-                 Keystore entry removed={alias_removed}"
+                "removed the {} ({}): wrapped blob removed={removed}, \
+                 Keystore entry removed={alias_removed}",
+                slot.label(),
+                slot.alias()
             ),
         );
     }
     Ok(removed || alias_removed)
 }
 
-fn lost(path: &Path, reason: &str) -> KeyStoreError {
+fn lost(slot: Slot, path: &Path, reason: &str) -> KeyStoreError {
     KeyStoreError::Lost(format!(
-        "the wrapped database key at {} could not be unwrapped ({reason}); the Android Keystore \
-         key that protected it is gone, so this copy of the data cannot be opened",
-        path.display()
+        "the wrapped {} at {} could not be unwrapped ({reason}); the Android Keystore \
+         key that protected it is gone, {}",
+        slot.label(),
+        path.display(),
+        slot.loss_consequence()
     ))
 }
 
@@ -194,24 +201,24 @@ fn lost(path: &Path, reason: &str) -> KeyStoreError {
 // File IO — the wrapped blob
 // ---------------------------------------------------------------------------
 
-fn wrapped_key_path() -> Result<PathBuf, KeyStoreError> {
+fn wrapped_key_path(slot: Slot) -> Result<PathBuf, KeyStoreError> {
     let dir = crate::dirs_next_to_db().ok_or_else(|| {
-        KeyStoreError::Unavailable(
-            "the app data directory is not known yet, so the wrapped database key cannot be found"
-                .to_string(),
-        )
+        KeyStoreError::Unavailable(format!(
+            "the app data directory is not known yet, so the wrapped {} cannot be found",
+            slot.label()
+        ))
     })?;
-    Ok(dir.join(WRAPPED_KEY_FILE))
+    Ok(dir.join(slot.file()))
 }
 
 /// Write the blob with owner-only permissions, temp+rename so a failure can
 /// never leave half a key file behind.
-fn write_blob(path: &Path, blob: &[u8]) -> Result<(), KeyStoreError> {
+fn write_blob(slot: Slot, path: &Path, blob: &[u8]) -> Result<(), KeyStoreError> {
     use std::io::Write;
     let parent = path.parent().ok_or_else(|| {
         KeyStoreError::Failed(format!("{} has no directory to write into", path.display()))
     })?;
-    let tmp = parent.join(format!("{WRAPPED_KEY_FILE}.tmp"));
+    let tmp = parent.join(format!("{}.tmp", slot.file()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -239,9 +246,9 @@ fn write_blob(path: &Path, blob: &[u8]) -> Result<(), KeyStoreError> {
     })
 }
 
-fn encode_blob(backing: u8, iv: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+fn encode_blob(slot: Slot, backing: u8, iv: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     let mut blob = Vec::with_capacity(HEADER_LEN + iv.len() + ciphertext.len());
-    blob.extend_from_slice(BLOB_MAGIC);
+    blob.extend_from_slice(slot.magic());
     blob.push(backing);
     blob.push(iv.len() as u8);
     blob.extend_from_slice(iv);
@@ -249,31 +256,31 @@ fn encode_blob(backing: u8, iv: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     blob
 }
 
-fn decode_blob(blob: &[u8]) -> Option<(u8, &[u8], &[u8])> {
-    if blob.len() < HEADER_LEN || &blob[..BLOB_MAGIC.len()] != BLOB_MAGIC {
+fn decode_blob(slot: Slot, blob: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    if blob.len() < HEADER_LEN || &blob[..MAGIC_LEN] != slot.magic() {
         return None;
     }
-    let backing = blob[BLOB_MAGIC.len()];
-    let iv_len = blob[BLOB_MAGIC.len() + 1] as usize;
+    let backing = blob[MAGIC_LEN];
+    let iv_len = blob[MAGIC_LEN + 1] as usize;
     if iv_len == 0 || iv_len > 32 {
         return None;
     }
     let iv_end = HEADER_LEN.checked_add(iv_len)?;
-    if blob.len() < iv_end + DEK_LEN + GCM_TAG_LEN {
+    if blob.len() < iv_end + KEY_LEN + GCM_TAG_LEN {
         return None;
     }
     Some((backing, &blob[HEADER_LEN..iv_end], &blob[iv_end..]))
 }
 
-fn decode_key_hex(key: &str) -> Option<[u8; DEK_LEN]> {
-    if key.len() != DEK_LEN * 2 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+fn decode_key_hex(key: &str) -> Option<[u8; KEY_LEN]> {
+    if key.len() != KEY_LEN * 2 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    let mut dek = [0u8; DEK_LEN];
-    for (index, byte) in dek.iter_mut().enumerate() {
+    let mut secret = [0u8; KEY_LEN];
+    for (index, byte) in secret.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&key[index * 2..index * 2 + 2], 16).ok()?;
     }
-    Some(dek)
+    Some(secret)
 }
 
 fn backing_name(backing: u8) -> &'static str {
@@ -510,9 +517,10 @@ fn gcm_spec<'local>(
 fn secret_key<'local>(
     env: &mut JNIEnv<'local>,
     store: &JObject<'_>,
+    slot: Slot,
 ) -> Result<JObject<'local>, KeyStoreError> {
-    const WHAT: &str = "to use the database wrapping key";
-    let alias = checked!(env, WHAT, env.new_string(KEK_ALIAS));
+    const WHAT: &str = "to use the wrapping key";
+    let alias = checked!(env, WHAT, env.new_string(slot.alias()));
     let key = checked!(
         env,
         WHAT,
@@ -525,47 +533,49 @@ fn secret_key<'local>(
     );
     let key = checked!(env, WHAT, key.l());
     if key.is_null() {
-        return Err(KeyStoreError::Failed(
-            "the Android Keystore no longer holds the database wrapping key".to_string(),
-        ));
+        return Err(KeyStoreError::Failed(format!(
+            "the Android Keystore no longer holds the {} wrapping key",
+            slot.label()
+        )));
     }
     Ok(key)
 }
 
 /// Create the Keystore wrapping key if it is not there yet, and report which
 /// backing it actually got.
-fn ensure_kek(env: &mut JNIEnv<'_>, store: &JObject<'_>) -> Result<u8, KeyStoreError> {
-    if has_alias(env, store, KEK_ALIAS)? {
-        return Ok(read_backing(env, store));
+fn ensure_kek(env: &mut JNIEnv<'_>, store: &JObject<'_>, slot: Slot) -> Result<u8, KeyStoreError> {
+    if has_alias(env, store, slot.alias())? {
+        return Ok(read_backing(env, store, slot));
     }
     let sdk = sdk_int(env)?;
     // StrongBox first (API 28+). A device without it refuses the spec, which
     // is a normal fallback to the TEE/software path — not a failure.
-    let strongbox = sdk >= 28 && generate_kek(env, true).is_ok();
+    let strongbox = sdk >= 28 && generate_kek(env, slot, true).is_ok();
     if !strongbox {
-        generate_kek(env, false).map_err(|_| {
-            KeyStoreError::Failed(
-                "Android Keystore would not create the database wrapping key; Purple Memo will \
-                 not fall back to an unprotected key"
-                    .to_string(),
-            )
+        generate_kek(env, slot, false).map_err(|_| {
+            KeyStoreError::Failed(format!(
+                "Android Keystore would not create the {} wrapping key; Purple Memo will \
+                 not fall back to an unprotected key",
+                slot.label()
+            ))
         })?;
     }
-    let backing = read_backing(env, store);
+    let backing = read_backing(env, store, slot);
     log(
         ANDROID_LOG_INFO,
         &format!(
-            "created the Keystore wrapping key {KEK_ALIAS}: strongbox_requested={strongbox}, \
+            "created the Keystore wrapping key {}: strongbox_requested={strongbox}, \
              backing={}",
+            slot.alias(),
             backing_name(backing)
         ),
     );
     Ok(backing)
 }
 
-fn generate_kek(env: &mut JNIEnv<'_>, strongbox: bool) -> Result<(), KeyStoreError> {
-    const WHAT: &str = "to create the database wrapping key";
-    let alias = checked!(env, WHAT, env.new_string(KEK_ALIAS));
+fn generate_kek(env: &mut JNIEnv<'_>, slot: Slot, strongbox: bool) -> Result<(), KeyStoreError> {
+    const WHAT: &str = "to create the wrapping key";
+    let alias = checked!(env, WHAT, env.new_string(slot.alias()));
     let algorithm = checked!(env, WHAT, env.new_string("AES"));
     let provider = checked!(env, WHAT, env.new_string("AndroidKeyStore"));
     let generator_class = checked!(env, WHAT, env.find_class("javax/crypto/KeyGenerator"));
@@ -697,8 +707,8 @@ fn generate_kek(env: &mut JNIEnv<'_>, strongbox: bool) -> Result<(), KeyStoreErr
 
 /// Which backing the existing wrapping key uses, best effort: a diagnostic
 /// that fails must never fail the key operation itself.
-fn read_backing(env: &mut JNIEnv<'_>, store: &JObject<'_>) -> u8 {
-    read_backing_inner(env, store).unwrap_or_else(|_| {
+fn read_backing(env: &mut JNIEnv<'_>, store: &JObject<'_>, slot: Slot) -> u8 {
+    read_backing_inner(env, store, slot).unwrap_or_else(|_| {
         if matches!(env.exception_check(), Ok(true)) {
             let _ = env.exception_clear();
         }
@@ -706,9 +716,13 @@ fn read_backing(env: &mut JNIEnv<'_>, store: &JObject<'_>) -> u8 {
     })
 }
 
-fn read_backing_inner(env: &mut JNIEnv<'_>, store: &JObject<'_>) -> Result<u8, KeyStoreError> {
-    const WHAT: &str = "to inspect the database wrapping key";
-    let key = secret_key(env, store)?;
+fn read_backing_inner(
+    env: &mut JNIEnv<'_>,
+    store: &JObject<'_>,
+    slot: Slot,
+) -> Result<u8, KeyStoreError> {
+    const WHAT: &str = "to inspect the wrapping key";
+    let key = secret_key(env, store, slot)?;
     let algorithm = checked!(
         env,
         WHAT,
@@ -777,11 +791,15 @@ fn read_backing_inner(env: &mut JNIEnv<'_>, store: &JObject<'_>) -> Result<u8, K
     })
 }
 
-fn wrap_dek(env: &mut JNIEnv<'_>, dek: &[u8]) -> Result<(Vec<u8>, u8), KeyStoreError> {
-    const WHAT: &str = "to wrap the database key";
+fn wrap_dek(
+    env: &mut JNIEnv<'_>,
+    slot: Slot,
+    secret: &[u8],
+) -> Result<(Vec<u8>, u8), KeyStoreError> {
+    const WHAT: &str = "to wrap the key";
     let store = open_key_store(env)?;
-    let backing = ensure_kek(env, &store)?;
-    let key = secret_key(env, &store)?;
+    let backing = ensure_kek(env, &store, slot)?;
+    let key = secret_key(env, &store, slot)?;
     let cipher = cipher(env)?;
 
     // The Keystore generates the IV, not us: a Keystore key refuses a
@@ -801,11 +819,11 @@ fn wrap_dek(env: &mut JNIEnv<'_>, dek: &[u8]) -> Result<(Vec<u8>, u8), KeyStoreE
     );
     let iv = keystore_iv(env, &cipher)?;
 
-    let plaintext = checked!(env, WHAT, env.byte_array_from_slice(dek));
+    let plaintext = checked!(env, WHAT, env.byte_array_from_slice(secret));
     let out = checked!(
         env,
         WHAT,
-        env.new_byte_array((dek.len() + GCM_TAG_LEN) as i32)
+        env.new_byte_array((secret.len() + GCM_TAG_LEN) as i32)
     );
     let written = checked!(
         env,
@@ -817,7 +835,7 @@ fn wrap_dek(env: &mut JNIEnv<'_>, dek: &[u8]) -> Result<(Vec<u8>, u8), KeyStoreE
             &[
                 JValue::Object(&plaintext),
                 JValue::Int(0),
-                JValue::Int(dek.len() as i32),
+                JValue::Int(secret.len() as i32),
                 JValue::Object(&out),
                 JValue::Int(0),
             ],
@@ -825,24 +843,27 @@ fn wrap_dek(env: &mut JNIEnv<'_>, dek: &[u8]) -> Result<(Vec<u8>, u8), KeyStoreE
     );
     let written = checked!(env, WHAT, written.i());
     let ciphertext = read_bytes(env, &out, written)?;
-    Ok((encode_blob(backing, &iv, &ciphertext), backing))
+    Ok((encode_blob(slot, backing, &iv, &ciphertext), backing))
 }
 
 fn unwrap_dek(
     env: &mut JNIEnv<'_>,
+    slot: Slot,
     iv: &[u8],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, KeyStoreError> {
-    const WHAT: &str = "to unwrap the database key";
+    const WHAT: &str = "to unwrap the key";
     let store = open_key_store(env)?;
     // Checked explicitly: a missing alias must read as "the key is gone", not
     // as a generic cipher failure.
-    if !has_alias(env, &store, KEK_ALIAS)? {
+    if !has_alias(env, &store, slot.alias())? {
         return Err(KeyStoreError::Failed(format!(
-            "the Keystore key {KEK_ALIAS} that wrapped the database key is gone"
+            "the Keystore key {} that wrapped the {} is gone",
+            slot.alias(),
+            slot.label()
         )));
     }
-    let key = secret_key(env, &store)?;
+    let key = secret_key(env, &store, slot)?;
     let cipher = cipher(env)?;
 
     let iv_array = checked!(env, WHAT, env.byte_array_from_slice(iv));
@@ -863,7 +884,7 @@ fn unwrap_dek(
     );
 
     let input = checked!(env, WHAT, env.byte_array_from_slice(ciphertext));
-    let out = checked!(env, WHAT, env.new_byte_array(DEK_LEN as i32));
+    let out = checked!(env, WHAT, env.new_byte_array(KEY_LEN as i32));
     let written = checked!(
         env,
         WHAT,
@@ -922,7 +943,7 @@ fn read_bytes(
     array: &JByteArray<'_>,
     length: i32,
 ) -> Result<Vec<u8>, KeyStoreError> {
-    if !(0..=DEK_LEN as i32 + GCM_TAG_LEN as i32).contains(&length) {
+    if !(0..=KEY_LEN as i32 + GCM_TAG_LEN as i32).contains(&length) {
         return Err(KeyStoreError::Failed(format!(
             "the Keystore returned an unexpected {length}-byte result"
         )));

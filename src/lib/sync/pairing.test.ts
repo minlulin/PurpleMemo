@@ -482,3 +482,16 @@ test("the pairing listener exists only while pairing is on", () => {
   });
   assert.deepEqual(stopPairingListener(), IDLE_LISTENER);
 });
+
+test("the fingerprint matches the Rust implementation's grouping", () => {
+  // The public half of the fixed desktop vector the envelope fixtures use; the
+  // Rust side asserts the same string in `src-tauri/src/pairing_key.rs`. If the
+  // two ever format the key differently, the screens a human compares would
+  // show different text for the same key.
+  assert.equal(
+    keyFingerprint(
+      "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    ),
+    "7B4E 909B BE7F FE44 C465 A220",
+  );
+});

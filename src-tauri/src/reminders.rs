@@ -115,7 +115,7 @@ pub fn clipboard_copy_sensitive(text: String) -> Result<u64, String> {
 pub fn keystore_backing() -> Result<String, String> {
     #[cfg(target_os = "android")]
     {
-        crate::key_store::backing()
+        crate::key_store::backing(crate::key_store::Slot::Database)
             .map(str::to_string)
             .map_err(|e| e.to_string())
     }

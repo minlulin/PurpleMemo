@@ -1,0 +1,5 @@
+{
+  "secret": "2222222222222222222222222222222222222222222222222222222222222222",
+  "peer_public": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+  "wire": "{\"header\":{\"v\":1,\"from\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"to\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"messageId\":\"msg-from-ts\",\"counter\":1,\"nonce\":\"333333333333333333333333333333333333333333333333\"},\"body\":\"51a181b9055d867f68efcb1b4ea849ebb32ee5fad10395ac60da47837fa3e2280cf7617acf1f73388c15a7\"}"
+}

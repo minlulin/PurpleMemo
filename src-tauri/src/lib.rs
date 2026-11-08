@@ -1,10 +1,21 @@
 mod commands;
 mod db;
+// Public because the pairing envelope is the one piece of the sync boundary
+// that both halves of the wire format are tested against (see the module doc).
+pub mod envelope;
 mod external_links;
 mod file_write;
 mod key_store;
 mod lifecycle;
 mod navigation;
+// Public for the same reason as `envelope`: the pairing identity and the
+// listener are the sync boundary both halves speak, and their API is proved by
+// tests before any UI drives it. Deliberately **not** exposed as Tauri commands
+// yet — the QR panel (Session 6) adds those together with the screen that asks
+// the user to open the window, because an openable LAN port with no consent
+// step would be worse than no port at all.
+pub mod pairing_key;
+pub mod pairing_listener;
 mod photos;
 mod reminders;
 mod reset;
@@ -301,7 +312,13 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     app.manage(lifecycle.clone());
     // LAN sharing starts OFF — it is opt-in per session and must never be
     // re-enabled silently by a restart.
-    app.manage(share::ShareState::with_lifecycle(lifecycle));
+    app.manage(share::ShareState::with_lifecycle(lifecycle.clone()));
+    // §11.5: the pairing window is a network listener too, and it consults the
+    // SAME barrier — a private one would be two states pretending to be one.
+    // Like sharing it starts closed: no port exists until pairing opens one.
+    app.manage(pairing_listener::PairingListenerState::with_lifecycle(
+        lifecycle,
+    ));
     Ok(())
 }
 

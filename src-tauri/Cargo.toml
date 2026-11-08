@@ -23,6 +23,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 sha2 = "0.11.0"
+# Pairing envelope (Phase C Session 5, docs/ANDROID_SYNC_PROTOCOL.md §11.6.1):
+# X25519 key agreement and XChaCha20-Poly1305. Published primitives only — the
+# protocol fixes what is encrypted and which key authenticates it, never how a
+# primitive is built.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
 # Only for O_NOFOLLOW / O_EXCL on the key-file temp write (review P3-5). Already
 # in the tree as a transitive dependency, so this declares an existing pin
 # rather than adding one.

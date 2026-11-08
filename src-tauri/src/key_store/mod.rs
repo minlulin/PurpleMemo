@@ -32,6 +32,84 @@ pub use android::MISSING_KEY_IS_RECOVERABLE;
 #[cfg(desktop)]
 pub use desktop::MISSING_KEY_IS_RECOVERABLE;
 
+/// Which long-lived secret is being read or written.
+///
+/// The seam started with one slot (the database key) and now holds two. They are
+/// kept apart deliberately: the pairing identity (§11.2) authenticates the sync
+/// wire and the DEK encrypts the database, and neither may ever stand in for the
+/// other. On desktop that means one credential-store entry per account name; on
+/// Android one wrapped blob and one non-exportable Keystore alias per slot, so a
+/// blob can never be unwrapped as the wrong secret (the magic bytes differ too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+    /// The SQLCipher database key (the DEK).
+    Database,
+    /// The device's long-term X25519 pairing secret (§11.2, §10.3).
+    PairingIdentity,
+}
+
+impl Slot {
+    /// Credential-store account (desktop): one entry per slot, same service.
+    #[cfg(desktop)]
+    pub fn account(self) -> &'static str {
+        match self {
+            Self::Database => "db-encryption-key",
+            Self::PairingIdentity => "pairing-identity-key",
+        }
+    }
+
+    /// Keystore alias of the non-exportable wrapping key (Android). Versioned so
+    /// a future rotation can mint a second alias instead of reusing one.
+    #[cfg(target_os = "android")]
+    pub fn alias(self) -> &'static str {
+        match self {
+            Self::Database => "purple_memo_db_key_wrap_v1",
+            Self::PairingIdentity => "purple_memo_pairing_key_wrap_v1",
+        }
+    }
+
+    /// The wrapped blob's file name (Android), inside the app data dir.
+    #[cfg(target_os = "android")]
+    pub fn file(self) -> &'static str {
+        match self {
+            Self::Database => "db-key.wrapped",
+            Self::PairingIdentity => "pairing-key.wrapped",
+        }
+    }
+
+    /// Blob magic (Android). Distinct per slot, so a blob written for one secret
+    /// is refused — not merely fail to authenticate — when opened as the other.
+    #[cfg(target_os = "android")]
+    pub fn magic(self) -> &'static [u8; 5] {
+        match self {
+            Self::Database => b"PMKW1",
+            Self::PairingIdentity => b"PMPK1",
+        }
+    }
+
+    /// What the user reads in an error about this slot.
+    #[cfg(target_os = "android")]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Database => "database key",
+            Self::PairingIdentity => "pairing key",
+        }
+    }
+
+    /// What losing this secret means, for the `Lost` message: the documented
+    /// fail-closed outcome differs per slot (restore/re-pair from the desktop vs.
+    /// a copy of the data that can no longer be opened at all).
+    #[cfg(target_os = "android")]
+    pub fn loss_consequence(self) -> &'static str {
+        match self {
+            Self::Database => "so this copy of the data cannot be opened",
+            Self::PairingIdentity => {
+                "so pairing fails closed until this device pairs again with a fresh key"
+            }
+        }
+    }
+}
+
 /// Why a key-store operation failed.
 ///
 /// The classes are what the boot paths act on, so they are separated by type
@@ -76,26 +154,27 @@ impl std::fmt::Display for KeyStoreError {
 ///
 /// `Ok(None)` means the store was reachable and holds no key — the only
 /// condition under which the caller may mint a new one.
-pub fn read() -> Result<Option<String>, KeyStoreError> {
-    platform::read()
+pub fn read(slot: Slot) -> Result<Option<String>, KeyStoreError> {
+    platform::read(slot)
 }
 
-/// Store the DB key, replacing whatever the store held.
-pub fn write(key: &str) -> Result<(), KeyStoreError> {
-    platform::write(key)
+/// Store `value` in `slot`, replacing whatever it held.
+pub fn write(slot: Slot, value: &str) -> Result<(), KeyStoreError> {
+    platform::write(slot, value)
 }
 
-/// Remove the DB key. `Ok(false)` means there was none (already absent, which
-/// a reset reports as success).
-pub fn delete() -> Result<bool, KeyStoreError> {
-    platform::delete()
+/// Remove `slot`. `Ok(false)` means it was already empty (which a reset reports
+/// as success).
+pub fn delete(slot: Slot) -> Result<bool, KeyStoreError> {
+    platform::delete(slot)
 }
 
-/// Which backing actually protects the DEK, as the platform recorded it.
+/// Which backing actually protects the database key, as the platform recorded
+/// it.
 ///
 /// Android only: the desktop credential store has no hardware backing to
 /// report, and its diagnostics screen is not this one.
 #[cfg(target_os = "android")]
-pub fn backing() -> Result<&'static str, KeyStoreError> {
-    platform::backing()
+pub fn backing(slot: Slot) -> Result<&'static str, KeyStoreError> {
+    platform::backing(slot)
 }

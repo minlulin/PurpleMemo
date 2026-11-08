@@ -715,6 +715,11 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             let share = handle
                 .try_state::<ShareState>()
                 .ok_or_else(|| "share state is not available — restart the app".to_string())?;
+            let pairing = handle
+                .try_state::<crate::pairing_listener::PairingListenerState>()
+                .ok_or_else(|| {
+                    "pairing listener state is not available — restart the app".to_string()
+                })?;
             let db_state = handle
                 .try_state::<AppState>()
                 .ok_or_else(|| "database state is not available — restart the app".to_string())?;
@@ -738,7 +743,15 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             lifecycle.raise_reset();
             let outcome = crate::reset::run_factory_reset(
                 crate::reset::fault_injection(),
-                || share.stop_for_reset(),
+                || {
+                    // §11.5 for both listeners before anything is deleted: the
+                    // share server and the pairing window must be gone before
+                    // the database they serve is. One component reports both,
+                    // because "nothing is listening" is the property.
+                    let share_removed = share.stop_for_reset()?;
+                    let pairing_removed = pairing.stop_for_reset()?;
+                    Ok(share_removed || pairing_removed)
+                },
                 || db::close_connection_for_reset(&db_state),
                 &db_state.data_dir,
                 db::delete_db_key,

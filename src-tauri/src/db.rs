@@ -103,7 +103,7 @@ pub fn validate_stored_key(key: &str) -> Result<String, String> {
 /// key-export step. Read-only: unlike [`load_or_mint_db_key`]
 /// it never mints — a missing entry is an error, not a fresh key.
 pub fn read_db_key() -> Result<String, String> {
-    match crate::key_store::read() {
+    match crate::key_store::read(crate::key_store::Slot::Database) {
         Ok(Some(key)) => validate_stored_key(&key),
         Ok(None) => Err("no DB encryption key stored".to_string()),
         Err(e) => Err(e.to_string()),
@@ -200,7 +200,7 @@ impl From<crate::key_store::KeyStoreError> for KeyLoadError {
 /// [`KeyLoadError::MissingKeyForExistingDb`] class, which the boot-failure
 /// dialog turns into the restore offer.
 pub fn load_or_mint_db_key(db_path: &Path) -> Result<DbKey, KeyLoadError> {
-    match crate::key_store::read()? {
+    match crate::key_store::read(crate::key_store::Slot::Database)? {
         Some(key) => Ok(DbKey {
             hex: validate_stored_key(&key)?,
             freshly_minted: false,
@@ -229,7 +229,7 @@ pub fn store_db_key(key: &str) -> Result<(), String> {
     // Never store something that is not a key: the slot is one entry deep and
     // a malformed value would block every later run.
     validate_stored_key(key)?;
-    crate::key_store::write(key).map_err(|e| e.to_string())
+    crate::key_store::write(crate::key_store::Slot::Database, key).map_err(|e| e.to_string())
 }
 
 /// Escape a filesystem path so it is safe to embed in ONE audit-log line
@@ -338,7 +338,7 @@ pub fn restore_db_key_from_file(
 /// [`remove_abandoned_new_db`]: discarding the key while the freshly created
 /// file stays would strand a database whose only key is gone (E9).
 pub fn discard_minted_key() {
-    let _ = crate::key_store::delete();
+    let _ = crate::key_store::delete(crate::key_store::Slot::Database);
 }
 
 /// Undo a first run that failed after creating its database (E9).
@@ -928,7 +928,16 @@ pub fn reconcile_open_txn(conn: &Connection) -> Result<(), String> {
 pub fn delete_db_key() -> Result<bool, String> {
     // `Ok(false)` means "no key stored": already absent, which a reset reports
     // as success. On Android the same call also removes the wrapped key blob.
-    crate::key_store::delete().map_err(|e| e.to_string())
+    let database =
+        crate::key_store::delete(crate::key_store::Slot::Database).map_err(|e| e.to_string())?;
+    // The reset's key component removes the pairing identity too (§10.3): a
+    // fresh install mints a new keypair and a new device id, and a reset that
+    // left the old pairing secret behind could resume a pairing the user
+    // believes was erased. Losing it is safe — pairing then fails closed and the
+    // device re-pairs with a new key.
+    let pairing = crate::key_store::delete(crate::key_store::Slot::PairingIdentity)
+        .map_err(|e| e.to_string())?;
+    Ok(database || pairing)
 }
 
 // ---------------------------------------------------------------------------
