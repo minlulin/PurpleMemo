@@ -324,6 +324,53 @@ export function registerPeerStatements(
   ];
 }
 
+/**
+ * §11.4: a re-pair is a NEW pairing, never a resumed one. The pin is replaced,
+ * both cursors go back to 0, and a previous revocation is cleared (that is what
+ * "re-pair" means). The row itself stays: its `created_at` is the history of
+ * when this device was first paired.
+ */
+export function rePairStatements(
+  peer: {
+    deviceId: string;
+    generation: number;
+    pairingId: string;
+    displayName?: string;
+    publicKey?: string | null;
+  },
+  now: Date = new Date(),
+): BatchStatement[] {
+  return [
+    {
+      sql: `UPDATE sync_peers
+            SET pairing_id = ?, display_name = ?, public_key = ?, generation = ?,
+                cursor_in = 0, cursor_out = 0, revoked_at = NULL
+            WHERE device_id = ?`,
+      params: [
+        peer.pairingId,
+        peer.displayName ?? "",
+        peer.publicKey ?? null,
+        peer.generation,
+        peer.deviceId,
+      ],
+    },
+    // Acks describe the old pairing's outbox rows; the new pairing starts at
+    // sequence 0 on both sides (§11.4), so they are not evidence any more.
+    {
+      sql: "DELETE FROM sync_outbox_delivery WHERE peer_id = ?",
+      params: [peer.deviceId],
+    },
+    {
+      sql: "DELETE FROM sync_tombstone_acks WHERE peer_id = ?",
+      params: [peer.deviceId],
+    },
+    {
+      sql: "UPDATE sync_state SET re_pair_required = 0, updated_at = ? WHERE id = 1",
+      params: [now.toISOString()],
+    },
+  ];
+}
+
 /** §11.3: stop syncing with a peer, keeping the row for diagnostics. */
 export function revokePeerStatements(
   deviceId: string,

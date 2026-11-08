@@ -389,9 +389,38 @@ longer holds the phase open.
   stay pending. Still open by design: nothing calls the store (no
   engine yet), and `applyBackup` does not bump the generation — that
   belongs to the "Backup payload rules" item.
-- [ ] Pairing & bootstrap: QR + numeric fallback, pinned keys, revocation,
-  re-pair; **first-pair adoption** pushes offline mobile-created records to
-  desktop as new entries without data wipe
+- [x] Pairing & bootstrap — **written 2026-11-08, pairing tests green,
+  Stage 1 not started** (core only: no transport, no QR rendering, no
+  device run yet — see the last paragraph). CORE:
+  `src/lib/sync/pairing.ts` — offer + QR payload (`purplememo-pair://v1`),
+  6-digit code with a **120 s lifetime** and a **5-attempt lockout**
+  (single-use; malformed input costs no attempt), key fingerprints for the
+  on-screen comparison, hello admission in §7.1 order (revoked → unpinned →
+  key mismatch → pairing id → protocol → schema → generation → stale pin),
+  the §11.4 re-pair guard (refuses while the outbox owes writes unless the
+  user discards), and a listener state that is idle except while pairing is
+  open. Pins, revocation and re-pair are the Session 2 store statements
+  (`pinStatements`, `revokePeerStatements`, `rePairStatements`; re-pair
+  zeroes both cursors and drops the old pairing's acks). BOOTSTRAP:
+  `src/lib/sync/bootstrap.ts` — `planBootstrap` counts snapshot / upload /
+  alreadyKnown / desktopOnly with `deletions: []` always, uploads keep the
+  phone's own UIDs (a second attempt uploads nothing), `batchSnapshot`
+  honours 200 ops / 256 KiB and never splits an aggregate, `resumeAdoption`
+  re-takes an interrupted snapshot (§8.4), `conflictLosers` archives only
+  Notes/Tasks/Shopping with the "Conflict copy — kept on this device only"
+  label, `adoptionSummary` is §9.3's plain count. TESTS (6 + 6, real SQLite
+  from the shipped v8 DDL with real `sync_peers` rows, no stubs): redeem
+  once → pin both sides → later hello admitted; expired / used / locked
+  refusals; a revoked peer refused before any effect (no outbox or delivery
+  row written); key / pairing / generation / protocol / schema refusals;
+  re-pair zeroes cursors and clears the revocation; adoption keeps every row
+  (counted on both sides) and uploads new UIDs only; bounded
+  aggregate-safe snapshot; interrupted snapshot re-taken; trash only for
+  mutable entities. **STILL OPEN IN THIS ITEM:** the LAN pairing listener
+(only its state value exists — no socket), the desktop QR rendering, the
+  phone's camera/numeric entry (its Settings block still says pairing is not
+  built), and the two-device run. §11.6's crypto/transport library choice is
+  unresolved, so nothing was invented here.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
