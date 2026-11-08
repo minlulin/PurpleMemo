@@ -364,9 +364,31 @@ longer holds the phase open.
   recommended: reminder definitions two-way, `created_by_device_id`, the
   creating device notifies). §13.2 (conflict losers → per-device local trash)
   is confirmed, not open.
-- [ ] Schema & storage work: durable outbox (same transaction as mutation),
-  tombstones incl. cascaded children, device identity, per-peer cursors
-  (UIDs already established in Phase A)
+- [x] Schema & storage work — **written 2026-11-08, storage tests green,
+  engine not started** (schema **v8**, migration 7→8). Six device-local
+  tables: `sync_state` (§1.2 device id, §4.2 Lamport counter, §1.3 last
+  seq, §10 generation + re-pair flag), `sync_outbox` (§6.1–§6.2: op id,
+  table + uid, stamp, field stamps, payload, base counter),
+  `sync_outbox_delivery` (§6.5 per-peer acks), `sync_tombstones` +
+  `sync_tombstone_acks` (§5.1–§5.4; a cascaded child gets its own),
+  `sync_peers` (§6.4 cursors, §10.2 paired generation, §11.3 revocation).
+  Plus nullable `reminders.created_by_device_id` — **pending MinLulin's
+  §13.1 call, reversible, nothing wired to it**. Write path:
+  `src/lib/sync/store.ts` returns batch statements, so an outbox row
+  commits in the same transaction as its mutation (§6.1) and a cursor
+  moves only inside the apply transaction (§6.4). Migration proof: an
+  honest v7 fixture seeded across the 17 synced tables migrates to
+  `user_version = 8` with every row and uid intact, and every new
+  table/index matches a fresh baseline (Rust). Storage tests on real
+  SQLite, no stubs (`store.test.ts`): atomicity both ways, seq/Lamport
+  monotonic across pruning, tombstone survives a cascade, cursor
+  honesty, acks prune only when every live peer acked, tombstone GC
+  needs a peer, device id stable per install (a wipe mints a new one),
+  restore bumps the generation and forces re-pair, allowlist refusal,
+  §13.1 marker unread. The six engine invariants in `harness.test.ts`
+  stay pending. Still open by design: nothing calls the store (no
+  engine yet), and `applyBackup` does not bump the generation — that
+  belongs to the "Backup payload rules" item.
 - [ ] Pairing & bootstrap: QR + numeric fallback, pinned keys, revocation,
   re-pair; **first-pair adoption** pushes offline mobile-created records to
   desktop as new entries without data wipe

@@ -134,6 +134,12 @@ test("BACKUP_TABLES covers the 31 data tables and excludes the derived notes_fts
     BACKUP_TABLES.includes("trash_items"),
     "the capture trash is backed up",
   );
+  // Sync storage is device-local: a restored database is a new data line, and
+  // carrying the outbox/cursors/generation along would fork it (§10.3).
+  assert.ok(
+    !BACKUP_TABLES.some((table) => table.startsWith("sync_")),
+    "the device-local sync tables never enter a backup payload",
+  );
 });
 
 test("readBackupData queries each table once, reads photo bytes, stamps the manifest", async () => {

@@ -756,6 +756,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         4 => Some(schema::MIGRATION_4_5),
         5 => Some(schema::MIGRATION_5_6),
         6 => Some(schema::migration_6_7()),
+        7 => Some(schema::MIGRATION_7_8),
         _ => None,
     }
 }
@@ -2050,10 +2051,10 @@ mod tests {
         }
     }
 
-    // -- Baseline schema: 32 tables, user_version = SCHEMA_VERSION, seeds, FK on
+    // -- Baseline schema: 38 tables, user_version = SCHEMA_VERSION, seeds, FK on
 
     #[test]
-    fn baseline_schema_has_32_tables_and_the_declared_user_version() {
+    fn baseline_schema_has_38_tables_and_the_declared_user_version() {
         // The number lives in schema::SCHEMA_VERSION; the old name hard-coded
         // `user_version 4` and went stale when v5 landed.
         let (_dir, conn) = open_baseline("schema");
@@ -2061,7 +2062,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
     }
 
     // -- Hot foreign-key columns are indexed ---------------------
@@ -2159,7 +2160,7 @@ mod tests {
     fn init_schema_is_idempotent_and_fresh_only() {
         let (_dir, conn) = open_baseline("idempotent");
         init_schema(&conn).expect("second init is a no-op");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
     }
 
     // -- Sequential, forward-only migrations --------
@@ -2224,6 +2225,9 @@ mod tests {
         )
         .expect("strip v2+ additions");
         strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 1i64)
             .expect("stamp v1");
         conn.execute_batch(
@@ -2286,7 +2290,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
         // Data, FTS content, settings and foreign-key rows all survived.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
         let collection: i64 = conn
@@ -2459,6 +2463,9 @@ mod tests {
         conn.execute_batch(schema::BASELINE_SQL)
             .expect("apply baseline");
         strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 6i64)
             .expect("stamp v6");
         conn.execute_batch(
@@ -2584,6 +2591,231 @@ mod tests {
         }
     }
 
+    /// Remove the v8 sync-storage tables and the reminders marker so a fixture
+    /// can be an honest pre-v8 database. Children go before parents: with
+    /// foreign keys on, dropping `sync_outbox` while `sync_outbox_delivery`
+    /// still references it is refused.
+    fn strip_sync_storage(conn: &Connection) {
+        let has_marker = scalar_i64(
+            conn,
+            "SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'created_by_device_id'",
+        ) > 0;
+        let mut sql = String::new();
+        for index in [
+            "idx_sync_outbox_seq",
+            "idx_sync_outbox_entity",
+            "idx_sync_tombstones_entity",
+        ] {
+            sql.push_str(&format!("DROP INDEX IF EXISTS {index};\n"));
+        }
+        for table in schema::SYNC_STORAGE_TABLES.iter().rev() {
+            sql.push_str(&format!("DROP TABLE IF EXISTS {table};\n"));
+        }
+        // `ADD COLUMN` has no IF NOT EXISTS, so the guard is explicit.
+        if has_marker {
+            sql.push_str("ALTER TABLE reminders DROP COLUMN created_by_device_id;\n");
+        }
+        conn.execute_batch(&sql).expect("strip v8 sync storage");
+    }
+
+    /// A version-7 database: the baseline with the v8 storage stripped again,
+    /// stamped 7, holding one row in every synced table so the migration has
+    /// real data to preserve — an empty database would pass that check
+    /// vacuously.
+    fn seeded_v7(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_sync_storage(&conn);
+        conn.pragma_update(None, "user_version", 7i64)
+            .expect("stamp v7");
+        conn.execute_batch(
+            "INSERT INTO collections (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111112', 'Work', '2026-01-01');
+             INSERT INTO notes (uid, title, content, tags, collection_id, created_at, updated_at)
+               VALUES ('11111111-1111-4111-8111-111111111111', 'Pre-v8 note', 'body', 'a', 1, '2026-01-01', '2026-01-02');
+             INSERT INTO tasks (uid, title, due_date, done, repeat, note, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111113', 'Pre-v8 task', '2026-01-05', 0, 'none', '', '2026-01-01');
+             INSERT INTO reminders (uid, title, remind_at, repeat, note, fired, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111114', 'Pre-v8 reminder', '2026-01-05T09:00', 'none', '', 0, '2026-01-01');
+             INSERT INTO shops (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111115', 'Shop', '2026-01-01');
+             INSERT INTO jobs (uid, title, total_cents, job_date, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111116', 'Job', 1000, '2026-01-01', '2026-01-01');
+             INSERT INTO loans (uid, counterparty, direction, amount_cents, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111117', 'Ko Aung', 'lent', 1000, '2026-01-01');
+             INSERT INTO habits (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111118', 'Walk', '2026-01-01');
+             INSERT INTO habit_logs (uid, habit_id, log_date, done)
+               VALUES ('11111111-1111-4111-8111-111111111119', 1, '2026-01-01', 1);
+             INSERT INTO shopping_lists (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-11111111111a', 'Groceries', '2026-01-01');
+             INSERT INTO shopping_items (uid, list_id, text, done, sort_order)
+               VALUES ('11111111-1111-4111-8111-11111111111b', 1, 'milk', 0, 0);
+             INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+               VALUES ('11111111-1111-4111-8111-11111111111c', 'Email', 'c', 's', 'i', '2026-01-01', '2026-01-01');
+             INSERT INTO income_entries (uid, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+               VALUES ('11111111-1111-4111-8111-11111111111d', 500, 1, 1, '2026-01-01', '', '2026-01-01');
+             INSERT INTO expense_entries (uid, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+               VALUES ('11111111-1111-4111-8111-11111111111e', 200, 1, 1, '2026-01-01', '', '2026-01-01');",
+        )
+        .expect("seed pre-v8 rows");
+        (dir, conn)
+    }
+
+    #[test]
+    fn migration_7_8_adds_sync_storage_and_keeps_every_row() {
+        let (_dir, conn) = seeded_v7("sync-migration");
+        // The fixture really is pre-v8: no outbox, no marker column.
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='sync_outbox'"
+            ),
+            0
+        );
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'created_by_device_id'"
+            ),
+            0
+        );
+
+        init_schema(&conn).expect("migrate 7 -> 8");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, 8);
+        assert_eq!(table_count(&conn), 38);
+
+        // Exactly one state row, minted with the SAME uuid expression as every
+        // synced row (one expression, two callers — as for v7).
+        assert!(
+            schema::MIGRATION_7_8.contains(schema::UID_V4_SQL),
+            "the device id must be minted with the shared UUID expression"
+        );
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_state"), 1);
+        let device_id: String = conn
+            .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .expect("device id");
+        assert!(is_uuid_v4(&device_id), "{device_id} is not a UUID v4");
+        assert_eq!(
+            scalar_i64(&conn, "SELECT data_generation FROM sync_state WHERE id = 1"),
+            1,
+            "a fresh line starts at generation 1"
+        );
+        assert_eq!(
+            scalar_i64(&conn, "SELECT lamport FROM sync_state WHERE id = 1"),
+            0
+        );
+        assert_eq!(
+            scalar_i64(&conn, "SELECT last_seq FROM sync_state WHERE id = 1"),
+            0
+        );
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT re_pair_required FROM sync_state WHERE id = 1"
+            ),
+            0
+        );
+
+        // Nothing was lost: every synced table kept its uid and its rows.
+        for table in schema::UID_TABLES {
+            assert_eq!(
+                scalar_i64(
+                    &conn,
+                    &format!("SELECT count(*) FROM {table} WHERE uid IS NULL")
+                ),
+                0,
+                "{table}: a pre-v8 row lost its uid"
+            );
+            assert!(
+                scalar_i64(&conn, &format!("SELECT count(*) FROM {table}")) > 0,
+                "{table}: the fixture seeded no row, so the check is vacuous"
+            );
+        }
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
+        assert_eq!(
+            conn.query_row("SELECT title FROM notes WHERE id = 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .expect("note row"),
+            "Pre-v8 note"
+        );
+
+        // §13.1's marker: present, nullable, and NULL for a pre-v8 reminder.
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'created_by_device_id'"
+            ),
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM reminders WHERE created_by_device_id IS NULL"
+            ),
+            1,
+            "the marker must stay nullable — nothing writes it yet"
+        );
+
+        // The new storage starts empty and quiet.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_outbox"), 0);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_tombstones"), 0);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_peers"), 0);
+    }
+
+    #[test]
+    fn a_migrated_sync_storage_matches_a_fresh_baseline() {
+        // The baseline repeats MIGRATION_7_8's DDL (one raw string cannot
+        // reference a const), so the agreement is pinned rather than trusted.
+        let (_fresh_dir, fresh) = open_baseline("sync-structure-fresh");
+        let (_v7_dir, migrated) = seeded_v7("sync-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        let mut names: Vec<&str> = schema::SYNC_STORAGE_TABLES.to_vec();
+        names.extend([
+            "idx_sync_outbox_seq",
+            "idx_sync_outbox_entity",
+            "idx_sync_tombstones_entity",
+            // The ALTER rewrites reminders, so a migrated table and a fresh one
+            // must come out identical.
+            "reminders",
+        ]);
+        for name in names {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
     /// SQLite records the DDL as it was typed, so two textually different but
     /// equivalent definitions compare equal here and not in `assert_eq!`. Comments
     /// are dropped too: the two copies of this DDL sit under different explanatory
@@ -2639,7 +2871,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
     }
 
     #[test]
@@ -2743,6 +2975,9 @@ mod tests {
             )
             .expect("strip v2+");
             strip_uid_columns(&conn);
+            // A pre-v8 fixture must not keep the v8 tables the baseline now
+            // carries, or the real 7 -> 8 step collides with them.
+            strip_sync_storage(&conn);
             conn.pragma_update(None, "user_version", 1i64)
                 .expect("stamp v1");
             conn.execute_batch(
@@ -2869,6 +3104,9 @@ mod tests {
         )
         .expect("strip v3 additions");
         strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 2i64)
             .expect("stamp v2");
         conn.execute_batch(
@@ -2923,6 +3161,9 @@ mod tests {
         )
         .expect("strip v4 addition");
         strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 3i64)
             .expect("stamp v3");
         (dir, conn)
@@ -2933,7 +3174,7 @@ mod tests {
         let (_dir, migrated) = seeded_v3("trash-migration");
         let (_fresh_dir, fresh) = open_baseline("trash-baseline");
         init_schema(&migrated).expect("migrate 3 -> 4");
-        assert_eq!(table_count(&migrated), 32);
+        assert_eq!(table_count(&migrated), 38);
         for name in [
             "trash_items",
             "idx_trash_items_entity",
@@ -3004,6 +3245,9 @@ mod tests {
         )
         .expect("strip v5 additions");
         strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 4i64)
             .expect("stamp v4");
         conn.execute_batch(
@@ -3103,7 +3347,7 @@ mod tests {
         conn.execute_batch("DROP TABLE trash_items")
             .expect("remove migration obstacle");
         init_schema(&conn).expect("retry succeeds");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
     }
 
     #[test]
@@ -3124,7 +3368,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
         // Everything version 2 held is still there, including what the v2
         // migration added — a v2 database is one that already had the capture inbox.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 2);
@@ -3149,7 +3393,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
         assert_eq!(
             scalar_i64(
                 &conn,
@@ -3173,7 +3417,7 @@ mod tests {
         );
         // A second run changes nothing.
         init_schema(&conn).expect("second run is a no-op");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
     }
 
     #[test]
@@ -3194,7 +3438,7 @@ mod tests {
         );
         conn.execute_batch("DROP TABLE links").expect("clear it");
         init_schema(&conn).expect("the retry succeeds");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 38);
     }
 
     #[test]

@@ -107,7 +107,7 @@ export interface PeerSeed {
 
 export const DESKTOP_DEVICE = "desktop-7f3c";
 export const MOBILE_DEVICE = "phone-91ab";
-export const DATA_SCHEMA_VERSION = 7;
+export const DATA_SCHEMA_VERSION = 8;
 
 export function createPeer(seed: PeerSeed): SimPeer {
   return {

@@ -1,5 +1,8 @@
-// Row/domain types for the 31-table schema — the 32nd, `notes_fts`, is the
-// trigger-maintained FTS index (SCHEMA_VERSION 6). Every table in that schema
+// Row/domain types for the 37-table schema — the 38th, `notes_fts`, is the
+// trigger-maintained FTS index. The six device-local sync-storage tables added
+// in SCHEMA_VERSION 8 (`sync_*`: outbox, tombstones, peers, device identity)
+// are typed where they are read, in `sync/store.ts`, and are never in a backup
+// payload. Every other table in that schema
 // has a `*Row` here, including the two ledger tables, `settings` and
 // `trash_items` (docs/AUDIT.md SCHEMA-02). Money is integer cents
 // everywhere; dates are local `yyyy-mm-dd` strings unless the field says

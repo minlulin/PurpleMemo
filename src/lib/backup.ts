@@ -126,7 +126,14 @@ function mib(bytes: number): number {
   return Math.round(bytes / (1024 * 1024));
 }
 
-/** The 31 data tables (the 32nd, notes_fts, is trigger-maintained). */
+/**
+ * The 31 data tables (the 32nd, notes_fts, is trigger-maintained).
+ *
+ * The six device-local sync-storage tables (`sync_*`, schema v8) are NOT here:
+ * docs/ANDROID_SYNC_PROTOCOL.md §10.3 forbids the outbox, tombstones, peer
+ * cursors and device identity from travelling in a backup — a restored
+ * database is a new data line, not a copy of the old one's sync state.
+ */
 export const BACKUP_TABLES = [
   "collections",
   "notes",

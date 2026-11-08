@@ -1,9 +1,15 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 32 tables at `PRAGMA user_version = 7`: 31 regular tables + the
+//! 38 tables at `PRAGMA user_version = 8`: 37 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
-//! shadow tables are FTS internals, not part of the 31).
+//! shadow tables are FTS internals, not part of the 37).
+//!
+//! Six of the 37 are the sync storage from [`MIGRATION_7_8`] — device-local
+//! tables (`sync_*`) that hold the durable outbox, tombstones, peer cursors
+//! and the device identity of docs/ANDROID_SYNC_PROTOCOL.md §1.2/§5/§6/§10.
+//! They are deliberately absent from `BACKUP_TABLES`: §10.3 forbids device
+//! state travelling with user data.
 //!
 //! **Migrations are forward-only and sequential.** `db::init_schema` reads
 //! `user_version`, applies every step from there to [`SCHEMA_VERSION`] in
@@ -20,7 +26,7 @@
 /// The schema version this build expects and stamps.
 use std::sync::OnceLock;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -266,6 +272,127 @@ pub const UID_TABLES: [&str; 17] = [
     "shopping_lists",
     "shopping_items",
     "vault_items",
+];
+
+/// Sync storage (docs/ANDROID_SYNC_PROTOCOL.md §1.2 device identity, §4.2
+/// Lamport counter, §5 tombstones, §6.1–§6.2 durable outbox, §6.4–§6.5 per-peer
+/// cursors and acks, §10 generation).
+///
+/// Every table here is DEVICE-LOCAL: it never enters a backup payload and is
+/// never replicated (§10.3). That is why the six tables are absent from
+/// `BACKUP_TABLES` while still being real tables of this schema.
+///
+/// The shape follows the clauses rather than the screens:
+///
+/// * `sync_state` is the one-row identity/clock row. `device_id` is minted once
+///   per install by the same UUID expression as every synced row; a key-loss
+///   wipe deletes the whole database, so the next boot is a first run and mints
+///   a NEW id — a re-pair, never a reused identity (§1.2). `last_seq` is
+///   durable separately from `sync_outbox` so pruning the outbox can never
+///   rewind the operation sequence (§1.3).
+/// * `sync_outbox` is one row per mutation, written in the SAME transaction as
+///   the mutation (§6.1). `counter` is the Lamport stamp; `field_stamps` the
+///   per-field stamps of §4.3; `payload` the field values.
+/// * `sync_outbox_delivery` records which peer acknowledged which row — the
+///   evidence §6.5 prunes on.
+/// * `sync_tombstones` + `sync_tombstone_acks` are §5: a delete survives until
+///   every known peer has acked it (§5.4). A cascaded child gets its OWN
+///   tombstone (§5.2); the FK cascade must never be the only record.
+/// * `sync_peers` holds the per-peer cursors (§6.4), the generation the peer
+///   paired at (§10.2) and the revocation mark (§11.3).
+///
+/// `reminders.created_by_device_id` is the flagged §13.1 marker: nullable, and
+/// nothing reads it until MinLulin decides who owns a reminder definition.
+pub const MIGRATION_7_8: &str = r#"
+CREATE TABLE sync_state (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id        TEXT NOT NULL CHECK (length(device_id) = 36),
+  data_generation  INTEGER NOT NULL DEFAULT 1 CHECK (data_generation > 0),
+  lamport          INTEGER NOT NULL DEFAULT 0 CHECK (lamport >= 0),
+  last_seq         INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+  re_pair_required INTEGER NOT NULL DEFAULT 0 CHECK (re_pair_required IN (0, 1)),
+  updated_at       TEXT NOT NULL
+);
+
+CREATE TABLE sync_outbox (
+  id           INTEGER PRIMARY KEY,
+  device_id    TEXT NOT NULL,
+  seq          INTEGER NOT NULL CHECK (seq > 0),
+  op_id        TEXT NOT NULL UNIQUE,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  op           TEXT NOT NULL CHECK (op IN ('create', 'update', 'toggle', 'delete')),
+  base_counter INTEGER NOT NULL DEFAULT 0 CHECK (base_counter >= 0),
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  field_stamps TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(field_stamps)),
+  payload      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload)),
+  created_at   TEXT NOT NULL,
+  UNIQUE (device_id, seq)
+);
+
+CREATE INDEX idx_sync_outbox_seq ON sync_outbox(seq);
+CREATE INDEX idx_sync_outbox_entity ON sync_outbox(entity_table, entity_uid);
+
+CREATE TABLE sync_outbox_delivery (
+  outbox_id INTEGER NOT NULL REFERENCES sync_outbox(id) ON DELETE CASCADE,
+  peer_id   TEXT NOT NULL,
+  acked_at  TEXT NOT NULL,
+  PRIMARY KEY (outbox_id, peer_id)
+);
+
+CREATE TABLE sync_tombstones (
+  id           INTEGER PRIMARY KEY,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  deleted_at   TEXT NOT NULL,
+  UNIQUE (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstones_entity ON sync_tombstones(entity_table, entity_uid);
+
+CREATE TABLE sync_tombstone_acks (
+  tombstone_id INTEGER NOT NULL REFERENCES sync_tombstones(id) ON DELETE CASCADE,
+  peer_id      TEXT NOT NULL,
+  acked_at     TEXT NOT NULL,
+  PRIMARY KEY (tombstone_id, peer_id)
+);
+
+CREATE TABLE sync_peers (
+  device_id    TEXT PRIMARY KEY,
+  pairing_id   TEXT,
+  display_name TEXT NOT NULL DEFAULT '',
+  public_key   TEXT,
+  generation   INTEGER NOT NULL,
+  cursor_in    INTEGER NOT NULL DEFAULT 0 CHECK (cursor_in >= 0),
+  cursor_out   INTEGER NOT NULL DEFAULT 0 CHECK (cursor_out >= 0),
+  revoked_at   TEXT,
+  created_at   TEXT NOT NULL
+);
+
+ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;
+
+INSERT INTO sync_state (id, device_id, data_generation, lamport, last_seq, re_pair_required, updated_at)
+SELECT 1, lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))), 1, 0, 0, 0, strftime('%Y-%m-%d', 'now', 'localtime')
+WHERE NOT EXISTS (SELECT 1 FROM sync_state);
+"#;
+
+/// The six device-local sync tables, in dependency order (parents first).
+///
+/// One list for the database tests: the fixtures that build a pre-v8 database
+/// strip exactly these, and the migrated-structure test compares exactly these.
+/// A name missing from it would leave a table behind in a fixture and only
+/// surface as a migration collision.
+#[cfg(test)]
+pub const SYNC_STORAGE_TABLES: [&str; 6] = [
+    "sync_state",
+    "sync_outbox",
+    "sync_outbox_delivery",
+    "sync_tombstones",
+    "sync_tombstone_acks",
+    "sync_peers",
 ];
 
 /// The full baseline DDL + seed data. Applied inside a single transaction by
@@ -715,6 +842,86 @@ CREATE UNIQUE INDEX idx_habit_logs_uid ON habit_logs(uid);
 CREATE UNIQUE INDEX idx_shopping_lists_uid ON shopping_lists(uid);
 CREATE UNIQUE INDEX idx_shopping_items_uid ON shopping_items(uid);
 CREATE UNIQUE INDEX idx_vault_items_uid ON vault_items(uid);
+
+-- ============================================================
+-- Sync storage — see MIGRATION_7_8 for why each column exists. Repeated
+-- rather than shared because BASELINE_SQL is one raw string; a test asserts
+-- the migrated structure matches this one.
+-- ============================================================
+CREATE TABLE sync_state (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id        TEXT NOT NULL CHECK (length(device_id) = 36),
+  data_generation  INTEGER NOT NULL DEFAULT 1 CHECK (data_generation > 0),
+  lamport          INTEGER NOT NULL DEFAULT 0 CHECK (lamport >= 0),
+  last_seq         INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+  re_pair_required INTEGER NOT NULL DEFAULT 0 CHECK (re_pair_required IN (0, 1)),
+  updated_at       TEXT NOT NULL
+);
+
+CREATE TABLE sync_outbox (
+  id           INTEGER PRIMARY KEY,
+  device_id    TEXT NOT NULL,
+  seq          INTEGER NOT NULL CHECK (seq > 0),
+  op_id        TEXT NOT NULL UNIQUE,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  op           TEXT NOT NULL CHECK (op IN ('create', 'update', 'toggle', 'delete')),
+  base_counter INTEGER NOT NULL DEFAULT 0 CHECK (base_counter >= 0),
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  field_stamps TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(field_stamps)),
+  payload      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload)),
+  created_at   TEXT NOT NULL,
+  UNIQUE (device_id, seq)
+);
+
+CREATE INDEX idx_sync_outbox_seq ON sync_outbox(seq);
+CREATE INDEX idx_sync_outbox_entity ON sync_outbox(entity_table, entity_uid);
+
+CREATE TABLE sync_outbox_delivery (
+  outbox_id INTEGER NOT NULL REFERENCES sync_outbox(id) ON DELETE CASCADE,
+  peer_id   TEXT NOT NULL,
+  acked_at  TEXT NOT NULL,
+  PRIMARY KEY (outbox_id, peer_id)
+);
+
+CREATE TABLE sync_tombstones (
+  id           INTEGER PRIMARY KEY,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  deleted_at   TEXT NOT NULL,
+  UNIQUE (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstones_entity ON sync_tombstones(entity_table, entity_uid);
+
+CREATE TABLE sync_tombstone_acks (
+  tombstone_id INTEGER NOT NULL REFERENCES sync_tombstones(id) ON DELETE CASCADE,
+  peer_id      TEXT NOT NULL,
+  acked_at     TEXT NOT NULL,
+  PRIMARY KEY (tombstone_id, peer_id)
+);
+
+CREATE TABLE sync_peers (
+  device_id    TEXT PRIMARY KEY,
+  pairing_id   TEXT,
+  display_name TEXT NOT NULL DEFAULT '',
+  public_key   TEXT,
+  generation   INTEGER NOT NULL,
+  cursor_in    INTEGER NOT NULL DEFAULT 0 CHECK (cursor_in >= 0),
+  cursor_out   INTEGER NOT NULL DEFAULT 0 CHECK (cursor_out >= 0),
+  revoked_at   TEXT,
+  created_at   TEXT NOT NULL
+);
+
+-- The flagged §13.1 marker: nullable and unread until that decision is made.
+ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;
+
+INSERT INTO sync_state (id, device_id, data_generation, lamport, last_seq, re_pair_required, updated_at)
+SELECT 1, lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))), 1, 0, 0, 0, strftime('%Y-%m-%d', 'now', 'localtime')
+WHERE NOT EXISTS (SELECT 1 FROM sync_state);
 
 -- ============================================================
 -- Seed data : default wallets + seeded categories. One-time

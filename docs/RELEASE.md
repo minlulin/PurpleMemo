@@ -169,13 +169,15 @@ npm run tauri -- signer generate -w .keys/updater.key
 - The `pubkey` in `tauri.conf.json` is the public half only; there is no
   signing secret in this repository and no hosted secret store.
 - **Schema migrations are forward-only, and downgrading is unsupported.** The
-  current schema is v6 (`inbox_items`, `links`, `trash_items`, and the v5
-  unique `photo_refs` index plus the `reminders` due-index, plus the v5→6
-  hot-path index set — nine `CREATE INDEX` statements: notes browse, photos
-  `created_at`, `memories.memory_date`, `habit_logs(habit_id, log_date)`,
-  ledger `(category_id, entry_date)`, `jobs.shop_id`, `payables(paid,
-  due_date)`, `shopping_items(list_id, sort_order)`); an older
-  binary opens a migrated database only to refuse it, by design. Release notes must say so, and
+  current schema is v8 (37 tables + the `notes_fts` index; v8 adds the six
+  device-local `sync_*` tables of docs/ANDROID_SYNC_PROTOCOL.md — outbox,
+  tombstones, peers, cursors, device identity — plus a nullable
+  `reminders.created_by_device_id`; v7 added the cross-device `uid` columns;
+  v6 the hot-path index set; v5 the `photo_refs`/`reminders` indexes; v4
+  `inbox_items`, `links`, `trash_items`); an older binary opens a migrated
+  database only to refuse it, by design. The `sync_*` tables are
+  device-local and deliberately absent from `BACKUP_TABLES` (§10.3), so a
+  schema bump there changes no backup payload version. Release notes must say so, and
   must not imply that reinstalling an older version rolls the data back — the
   database file is untouched, but nothing older than the schema version can open
   it. A user who wants to go back has to restore a backup taken before the
