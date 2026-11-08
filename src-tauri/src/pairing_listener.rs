@@ -73,6 +73,13 @@ const ACCEPTED_KINDS: [&str; 1] = ["hello"];
 /// How long the accept loop waits before re-checking shutdown.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long a stop may spend proving the socket is gone. tiny_http frees the
+/// socket on its own thread, normally within tens of milliseconds.
+const CLOSE_DEADLINE: Duration = Duration::from_secs(2);
+
+/// The gap between two probes of a port that is closing.
+const CLOSE_PROBE_GAP: Duration = Duration::from_millis(5);
+
 /// Responses served at once: a client that stops reading owns a worker, never
 /// the accept loop, so `stop` cannot wait on it.
 const MAX_WORKERS: usize = 2;
@@ -202,6 +209,9 @@ struct Shared {
 
 struct Running {
     port: u16,
+    /// Where a stop probes for closure: the bound address, with an unspecified
+    /// bind (`0.0.0.0`, production) mapped to loopback.
+    probe: SocketAddr,
     public_key: String,
     fingerprint: String,
     peer_device_id: Option<String>,
@@ -297,16 +307,16 @@ impl PairingListenerState {
             }
         }
         if let Some(stale) = guard.take() {
-            reap(stale);
+            reap(stale)?;
         }
 
         let server = Server::http((bind, 0))
             .map_err(|e| format!("could not start the pairing listener on {bind}: {e}"))?;
-        let port = server
+        let bound = server
             .server_addr()
             .to_ip()
-            .map(|address: SocketAddr| address.port())
             .ok_or_else(|| "could not read the pairing listener port".to_string())?;
+        let port = bound.port();
         let gate = Arc::new(Gate {
             local_device_id: window.local_device_id,
             local_secret,
@@ -327,6 +337,7 @@ impl PairingListenerState {
 
         let running = Running {
             port,
+            probe: probe_address(bound),
             public_key,
             fingerprint,
             peer_device_id,
@@ -342,7 +353,7 @@ impl PairingListenerState {
     pub fn stop(&self) -> Result<PairingListenerInfo, String> {
         let mut guard = self.lock()?;
         if let Some(running) = guard.take() {
-            reap(running);
+            reap(running)?;
         }
         Ok(PairingListenerInfo::stopped(None))
     }
@@ -362,7 +373,7 @@ impl PairingListenerState {
         let mut guard = self.lock()?;
         let removed = match guard.take() {
             Some(running) => {
-                reap(running);
+                reap(running)?;
                 true
             }
             None => false,
@@ -377,7 +388,7 @@ impl PairingListenerState {
             Some(running) if !running.finished() => Ok(running.info(None)),
             Some(_) => {
                 let running = guard.take().expect("checked above");
-                reap(running);
+                reap(running)?;
                 Ok(PairingListenerInfo::stopped(None))
             }
             None => Ok(PairingListenerInfo::stopped(None)),
@@ -385,12 +396,57 @@ impl PairingListenerState {
     }
 }
 
-/// Signal the accept loop and wait for it to exit.
-fn reap(mut running: Running) {
+/// Signal the accept loop, join it, and then wait for the port itself to close.
+///
+/// The join alone proves nothing: in tiny_http the `Server` does not own the
+/// socket — the crate's own thread does — and `Drop` only asks that thread to
+/// stop (its comment allows "a few hundreds ms"). So a joined serve thread can
+/// still be followed by a port that accepts connections. §11.5's guarantee is
+/// about the socket, not the thread, so the close is not reported until a
+/// connect is actually refused; if that never happens the error names the port
+/// instead of claiming a window that is still open.
+fn reap(mut running: Running) -> Result<(), String> {
     running.shared.stop.store(true, Ordering::SeqCst);
     if let Some(join) = running.join.take() {
         let _ = join.join();
     }
+    wait_until_refused(running.probe)
+}
+
+/// Probe `probe` until a connect is refused, bounded by [`CLOSE_DEADLINE`].
+///
+/// "Refused" is a failed connect, which on Windows may be a dropped SYN rather
+/// than an RST: a closed loopback port can take seconds to say so, hence the
+/// short per-probe timeout. An open listener answers in well under a
+/// millisecond, so a probe that cannot connect is the closed window.
+fn wait_until_refused(probe: SocketAddr) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + CLOSE_DEADLINE;
+    loop {
+        if std::net::TcpStream::connect_timeout(&probe, CLOSE_PROBE_GAP * 4).is_err() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "the pairing listener on port {} is still accepting connections; the window is not closed",
+                probe.port()
+            ));
+        }
+        thread::sleep(CLOSE_PROBE_GAP);
+    }
+}
+
+/// The address a stop probes: the bound one, with an unspecified bind mapped to
+/// loopback (production binds `0.0.0.0`, which is not itself connectable).
+fn probe_address(bound: SocketAddr) -> SocketAddr {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    if !bound.ip().is_unspecified() {
+        return bound;
+    }
+    let loopback = match bound.ip() {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+    };
+    SocketAddr::new(loopback, bound.port())
 }
 
 /// A refusal as the wire sees it: a named reason, a message, and the status

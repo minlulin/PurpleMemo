@@ -447,8 +447,10 @@ longer holds the phase open.
   data line), an ack sealed back to the peer, and **no effect on any refusal**
   (the only effect of an accepted hello is advancing the replay counter).
   Lifetime is a property of the socket, not a flag: `stop` joins the accept
-  thread; the reset path is wired today, and the lock/background call sites
-  arrive with the pairing panel — 14
+  thread and then proves the port itself is refused — tiny_http frees the
+  socket on its own thread, so the join alone proves nothing; the reset path is
+  wired today, and the lock/background call sites arrive with the pairing
+  panel — 14
   loopback tests prove an accept while open and a refused connection after
   stop, lock and reset. **Two interpretations awaiting MinLulin's approval:**
   (1) §11.6.1 says *ephemeral* X25519; composing ephemeral and static
