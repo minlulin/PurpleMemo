@@ -17,6 +17,7 @@ mod navigation;
 mod pairing_client;
 pub mod pairing_key;
 pub mod pairing_listener;
+pub mod pairing_snapshot;
 mod photos;
 mod reminders;
 mod reset;
