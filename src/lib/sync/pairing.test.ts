@@ -46,7 +46,18 @@ function syncDdl(): string {
   return match[1];
 }
 
+/** The v9 row-stamp DDL, sliced from `BASELINE_SQL` for the same reason. */
+function rowStampDdl(): string {
+  const match =
+    /-- v9: the stamp of the value[\s\S]*?CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps\(entity_uid\);/.exec(
+      SCHEMA_RS,
+    );
+  assert.ok(match?.[0], "sync_row_stamps DDL not found in schema.rs");
+  return match[0];
+}
+
 const DDL = syncDdl();
+const ROW_STAMP_DDL = rowStampDdl();
 
 /** Only the pre-v8 table the migration's ALTER touches. */
 const REMINDERS = `
@@ -60,7 +71,7 @@ const DESKTOP_KEY = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const PHONE_KEY = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 const DESKTOP_DEVICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PHONE_DEVICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const NOW = 1_760_000_000_000;
 
 function openPeer(): { db: DatabaseSync; driver: DataDriver } {
@@ -68,6 +79,7 @@ function openPeer(): { db: DatabaseSync; driver: DataDriver } {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(REMINDERS);
   db.exec(DDL);
+  db.exec(ROW_STAMP_DDL);
   const run = (sql: string, params: unknown[] = []): void => {
     db.prepare(sql).run(...(params as never[]));
   };

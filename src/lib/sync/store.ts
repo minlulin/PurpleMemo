@@ -1,6 +1,6 @@
 /**
  * Sync storage for protocol v1 — the write path of
- * `docs/ANDROID_SYNC_PROTOCOL.md` §1.2, §5, §6 and §10 over schema v8
+ * `docs/ANDROID_SYNC_PROTOCOL.md` §1.2, §5, §6 and §10 over schema v9
  * (`src-tauri/src/schema.rs`, `MIGRATION_7_8`).
  *
  * This module owns the SQL and nothing else: it opens no connection, keeps no
@@ -170,6 +170,36 @@ export function outboxStatements(
         stamp,
       ],
     });
+    // §4.2/§8.4: the durable stamp of the value this row now holds. Written
+    // with the mutation, in the same batch (§6.1), because `sync_outbox` is
+    // pruned once every peer acks (§6.5) and the snapshot still has to be
+    // able to say which write a row's value came from. A delete drops the
+    // stamp: the tombstone carries the delete's own stamp (§5.1).
+    statements.push(
+      entry.kind === "delete"
+        ? {
+            sql: "DELETE FROM sync_row_stamps WHERE entity_table = ? AND entity_uid = ?",
+            params: [entry.table, entry.uid],
+          }
+        : {
+            sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+                  VALUES (?, ?, (SELECT lamport FROM sync_state WHERE id = 1),
+                          (SELECT device_id FROM sync_state WHERE id = 1), ?, ?, ?)
+                  ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
+                    counter = excluded.counter,
+                    device_id = excluded.device_id,
+                    op_id = excluded.op_id,
+                    field_stamps = excluded.field_stamps,
+                    updated_at = excluded.updated_at`,
+            params: [
+              entry.table,
+              entry.uid,
+              opId,
+              JSON.stringify(entry.fieldStamps ?? {}),
+              stamp,
+            ],
+          },
+    );
     // §5.2: a deleted child gets its own tombstone even when the database's
     // FK cascade is what removed the row. The caller passes every cascaded
     // child explicitly; nothing here can infer the children.

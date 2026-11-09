@@ -1,5 +1,6 @@
 /**
- * Storage tests for the v8 sync tables (`src/lib/sync/store.ts`).
+ * Storage tests for the sync tables (`src/lib/sync/store.ts`) — v8's six plus
+ * v9's `sync_row_stamps`.
  *
  * No mocks: every test runs the real DDL on a real SQLite database
  * (`node:sqlite`), sliced out of `src-tauri/src/schema.rs` rather than retyped,
@@ -40,6 +41,22 @@ function migrationDdl(): string {
   );
   assert.ok(match?.[1], "MIGRATION_7_8 not found in src-tauri/src/schema.rs");
   return match[1];
+}
+
+/**
+ * The v9 row-stamp DDL, sliced out of `BASELINE_SQL` for the same reason as
+ * the v8 block: retyping it here would let the test and the app disagree.
+ */
+function rowStampDdl(): string {
+  const match =
+    /-- v9: the stamp of the value[\s\S]*?CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps\(entity_uid\);/.exec(
+      SCHEMA_RS,
+    );
+  assert.ok(
+    match?.[0],
+    "sync_row_stamps DDL not found in src-tauri/src/schema.rs",
+  );
+  return match[0];
 }
 
 /** The pre-v8 tables these tests mutate (the columns they actually touch). */
@@ -85,6 +102,7 @@ function openStore(): Store {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(V7_FIXTURE);
   db.exec(migrationDdl());
+  db.exec(rowStampDdl());
   const run = (sql: string, params: unknown[] = []): void => {
     db.prepare(sql).run(...(params as never[]));
   };

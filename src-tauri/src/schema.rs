@@ -1,13 +1,15 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 38 tables at `PRAGMA user_version = 8`: 37 regular tables + the
+//! 39 tables at `PRAGMA user_version = 9`: 38 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
-//! shadow tables are FTS internals, not part of the 37).
+//! shadow tables are FTS internals, not part of the 38).
 //!
-//! Six of the 37 are the sync storage from [`MIGRATION_7_8`] — device-local
-//! tables (`sync_*`) that hold the durable outbox, tombstones, peer cursors
-//! and the device identity of docs/ANDROID_SYNC_PROTOCOL.md §1.2/§5/§6/§10.
+//! Seven of the 38 are device-local sync storage (`sync_*`): the six from
+//! [`MIGRATION_7_8`] that hold the durable outbox, tombstones, peer cursors and
+//! the device identity of docs/ANDROID_SYNC_PROTOCOL.md §1.2/§5/§6/§10, plus
+//! [`migration_8_9`]'s `sync_row_stamps` — the §4.2 stamp of the value each row
+//! currently holds, which a snapshot must carry so §4's merge has an input.
 //! They are deliberately absent from `BACKUP_TABLES`: §10.3 forbids device
 //! state travelling with user data.
 //!
@@ -26,7 +28,7 @@
 /// The schema version this build expects and stamps.
 use std::sync::OnceLock;
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -386,17 +388,71 @@ WHERE NOT EXISTS (SELECT 1 FROM sync_state);
 /// A name missing from it would leave a table behind in a fixture and only
 /// surface as a migration collision.
 #[cfg(test)]
-pub const SYNC_STORAGE_TABLES: [&str; 6] = [
+pub const SYNC_STORAGE_TABLES: [&str; 7] = [
     "sync_state",
     "sync_outbox",
     "sync_outbox_delivery",
     "sync_tombstones",
     "sync_tombstone_acks",
     "sync_peers",
+    "sync_row_stamps",
 ];
 
 /// The full baseline DDL + seed data. Applied inside a single transaction by
 /// `db::init_schema`, which then stamps `user_version`.
+/// Schema v8 → v9: `sync_row_stamps`, the stamp of the value each row holds.
+///
+/// §8.4's snapshot must be a read of the 17 tables "plus their tombstones", and
+/// §9.5 merges a shared UID by comparing stamps — but the entity tables never
+/// carried one: `sync_outbox` holds the stamps of *operations* and is pruned
+/// once every live peer acks (§6.5), so a row delivered months ago has no
+/// stamp left to send. This table is that missing durable copy: one row per
+/// entity, written in the same batch as the mutation
+/// (`store.ts::outboxStatements`) and backfilled here.
+///
+/// The backfill stamps every row that exists at migration time with this
+/// device's current Lamport counter and `migration-8-9` as the operation id.
+/// That is the honest reading: before this version the database has no
+/// per-row history, so "as of v9" is the oldest stamp it can claim — and it is
+/// older than any edit written afterwards. A row with no stamp row at all (a
+/// fresh install's seeded wallets, say) reads as counter 0, which is the same
+/// statement: pre-history.
+pub fn migration_8_9() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| {
+        let backfill = UID_TABLES
+            .iter()
+            .map(|table| {
+                format!(
+                    "INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)\n\
+                     SELECT '{table}', uid,\n\
+                            (SELECT lamport FROM sync_state WHERE id = 1),\n\
+                            (SELECT device_id FROM sync_state WHERE id = 1),\n\
+                            'migration-8-9', '{{}}',\n\
+                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\n\
+                     FROM {table} WHERE uid IS NOT NULL\n\
+                     ON CONFLICT(entity_table, entity_uid) DO NOTHING;"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        format!(
+            "CREATE TABLE sync_row_stamps (\n\
+  entity_table TEXT NOT NULL,\n\
+  entity_uid   TEXT NOT NULL,\n\
+  counter      INTEGER NOT NULL CHECK (counter >= 0),\n\
+  device_id    TEXT NOT NULL,\n\
+  op_id        TEXT NOT NULL,\n\
+  field_stamps TEXT NOT NULL DEFAULT '{{}}' CHECK (json_valid(field_stamps)),\n\
+  updated_at   TEXT NOT NULL,\n\
+  PRIMARY KEY (entity_table, entity_uid)\n\
+);\n\n\
+CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps(entity_uid);\n\n\
+{backfill}"
+        )
+    })
+}
+
 pub const BASELINE_SQL: &str = r#"
 -- ============================================================
 -- Notes & collections
@@ -915,6 +971,23 @@ CREATE TABLE sync_peers (
   revoked_at   TEXT,
   created_at   TEXT NOT NULL
 );
+
+-- v9: the stamp of the value a row currently holds (§4.2). `sync_outbox`
+-- carries the stamps of operations and is pruned once every peer acks (§6.5),
+-- so a snapshot needs this durable per-row copy. Counter 0 means pre-history:
+-- the row predates any stamp this database can claim.
+CREATE TABLE sync_row_stamps (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  field_stamps TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(field_stamps)),
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps(entity_uid);
 
 -- The flagged §13.1 marker: nullable and unread until that decision is made.
 ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;

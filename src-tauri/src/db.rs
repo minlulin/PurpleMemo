@@ -757,6 +757,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         5 => Some(schema::MIGRATION_5_6),
         6 => Some(schema::migration_6_7()),
         7 => Some(schema::MIGRATION_7_8),
+        8 => Some(schema::migration_8_9()),
         _ => None,
     }
 }
@@ -2060,10 +2061,10 @@ mod tests {
         }
     }
 
-    // -- Baseline schema: 38 tables, user_version = SCHEMA_VERSION, seeds, FK on
+    // -- Baseline schema: 39 tables, user_version = SCHEMA_VERSION, seeds, FK on
 
     #[test]
-    fn baseline_schema_has_38_tables_and_the_declared_user_version() {
+    fn baseline_schema_has_39_tables_and_the_declared_user_version() {
         // The number lives in schema::SCHEMA_VERSION; the old name hard-coded
         // `user_version 4` and went stale when v5 landed.
         let (_dir, conn) = open_baseline("schema");
@@ -2071,7 +2072,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
     }
 
     // -- Hot foreign-key columns are indexed ---------------------
@@ -2169,7 +2170,7 @@ mod tests {
     fn init_schema_is_idempotent_and_fresh_only() {
         let (_dir, conn) = open_baseline("idempotent");
         init_schema(&conn).expect("second init is a no-op");
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
     }
 
     // -- Sequential, forward-only migrations --------
@@ -2299,7 +2300,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
         // Data, FTS content, settings and foreign-key rows all survived.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
         let collection: i64 = conn
@@ -2693,13 +2694,13 @@ mod tests {
             0
         );
 
-        init_schema(&conn).expect("migrate 7 -> 8");
+        init_schema(&conn).expect("migrate 7 -> current");
 
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 8);
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(table_count(&conn), 39);
 
         // Exactly one state row, minted with the SAME uuid expression as every
         // synced row (one expression, two callers — as for v7).
@@ -2880,7 +2881,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
     }
 
     #[test]
@@ -3183,7 +3184,7 @@ mod tests {
         let (_dir, migrated) = seeded_v3("trash-migration");
         let (_fresh_dir, fresh) = open_baseline("trash-baseline");
         init_schema(&migrated).expect("migrate 3 -> 4");
-        assert_eq!(table_count(&migrated), 38);
+        assert_eq!(table_count(&migrated), 39);
         for name in [
             "trash_items",
             "idx_trash_items_entity",
@@ -3356,7 +3357,7 @@ mod tests {
         conn.execute_batch("DROP TABLE trash_items")
             .expect("remove migration obstacle");
         init_schema(&conn).expect("retry succeeds");
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
     }
 
     #[test]
@@ -3377,7 +3378,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
         // Everything version 2 held is still there, including what the v2
         // migration added — a v2 database is one that already had the capture inbox.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 2);
@@ -3402,7 +3403,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
         assert_eq!(
             scalar_i64(
                 &conn,
@@ -3426,7 +3427,7 @@ mod tests {
         );
         // A second run changes nothing.
         init_schema(&conn).expect("second run is a no-op");
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
     }
 
     #[test]
@@ -3447,7 +3448,7 @@ mod tests {
         );
         conn.execute_batch("DROP TABLE links").expect("clear it");
         init_schema(&conn).expect("the retry succeeds");
-        assert_eq!(table_count(&conn), 38);
+        assert_eq!(table_count(&conn), 39);
     }
 
     #[test]

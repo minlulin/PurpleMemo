@@ -244,10 +244,10 @@ only).
    because §8.4 requires one transaction; the alternative is a TS reader over
    `db_query`, which cannot hold a transaction across the read. State the
    choice in the report when Session 3 starts.
-3. **Snapshot row stamps (blocks Session 3).** The current schema has no stamp
-   to put on a snapshot row. See **Status** below: this one cannot be worked
-   around in code, because it decides which value survives a shared UID at
-   first pairing (§9.2, §9.5).
+3. **Snapshot row stamps.** Decided: **A** (2026-11-09). Schema v9's
+   `sync_row_stamps` records the §4.2 stamp of the value each row holds, written
+   with the mutation and backfilled by the migration; the snapshot transport
+   reads it. See **Status** below.
 
 Settled and not to be re-decided here: N1 (no pin without a proved hello and a
 human Trust), N2 (a missing key fails closed), D1 Option A (the request carries
@@ -319,6 +319,15 @@ value survives when both hold the same `uid` at first pairing. Everything else
 in Session 3 — the `/pair/snapshot` route, the sealed batches, the refusal list,
 the busy guard — is ready to write the moment the row shape is fixed, and the
 48 KiB re-cut in the proposal keeps today's 64 KiB frame cap untouched.
+
+#### Decision taken (2026-11-09): **A**
+
+`sync_row_stamps` (schema v9) is one row per entity — `counter`, `device_id`,
+`op_id`, `field_stamps` — written in the same batch as the mutation
+(`store.ts::outboxStatements`) and backfilled once by `migration_8_9` with the
+device's current Lamport counter and `migration-8-9` as the operation id. A row
+with no stamp row reads as counter 0: pre-history, older than any edit written
+after v9. The snapshot transport is built on this next.
 
 ## Out of scope
 
