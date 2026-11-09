@@ -419,7 +419,17 @@ export function admitPeer(input: AdmissionInput): Admission {
         "this device's key changed — that is a re-pair, not a sync. Re-pair and compare the fingerprints (§11.2).",
     };
   }
-  if (pinned.pairingId !== null && input.pairingId !== pinned.pairingId) {
+  // §11.6.1: the pairing id is the envelope's HKDF salt, so every pairing has
+  // one. A pin without one is a broken pin, not a pairing that skips the check
+  // (N9).
+  if (pinned.pairingId === null) {
+    return {
+      ok: false,
+      code: "unpaired",
+      message: "this pairing has no pairing id — re-pair this phone (§11.6.1).",
+    };
+  }
+  if (input.pairingId !== pinned.pairingId) {
     return {
       ok: false,
       code: "pairing-mismatch",

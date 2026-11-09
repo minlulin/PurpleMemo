@@ -189,9 +189,10 @@ pub struct PairingOffer {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingOpenInput {
-    /// §11.4: a hello claiming a different pairing is a re-pair, not a sync.
-    #[serde(default)]
-    pub pairing_id: Option<String>,
+    /// §11.6.1: the pairing id is the HKDF salt, so a window cannot open
+    /// without one. Required — a call that omits it fails at the IPC boundary
+    /// instead of sealing under the zero salt (N9).
+    pub pairing_id: String,
     #[serde(default)]
     pub offer_code: Option<String>,
     #[serde(default)]
@@ -216,8 +217,9 @@ pub struct PairingWindow {
     pub local_protocol_version: u64,
     pub local_schema_version: u64,
     /// §11.4: a hello claiming a different pairing is a re-pair, not a sync.
-    #[serde(default)]
-    pub pairing_id: Option<String>,
+    /// §11.6.1: required — it is the HKDF salt, and `start` refuses an empty
+    /// one rather than sealing under the all-zero default (N9).
+    pub pairing_id: String,
     /// The code that gates a first pairing (§11.1). `None` opens a window for a
     /// pinned peer only.
     #[serde(default)]
@@ -308,7 +310,8 @@ struct Gate {
     local_generation: u64,
     local_protocol_version: u64,
     local_schema_version: u64,
-    pairing_id: Option<String>,
+    /// Never optional: `start` refuses a window without one (§11.6.1).
+    pairing_id: String,
     pin: Option<Pin>,
     /// §11.1: the code that gates a first pairing. Absent on a window for an
     /// already-pinned peer.
@@ -408,6 +411,12 @@ impl PairingListenerState {
     ) -> Result<PairingListenerInfo, String> {
         // Fail before binding anything if a reset or import owns the app (E2).
         self.lifecycle.ensure_share_allowed()?;
+        // §11.6.1: a window is bound to its pairing id, which is the HKDF salt.
+        // An empty one would seal under the all-zero default while claiming to
+        // be bound, so it is refused here rather than trusted (N9).
+        if window.pairing_id.trim().is_empty() {
+            return Err("a pairing window needs a pairing id (§11.6.1)".to_string());
+        }
         let pin = match window.peer.as_ref() {
             Some(peer) => {
                 let bytes = envelope::from_hex(&peer.public_key)
@@ -1041,7 +1050,7 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
             "this request carries no pairing id; show a new code on the desktop (§11.1).",
         ));
     };
-    if Some(presented_pairing) != gate.pairing_id.as_deref() {
+    if presented_pairing != gate.pairing_id.as_str() {
         return Err(RefusalReply::refused(
             "pairing-mismatch",
             "this request belongs to a different pairing; show a new code (§11.4).",
@@ -1132,7 +1141,7 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     };
     let ack = json!({
         "kind": "paired",
-        "pairingId": gate.pairing_id,
+        "pairingId": gate.pairing_id.as_str(),
         "deviceId": gate.local_device_id,
         "generation": gate.local_generation,
         "schemaVersion": gate.local_schema_version,
@@ -1147,7 +1156,7 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         message_id: &format!("paired:{counter}"),
         counter,
         message: &ack,
-        pairing_id: gate.pairing_id.as_deref(),
+        pairing_id: Some(gate.pairing_id.as_str()),
         nonce: None,
         ephemeral_secret: None,
     })
@@ -1183,6 +1192,14 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
             "this device has never paired; show a pairing code on the desktop first (§11.2).",
         ));
     };
+    // §1.2: a device cannot pair with itself. A pin naming this device is not a
+    // pairing, so its hello is refused before any envelope is opened (N9).
+    if pin.device_id == gate.local_device_id {
+        return Err(RefusalReply::refused(
+            "same-device",
+            "a device cannot pair with itself.",
+        ));
+    }
     let text = decode_frame(body).map_err(RefusalReply::malformed)?;
     let mut last_counter = gate.last_counter.lock().unwrap_or_else(|e| e.into_inner());
     let opened = envelope::open(OpenInput {
@@ -1192,7 +1209,7 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         expected_from: &pin.device_id,
         last_counter: *last_counter,
         // §11.6.1's HKDF salt and info: the key is bound to this pairing.
-        pairing_id: gate.pairing_id.as_deref(),
+        pairing_id: Some(gate.pairing_id.as_str()),
         raw: &text,
     })
     .map_err(RefusalReply::from_envelope)?;
@@ -1214,14 +1231,15 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     }
 
     let number = |key: &str| opened.message.get(key).and_then(JsonValue::as_u64);
-    if let Some(expected) = gate.pairing_id.as_deref() {
-        let presented = opened.message.get("pairingId").and_then(JsonValue::as_str);
-        if presented != Some(expected) {
-            return Err(RefusalReply::refused(
-                "pairing-mismatch",
-                "this hello belongs to a different pairing; re-pair this phone (§11.4).",
-            ));
-        }
+    // §11.6.1: the check is unconditional — the window's pairing id is required,
+    // so a hello that claims none is a mismatch, not a check that is skipped
+    // (N9).
+    let presented = opened.message.get("pairingId").and_then(JsonValue::as_str);
+    if presented != Some(gate.pairing_id.as_str()) {
+        return Err(RefusalReply::refused(
+            "pairing-mismatch",
+            "this hello belongs to a different pairing; re-pair this phone (§11.4).",
+        ));
     }
     let protocol = number("protocolVersion").ok_or_else(|| {
         RefusalReply::malformed("the hello does not say which protocol version it speaks.")
@@ -1297,7 +1315,7 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         message_id: &format!("ack:{}", opened.header.message_id),
         counter,
         message: &ack,
-        pairing_id: gate.pairing_id.as_deref(),
+        pairing_id: Some(gate.pairing_id.as_str()),
         nonce: None,
         ephemeral_secret: None,
     })
@@ -1346,7 +1364,7 @@ mod tests {
             local_generation: 1,
             local_protocol_version: 1,
             local_schema_version: 8,
-            pairing_id: Some("pair-1".to_string()),
+            pairing_id: "pair-1".to_string(),
             offer: None,
             peer: Some(PinnedPeer {
                 device_id: PHONE_ID.to_string(),
@@ -1960,15 +1978,62 @@ mod tests {
 
     #[test]
     fn a_window_without_a_code_admits_no_first_pairing() {
+        // A first pairing is what the code gates, so the test must knock on the
+        // rendezvous: `/pair/hello` would only prove that `admit` also refuses
+        // an unpinned window (N12).
         let state = PairingListenerState::default();
         let mut pinless = window(false);
         pinless.peer = None;
         let info = state
             .start("127.0.0.1", pinless, desktop_identity())
             .expect("start");
-        let (status, body) = post(info.port.expect("port"), &request_body(|_| {}));
+        let (status, body) = post_request(info.port.expect("port"), &request_body(|_| {}));
         assert_eq!(status, 403, "{body}");
         assert_eq!(refusal_reason(&body), "unpaired");
+        state.stop().expect("stop");
+
+        // With a pinned peer AND no offer, only the rendezvous' own
+        // `offer.is_none()` guard can produce the refusal — `admit` would have
+        // accepted a hello from this pin.
+        let pinned = PairingListenerState::default();
+        let info = pinned
+            .start("127.0.0.1", window(false), desktop_identity())
+            .expect("start");
+        let port = info.port.expect("port");
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "unpaired");
+        // The window is otherwise alive: its pin still admits its own hello.
+        assert_eq!(post(port, &hello_frame(1)).0, 200);
+        pinned.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_window_without_a_pairing_id_refuses_to_open() {
+        let state = PairingListenerState::default();
+        let mut idless = window(false);
+        idless.pairing_id = String::new();
+        let error = state
+            .start("127.0.0.1", idless, desktop_identity())
+            .expect_err("no window may seal under the zero salt (§11.6.1)");
+        assert!(error.contains("pairing id"), "{error}");
+        assert!(!state.status().expect("status").running);
+    }
+
+    #[test]
+    fn a_hello_from_this_device_is_refused_as_same_device() {
+        let state = PairingListenerState::default();
+        let mut selfish = window(false);
+        let peer = selfish.peer.as_mut().expect("a peer");
+        peer.device_id = DESKTOP_ID.to_string();
+        peer.public_key = envelope::to_hex(&envelope::public_key(&DESKTOP_SECRET));
+        let info = state
+            .start("127.0.0.1", selfish, desktop_identity())
+            .expect("start");
+        // The pin names this device, so no envelope is even opened (§1.2, N9).
+        let (status, body) = post(info.port.expect("port"), &hello_frame(1));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "same-device");
         state.stop().expect("stop");
     }
 

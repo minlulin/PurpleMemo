@@ -174,9 +174,13 @@ export interface PairingPeerPin {
   revoked?: boolean;
 }
 
-/** What the panel asks the listener for when it opens (§11.1, §11.5). */
+/**
+ * What the panel asks the listener for when it opens (§11.1, §11.5).
+ * `pairingId` is required: it is the envelope's HKDF salt, so a window cannot
+ * open without one (§11.6.1, N9).
+ */
 export interface PairingOpenInput {
-  pairingId: string | null;
+  pairingId: string;
   /** The single-use code; `null` opens a window for a pinned peer only. */
   offerCode: string | null;
   /** Unix epoch milliseconds, when a code is offered. */

@@ -157,8 +157,9 @@ pub fn shared_key(
 }
 
 /// The pairing id as HKDF salt. A flow with no pairing id salts with 32 zero
-/// bytes — the spec names that branch, and a window with no pairing id refuses
-/// every hello, so it seals nothing in practice.
+/// bytes: that is a defensive default only — `pairing_listener::start` refuses
+/// to open a window without a pairing id, so no running pairing window ever
+/// seals under this salt (N9).
 fn kdf_salt(pairing_id: Option<&str>) -> Vec<u8> {
     match pairing_id {
         Some(id) => id.as_bytes().to_vec(),

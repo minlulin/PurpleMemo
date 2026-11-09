@@ -402,6 +402,34 @@ test("a changed key, a foreign pairing, a new generation and a different build a
   assert.equal(unpaired.ok === false ? unpaired.code : null, "unpaired");
 });
 
+test("a pin without a pairing id is refused, not trusted (§11.6.1)", () => {
+  const local = {
+    deviceId: DESKTOP_DEVICE,
+    protocolVersion: PROTOCOL_VERSION,
+    dataSchemaVersion: SCHEMA_VERSION,
+    generation: 1,
+  };
+  const refused = admitPeer({
+    local,
+    remote: { ...local, deviceId: PHONE_DEVICE },
+    remotePublicKey: PHONE_KEY,
+    pinned: {
+      deviceId: PHONE_DEVICE,
+      publicKey: PHONE_KEY,
+      generation: 1,
+      pairingId: null,
+      revoked: false,
+    },
+    pairingId: null,
+  });
+  assert.equal(
+    refused.ok === false ? refused.code : null,
+    "unpaired",
+    "a pairing id is the HKDF salt; a pin without one cannot be admitted",
+  );
+  assert.match(refused.ok === false ? refused.message : "", /pairing id/);
+});
+
 test("re-pair refuses while the outbox owes writes, and otherwise starts a new pairing", async () => {
   assert.equal(canRePair(0, false).ok, true);
   const refused = canRePair(3, false);
