@@ -11,11 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mobilePairingRepo } from "../data/app.ts";
-import {
-  isCompleteCode,
-  offerFromFrame,
-  type PairingOutcome,
-} from "../lib/sync/mobilePairing.ts";
+import { isCompleteCode, offerFromFrame } from "../lib/sync/mobilePairing.ts";
 import {
   keyFingerprint,
   type PairingOffer,
@@ -37,7 +33,6 @@ export function MobilePairingCard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<PairingOutcome | null>(null);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -92,7 +87,6 @@ export function MobilePairingCard() {
               usedAt: null,
             });
             setTyped("");
-            setOutcome(null);
             setScanning("idle");
             stopCamera();
             return;
@@ -107,6 +101,10 @@ export function MobilePairingCard() {
     }
   }, [stopCamera]);
 
+  // A used code is spent: the button stops offering a second attempt that can
+  // only come back "used".
+  const spent = session !== null && session.usedAt !== null;
+
   const confirm = async () => {
     if (session === null || busy) return;
     setBusy(true);
@@ -115,7 +113,6 @@ export function MobilePairingCard() {
     try {
       const result = await mobilePairingRepo.pairWithDesktop(session, typed);
       setSession(result.session);
-      setOutcome(result);
       if (result.paired) {
         setNotice(t("mobile.settings.pairConfirmed"));
       } else {
@@ -182,18 +179,11 @@ export function MobilePairingCard() {
           <button
             type="button"
             className="btn"
-            disabled={!isCompleteCode(typed) || busy}
+            disabled={!isCompleteCode(typed) || busy || spent}
             onClick={() => void confirm()}
           >
             {t("mobile.settings.pairConfirm")}
           </button>
-          {outcome?.paired && outcome.desktop !== null ? (
-            <p className="mobile-row-text">
-              {t("mobile.settings.pairDesktopKey", {
-                fingerprint: keyFingerprint(outcome.desktop.desktopPublicKey),
-              })}
-            </p>
-          ) : null}
         </>
       )}
       {error !== null ? (
