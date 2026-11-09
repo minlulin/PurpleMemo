@@ -244,11 +244,81 @@ only).
    because §8.4 requires one transaction; the alternative is a TS reader over
    `db_query`, which cannot hold a transaction across the read. State the
    choice in the report when Session 3 starts.
+3. **Snapshot row stamps (blocks Session 3).** The current schema has no stamp
+   to put on a snapshot row. See **Status** below: this one cannot be worked
+   around in code, because it decides which value survives a shared UID at
+   first pairing (§9.2, §9.5).
 
 Settled and not to be re-decided here: N1 (no pin without a proved hello and a
 human Trust), N2 (a missing key fails closed), D1 Option A (the request carries
 no generation), D5 (`needs-re-pair` is canonical), the envelope construction,
 and the one-write-path rule for `sync_peers`.
+
+## Status (2026-11-09)
+
+**Session 1 — done** (`1581b3a`): `pairing_client.rs`, the request → ack → hello
+handshake, the loopback proof, one IPC command.
+
+**Session 2 — done** (`f063c21`, corrected in `44a45a6`): the phone's pin write,
+written only after the hello, through the desktop's pin/re-pair path, wired
+through `MobilePairingCard` and checked in a browser.
+
+**Session 3 — blocked, before a line of it was written.**
+
+#### The snapshot cannot be stamped from this schema
+
+§8.4 requires the snapshot to be a consistent read of the 17 tables plus their
+tombstones, and `src/lib/sync/bootstrap.ts` states the row it must produce:
+
+```ts
+export interface SyncedRow {
+  table: SyncTable;
+  uid: string;
+  stamp: VersionStamp;   // { counter, deviceId, opId }
+  fields: Record<string, unknown>;
+}
+```
+
+`conflictLosers` compares those stamps (§9.5), so a snapshot without a real
+stamp cannot participate in §4's merge at all. But the schema has nowhere to
+read one from:
+
+- the 17 entity tables carry `uid` and ordinary timestamps, no stamp — see
+the DDL for `notes`, `tasks`, `habit_logs` and `shopping_items` in
+`src-tauri/src/schema.rs`;
+- the only stamp storage is `sync_outbox` (`counter`, `device_id`, `op_id`,
+`field_stamps`) and `sync_tombstones` (one `counter`/`device_id`/`op_id`);
+- `sync_outbox` is pruned once every live peer has acknowledged it (§6.5), so it
+cannot act as a durable per-row stamp store: a row the desktop wrote and
+delivered last month would arrive in a snapshot with no stamp at all.
+
+So the question Session 3 opens with is not a wire question but a data one:
+**where does a snapshot row's stamp come from?**
+
+#### The options
+
+- **A (recommended).** Add a side table, e.g.
+  `sync_row_stamps(entity_table, entity_uid, counter, device_id, op_id,
+  field_stamps)`, written with every mutation and backfilled once at adoption
+  time from the desktop's current Lamport counter and device id. Costs a schema
+  v9 migration and a change in every writer; in exchange §4.3's per-field merge
+  works over a snapshot, and the consequence is stated plainly: at adoption the
+  desktop's stored value outranks phone edits stamped below it, which is what
+  §2.3's "the desktop is the authority" already implies.
+- **B.** The snapshot carries a synthetic pre-history stamp (`counter: 0`), and
+the phone treats it as older than any local write. Costs no migration; makes
+every phone edit win a shared-UID adoption merge, and gives §4.3 no per-field
+input at all.
+- **C.** No stamps in the snapshot; adoption inserts desktop-only rows and
+leaves shared UIDs to the merge engine without per-row stamps. Smallest change,
+but §9.5's conflict-copy path cannot be evaluated during adoption and it
+contradicts the `SyncedRow` type the adoption module is written against.
+
+This one is the owner's call, not the implementer's: it decides which device's
+value survives when both hold the same `uid` at first pairing. Everything else
+in Session 3 — the `/pair/snapshot` route, the sealed batches, the refusal list,
+the busy guard — is ready to write the moment the row shape is fixed, and the
+48 KiB re-cut in the proposal keeps today's 64 KiB frame cap untouched.
 
 ## Out of scope
 
