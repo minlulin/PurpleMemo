@@ -25,9 +25,13 @@
 //! The sender mints a fresh ephemeral keypair per message and its public half
 //! travels in the authenticated header, so a forged `eph` fails the AEAD tag
 //! instead of being used. The long-term keys stay pinned (§11.2): a peer
-//! without the pinned secret still cannot produce an openable envelope, and the
-//! ephemeral half adds forward secrecy — the message key depends on a secret
-//! the sender destroys after one message.
+//! without the pinned secret still cannot produce an openable envelope. The
+//! ephemeral half is a **sender** ephemeral, so it buys per-message key
+//! separation and sender-key-compromise resistance — not symmetric forward
+//! secrecy. The receiver's long-term secret plus the public `eph` reproduce
+//! both agreements, so a later compromise of the receiver's key opens
+//! envelopes that were sent to it; true ephemeral–ephemeral forward secrecy is
+//! deferred, bounded by §11.5's short window (§11.6.1, decision D2).
 //!
 //! Nothing here logs a key, and no secret is ever serialized: the wire carries
 //! public values, a nonce and ciphertext only.

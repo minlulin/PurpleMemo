@@ -555,11 +555,16 @@ new records at the next pairing (they are not in the desktop's UID set).
 
 #### §11.1 QR primary, numeric fallback
 
-QR carries the LAN endpoint, a single-use pairing secret and both device public
-key fingerprints, shown for the user to confirm. The numeric fallback is
-short-lived, rate-limited, single-use and confirmed by comparing fingerprints
-on both screens — a low-entropy code must never become a bearer password (F7).
-Camera permission is the QR path only; manual entry must remain first-class.
+The QR carries the LAN endpoint, the **desktop's** long-term public key and its
+fingerprint, the single-use pairing secret and the data line it is pairing for.
+It cannot carry the phone's key: the desktop does not know it yet. The
+`POST /pair/request` of §11.6.1 exchanges that key, and only then do both
+screens show **both** fingerprints — the pair the person compares before
+pressing Trust (§11.2). The numeric fallback is the same rendezvous with the
+code typed instead of scanned: short-lived, rate-limited, single-use, and
+confirmed by the same pair of fingerprints — a low-entropy code must never
+become a bearer password (F7). Camera permission is the QR path only; manual
+entry must remain first-class.
 
 #### §11.2 Pinned long-term keys
 
@@ -634,9 +639,18 @@ and carries no recorded deviation from this section:
   associated data.
 - A low-order point yields an all-zero agreement and is refused as malformed.
 
-Because the message key depends on a secret the sender destroys after one
-message, a later compromise of both long-term keys does not open recorded
-envelopes — the forward secrecy this section asks for.
+`eph` is a **sender** ephemeral, and the claim it supports is narrower than
+symmetric forward secrecy. It gives per-message key separation and resistance
+to a later compromise of the *sender's* long-term key: a recorded envelope
+cannot be opened from the sender's key alone once the ephemeral secret is gone.
+It does not protect the receiver. The receiver's long-term secret plus the
+public `eph` reproduce both agreements — `X25519(receiver_secret, eph)` and
+`X25519(receiver_secret, sender_public)` — so a later compromise of the
+**receiver's** long-term key opens every envelope that was sent to it. True
+ephemeral–ephemeral forward secrecy is **deferred**, not claimed; what bounds
+the exposure today is §11.5's short-lived LAN window together with the
+per-message nonce and counter (a replayed envelope is undecryptable or a
+no-op). No wire change is implied by this paragraph (decision D2).
 
 How each property is met:
 
@@ -659,11 +673,83 @@ any primitive is built.
   (§2.2/§2.3) before any effect, so a phone cannot talk its way past the
   boundary by sending a shape the app never produces.
 
-**Implementation status:** the QR half is implemented and tested
-(`src/lib/sync/qr.ts`, render → decode → `parseOffer`). The listener, the
-envelope and the long-term key storage are **not** implemented yet; the open
-lines and their reasons are recorded in `ANDROID_BUILD_TODO.md` under
-“Pairing & bootstrap”.
+**First pairing: the two endpoints, as built (wave 1).** A window that was
+opened with an offer serves two paths, both framed as above and both alive only
+while pairing is on screen (§11.5):
+
+- `POST /pair/hello` — every message after a pin exists. Framed, sealed under
+the pinned key, with the fields and check order of §9; a pairing window accepts
+`hello` as its only payload kind, and a hello from a device this desktop has
+not pinned is refused `unpaired` (a revoked peer is refused `revoked` before
+anything else, §11.3).
+- `POST /pair/request` — the code-confirmed rendezvous of §11.1, sent once and
+in **plaintext**. It cannot be sealed: the desktop does not know the phone's
+key yet. It proves possession of the single-use code and nothing about the key
+it carries. Accepting it **stages** the presented key as this window's
+candidate; the pin is written only when the person presses Trust after a sealed
+hello has proved possession and both fingerprints were compared (§11.2).
+
+A request is one JSON object (camelCase, framed like every message):
+
+| Field | Type | Rule |
+|---|---|---|
+| `deviceId` | string | canonical lowercase UUID v4 (§1.2) |
+| `publicKey` | string | 64 lowercase hex characters naming a usable X25519 point |
+| `pairingId` | string | required; must equal this window's pairing id (§11.4) |
+| `code` | string | the six digits from the desktop's screen; separators ignored |
+| `protocolVersion` | number | must equal the desktop's |
+| `schemaVersion` | number | must equal the desktop's (§8.2) |
+| `generation` | number | the desktop's generation as the offer carried it; a mismatch is `needs-re-pair` (§10.2) |
+
+The check order matters, and every refusal has zero effect except that a wrong
+code spends one of the five attempts:
+
+1. framing, JSON shape or field types → `malformed` (400), **no attempt spent**;
+2. the window has no code → `unpaired`;
+3. `pairingId` missing or foreign → `pairing-mismatch`;
+4. `deviceId` not canonical, or `publicKey` not a usable point → `malformed`;
+5. protocol → `protocol-unsupported`; schema → `schema-mismatch`;
+6. code already redeemed → `used`; past its 120 s → `expired`; five failures → `locked`;
+7. `code` not six digits → `malformed` (no attempt); otherwise wrong → `wrong-code` with `attemptsLeft`;
+8. `deviceId` is this desktop → `same-device`;
+9. `generation` differs from the desktop's → `needs-re-pair`.
+
+Steps 1–5 come **before** the code is compared, so a malformed request can
+neither spend an attempt nor learn whether a guessed code was right (wave 1
+N5). A refusal is `{"ok": false, "reason": <code>, "message": <what to do>}`,
+with `attemptsLeft` added on a code refusal.
+
+An accepted request spends the code before the reply leaves, replaces any
+earlier candidate for this window, resets the replay counter for the newly
+staged peer, and answers with `{"ok": true, "reason": "paired", "envelope":
+<wire>}` — an ordinary sealed envelope from the desktop to the phone under this
+pairing id, whose payload is
+
+```json
+{"kind":"paired","pairingId":"…","deviceId":"<desktop>","generation":1,
+ "schemaVersion":8,"protocolVersion":1}
+```
+
+Those values are authoritative. The phone stores the desktop's `generation`
+as the data line it paired with (§10.2); the request's copy exists only so the
+desktop can refuse a stale one, and no later message asks the phone to assume
+it. This is generation **Option A** as decision D1 records it: the desktop owns
+the number and the sealed ack delivers it.
+
+**Implementation status (wave 1, as built).** The offer and its QR are
+implemented and tested (`src/lib/sync/qr.ts`, `pairing.ts`: render → decode →
+`parseOffer`), and so is the listener (`src-tauri/src/pairing_listener.rs`):
+both endpoints above, on a window that exists only while pairing is on screen
+(§11.5), with read/write timeouts, no CORS grant, and validation before effect.
+The envelope has both halves, proved against each other's bytes
+(`envelope.rs`, `envelope.ts`, `src/lib/sync/__fixtures__/`). The long-term key
+lives in the platform key store, never in the database or a backup
+(`pairing_key.rs`, `key_store/`); a key that is missing over an existing
+pairing fails closed, records `re_pair_required` and needs the person's
+confirmed re-pair (§11.2, §11.4). Not built yet, and tracked in
+`ANDROID_BUILD_TODO.md` under “Pairing & bootstrap”: the phone's sealed client,
+the snapshot and operation transport built on these envelopes, and the real
+two-device pairing proof (Session 7).
 
 ---
 

@@ -22,9 +22,13 @@
  * The sender mints a fresh ephemeral keypair per message; its public half rides
  * in the authenticated header, so a forged `eph` changes the derived key and
  * fails the tag instead of being used. The long-term keys stay pinned (§11.2):
- * only a peer holding the pinned secret can produce an openable envelope, and
- * the ephemeral half is what adds forward secrecy — the message key depends on a
- * secret the sender throws away after one message.
+ * only a peer holding the pinned secret can produce an openable envelope. The
+ * ephemeral half is a **sender** ephemeral: per-message key separation and
+ * sender-key-compromise resistance, not symmetric forward secrecy. The
+ * receiver's long-term secret plus the public `eph` reproduce both agreements,
+ * so a later compromise of the receiver's key opens envelopes sent to it;
+ * true ephemeral–ephemeral forward secrecy is deferred, bounded by §11.5's
+ * short window (§11.6.1, decision D2).
  *
  * The header is authenticated but not secret: it carries the routing and
  * replay facts a receiver must check before spending a decryption.
