@@ -38,6 +38,22 @@ test("each pairing command is one invoke site with the documented argument", () 
 });
 
 /**
+ * The phone's wire step is the same contract: one invoke site, registered in
+ * Rust, and the two wire paths belong to the client rather than the webview.
+ */
+test("the phone's wire step is one invoke site and is registered", () => {
+  assert.match(
+    driver,
+    /pairingPhonePair: \(input\) => invoke\("pairing_phone_pair", \{ input \}\)/,
+  );
+  assert.match(lib, /commands::pairing_phone_pair,/);
+  assert.ok(
+    !driver.includes("/pair/request"),
+    "the webview must not name a wire path; the client is in Rust",
+  );
+});
+
+/**
  * §11.2 (N2): a pairing identity that is gone must never be minted behind the
  * person's back. The replacement is a separate command, it refuses without an
  * explicit confirmation, and it deletes only the pairing slot.

@@ -175,6 +175,33 @@ export interface PairingPeerPin {
 }
 
 /**
+ * The desktop's authoritative facts after the phone's sealed handshake
+ * (§11.6.1). `desktopPublicKey` is the offer's key — the one the ack was
+ * authenticated under — and `generation` is the desktop's data line, which the
+ * phone adopts rather than choosing (Option A, §10.2).
+ */
+export interface PhonePairResult {
+  desktopDeviceId: string;
+  desktopPublicKey: string;
+  desktopFingerprint: string;
+  pairingId: string;
+  generation: number;
+  schemaVersion: number;
+  protocolVersion: number;
+}
+
+/** The parts of a scanned offer the phone's wire step acts on (§11.1). */
+export interface PairingPhoneInput {
+  /** The offer's `host:port` — the only address the client will dial. */
+  endpoint: string;
+  pairingId: string;
+  /** The desktop's long-term public key, hex. */
+  publicKey: string;
+  /** The six digits from the desktop's screen. */
+  code: string;
+}
+
+/**
  * What the panel asks the listener for when it opens (§11.1, §11.5).
  * `pairingId` is required: it is the envelope's HKDF salt, so a window cannot
  * open without one (§11.6.1, N9).
@@ -413,6 +440,13 @@ export interface PairingDriver {
    * stay — and every peer then pairs again.
    */
   pairingIdentityReplace(confirm: boolean): Promise<PairingIdentityStatus>;
+  /**
+   * Pair this phone with the desktop whose code was scanned (§11.1, §11.6.1).
+   * The key stays in Rust and the offer's address is the only one dialled.
+   * Writes nothing: the pin is the caller's `sync_peers` write, made only after
+   * this resolves — i.e. only after the sealed hello proved possession.
+   */
+  pairingPhonePair(input: PairingPhoneInput): Promise<PhonePairResult>;
 }
 
 /** The one production driver: Tauri IPC commands. */
@@ -487,6 +521,7 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     pairingIdentityStatus: () => invoke("pairing_identity_status"),
     pairingIdentityReplace: (confirm) =>
       invoke("pairing_identity_replace", { confirm }),
+    pairingPhonePair: (input) => invoke("pairing_phone_pair", { input }),
   };
 }
 

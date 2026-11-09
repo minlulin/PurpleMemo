@@ -1012,6 +1012,80 @@ pub fn pairing_identity_status(app: tauri::AppHandle) -> CmdResult<PairingIdenti
     }
 }
 
+/// What the phone needs from the scanned offer to reach the desktop (§11.1).
+/// The device id, schema and protocol come from this device in Rust; the
+/// webview supplies only what the code itself carried, and no data line (D1).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingPhoneInput {
+    pub endpoint: String,
+    pub pairing_id: String,
+    pub public_key: String,
+    pub code: String,
+}
+
+/// The desktop's authoritative facts, opened from its sealed ack (§11.6.1).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhonePairResult {
+    pub desktop_device_id: String,
+    pub desktop_public_key: String,
+    pub desktop_fingerprint: String,
+    pub pairing_id: String,
+    pub generation: u64,
+    pub schema_version: u64,
+    pub protocol_version: u64,
+}
+
+/// Pair this phone with the desktop whose offer was scanned (§11.1, §11.6.1).
+///
+/// The whole handshake happens in Rust because the long-term key does: the
+/// webview never sees the secret (§11.2). Nothing is written here — the pin is
+/// the caller's `sync_peers` write, made only after this returns, i.e. only
+/// after the sealed hello proved this phone holds the key it presented (wave 1
+/// N1, mirrored on the phone).
+#[tauri::command]
+pub fn pairing_phone_pair(
+    app: tauri::AppHandle,
+    input: PairingPhoneInput,
+) -> CmdResult<PhonePairResult> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let target = crate::pairing_client::PairingTarget {
+        endpoint: &input.endpoint,
+        pairing_id: &input.pairing_id,
+        desktop_public_key: &input.public_key,
+        code: &input.code,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    let ack = crate::pairing_client::request_pairing(&target, &facts, &identity)
+        .map_err(|error| error.to_string())?;
+    crate::pairing_client::send_hello(
+        &target,
+        &facts,
+        &identity,
+        &ack,
+        crate::pairing_client::next_hello_counter(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(PhonePairResult {
+        desktop_device_id: ack.desktop_device_id,
+        desktop_fingerprint: pairing_key::fingerprint_of(&input.public_key),
+        desktop_public_key: input.public_key,
+        pairing_id: ack.pairing_id,
+        generation: ack.generation,
+        schema_version: ack.schema_version,
+        protocol_version: ack.protocol_version,
+    })
+}
+
 /// Mint a fresh pairing identity after an explicit confirmation (§11.4, N2).
 ///
 /// Deletes only `Slot::PairingIdentity`: local notes, tasks and the database key

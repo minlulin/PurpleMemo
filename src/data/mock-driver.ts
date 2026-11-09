@@ -10,6 +10,7 @@
 // the mock is where they are unit-testable at all.
 
 import { createHash } from "node:crypto";
+import { keyFingerprint } from "../lib/sync/pairing.ts";
 import type {
   BatchStatement,
   DataDriver,
@@ -19,6 +20,8 @@ import type {
   PairingListenerInfo,
   PairingLocalInfo,
   PairingOpenInput,
+  PairingPhoneInput,
+  PhonePairResult,
   Queryable,
   ShareInfo,
 } from "./driver.ts";
@@ -511,6 +514,25 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     async pairingIdentityStatus(): Promise<PairingIdentityStatus> {
       record("pairingIdentityStatus", []);
       return { ...identity };
+    },
+    // Mirrors the Rust client's shape: the offer's address is the only one
+    // dialled, the six-digit code is checked, and the desktop's public facts
+    // come back; nothing is written here (§11.6.1).
+    async pairingPhonePair(input: PairingPhoneInput): Promise<PhonePairResult> {
+      record("pairingPhonePair", [input]);
+      if (!/^\d{6}$/.test(input.code.replace(/[\s-]/g, ""))) {
+        throw new Error("wrong-code: a pairing code is six digits (§11.1).");
+      }
+      return {
+        // A canonical v4 id for the mock desktop the fixtures describe.
+        desktopDeviceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        desktopPublicKey: input.publicKey,
+        desktopFingerprint: keyFingerprint(input.publicKey),
+        pairingId: input.pairingId,
+        generation: 1,
+        schemaVersion: 8,
+        protocolVersion: 1,
+      };
     },
     // Mirrors `commands.rs`: no confirmation, no replacement, and only the
     // pairing slot is replaced — the rest of the identity state stands (§11.4).

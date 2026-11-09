@@ -14,6 +14,7 @@ mod navigation;
 // yet — the QR panel (Session 6) adds those together with the screen that asks
 // the user to open the window, because an openable LAN port with no consent
 // step would be worse than no port at all.
+mod pairing_client;
 pub mod pairing_key;
 pub mod pairing_listener;
 mod photos;
@@ -182,6 +183,7 @@ pub fn run() {
             commands::pairing_status,
             commands::pairing_identity_status,
             commands::pairing_identity_replace,
+            commands::pairing_phone_pair,
             commands::factory_reset,
             commands::app_restart,
             external_links::open_external_url,
