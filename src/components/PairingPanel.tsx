@@ -16,8 +16,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pairingRepo } from "../data/app.ts";
+import type { PairingIdentityStatus } from "../data/driver.ts";
 import { errText } from "../lib/errors.ts";
 import {
+  identityRecovery,
   type PairingPanelState,
   type PinWrite,
   panelView,
@@ -25,6 +27,7 @@ import {
 } from "../lib/sync/pairingPanel.ts";
 import { QR_QUIET_ZONE, qrMatrix } from "../lib/sync/qr.ts";
 import type { PeerRow } from "../lib/sync/store.ts";
+import { ConfirmButton } from "./ConfirmButton.tsx";
 
 /** The QR's modules, drawn from the same matrix the round-trip test decodes. */
 function QrCode({ payload }: { payload: string }) {
@@ -68,6 +71,7 @@ export function PairingPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pin, setPin] = useState<PinWrite | null>(null);
+  const [identity, setIdentity] = useState<PairingIdentityStatus | null>(null);
   const startingRef = useRef(false);
   const stateRef = useRef<PairingPanelState | null>(null);
   stateRef.current = state;
@@ -81,6 +85,16 @@ export function PairingPanel() {
     },
     [],
   );
+
+  /** The identity's state, so a lost key is visible before anything is opened. */
+  const refreshIdentity = useCallback(async () => {
+    const status = await pairingRepo.identity().catch(() => null);
+    if (status !== null) setIdentity(status);
+  }, []);
+
+  useEffect(() => {
+    void refreshIdentity();
+  }, [refreshIdentity]);
 
   const open = useCallback(async () => {
     if (startingRef.current) return;
@@ -97,11 +111,14 @@ export function PairingPanel() {
       setPeers(await pairingRepo.peers().catch(() => []));
     } catch (e) {
       setError(errText(e));
+      // A missing or unopenable pairing key is *why* opening failed; show the
+      // recovery beside the error instead of leaving a dead end (N2).
+      await refreshIdentity();
     } finally {
       startingRef.current = false;
       setBusy(false);
     }
-  }, []);
+  }, [refreshIdentity]);
 
   const close = useCallback(async () => {
     setBusy(true);
@@ -144,6 +161,24 @@ export function PairingPanel() {
     };
   }, [pairingId]);
 
+  /**
+   * The one place a replacement identity is minted (§11.4, N2). It is reached
+   * only through the two-step `ConfirmButton` below, which is the person's
+   * explicit confirmation — there is no one-click path and no retry after an
+   * error that leaves the button armed.
+   */
+  const replaceIdentity = useCallback(async () => {
+    setError(null);
+    try {
+      setIdentity(await pairingRepo.replaceIdentity(true));
+      // The pins on this device still name the old key; every phone re-pairs,
+      // so the rows are read again rather than assumed unchanged.
+      setPeers(await pairingRepo.peers().catch(() => []));
+    } catch (e) {
+      setError(errText(e));
+    }
+  }, []);
+
   const trust = useCallback(async () => {
     const current = stateRef.current;
     if (current === null) return;
@@ -163,6 +198,7 @@ export function PairingPanel() {
 
   const view = state === null ? null : panelView(state);
   const pending = state === null ? null : pendingConfirmation(state, peers);
+  const recovery = identityRecovery(identity);
 
   return (
     <div className="pairing-panel">
@@ -174,6 +210,43 @@ export function PairingPanel() {
       {error !== null ? (
         <p className="pairing-error" role="alert">
           {error}
+        </p>
+      ) : null}
+
+      {/* Nothing is drawn while the status is unknown, and a key that works
+          is never offered for replacement — only a key that is gone or can
+          no longer be opened (§11.2, N2). */}
+      {recovery.needed ? (
+        <section aria-label="Replace this device's pairing key">
+          <p>
+            <strong>This device's pairing key is gone or unreadable.</strong>
+          </p>
+          {recovery.note !== null ? (
+            <p className="pairing-error" role="alert">
+              {recovery.note}
+            </p>
+          ) : null}
+          <p className="muted">
+            Replacing it mints a new pairing key. Your notes, tasks and photos
+            stay on this device; every paired phone has to pair again, with its
+            fingerprints compared as before.
+          </p>
+          <div className="pairing-actions">
+            <ConfirmButton
+              what="this device's pairing key"
+              className="btn btn-danger"
+              disabled={busy}
+              onConfirm={replaceIdentity}
+            >
+              Replace this device's pairing key
+            </ConfirmButton>
+          </div>
+        </section>
+      ) : null}
+      {recovery.rePairRequired && !recovery.needed ? (
+        <p className="muted" role="status">
+          Pairing again is required: a phone that paired before must pair again
+          with a fresh code on this desktop.
         </p>
       ) : null}
 

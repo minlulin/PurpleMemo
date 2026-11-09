@@ -25,6 +25,7 @@ import type {
   BatchStatement,
   DataDriver,
   PairingDriver,
+  PairingIdentityStatus,
   PairingListenerInfo,
   PairingLocalInfo,
   PairingOpenInput,
@@ -156,6 +157,47 @@ export function panelView(
     fingerprint: state.local.fingerprint,
     peerFingerprint: state.listener.peerFingerprint,
     listenerRunning: state.listener.running,
+  };
+}
+
+/**
+ * What the panel shows about this device's pairing identity (wave 1, N2).
+ *
+ * `needed` is deliberately narrower than `rePairRequired`: a key that is
+ * present and readable is never replaced, even when a restore or a previous
+ * replacement means every phone must pair again. Only a key that is gone or
+ * can never be opened again asks for the confirmed replacement — the one path
+ * that mints a new identity (§11.2, §11.4).
+ */
+export interface PairingIdentityRecovery {
+  /** The key itself is unusable: offer the confirmed replacement. */
+  needed: boolean;
+  /** Why, in the backend's words — the same text the command returns. */
+  note: string | null;
+  /** Pairing again is required, whether or not the key was replaced. */
+  rePairRequired: boolean;
+  /** This device's key fingerprint, when it has a usable key. */
+  fingerprint: string | null;
+}
+
+export function identityRecovery(
+  status: PairingIdentityStatus | null,
+): PairingIdentityRecovery {
+  if (status === null) {
+    // Unknown is not lost: a status the backend could not report must not
+    // invite a key replacement.
+    return {
+      needed: false,
+      note: null,
+      rePairRequired: false,
+      fingerprint: null,
+    };
+  }
+  return {
+    needed: status.lost || !status.present,
+    note: status.note,
+    rePairRequired: status.needsRePair,
+    fingerprint: status.fingerprint,
   };
 }
 
@@ -316,5 +358,8 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     local: () => driver.pairingLocal(),
     status: () => driver.pairingStatus(),
     peers: () => readPeers(driver),
+    identity: () => driver.pairingIdentityStatus(),
+    replaceIdentity: (confirm: boolean) =>
+      driver.pairingIdentityReplace(confirm),
   };
 }

@@ -27,6 +27,7 @@ import {
 } from "./pairing.ts";
 import {
   closePairingPanel,
+  identityRecovery,
   openPairingPanel,
   type PairingPanelState,
   type PairingTransport,
@@ -407,6 +408,86 @@ test("Trust is withheld until a sealed hello proves key possession", async () =>
     n: number;
   };
   assert.equal(row.n, 0, "an unproven key is never pinned");
+});
+
+test("a lost key offers the confirmed replacement, a working key never does", () => {
+  const base = {
+    present: false,
+    publicKey: null,
+    fingerprint: null,
+    needsRePair: true,
+    lost: false,
+    rePairRequired: true,
+    note: "this device's pairing key is missing from the platform key store",
+  } as const;
+
+  const missing = identityRecovery({ ...base });
+  assert.equal(missing.needed, true, "a missing key is why opening fails");
+  assert.match(missing.note ?? "", /pairing key is missing/);
+
+  const lost = identityRecovery({ ...base, lost: true });
+  assert.equal(lost.needed, true, "an unopenable key is just as unusable");
+
+  const healthy = identityRecovery({
+    ...base,
+    present: true,
+    publicKey:
+      "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    fingerprint: "7B4E 909B BE7F FE44 C465 A220",
+    needsRePair: false,
+    rePairRequired: false,
+    note: null,
+  });
+  assert.equal(
+    healthy.needed,
+    false,
+    "a readable key is never replaced behind the person's back (§11.2)",
+  );
+  assert.equal(healthy.fingerprint, "7B4E 909B BE7F FE44 C465 A220");
+
+  const rePairOnly = identityRecovery({
+    ...base,
+    present: true,
+    needsRePair: true,
+    note: null,
+  });
+  assert.equal(
+    rePairOnly.needed,
+    false,
+    "needing a re-pair is not a reason to replace the key",
+  );
+  assert.equal(rePairOnly.rePairRequired, true);
+
+  assert.equal(
+    identityRecovery(null).needed,
+    false,
+    "an unknown status invites nothing",
+  );
+});
+
+test("the panel replaces the identity only through the two-step confirmation", () => {
+  const panel = readFileSync(
+    new URL("../../components/PairingPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /const recovery = identityRecovery\(identity\)/);
+  assert.match(panel, /\{recovery\.needed \?/);
+  assert.match(
+    panel,
+    /<ConfirmButton[\s\S]{0,300}?onConfirm=\{replaceIdentity\}/,
+    "the replacement is behind the app's one confirmation pattern",
+  );
+  assert.equal(
+    (panel.match(/pairingRepo\.replaceIdentity\(/g) ?? []).length,
+    1,
+    "one replacement call site",
+  );
+  assert.match(panel, /pairingRepo\.replaceIdentity\(true\)/);
+  assert.doesNotMatch(
+    panel,
+    /onClick=\{\(\) => void replaceIdentity\(\)\}/,
+    "no one-click replacement path",
+  );
 });
 
 test("a deviceId collision shows the existing phone and its fingerprint", async () => {
