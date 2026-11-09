@@ -32,15 +32,24 @@
 //! proves is possession of the single-use, 120 s, 5-attempt code, and the human
 //! confirms the key by comparing the fingerprints on both screens (§11.1,
 //! §11.6.1: "the code gates the rendezvous only. It is never the encryption
-//! key"). Accepting it pins that key **for this window** and answers with an
-//! acknowledgement sealed under the ordinary envelope, so the phone can open
-//! it with the desktop key it read from the offer. Every later message is a
-//! sealed hello checked against the pin, exactly as before; a wrong, expired,
+//! key"). Accepting it **stages** that key as a candidate for this window and
+//! answers with an acknowledgement sealed under the ordinary envelope, so the
+//! phone can open it with the desktop key it read from the offer. Every later
+//! message is a sealed hello checked against the candidate; a wrong, expired,
 //! used or locked-out code is a named refusal with zero effect.
 //!
+//! **Staging is not trust (§11.1, wave 1 N1).** A candidate is pinned only when
+//! the person presses Trust on the panel after comparing both fingerprints.
+//! Until a sealed hello *from* that candidate has been opened, the key is only
+//! something a stranger presented — the ack is sealed **to** it, which proves
+//! nothing — so [`PairingListenerInfo::peer_hello_received`] stays false and
+//! the panel offers no Trust. This module writes the pin nowhere: the panel's
+//! `sync_peers` write is the only one, and it happens on Trust alone.
+//!
 //! The only effect an accepted hello has is advancing the peer's replay
-//! counter and sealing an ack; nothing is written to the database, the
-//! filesystem or the key store by this module.
+//! counter, marking the staged candidate's key possession, and sealing an ack;
+//! nothing is written to the database, the filesystem or the key store by this
+//! module.
 //!
 //! **What a changed key looks like.** A re-keyed phone cannot produce a message
 //! that opens under the pinned key, so its hello is refused as
@@ -223,6 +232,10 @@ pub struct PairingListenerInfo {
     /// Public key material only — this is what the panel stores as a pin.
     pub peer_public_key: Option<String>,
     pub peer_fingerprint: Option<String>,
+    /// A sealed hello from the staged candidate has been opened, so it has
+    /// proved it holds the key it presented. The panel may not offer Trust
+    /// before this is true (§11.1, wave 1 N1).
+    pub peer_hello_received: bool,
     pub note: Option<String>,
 }
 
@@ -237,6 +250,7 @@ impl PairingListenerInfo {
             peer_device_id: None,
             peer_public_key: None,
             peer_fingerprint: None,
+            peer_hello_received: false,
             note,
         }
     }
@@ -265,6 +279,9 @@ struct PairedPeer {
     pin: Pin,
     public_key_hex: String,
     fingerprint: String,
+    /// Set when a sealed hello from this candidate has been opened: the one
+    /// proof that the peer holds the half of the key it presented (§11.1).
+    hello_received: bool,
 }
 
 /// What one accepted-or-refused request may consult. Immutable except for the
@@ -331,6 +348,7 @@ impl Running {
                 .or_else(|| self.peer_device_id.clone()),
             peer_public_key: paired.as_ref().map(|peer| peer.public_key_hex.clone()),
             peer_fingerprint: paired.as_ref().map(|peer| peer.fingerprint.clone()),
+            peer_hello_received: paired.as_ref().is_some_and(|peer| peer.hello_received),
             note,
         }
     }
@@ -969,10 +987,15 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     drop(state);
     let public_key_hex = envelope::to_hex(&key);
     let fingerprint = crate::pairing_key::fingerprint_of(&public_key_hex);
+    // The candidate replaces any earlier candidate for this window — including
+    // a phone re-presenting its `deviceId` with a new key. Nothing is stored:
+    // Trust (the person's decision) is what writes a pin, and this window's
+    // key possession is still unproven until a sealed hello arrives.
     *gate.paired.lock().unwrap_or_else(|e| e.into_inner()) = Some(PairedPeer {
         pin,
         public_key_hex,
         fingerprint,
+        hello_received: false,
     });
     Ok(json!({ "ok": true, "reason": "paired", "envelope": wire }))
 }
@@ -1081,6 +1104,21 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     *last_counter = opened.header.counter;
     drop(last_counter);
 
+    // §11.1 (wave 1, N1): opening a hello under the staged candidate's key is
+    // the proof of possession the panel waits for before offering Trust. It is
+    // proof, not trust — the pin is still the person's decision — so nothing
+    // else changes here.
+    if let Some(paired) = gate
+        .paired
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        if paired.pin.device_id == pin.device_id && paired.pin.public_key == pin.public_key {
+            paired.hello_received = true;
+        }
+    }
+
     let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
     let ack = json!({
         "kind": "ack",
@@ -1121,6 +1159,9 @@ mod tests {
 
     const DESKTOP_SECRET: [u8; KEY_BYTES] = [0x11u8; KEY_BYTES];
     const PHONE_SECRET: [u8; KEY_BYTES] = [0x22u8; KEY_BYTES];
+    /// A key that is not the phone's: what a sibling device — or an attacker
+    /// who saw the code — would present.
+    const OTHER_SECRET: [u8; KEY_BYTES] = [0x55u8; KEY_BYTES];
     const DESKTOP_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const PHONE_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
@@ -1130,6 +1171,10 @@ mod tests {
 
     fn phone_public_hex() -> String {
         envelope::to_hex(&envelope::public_key(&PHONE_SECRET))
+    }
+
+    fn other_public_hex() -> String {
+        envelope::to_hex(&envelope::public_key(&OTHER_SECRET))
     }
 
     fn window(revoked: bool) -> PairingWindow {
@@ -1158,28 +1203,29 @@ mod tests {
         (state, info.port.expect("a bound port"))
     }
 
-    /// A real sealed hello from the phone, sealed to the desktop's public key.
-    fn hello_wire(
-        counter: u64,
-        patch: impl FnOnce(&mut serde_json::Map<String, JsonValue>),
-    ) -> String {
-        let mut message = json!({
+    /// The hello's body, before it is sealed.
+    fn hello_body() -> JsonValue {
+        json!({
             "kind": "hello",
             "protocolVersion": 1,
             "schemaVersion": 8,
             "generation": 1,
             "pairingId": "pair-1",
             "deviceId": PHONE_ID,
-        });
-        patch(message.as_object_mut().expect("the hello is an object"));
+        })
+    }
+
+    /// Seal a hello to the desktop's public key with whichever secret the test
+    /// says holds the presented key.
+    fn seal_hello(secret: &[u8; KEY_BYTES], counter: u64, message: &JsonValue) -> String {
         envelope::seal(SealInput {
-            secret: &PHONE_SECRET,
+            secret,
             peer_public: &envelope::public_key(&DESKTOP_SECRET),
             from: PHONE_ID,
             to: DESKTOP_ID,
             message_id: &format!("hello-{counter}"),
             counter,
-            message: &message,
+            message,
             pairing_id: Some("pair-1"),
             nonce: None,
             ephemeral_secret: None,
@@ -1187,8 +1233,23 @@ mod tests {
         .expect("seal the hello")
     }
 
+    /// A real sealed hello from the phone, sealed to the desktop's public key.
+    fn hello_wire(
+        counter: u64,
+        patch: impl FnOnce(&mut serde_json::Map<String, JsonValue>),
+    ) -> String {
+        let mut message = hello_body();
+        patch(message.as_object_mut().expect("the hello is an object"));
+        seal_hello(&PHONE_SECRET, counter, &message)
+    }
+
     fn hello_frame(counter: u64) -> Vec<u8> {
         encode_frame(&hello_wire(counter, |_| {})).expect("frame the hello")
+    }
+
+    /// A hello sealed by a key that is not the pinned one.
+    fn hello_frame_from(secret: &[u8; KEY_BYTES], counter: u64) -> Vec<u8> {
+        encode_frame(&seal_hello(secret, counter, &hello_body())).expect("frame the hello")
     }
 
     /// A POST with the framed reply decoded — the shape the phone sees.
@@ -1577,6 +1638,23 @@ mod tests {
         (state, info.port.expect("a bound port"))
     }
 
+    /// A window opened with the stored pin *and* a code: what a re-pair of an
+    /// existing phone looks like.
+    fn started_with_pinned_offer() -> (PairingListenerState, u16) {
+        let state = PairingListenerState::default();
+        let mut window = offer_window(false);
+        window.peer = Some(PinnedPeer {
+            device_id: PHONE_ID.to_string(),
+            public_key: phone_public_hex(),
+            generation: 1,
+            revoked: false,
+        });
+        let info = state
+            .start("127.0.0.1", window, desktop_identity())
+            .expect("start the pairing window");
+        (state, info.port.expect("a bound port"))
+    }
+
     /// What the phone sends for a first pairing: plaintext, carrying its public
     /// key and the code from the desktop's screen.
     fn request_body(patch: impl FnOnce(&mut serde_json::Map<String, JsonValue>)) -> Vec<u8> {
@@ -1595,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desktop_code_pins_the_phone_and_its_next_hello_is_accepted() {
+    fn the_desktop_code_stages_the_phone_and_its_next_hello_proves_possession() {
         let (state, port) = started_with_offer(false);
         let (status, body) = post_request(port, &request_body(|_| {}));
         assert_eq!(status, 200, "{body}");
@@ -1617,12 +1695,26 @@ mod tests {
         assert_eq!(opened.message["kind"], json!("paired"));
         assert_eq!(opened.message["deviceId"], json!(DESKTOP_ID));
 
-        // §11.2: the rendezvous pinned that key, so a sealed hello from it is
-        // admitted — and reported to the panel, which persists the pin.
+        // §11.1 (wave 1, N1): the rendezvous only STAGES a candidate. No pin
+        // exists yet — the person has not confirmed — and no Trust is offered
+        // until the phone proves it holds the key it presented.
+        let staged = state.status().expect("status");
+        assert_eq!(staged.peer_device_id.as_deref(), Some(PHONE_ID));
+        assert!(
+            !staged.peer_hello_received,
+            "the ack is sealed TO the key; nothing sealed BY it has arrived yet"
+        );
+
+        // §11.2: the sealed hello is that proof, and only then may the panel
+        // persist the pin — after the human compares the fingerprints.
         let (status, body) = post(port, &hello_frame(1));
         assert_eq!(status, 200, "{body}");
         let reported = state.status().expect("status");
         assert_eq!(reported.peer_device_id.as_deref(), Some(PHONE_ID));
+        assert!(
+            reported.peer_hello_received,
+            "an opened hello proves possession of the presented key"
+        );
         assert_eq!(
             reported.peer_public_key.as_deref(),
             Some(phone_public_hex().as_str())
@@ -1761,5 +1853,114 @@ mod tests {
         // Refusals before the pin leave the code unspent.
         assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
         state.stop().expect("stop");
+    }
+
+    // -- staging is not trust: the human confirms (wave 1, N1) ---------------
+
+    #[test]
+    fn a_rendezvous_stages_a_candidate_and_writes_nothing() {
+        let (state, port) = started_with_offer(false);
+        let before = state.status().expect("status");
+        assert!(
+            before.peer_device_id.is_none(),
+            "the window has no candidate before anyone knocks"
+        );
+
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 200, "{body}");
+
+        // The listener holds no database, so the only effect is gate state: a
+        // candidate reported to the panel, and no proof of possession yet.
+        let staged = state.status().expect("status");
+        assert_eq!(staged.peer_device_id.as_deref(), Some(PHONE_ID));
+        assert_eq!(
+            staged.peer_public_key.as_deref(),
+            Some(phone_public_hex().as_str())
+        );
+        assert!(
+            !staged.peer_hello_received,
+            "staging is not possession: no sealed hello has been opened"
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn only_a_sealed_hello_from_the_staged_peer_proves_possession() {
+        let (state, port) = started_with_offer(false);
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+
+        // A hello sealed by another key cannot open under the staged key, so it
+        // is not the proof the panel waits for.
+        let (status, body) = post(port, &hello_frame_from(&OTHER_SECRET, 1));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "unauthenticated");
+        assert!(!state.status().expect("status").peer_hello_received);
+
+        // The staged key's own hello is.
+        let (status, body) = post(port, &hello_frame(1));
+        assert_eq!(status, 200, "{body}");
+        assert!(state.status().expect("status").peer_hello_received);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_rendezvous_replaces_the_staged_candidate_and_never_a_stored_pin() {
+        let (first, first_port) = started_with_pinned_offer();
+        assert_eq!(
+            post_request(
+                first_port,
+                &request_body(|message| {
+                    message.insert("publicKey".to_string(), json!(other_public_hex()));
+                })
+            )
+            .0,
+            200
+        );
+
+        // The candidate for this window is the presented key, not the pin the
+        // window was opened with: the old key cannot produce an admitted hello.
+        let staged = first.status().expect("status");
+        assert_eq!(
+            staged.peer_public_key.as_deref(),
+            Some(other_public_hex().as_str())
+        );
+        assert!(!staged.peer_hello_received);
+        let (status, body) = post(first_port, &hello_frame_from(&PHONE_SECRET, 1));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "unauthenticated");
+        assert_eq!(post(first_port, &hello_frame_from(&OTHER_SECRET, 1)).0, 200);
+        first.stop().expect("stop");
+
+        // Nothing was written: a fresh window opened with the same stored pin
+        // stages no candidate, and that pin still admits its own key alone.
+        let (second, second_port) = started_with_pinned_offer();
+        let reported = second.status().expect("status");
+        assert!(
+            reported.peer_public_key.is_none(),
+            "no staging survives a window"
+        );
+        assert_eq!(reported.peer_device_id.as_deref(), Some(PHONE_ID));
+        assert!(!reported.peer_hello_received);
+        assert_eq!(post(second_port, &hello_frame(1)).0, 200);
+        second.stop().expect("stop");
+    }
+
+    #[test]
+    fn after_reject_the_staged_peer_is_refused() {
+        let (state, port) = started_with_offer(false);
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        assert_eq!(post(port, &hello_frame(1)).0, 200);
+
+        // Reject is the window closing: the pin is never written, so nothing
+        // about this peer survives it — not even the staged candidate.
+        state.stop().expect("stop");
+        assert!(
+            StdTcpStream::connect(("127.0.0.1", port)).is_err(),
+            "a rejected window admits nothing"
+        );
+        let reported = state.status().expect("status");
+        assert!(!reported.running);
+        assert!(reported.peer_public_key.is_none());
+        assert!(!reported.peer_hello_received);
     }
 }

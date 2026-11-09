@@ -171,6 +171,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     peerDeviceId: null,
     peerPublicKey: null,
     peerFingerprint: null,
+    peerHelloReceived: false,
     note: null,
   });
   /** The fixed `0x11…` vector's public key and the grouping both screens show. */
@@ -480,6 +481,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         peerDeviceId: null,
         peerPublicKey: null,
         peerFingerprint: null,
+        peerHelloReceived: false,
         note: null,
       };
       return { ...pairing };

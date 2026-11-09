@@ -137,9 +137,11 @@ export interface ShareInfo {
 
 /**
  * The pairing window's state (§11.5). `endpoint` is the `host:port` the offer's
- * QR carries. `peerPublicKey`/`peerFingerprint` appear only after a
- * code-confirmed rendezvous pinned a peer in THIS window (§11.1, §11.2) —
- * public key material only, never a secret.
+ * QR carries. `peerPublicKey`/`peerFingerprint` appear once a code-confirmed
+ * rendezvous **staged** a candidate in THIS window (§11.1, §11.2) — public key
+ * material only, never a secret. `peerHelloReceived` turns true when a sealed
+ * hello from that candidate has been opened: the proof of key possession the
+ * panel requires before it offers Trust. The pin is written only on Trust.
  */
 export interface PairingListenerInfo {
   running: boolean;
@@ -150,6 +152,7 @@ export interface PairingListenerInfo {
   peerDeviceId: string | null;
   peerPublicKey: string | null;
   peerFingerprint: string | null;
+  peerHelloReceived: boolean;
   note: string | null;
 }
 

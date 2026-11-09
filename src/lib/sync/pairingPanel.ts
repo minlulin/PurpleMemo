@@ -32,6 +32,7 @@ import type {
 import {
   createPairingSession,
   encodeOffer,
+  keyFingerprint,
   type PairingOffer,
   type PairingSession,
   type PairingSessionState,
@@ -159,10 +160,66 @@ export function panelView(
 }
 
 /**
+ * What the panel needs before it may offer Trust (§11.1, wave 1 N1). `null`
+ * whenever no candidate is staged: then there is nothing to confirm and
+ * nothing to pin — the panel never trusts on its own.
+ */
+export interface PendingConfirmation {
+  /** The candidate the rendezvous staged, as the listener reports it. */
+  peer: { deviceId: string; publicKey: string; fingerprint: string | null };
+  /** This desktop's fingerprint — both screens show both (§11.1). */
+  localFingerprint: string;
+  /** A sealed hello from the candidate has been opened: key possession. */
+  helloReceived: boolean;
+  /** The row Trust would replace, when this `deviceId` already paired (§11.4). */
+  existing: {
+    deviceId: string;
+    displayName: string;
+    fingerprint: string | null;
+  } | null;
+}
+
+/**
+ * The confirmation the panel shows for a staged candidate. A `deviceId` that
+ * already has a row is a re-pair, and says so: the existing phone's name and
+ * pinned fingerprint sit next to the presented one, because Trust replaces
+ * them (§11.4).
+ */
+export function pendingConfirmation(
+  state: PairingPanelState,
+  peers: readonly PeerRow[] = [],
+): PendingConfirmation | null {
+  const { peerDeviceId, peerPublicKey, peerFingerprint, peerHelloReceived } =
+    state.listener;
+  if (peerDeviceId === null || peerPublicKey === null) return null;
+  const existing = peers.find((row) => row.device_id === peerDeviceId);
+  return {
+    peer: {
+      deviceId: peerDeviceId,
+      publicKey: peerPublicKey,
+      fingerprint: peerFingerprint,
+    },
+    localFingerprint: state.local.fingerprint,
+    helloReceived: peerHelloReceived,
+    existing:
+      existing === undefined
+        ? null
+        : {
+            deviceId: existing.device_id,
+            displayName: existing.display_name,
+            fingerprint:
+              existing.public_key === null
+                ? null
+                : keyFingerprint(existing.public_key),
+          },
+  };
+}
+
+/**
  * One poll of the window: a dead code closes the socket, and a live one reports
  * whatever the listener has learned. The listener's own close is proven by the
  * Rust suite (a connect is refused); here the state value and the socket are
- * kept in step.
+ * kept in step. A tick never pins: the pin is the person's decision.
  */
 export async function settlePairingPanel(
   transport: PairingTransport,
@@ -194,8 +251,14 @@ export interface PinWrite {
 }
 
 /**
- * Store the pin the window's code established (§11.2), once the listener
- * reports an admitted peer. Returns `null` while nobody has been admitted.
+ * The Trust action: store the pin the window's code staged (§11.2). Returns
+ * `null` while nobody has been staged.
+ *
+ * This is the only pairing write to `sync_peers`, and it runs only when the
+ * person presses Trust — never from a poll tick (§11.1, wave 1 N1). It throws
+ * while the candidate has not proved key possession with a sealed hello: until
+ * then the key is only something a stranger presented, and the six-digit code
+ * must never be the thing that grants trust.
  *
  * A peer that already has a row is re-paired through `rePairStatements` — new
  * pairing id, both cursors zeroed, old acks dropped (§11.4) — instead of a
@@ -209,6 +272,11 @@ export async function pinAdmittedPeer(
   const deviceId = listener.peerDeviceId;
   const publicKey = listener.peerPublicKey;
   if (deviceId === null || publicKey === null) return null;
+  if (!listener.peerHelloReceived) {
+    throw new Error(
+      "waiting for the phone's hello — key possession is not proven yet, so nothing is pinned.",
+    );
+  }
   const existing = (await transport.peers()).find(
     (row) => row.device_id === deviceId,
   );
@@ -241,5 +309,6 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     pin: (state: PairingPanelState) => pinAdmittedPeer(transport, state),
     local: () => driver.pairingLocal(),
     status: () => driver.pairingStatus(),
+    peers: () => readPeers(driver),
   };
 }

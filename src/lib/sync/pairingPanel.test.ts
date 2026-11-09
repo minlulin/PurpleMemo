@@ -19,15 +19,19 @@ import type {
 } from "../../data/driver.ts";
 import { createMockDriver } from "../../data/mock-driver.ts";
 import {
+  keyFingerprint,
   PAIRING_CODE_LIFETIME_MS,
   type PairingOffer,
   parseOffer,
+  pinStatements,
 } from "./pairing.ts";
 import {
+  closePairingPanel,
   openPairingPanel,
   type PairingPanelState,
   type PairingTransport,
   panelView,
+  pendingConfirmation,
   pinAdmittedPeer,
   settlePairingPanel,
 } from "./pairingPanel.ts";
@@ -63,6 +67,9 @@ const PHONE_DEVICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const DESKTOP_KEY =
   "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
 const PHONE_KEY = "0f1e2d3c4b5a69788796a5b4c3d2e1f0".repeat(2);
+/** A key presented for an already-pinned device id — the collision case. */
+const OTHER_PHONE_KEY = "aa".repeat(32);
+const PHONE_FINGERPRINT = "0F1E 2D3C 4B5A 6978 8796 A5B4";
 
 const LOCAL: PairingLocalInfo = {
   deviceId: DESKTOP_DEVICE,
@@ -85,6 +92,7 @@ function listener(
     peerDeviceId: null,
     peerPublicKey: null,
     peerFingerprint: null,
+    peerHelloReceived: false,
     note: null,
     ...over,
   };
@@ -217,7 +225,9 @@ test("the code's peer becomes one sync_peers row, and a re-pair resets cursors",
   const admitted = listener({
     peerDeviceId: PHONE_DEVICE,
     peerPublicKey: PHONE_KEY,
-    peerFingerprint: "0F1E 2D3C 4B5A 6978 8796 A5B4",
+    peerFingerprint: PHONE_FINGERPRINT,
+    // Trust is only offered after a sealed hello proved possession (N1).
+    peerHelloReceived: true,
   });
   const transport: PairingTransport = {
     pairingLocal: async () => LOCAL,
@@ -274,4 +284,148 @@ test("nothing is pinned until the listener reports an admitted peer", async () =
     n: number;
   };
   assert.equal(row.n, 0);
+});
+
+test("the poll tick never pins a staged candidate", async () => {
+  const { db, driver } = openDb();
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  let writes = 0;
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => staged,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => staged,
+    batch: async (statements) => {
+      writes += 1;
+      await driver.batch(statements);
+    },
+    peers: () => readPeers(driver),
+  };
+
+  const now = Date.now();
+  const state = await openPairingPanel(transport, now);
+  const settled = await settlePairingPanel(transport, state, now + 2_000);
+  assert.equal(
+    settled.listener.peerDeviceId,
+    PHONE_DEVICE,
+    "the panel sees the candidate",
+  );
+  assert.equal(writes, 0, "a tick is not a Trust");
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 0, "nothing was pinned by the clock");
+});
+
+test("Trust pins the staged peer once; Reject closes without pinning", async () => {
+  const { db, driver } = openDb();
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  let writes = 0;
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => staged,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => staged,
+    batch: async (statements) => {
+      writes += 1;
+      await driver.batch(statements);
+    },
+    peers: () => readPeers(driver),
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: staged,
+  };
+
+  const written = await pinAdmittedPeer(transport, state);
+  assert.ok(written !== null);
+  assert.equal(written.peer.deviceId, PHONE_DEVICE);
+  assert.equal(writes, 1, "Trust writes the pin exactly once");
+
+  // Reject is the window closing: no write at all, and no row for a peer the
+  // person never trusted.
+  const rejected = await closePairingPanel(transport);
+  assert.equal(rejected.running, false);
+  assert.equal(writes, 1);
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 1);
+});
+
+test("Trust is withheld until a sealed hello proves key possession", async () => {
+  const { db, driver } = openDb();
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: false,
+  });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => staged,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => staged,
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: staged,
+  };
+
+  const pending = pendingConfirmation(state);
+  assert.ok(pending !== null);
+  assert.equal(pending.helloReceived, false);
+
+  await assert.rejects(() => pinAdmittedPeer(transport, state), /hello/);
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 0, "an unproven key is never pinned");
+});
+
+test("a deviceId collision shows the existing phone and its fingerprint", async () => {
+  const { driver } = openDb();
+  await driver.batch(
+    pinStatements({
+      deviceId: PHONE_DEVICE,
+      generation: 1,
+      pairingId: "pair-0",
+      publicKey: PHONE_KEY,
+      displayName: "Sam's phone",
+    }),
+  );
+  const peers = await readPeers(driver);
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: OTHER_PHONE_KEY,
+    peerFingerprint: keyFingerprint(OTHER_PHONE_KEY),
+    peerHelloReceived: false,
+  });
+
+  const pending = pendingConfirmation(
+    { ...panelState("pair-1"), listener: staged },
+    peers,
+  );
+  assert.ok(pending !== null);
+  assert.equal(pending.localFingerprint, LOCAL.fingerprint);
+  assert.equal(pending.peer.fingerprint, keyFingerprint(OTHER_PHONE_KEY));
+  assert.equal(pending.existing?.displayName, "Sam's phone");
+  assert.equal(pending.existing?.fingerprint, keyFingerprint(PHONE_KEY));
+  assert.notEqual(
+    pending.peer.fingerprint,
+    pending.existing?.fingerprint,
+    "the presented key and the pinned one are shown side by side",
+  );
 });
