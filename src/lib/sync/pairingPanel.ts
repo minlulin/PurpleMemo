@@ -282,7 +282,13 @@ export async function pinAdmittedPeer(
   );
   const peer = { deviceId, publicKey, generation: state.local.generation };
   const statements = existing
-    ? rePairStatements({ ...peer, pairingId: state.offer.pairingId })
+    ? // §11.4: a re-pair is a new pairing, not a new phone — the name the
+      // person gave it is carried over, so re-pairing never erases a label.
+      rePairStatements({
+        ...peer,
+        pairingId: state.offer.pairingId,
+        displayName: existing.display_name,
+      })
     : pinStatements({ ...peer, pairingId: state.offer.pairingId });
   await transport.batch(statements);
   return {

@@ -286,9 +286,16 @@ export function collectTombstonesStatements(): BatchStatement[] {
 }
 
 /**
- * Record (or refresh) a paired peer. `generation` is the desktop's data
- * generation at pairing time — §10.2 compares it on every handshake, so a
- * restored desktop refuses the old pairing instead of merging.
+ * Record a newly paired peer. `generation` is the desktop's data generation at
+ * pairing time — §10.2 compares it on every handshake, so a restored desktop
+ * refuses the old pairing instead of merging.
+ *
+ * Pure `INSERT` (N10): a row that already exists is refused by the primary
+ * key. The old `ON CONFLICT ... DO UPDATE` was wrong twice over — it replaced
+ * the pin without zeroing `cursor_in`/`cursor_out` or dropping the previous
+ * pairing's delivery acks, so the new pairing silently resumed another
+ * pairing's history, and it made that look like success. Re-pairing is
+ * `rePairStatements` (§11.4) and nothing else.
  */
 export function registerPeerStatements(
   peer: {
@@ -303,15 +310,7 @@ export function registerPeerStatements(
   return [
     {
       sql: `INSERT INTO sync_peers (device_id, pairing_id, display_name, public_key, generation, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(device_id) DO UPDATE SET
-              pairing_id = excluded.pairing_id,
-              display_name = excluded.display_name,
-              public_key = excluded.public_key,
-              generation = excluded.generation,
-              -- Re-pairing a revoked phone is the user's decision, and §11.3
-              -- allows exactly that: revocation is a mark, not a delete.
-              revoked_at = NULL`,
+            VALUES (?, ?, ?, ?, ?, ?)`,
       params: [
         peer.deviceId,
         peer.pairingId ?? null,

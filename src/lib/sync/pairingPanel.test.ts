@@ -258,15 +258,29 @@ test("the code's peer becomes one sync_peers row, and a re-pair resets cursors",
   assert.equal(first.public_key, PHONE_KEY);
   assert.equal(first.generation, 1);
 
-  db.prepare("UPDATE sync_peers SET cursor_in = 7, cursor_out = 9").run();
+  db.prepare(
+    "UPDATE sync_peers SET cursor_in = 7, cursor_out = 9, display_name = ?",
+  ).run("Sam's phone");
   const again = await pinAdmittedPeer(transport, panelState("pair-2"));
   assert.ok(again?.repinned, "a peer that paired before is re-paired (§11.4)");
   const second = db
-    .prepare("SELECT pairing_id, cursor_in, cursor_out FROM sync_peers")
-    .get() as { pairing_id: string; cursor_in: number; cursor_out: number };
+    .prepare(
+      "SELECT pairing_id, cursor_in, cursor_out, display_name FROM sync_peers",
+    )
+    .get() as {
+    pairing_id: string;
+    cursor_in: number;
+    cursor_out: number;
+    display_name: string;
+  };
   assert.equal(second.pairing_id, "pair-2");
   assert.equal(second.cursor_in, 0);
   assert.equal(second.cursor_out, 0);
+  assert.equal(
+    second.display_name,
+    "Sam's phone",
+    "re-pairing a known phone keeps the name it was given (N10)",
+  );
 });
 
 test("nothing is pinned until the listener reports an admitted peer", async () => {

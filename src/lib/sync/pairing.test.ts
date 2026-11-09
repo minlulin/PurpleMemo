@@ -350,8 +350,8 @@ test("a changed key, a foreign pairing, a new generation and a different build a
   });
   assert.equal(
     mismatchedGeneration.ok === false ? mismatchedGeneration.code : null,
-    "generation-mismatch",
-    "the phone still believes in the old data line (§10.2)",
+    "needs-re-pair",
+    "after a restore the pin is stale — the canonical code, reachable before the handshake (D5)",
   );
 
   const stalePin = admitPeer({

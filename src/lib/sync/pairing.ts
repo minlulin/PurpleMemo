@@ -363,8 +363,7 @@ export type AdmissionRefusal =
   | "needs-re-pair"
   | "same-device"
   | "protocol-unsupported"
-  | "schema-mismatch"
-  | "generation-mismatch";
+  | "schema-mismatch";
 
 export type Admission =
   | { ok: true; message: string }
@@ -437,10 +436,11 @@ export function admitPeer(input: AdmissionInput): Admission {
         "this hello belongs to a different pairing; re-pair this phone (§11.4).",
     };
   }
-  const admitted = handshake(input.local, remote);
-  if (!admitted.ok) {
-    return { ok: false, code: admitted.code, message: admitted.message };
-  }
+  // §10.2, §10.5 (D5): the pin remembers the data line this pairing was made
+  // on. Compare it BEFORE the handshake, because a restore makes the desktop
+  // and the phone disagree about the line too, and the pin is the reason why.
+  // "needs-re-pair" is the canonical refusal — reachable for every stale
+  // pairing, not only for a phone that happened to send the new generation.
   if (pinned.generation !== input.local.generation) {
     return {
       ok: false,
@@ -448,6 +448,16 @@ export function admitPeer(input: AdmissionInput): Admission {
       message:
         "the desktop's data line changed since this phone paired; re-pair it (§10.2, §10.5).",
     };
+  }
+  const admitted = handshake(input.local, remote);
+  if (!admitted.ok) {
+    // `handshake` words the generation case for the protocol layer. Here the
+    // pin has already passed, so a hello that still disagrees about the line
+    // is a stale pairing as well — same canonical code (D5).
+    if (admitted.code === "generation-mismatch") {
+      return { ok: false, code: "needs-re-pair", message: admitted.message };
+    }
+    return { ok: false, code: admitted.code, message: admitted.message };
   }
   return { ok: true, message: "hello accepted." };
 }

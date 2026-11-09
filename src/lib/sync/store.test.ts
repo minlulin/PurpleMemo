@@ -188,6 +188,55 @@ test("an outbox row and its mutation commit or roll back together", async () => 
   assert.equal(count(db, "SELECT count(*) AS n FROM sync_outbox"), 1);
 });
 
+test("registering a peer twice is refused instead of half-re-pinning it", async () => {
+  const { driver } = openStore();
+  await driver.batch(
+    registerPeerStatements({
+      deviceId: UID_PEER_A,
+      generation: 1,
+      pairingId: "pair-1",
+      publicKey: "aa",
+    }),
+  );
+  await driver.batch([
+    {
+      sql: "UPDATE sync_peers SET cursor_in = 4, cursor_out = 7, revoked_at = '2026-01-01T00:00:00Z' WHERE device_id = ?",
+      params: [UID_PEER_A],
+    },
+  ]);
+
+  // §11.4 (N10): a second pairing is `rePairStatements` — new pairing id, both
+  // cursors zeroed, old acks dropped. A plain register must refuse rather than
+  // replace the pin and leave another pairing's history attached to it.
+  await assert.rejects(
+    driver.batch(
+      registerPeerStatements({
+        deviceId: UID_PEER_A,
+        generation: 2,
+        pairingId: "pair-2",
+        publicKey: "bb",
+      }),
+    ),
+    /UNIQUE|constraint/i,
+  );
+
+  const peer = (await readPeers(driver))[0];
+  assert.equal(peer?.pairing_id, "pair-1", "the old pin is not half-replaced");
+  assert.equal(peer?.public_key, "aa");
+  assert.equal(peer?.generation, 1);
+  assert.equal(
+    peer?.cursor_in,
+    4,
+    "the cursors still belong to the pairing that set them",
+  );
+  assert.equal(peer?.cursor_out, 7);
+  assert.notEqual(
+    peer?.revoked_at,
+    null,
+    "a refused register cannot quietly un-revoke a phone (§11.3)",
+  );
+});
+
 test("the operation sequence and the Lamport counter never rewind, even after pruning", async () => {
   const { db, driver } = openStore();
   await driver.batch(
