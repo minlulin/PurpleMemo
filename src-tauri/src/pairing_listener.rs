@@ -57,21 +57,27 @@
 //! presented key would require accepting an unpinned message to read it, which
 //! §11.2 forbids. The refusal still names its reason and the human re-pairs.
 //!
+//! **The socket is ours (§11.1, N5).** The listener owns its accept loop and
+//! speaks the two endpoints itself, so every connection carries a read timeout,
+//! a write timeout and an end-to-end budget: a client that opens a connection
+//! and then stalls cannot hold a worker, and `stop` joins the workers it
+//! spawned. No response ever grants a browser origin — the phone's sealed client
+//! invokes HTTP from Rust, not from a WebView `fetch` (§11.6.1).
+//!
 //! **Framing (§11.6.1).** Each message is a length-prefixed UTF-8 JSON
 //! document: four big-endian bytes of body length, then exactly that many bytes
 //! of the envelope wire string. `src/lib/sync/frame.ts` is the phone's half, and
 //! both sides are pinned to the same byte vector by a test.
 
-use std::io::{Cursor, Read};
-use std::net::SocketAddr;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::envelope::{self, OpenInput, Refusal, SealInput, KEY_BYTES};
 use crate::lifecycle::Lifecycle;
@@ -100,19 +106,29 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// operation of any other kind is refused before it can have an effect.
 const ACCEPTED_KINDS: [&str; 1] = ["hello"];
 
-/// How long the accept loop waits before re-checking shutdown.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How long the accept loop sleeps between non-blocking accepts: the bound on
+/// how long a `stop` waits to be seen, and on how long a phone waits to be
+/// accepted.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// How long a stop may spend proving the socket is gone. tiny_http frees the
-/// socket on its own thread, normally within tens of milliseconds.
+/// How long a stop may spend proving the socket is gone.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(2);
 
 /// The gap between two probes of a port that is closing.
 const CLOSE_PROBE_GAP: Duration = Duration::from_millis(5);
 
-/// Responses served at once: a client that stops reading owns a worker, never
-/// the accept loop, so `stop` cannot wait on it.
+/// Responses served at once: a client that stalls owns a worker, never the
+/// accept loop. Two is enough for a phone plus a retry.
 const MAX_WORKERS: usize = 2;
+
+/// How long one connection may take, end to end, before its worker gives up on
+/// it. Every read and write is bounded by this too, so a client that dribbles a
+/// byte at a time cannot hold a worker either (§11.1, N5).
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A request head is a request line and a handful of headers. Anything larger is
+/// a client that will not be served.
+const MAX_HEAD_BYTES: usize = 8 * 1024;
 
 /// Frame one UTF-8 JSON document with its four-byte length prefix.
 pub fn encode_frame(text: &str) -> Result<Vec<u8>, String> {
@@ -441,12 +457,11 @@ impl PairingListenerState {
             None => None,
         };
 
-        let server = Server::http((bind, 0))
+        let listener = TcpListener::bind((bind, 0))
             .map_err(|e| format!("could not start the pairing listener on {bind}: {e}"))?;
-        let bound = server
-            .server_addr()
-            .to_ip()
-            .ok_or_else(|| "could not read the pairing listener port".to_string())?;
+        let bound = listener
+            .local_addr()
+            .map_err(|_| "could not read the pairing listener port".to_string())?;
         let port = bound.port();
         // What the offer's QR carries (§11.1): a loopback bind is for tests and
         // reports itself; production binds every interface and reports the LAN
@@ -474,7 +489,7 @@ impl PairingListenerState {
         let thread_gate = Arc::clone(&gate);
         let join = thread::Builder::new()
             .name("purple-memo-pairing".to_string())
-            .spawn(move || serve(server, thread_gate, thread_shared))
+            .spawn(move || serve(listener, thread_gate, thread_shared))
             .map_err(|e| format!("could not start the pairing thread: {e}"))?;
 
         let running = Running {
@@ -649,149 +664,257 @@ impl RefusalReply {
     }
 }
 
-/// Every reply is one framed JSON document (§11.6.1), exactly like a request:
-/// the phone reads the same four bytes it writes.
-fn respond_framed(status: u16, body: JsonValue) -> Response<Cursor<Vec<u8>>> {
-    let framed = encode_frame(&body.to_string()).unwrap_or_default();
-    let mut response = Response::from_data(framed).with_status_code(StatusCode(status));
-    for (name, value) in [
-        ("Content-Type", "application/octet-stream"),
-        ("Cache-Control", "no-store"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Methods", "POST, OPTIONS"),
-        ("Access-Control-Allow-Headers", "content-type"),
-    ] {
-        if let Ok(header) = Header::from_bytes(name, value) {
-            response.add_header(header);
+/// The reason phrase for every status this listener can answer with.
+fn status_text(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error",
+    }
+}
+
+/// Write one response; the caller's stream is dropped afterwards, which closes
+/// the connection.
+///
+/// No `Access-Control-Allow-Origin` is ever sent (§11.1, N5): the phone's sealed
+/// client invokes HTTP from Rust, not from a WebView `fetch`, so no browser is
+/// meant to read this port and a wildcard grant would only widen it.
+fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> std::io::Result<()> {
+    let mut head = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
+        status_text(status)
+    );
+    // A 204 has no body and must not carry a length (RFC 9110 §6.4.1).
+    if status != 204 {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("\r\n");
+    let mut wire = head.into_bytes();
+    wire.extend_from_slice(body);
+    stream.write_all(&wire)
+}
+
+/// Read one request: a bounded head, then exactly the body its `Content-Length`
+/// promises. Bounded in bytes *and* in time, so neither a huge head nor a slow
+/// drip holds the worker past [`CONNECTION_TIMEOUT`].
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), RefusalReply> {
+    let deadline = Instant::now() + CONNECTION_TIMEOUT;
+    let too_slow = || RefusalReply::malformed("the request did not arrive in time.");
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= MAX_HEAD_BYTES {
+            return Err(RefusalReply::malformed("the request head is too large."));
+        }
+        if Instant::now() >= deadline {
+            return Err(too_slow());
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Err(RefusalReply::malformed("the request head ended early.")),
+            Ok(_) => head.push(byte[0]),
+            Err(_) => return Err(too_slow()),
         }
     }
-    response
-}
-
-/// The preflight a phone's webview sends before a cross-origin POST. The
-/// listener serves two POST endpoints and nothing else, and it is only open
-/// while the panel is (§11.5); the code, not the origin, is what gates pairing.
-fn respond_preflight() -> Response<Cursor<Vec<u8>>> {
-    let mut response = Response::from_data(Vec::new()).with_status_code(204);
-    for (name, value) in [
-        ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Methods", "POST, OPTIONS"),
-        ("Access-Control-Allow-Headers", "content-type"),
-        ("Cache-Control", "no-store"),
-    ] {
-        if let Ok(header) = Header::from_bytes(name, value) {
-            response.add_header(header);
-        }
+    let text = String::from_utf8(head)
+        .map_err(|_| RefusalReply::malformed("the request head is not UTF-8."))?;
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split(' ');
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+        return Err(RefusalReply::malformed(
+            "the request line is not METHOD TARGET HTTP/x.y.",
+        ));
+    };
+    if !parts
+        .next()
+        .is_some_and(|version| version.starts_with("HTTP/1."))
+    {
+        return Err(RefusalReply::malformed("a pairing message is HTTP/1.x."));
     }
-    response
-}
 
-fn refused_response(refusal: RefusalReply) -> Response<Cursor<Vec<u8>>> {
-    respond_framed(refusal.status, refusal.body())
-}
-
-/// The accept loop. It never writes a response itself, so a client that stops
-/// reading cannot keep `stop` from returning.
-fn serve(server: Server, gate: Arc<Gate>, shared: Arc<Shared>) {
-    let mut consecutive_errors = 0u32;
-    let mut workers: Vec<JoinHandle<()>> = Vec::new();
-    while !shared.stop.load(Ordering::SeqCst) {
-        workers.retain(|worker| !worker.is_finished());
-        match server.recv_timeout(POLL_INTERVAL) {
-            Ok(Some(request)) => {
-                consecutive_errors = 0;
-                if workers.len() >= MAX_WORKERS {
-                    // Every slot is held by a slow reader. Dropping closes the
-                    // connection without putting this loop behind that write.
-                    drop(request);
-                    continue;
-                }
-                let worker_gate = Arc::clone(&gate);
-                if let Ok(join) = thread::Builder::new()
-                    .name("purple-memo-pairing-worker".to_string())
-                    .spawn(move || handle(request, &worker_gate))
-                {
-                    workers.push(join);
+    let mut content_length: Option<usize> = None;
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(RefusalReply::malformed("a header has no colon."));
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "content-length" => {
+                let length = value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| RefusalReply::malformed("Content-Length is a number."))?;
+                if content_length.replace(length).is_some() {
+                    return Err(RefusalReply::malformed("Content-Length is sent once."));
                 }
             }
-            Ok(None) => consecutive_errors = 0,
-            // A client hanging up mid-handshake is normal; a listener that keeps
-            // failing is not.
-            Err(_) => {
-                consecutive_errors += 1;
-                if consecutive_errors >= 100 {
-                    return;
-                }
+            // A chunked body is not a pairing message: the frame carries its own
+            // length and the HTTP body is exactly that (§11.6.1).
+            "transfer-encoding" => {
+                return Err(RefusalReply::malformed(
+                    "a pairing message is not chunked; send one framed body.",
+                ))
             }
+            _ => {}
         }
     }
+
+    let body_limit = MAX_FRAME_BYTES + FRAME_HEADER_BYTES + 1;
+    let length = content_length.unwrap_or(0);
+    if length > body_limit {
+        return Err(RefusalReply::malformed(
+            "the request body is larger than a pairing message.",
+        ));
+    }
+    let mut body = Vec::with_capacity(length);
+    let mut chunk = [0u8; 8192];
+    while body.len() < length {
+        if Instant::now() >= deadline {
+            return Err(too_slow());
+        }
+        let want = (length - body.len()).min(chunk.len());
+        match stream.read(&mut chunk[..want]) {
+            Ok(0) => return Err(RefusalReply::malformed("the request body ended early.")),
+            Ok(read) => body.extend_from_slice(&chunk[..read]),
+            Err(_) => return Err(too_slow()),
+        }
+    }
+    Ok((
+        method.to_string(),
+        target.split('?').next().unwrap_or(target).to_string(),
+        body,
+    ))
 }
 
-/// Serve one request. Everything this handler can do is admit a hello.
-fn handle(mut request: Request, gate: &Gate) {
-    let url = request.url().to_string();
-    let path = url.split('?').next().unwrap_or(&url);
+/// One answered connection: a status and, unless it is a bodiless 204, the
+/// framed JSON document the phone reads (§11.6.1).
+fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
+    let (method, path, body) = match read_request(stream) {
+        Ok(request) => request,
+        Err(refusal) => return (refusal.status, Some(refusal.body())),
+    };
     let hello = path == HELLO_PATH;
     if !hello && path != REQUEST_PATH {
-        let _ = request.respond(respond_framed(
+        return (
             404,
-            json!({
+            Some(json!({
                 "ok": false,
                 "reason": "not-found",
                 "message": "the pairing listener serves POST /pair/hello and POST /pair/request.",
-            }),
-        ));
-        return;
+            })),
+        );
     }
-    if request.method() == &Method::Options {
-        let _ = request.respond(respond_preflight());
-        return;
+    // Answered, never granted: the 204 carries no CORS headers (N5).
+    if method == "OPTIONS" {
+        return (204, None);
     }
-    if request.method() != &Method::Post {
-        let _ = request.respond(respond_framed(
+    if method != "POST" {
+        return (
             405,
-            json!({
+            Some(json!({
                 "ok": false,
                 "reason": "method",
                 "message": "a pairing message is POSTed.",
-            }),
-        ));
-        return;
+            })),
+        );
     }
     // §11.3 before anything else: a revoked peer's key is not even looked at.
     // This gates sealed messages only — the rendezvous below *replaces* the
     // pin, and a revocation must never be a lockout from re-pairing.
     if hello && active_pin(gate).is_some_and(|pin| pin.revoked) {
-        let _ = request.respond(refused_response(RefusalReply::refused(
+        let refusal = RefusalReply::refused(
             "revoked",
             "this device was revoked on the desktop; re-pair it before anything syncs (§11.3).",
-        )));
-        return;
+        );
+        return (refusal.status, Some(refusal.body()));
     }
-    let body = match read_body(request.as_reader()) {
-        Ok(body) => body,
-        Err(()) => {
-            let _ = request.respond(refused_response(RefusalReply::malformed(
-                "the request body is empty or larger than a pairing message.",
-            )));
-            return;
-        }
-    };
     let outcome = if hello {
         admit(gate, &body)
     } else {
         rendezvous(gate, &body)
     };
     match outcome {
-        Ok(reply) => {
-            let _ = request.respond(respond_framed(200, reply));
-        }
-        Err(refusal) => {
-            let _ = request.respond(refused_response(refusal));
+        Ok(reply) => (200, Some(reply)),
+        Err(refusal) => (refusal.status, Some(refusal.body())),
+    }
+}
+
+/// The accept loop. It never writes a response itself, so a client that stalls
+/// cannot keep `stop` from returning; and it joins every worker it spawned, so
+/// no thread holding `Arc<Gate>` — and with it the local secret — outlives the
+/// window (§11.1, N5).
+fn serve(listener: TcpListener, gate: Arc<Gate>, shared: Arc<Shared>) {
+    // Non-blocking accept so the shutdown flag is read without a second socket.
+    if listener.set_nonblocking(true).is_err() {
+        return;
+    }
+    let mut consecutive_errors = 0u32;
+    let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    while !shared.stop.load(Ordering::SeqCst) {
+        workers.retain(|worker| !worker.is_finished());
+        match listener.accept() {
+            Ok((stream, _)) => {
+                consecutive_errors = 0;
+                if workers.len() >= MAX_WORKERS {
+                    // Every slot is busy. Dropping closes the connection without
+                    // putting this loop behind a worker that is still reading.
+                    drop(stream);
+                    continue;
+                }
+                let worker_gate = Arc::clone(&gate);
+                if let Ok(join) = thread::Builder::new()
+                    .name("purple-memo-pairing-worker".to_string())
+                    .spawn(move || handle(stream, &worker_gate))
+                {
+                    workers.push(join);
+                }
+            }
+            Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
+                consecutive_errors = 0;
+                thread::sleep(POLL_INTERVAL);
+            }
+            // A client hanging up mid-handshake is normal; a listener that keeps
+            // failing is not.
+            Err(ref error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                        | ErrorKind::Interrupted
+                ) => {}
+            Err(_) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 100 {
+                    break;
+                }
+            }
         }
     }
+    // Close the port first, then wait for the workers: a stop that returned with
+    // `Gate`-holding threads alive would leave the local secret reachable after
+    // the window is gone.
+    drop(listener);
+    for worker in workers {
+        let _ = worker.join();
+    }
+}
+
+/// Serve one connection: install the deadlines, answer, close.
+fn handle(mut stream: TcpStream, gate: &Gate) {
+    let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
+    let (status, body) = answer(&mut stream, gate);
+    let framed = match body {
+        Some(body) => encode_frame(&body.to_string()).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let _ = write_response(&mut stream, status, &framed);
 }
 
 /// §11.1: digits only, six of them. Spaces and dashes are typing conveniences,
@@ -802,6 +925,44 @@ fn normalize_code(input: &str) -> Option<String> {
         .filter(|c| !c.is_whitespace() && *c != '-')
         .collect();
     (digits.len() == 6 && digits.chars().all(|c| c.is_ascii_digit())).then_some(digits)
+}
+
+/// §1.2: a device id is a canonical lowercase UUID v4 — 36 characters, version
+/// nibble `4`, RFC 4122 variant. Anything else is refused, never coerced: the
+/// id is part of the envelope's HKDF `info`, which separates its fields with
+/// NULs, so an arbitrary string would break that separation (N5).
+fn canonical_device_id(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => *byte == b'-',
+        14 => *byte == b'4',
+        19 => matches!(*byte, b'8' | b'9' | b'a' | b'b'),
+        _ => byte.is_ascii_digit() || matches!(*byte, b'a'..=b'f'),
+    })
+}
+
+/// §11.6.1: a long-term key is 32 bytes of lowercase hex, and it must be a point
+/// X25519 can agree on — a low-order point yields an all-zero shared secret
+/// (N5). `None` is a refusal, never a coercion.
+fn usable_public_key(input: &str) -> Option<[u8; KEY_BYTES]> {
+    let bytes = input.as_bytes();
+    if bytes.len() != KEY_BYTES * 2
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(*byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    let parsed = envelope::from_hex(input)?;
+    let mut key = [0u8; KEY_BYTES];
+    key.copy_from_slice(&parsed);
+    // A fixed public probe only asks X25519 whether the point is usable; nothing
+    // is sealed, sent or stored.
+    envelope::shared_key(&[0x5au8; KEY_BYTES], &key)?;
+    Some(key)
 }
 
 /// Constant-time compare: the length is fixed and public, so an early length
@@ -870,6 +1031,51 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
             "a pair request is a JSON object with deviceId, publicKey, pairingId and code.",
         )
     })?;
+    // §11.1 (N5): validate the metadata BEFORE the code is looked at, so a
+    // malformed request costs no attempt and cannot learn whether a guessed code
+    // was right. A probe with the right code and a bogus pairing id is a pairing
+    // mismatch with the attempt count untouched.
+    let Some(presented_pairing) = request.pairing_id.as_deref() else {
+        return Err(RefusalReply::refused(
+            "pairing-mismatch",
+            "this request carries no pairing id; show a new code on the desktop (§11.1).",
+        ));
+    };
+    if Some(presented_pairing) != gate.pairing_id.as_deref() {
+        return Err(RefusalReply::refused(
+            "pairing-mismatch",
+            "this request belongs to a different pairing; show a new code (§11.4).",
+        ));
+    }
+    if !canonical_device_id(&request.device_id) {
+        return Err(RefusalReply::malformed(
+            "deviceId is a canonical lowercase UUID v4 (§1.2).",
+        ));
+    }
+    let Some(key) = usable_public_key(&request.public_key) else {
+        return Err(RefusalReply::malformed(
+            "publicKey is 64 lowercase hex characters naming a usable X25519 point.",
+        ));
+    };
+    if request.protocol_version != gate.local_protocol_version {
+        return Err(RefusalReply::refused(
+            "protocol-unsupported",
+            format!(
+                "this build speaks protocol v{}; the peer sent v{}.",
+                gate.local_protocol_version, request.protocol_version
+            ),
+        ));
+    }
+    if request.schema_version != gate.local_schema_version {
+        return Err(RefusalReply::refused(
+            "schema-mismatch",
+            format!(
+                "the peers hold schema v{} and v{} — sync only between identical builds (§8.2).",
+                gate.local_schema_version, request.schema_version
+            ),
+        ));
+    }
+
     let mut state = offer.lock().unwrap_or_else(|e| e.into_inner());
     if state.redeemed {
         return Err(RefusalReply::refused(
@@ -912,47 +1118,12 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
             "a device cannot pair with itself.",
         ));
     }
-    if let Some(expected) = gate.pairing_id.as_deref() {
-        if request.pairing_id.as_deref() != Some(expected) {
-            return Err(RefusalReply::refused(
-                "pairing-mismatch",
-                "this request belongs to a different pairing; show a new code (§11.4).",
-            ));
-        }
-    }
-    if request.protocol_version != gate.local_protocol_version {
-        return Err(RefusalReply::refused(
-            "protocol-unsupported",
-            format!(
-                "this build speaks protocol v{}; the peer sent v{}.",
-                gate.local_protocol_version, request.protocol_version
-            ),
-        ));
-    }
-    if request.schema_version != gate.local_schema_version {
-        return Err(RefusalReply::refused(
-            "schema-mismatch",
-            format!(
-                "the peers hold schema v{} and v{} — sync only between identical builds (§8.2).",
-                gate.local_schema_version, request.schema_version
-            ),
-        ));
-    }
     if request.generation != gate.local_generation {
         return Err(RefusalReply::refused(
             "needs-re-pair",
             "this device's data line changed since it paired; re-pair it (§10.2, §10.5).",
         ));
     }
-    let Some(public_key) =
-        envelope::from_hex(&request.public_key).filter(|bytes| bytes.len() == KEY_BYTES)
-    else {
-        return Err(RefusalReply::malformed(
-            "the phone's public key is not a 32-byte hex key.",
-        ));
-    };
-    let mut key = [0u8; KEY_BYTES];
-    key.copy_from_slice(&public_key);
     let pin = Pin {
         device_id: request.device_id.clone(),
         public_key: key,
@@ -997,19 +1168,11 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         fingerprint,
         hello_received: false,
     });
+    // A window re-opened after a previous one carries that window's counter; the
+    // newly staged peer has sent nothing, so its first hello is counter 1 and
+    // must not be refused as a replay (N5).
+    *gate.last_counter.lock().unwrap_or_else(|e| e.into_inner()) = 0;
     Ok(json!({ "ok": true, "reason": "paired", "envelope": wire }))
-}
-
-/// Read at most one frame plus one byte, so an oversized body is refused rather
-/// than buffered.
-fn read_body(reader: impl Read) -> Result<Vec<u8>, ()> {
-    let limit = (MAX_FRAME_BYTES + FRAME_HEADER_BYTES + 1) as u64;
-    let mut body = Vec::new();
-    reader.take(limit).read_to_end(&mut body).map_err(|_| ())?;
-    if body.is_empty() || body.len() as u64 >= limit {
-        return Err(());
-    }
-    Ok(body)
 }
 
 /// §7.1's order, from the pin to the ack.
@@ -1268,11 +1431,8 @@ mod tests {
         (status, text)
     }
 
-    /// Minimal raw HTTP/1.1 request — enough to exercise the listener.
-    ///
-    /// The body is read as **bytes**: a framed reply begins with a length
-    /// prefix, which is not UTF-8, so a string read would garble it.
-    fn request(port: u16, request_line: &str, body: &[u8]) -> (u16, Vec<u8>) {
+    /// The whole response, head included — for tests about headers.
+    fn raw_response(port: u16, request_line: &str, body: &[u8]) -> Vec<u8> {
         let mut stream = StdTcpStream::connect(("127.0.0.1", port)).expect("connect");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1288,6 +1448,15 @@ mod tests {
         stream.flush().ok();
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).expect("read response");
+        raw
+    }
+
+    /// Minimal raw HTTP/1.1 request — enough to exercise the listener.
+    ///
+    /// The body is read as **bytes**: a framed reply begins with a length
+    /// prefix, which is not UTF-8, so a string read would garble it.
+    fn request(port: u16, request_line: &str, body: &[u8]) -> (u16, Vec<u8>) {
+        let raw = raw_response(port, request_line, body);
         let split = raw
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
@@ -1962,5 +2131,161 @@ mod tests {
         assert!(!reported.running);
         assert!(reported.peer_public_key.is_none());
         assert!(!reported.peer_hello_received);
+    }
+
+    // -- the socket is ours: bounded reads, validation first (wave 1, N5) ----
+
+    #[test]
+    fn two_stalled_connections_do_not_keep_the_phone_out() {
+        let (state, port) = started(false);
+        // Two clients announce a body and never send it: both worker slots are
+        // held until the connection's own deadline expires.
+        let mut stalled = Vec::new();
+        for _ in 0..MAX_WORKERS {
+            let mut stream = StdTcpStream::connect(("127.0.0.1", port)).expect("connect");
+            write!(
+                stream,
+                "POST /pair/hello HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\n"
+            )
+            .expect("write head");
+            stalled.push(stream);
+        }
+        thread::sleep(CONNECTION_TIMEOUT + Duration::from_millis(500));
+
+        // The deadline freed the workers, so the real phone is served.
+        let (status, body) = post(port, &hello_frame(1));
+        assert_eq!(status, 200, "{body}");
+        drop(stalled);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_window_opened_on_an_old_counter_accepts_the_staged_peer_first_hello() {
+        let state = PairingListenerState::default();
+        let mut window = offer_window(false);
+        // A previous window admitted counters up to 7 from some peer.
+        window.last_counter = 7;
+        let info = state
+            .start("127.0.0.1", window, desktop_identity())
+            .expect("start");
+        let port = info.port.expect("a bound port");
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        // The staged peer has sent nothing, so counter 1 is not a replay.
+        let (status, body) = post(port, &hello_frame(1));
+        assert_eq!(status, 200, "{body}");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn blind_requests_without_the_pairing_id_burn_no_attempt_and_reveal_nothing() {
+        let (state, port) = started_with_offer(false);
+        for _ in 0..PAIRING_MAX_ATTEMPTS {
+            let (status, body) = post_request(
+                port,
+                &request_body(|message| {
+                    message.insert("pairingId".to_string(), json!("pair-9"));
+                }),
+            );
+            assert_eq!(status, 403, "{body}");
+            assert_eq!(refusal_reason(&body), "pairing-mismatch", "{body}");
+            assert!(
+                !body.contains("attemptsLeft"),
+                "a mismatch spends no attempt: {body}"
+            );
+        }
+        // Five blind probes did not lock the code, and the right request pairs.
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_mismatch_costs_nothing_and_a_wrong_code_costs_one() {
+        let (state, port) = started_with_offer(false);
+        // Right code, bogus pairing id: a mismatch with the count untouched.
+        let (status, body) = post_request(
+            port,
+            &request_body(|message| {
+                message.insert("pairingId".to_string(), json!("pair-9"));
+            }),
+        );
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "pairing-mismatch");
+
+        // A wrong code under the right pairing id is the only thing that costs.
+        let (status, body) = post_request(
+            port,
+            &request_body(|message| {
+                message.insert("code".to_string(), json!("000000"));
+            }),
+        );
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "wrong-code");
+        let reply: JsonValue = serde_json::from_str(&body).expect("refusal json");
+        assert_eq!(
+            reply["attemptsLeft"],
+            json!(PAIRING_MAX_ATTEMPTS - 1),
+            "only the wrong code spent an attempt: {body}"
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_malformed_peer_identity_is_refused_before_the_code() {
+        let (state, port) = started_with_offer(false);
+        let oversized = "B".repeat(60_000);
+        let short_key = phone_public_hex()[..62].to_string();
+        let upper_key = phone_public_hex().to_uppercase();
+        let low_order = "00".repeat(KEY_BYTES);
+        let cases: Vec<Vec<u8>> = vec![
+            request_body(|message| {
+                message.insert("deviceId".to_string(), json!(""));
+            }),
+            request_body(|message| {
+                message.insert(
+                    "deviceId".to_string(),
+                    json!("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb\u{0}"),
+                );
+            }),
+            request_body(|message| {
+                message.insert("deviceId".to_string(), json!(oversized));
+            }),
+            request_body(|message| {
+                message.insert("deviceId".to_string(), json!(PHONE_ID.to_uppercase()));
+            }),
+            request_body(|message| {
+                message.insert("deviceId".to_string(), json!("not-a-uuid"));
+            }),
+            request_body(|message| {
+                message.insert("publicKey".to_string(), json!("not-hex"));
+            }),
+            request_body(|message| {
+                message.insert("publicKey".to_string(), json!(short_key));
+            }),
+            request_body(|message| {
+                message.insert("publicKey".to_string(), json!(upper_key));
+            }),
+            request_body(|message| {
+                message.insert("publicKey".to_string(), json!(low_order));
+            }),
+        ];
+        for body in cases {
+            let (status, reply) = post_request(port, &body);
+            assert_eq!(status, 400, "{reply}");
+            assert_eq!(refusal_reason(&reply), "malformed", "{reply}");
+            assert!(!reply.contains("attemptsLeft"), "{reply}");
+        }
+        // Nothing was spent: a well-formed request still pairs.
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn no_response_grants_a_browser_origin() {
+        let (state, port) = started(false);
+        for line in ["POST /pair/hello", "OPTIONS /pair/hello"] {
+            let head = String::from_utf8_lossy(&raw_response(port, line, &[])).to_lowercase();
+            assert!(!head.contains("access-control"), "{line}: {head}");
+        }
+        state.stop().expect("stop");
     }
 }
