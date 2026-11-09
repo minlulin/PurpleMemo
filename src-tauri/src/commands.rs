@@ -44,6 +44,10 @@ use tauri::{Manager, State};
 use crate::db::{self, AppState, BatchStatement, ExecuteOutcome, JsonObj};
 use crate::file_write;
 use crate::lifecycle::Lifecycle;
+use crate::pairing_listener::{
+    PairingListenerInfo, PairingListenerState, PairingOffer, PairingOpenInput, PairingWindow,
+    PROTOCOL_VERSION,
+};
 use crate::photos;
 use crate::share::{ShareInfo, ShareState};
 
@@ -790,6 +794,107 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
 #[tauri::command]
 pub fn app_restart(app: tauri::AppHandle) -> CmdResult<()> {
     app.restart()
+}
+
+/// This device's own pairing facts: what the offer carries (§11.1) and what the
+/// other screen compares (§11.2). The public key and fingerprint are public by
+/// design; there is no field for a secret.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingLocalInfo {
+    pub device_id: String,
+    pub generation: u64,
+    pub schema_version: u64,
+    pub protocol_version: u64,
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+/// The device id, data line and schema the sync store holds — read from the one
+/// database through the same connection lock every other command uses, so the
+/// pairing window can never advertise facts the store does not hold.
+fn local_sync_facts(state: &AppState) -> CmdResult<(String, u64, u64)> {
+    let conn = lock_conn(state)?;
+    let (device_id, generation): (String, i64) = conn
+        .query_row(
+            "SELECT device_id, data_generation FROM sync_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("could not read this device's sync state: {e}"))?;
+    let schema: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| format!("could not read the schema version: {e}"))?;
+    Ok((device_id, generation.max(0) as u64, schema.max(0) as u64))
+}
+
+/// This device's pairing identity and the data line it would pair on. Reads
+/// only — no socket is bound here.
+#[tauri::command]
+pub fn pairing_local(app: tauri::AppHandle) -> CmdResult<PairingLocalInfo> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
+    let identity = crate::pairing_key::load_or_mint()?;
+    Ok(PairingLocalInfo {
+        device_id,
+        generation,
+        schema_version,
+        protocol_version: PROTOCOL_VERSION,
+        public_key: identity.public_key_hex(),
+        fingerprint: identity.fingerprint(),
+    })
+}
+
+/// Open the pairing window (§11.5): one LAN listener, alive only while the
+/// panel is on screen. The local identity, device id, generation and schema are
+/// read here rather than trusted from the webview.
+#[tauri::command]
+pub fn pairing_open(
+    app: tauri::AppHandle,
+    input: PairingOpenInput,
+) -> CmdResult<PairingListenerInfo> {
+    let listener = app
+        .try_state::<PairingListenerState>()
+        .ok_or_else(|| "pairing listener state is not available — restart the app".to_string())?;
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
+    let identity = crate::pairing_key::load_or_mint()?;
+    let offer = match (input.offer_code, input.offer_expires_at) {
+        (Some(code), Some(expires_at)) => Some(PairingOffer { code, expires_at }),
+        (None, None) => None,
+        _ => return Err("a pairing offer needs both a six-digit code and its expiry".to_string()),
+    };
+    let window = PairingWindow {
+        local_device_id: device_id,
+        local_generation: generation,
+        local_protocol_version: PROTOCOL_VERSION,
+        local_schema_version: schema_version,
+        pairing_id: input.pairing_id,
+        offer,
+        peer: input.peer,
+        last_counter: input.last_counter.unwrap_or(0),
+    };
+    // §11.5: the window is on the LAN only while pairing is on screen; the
+    // panel closes it on expiry, on close, on lock and on app background.
+    listener.start("0.0.0.0", window, identity)
+}
+
+/// Close the pairing window. Idempotent, and called by the lock and app-
+/// background paths as well as by the panel's own close (§11.5).
+#[tauri::command]
+pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
+    state.stop()
+}
+
+/// Current pairing state — including the peer a code-confirmed rendezvous
+/// pinned, which the panel then stores as its pin (§11.2).
+#[tauri::command]
+pub fn pairing_status(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
+    state.status()
 }
 
 #[cfg(test)]

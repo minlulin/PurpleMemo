@@ -16,15 +16,27 @@
 //! pin before it has any effect:
 //!
 //! 1. a revoked peer is refused **first**, before its key is even looked at;
-//! 2. a device with no pin is refused as unpaired — this listener admits a
-//!    known peer, it never discovers one (first pairing is the next session's
-//!    code-confirmed flow);
+//! 2. a sealed hello from a device with no pin is refused as unpaired;
 //! 3. then the envelope: version, recipient, pinned sender, replay, and the
 //!    AEAD tag;
 //! 4. then the payload: the message kind allowlist (`hello` only — the §2.3
 //!    seam; table/field allowlists apply to the operation path, which does not
 //!    exist yet), the pairing id, protocol version, schema version and the data
 //!    line.
+//!
+//! **First pairing (§11.1, Phase C Session 6).** A window opened with an
+//! *offer* also serves `POST /pair/request`: the phone presents its device id,
+//! its long-term public key and the six-digit code from the desktop's screen.
+//! That request is not sealed — it cannot be, the desktop does not know the
+//! phone's key yet — and it proves nothing about the key it carries. What it
+//! proves is possession of the single-use, 120 s, 5-attempt code, and the human
+//! confirms the key by comparing the fingerprints on both screens (§11.1,
+//! §11.6.1: "the code gates the rendezvous only. It is never the encryption
+//! key"). Accepting it pins that key **for this window** and answers with an
+//! acknowledgement sealed under the ordinary envelope, so the phone can open
+//! it with the desktop key it read from the offer. Every later message is a
+//! sealed hello checked against the pin, exactly as before; a wrong, expired,
+//! used or locked-out code is a named refusal with zero effect.
 //!
 //! The only effect an accepted hello has is advancing the peer's replay
 //! counter and sealing an ack; nothing is written to the database, the
@@ -46,7 +58,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -56,8 +68,17 @@ use crate::envelope::{self, OpenInput, Refusal, SealInput, KEY_BYTES};
 use crate::lifecycle::Lifecycle;
 use crate::pairing_key::PairingIdentity;
 
-/// The only endpoint this listener serves.
+/// A sealed message from the pinned peer (§11.6.1).
 const HELLO_PATH: &str = "/pair/hello";
+
+/// The code-confirmed rendezvous that pins a peer for the first time (§11.1).
+const REQUEST_PATH: &str = "/pair/request";
+
+/// The protocol this build speaks (protocol v1, `docs/ANDROID_SYNC_PROTOCOL.md`).
+pub const PROTOCOL_VERSION: u64 = 1;
+
+/// §11.1: five wrong guesses burn the code; the sixth attempt is a lockout.
+pub const PAIRING_MAX_ATTEMPTS: u32 = 5;
 
 /// Four big-endian bytes of body length (§11.6.1).
 pub const FRAME_HEADER_BYTES: usize = 4;
@@ -129,6 +150,37 @@ pub struct PinnedPeer {
     pub revoked: bool,
 }
 
+/// The single-use code the desktop shows, and when it dies (§11.1).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingOffer {
+    /// Six digits, as rendered on the desktop's screen.
+    pub code: String,
+    /// Unix epoch milliseconds.
+    pub expires_at: u64,
+}
+
+/// What the shell asks for when it opens a pairing window.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingOpenInput {
+    /// §11.4: a hello claiming a different pairing is a re-pair, not a sync.
+    #[serde(default)]
+    pub pairing_id: Option<String>,
+    #[serde(default)]
+    pub offer_code: Option<String>,
+    #[serde(default)]
+    pub offer_expires_at: Option<u64>,
+    /// `None` is a window that admits no sealed hello until a code-confirmed
+    /// rendezvous pins one.
+    #[serde(default)]
+    pub peer: Option<PinnedPeer>,
+    /// The highest counter already accepted from this peer, when a window
+    /// re-opens after a previous one.
+    #[serde(default)]
+    pub last_counter: Option<u64>,
+}
+
 /// Everything the listener needs about this pairing window. Parsed from the
 /// command's JSON argument, so the shell passes one value and no key material.
 #[derive(Debug, Clone, Deserialize)]
@@ -141,7 +193,10 @@ pub struct PairingWindow {
     /// §11.4: a hello claiming a different pairing is a re-pair, not a sync.
     #[serde(default)]
     pub pairing_id: Option<String>,
-    /// `None` is a refused-as-unpaired window, not a discovery window.
+    /// The code that gates a first pairing (§11.1). `None` opens a window for a
+    /// pinned peer only.
+    #[serde(default)]
+    pub offer: Option<PairingOffer>,
     #[serde(default)]
     pub peer: Option<PinnedPeer>,
     /// The highest counter already accepted from this peer, when a window
@@ -156,10 +211,18 @@ pub struct PairingWindow {
 pub struct PairingListenerInfo {
     pub running: bool,
     pub port: Option<u16>,
+    /// `host:port` the offer's QR carries (§11.1). Never a loopback name in
+    /// production: the phone has to reach it over the LAN.
+    pub endpoint: Option<String>,
     /// This device's public key — never its secret.
     pub public_key: Option<String>,
     pub fingerprint: Option<String>,
+    /// The pinned peer this window knows about, if any.
     pub peer_device_id: Option<String>,
+    /// The peer a code-confirmed rendezvous pinned in this window (§11.2).
+    /// Public key material only — this is what the panel stores as a pin.
+    pub peer_public_key: Option<String>,
+    pub peer_fingerprint: Option<String>,
     pub note: Option<String>,
 }
 
@@ -168,20 +231,40 @@ impl PairingListenerInfo {
         Self {
             running: false,
             port: None,
+            endpoint: None,
             public_key: None,
             fingerprint: None,
             peer_device_id: None,
+            peer_public_key: None,
+            peer_fingerprint: None,
             note,
         }
     }
 }
 
 /// A parsed pin: the hex string is only ever read once, at start.
+#[derive(Clone)]
 struct Pin {
     device_id: String,
     public_key: [u8; KEY_BYTES],
     generation: u64,
     revoked: bool,
+}
+
+/// The live state of the window's code: attempts, single use, expiry.
+struct OfferState {
+    code: String,
+    expires_at: u64,
+    attempts: u32,
+    redeemed: bool,
+}
+
+/// The peer a code-confirmed rendezvous pinned. `Debug` would print the key,
+/// which is public; the secret is never in here.
+struct PairedPeer {
+    pin: Pin,
+    public_key_hex: String,
+    fingerprint: String,
 }
 
 /// What one accepted-or-refused request may consult. Immutable except for the
@@ -194,6 +277,11 @@ struct Gate {
     local_schema_version: u64,
     pairing_id: Option<String>,
     pin: Option<Pin>,
+    /// §11.1: the code that gates a first pairing. Absent on a window for an
+    /// already-pinned peer.
+    offer: Option<Mutex<OfferState>>,
+    /// The peer this window's code pinned, once the rendezvous succeeded.
+    paired: Mutex<Option<PairedPeer>>,
     /// The highest counter accepted from the peer. Opening a message and
     /// advancing this is one step under one lock, so two racing copies of the
     /// same envelope cannot both be accepted.
@@ -212,9 +300,14 @@ struct Running {
     /// Where a stop probes for closure: the bound address, with an unspecified
     /// bind (`0.0.0.0`, production) mapped to loopback.
     probe: SocketAddr,
+    endpoint: Option<String>,
     public_key: String,
     fingerprint: String,
     peer_device_id: Option<String>,
+    /// The same gate the serve thread holds: `info` reads the live pairing
+    /// state from it, so the panel sees an admitted peer without a second
+    /// channel.
+    gate: Arc<Gate>,
     shared: Arc<Shared>,
     join: Option<JoinHandle<()>>,
 }
@@ -225,12 +318,19 @@ impl Running {
     }
 
     fn info(&self, note: Option<String>) -> PairingListenerInfo {
+        let paired = self.gate.paired.lock().unwrap_or_else(|e| e.into_inner());
         PairingListenerInfo {
             running: true,
             port: Some(self.port),
+            endpoint: self.endpoint.clone(),
             public_key: Some(self.public_key.clone()),
             fingerprint: Some(self.fingerprint.clone()),
-            peer_device_id: self.peer_device_id.clone(),
+            peer_device_id: paired
+                .as_ref()
+                .map(|peer| peer.pin.device_id.clone())
+                .or_else(|| self.peer_device_id.clone()),
+            peer_public_key: paired.as_ref().map(|peer| peer.public_key_hex.clone()),
+            peer_fingerprint: paired.as_ref().map(|peer| peer.fingerprint.clone()),
             note,
         }
     }
@@ -310,6 +410,19 @@ impl PairingListenerState {
             reap(stale)?;
         }
 
+        // §11.1: the code must be six digits before a window can offer it; a
+        // malformed code would gate nothing at all.
+        let offer = match window.offer.as_ref() {
+            Some(offer) => Some(Mutex::new(OfferState {
+                code: normalize_code(&offer.code)
+                    .ok_or_else(|| "the pairing code must be six digits".to_string())?,
+                expires_at: offer.expires_at,
+                attempts: 0,
+                redeemed: false,
+            })),
+            None => None,
+        };
+
         let server = Server::http((bind, 0))
             .map_err(|e| format!("could not start the pairing listener on {bind}: {e}"))?;
         let bound = server
@@ -317,6 +430,14 @@ impl PairingListenerState {
             .to_ip()
             .ok_or_else(|| "could not read the pairing listener port".to_string())?;
         let port = bound.port();
+        // What the offer's QR carries (§11.1): a loopback bind is for tests and
+        // reports itself; production binds every interface and reports the LAN
+        // address the phone can actually reach.
+        let endpoint = if bound.ip().is_unspecified() {
+            crate::share::lan_ip().map(|ip| format!("{ip}:{port}"))
+        } else {
+            Some(format!("{}:{port}", bound.ip()))
+        };
         let gate = Arc::new(Gate {
             local_device_id: window.local_device_id,
             local_secret,
@@ -325,22 +446,27 @@ impl PairingListenerState {
             local_schema_version: window.local_schema_version,
             pairing_id: window.pairing_id,
             pin,
+            offer,
+            paired: Mutex::new(None),
             last_counter: Mutex::new(window.last_counter),
             send_counter: AtomicU64::new(0),
         });
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
+        let thread_gate = Arc::clone(&gate);
         let join = thread::Builder::new()
             .name("purple-memo-pairing".to_string())
-            .spawn(move || serve(server, gate, thread_shared))
+            .spawn(move || serve(server, thread_gate, thread_shared))
             .map_err(|e| format!("could not start the pairing thread: {e}"))?;
 
         let running = Running {
             port,
             probe: probe_address(bound),
+            endpoint,
             public_key,
             fingerprint,
             peer_device_id,
+            gate,
             shared,
             join: Some(join),
         };
@@ -455,6 +581,8 @@ struct RefusalReply {
     code: &'static str,
     message: String,
     status: u16,
+    /// §11.1: how many guesses the code has left, on a code refusal.
+    attempts_left: Option<u32>,
 }
 
 impl RefusalReply {
@@ -463,6 +591,7 @@ impl RefusalReply {
             code,
             message: message.into(),
             status: 403,
+            attempts_left: None,
         }
     }
 
@@ -471,6 +600,16 @@ impl RefusalReply {
             code: "malformed",
             message: message.into(),
             status: 400,
+            attempts_left: None,
+        }
+    }
+
+    fn code_refused(code: &'static str, message: impl Into<String>, attempts_left: u32) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            status: 403,
+            attempts_left: Some(attempts_left),
         }
     }
 
@@ -479,11 +618,16 @@ impl RefusalReply {
             code: refusal.code(),
             message: refusal.message(),
             status: 403,
+            attempts_left: None,
         }
     }
 
     fn body(&self) -> JsonValue {
-        json!({ "ok": false, "reason": self.code, "message": self.message })
+        let mut body = json!({ "ok": false, "reason": self.code, "message": self.message });
+        if let (Some(left), Some(object)) = (self.attempts_left, body.as_object_mut()) {
+            object.insert("attemptsLeft".to_string(), json!(left));
+        }
+        body
     }
 }
 
@@ -497,6 +641,27 @@ fn respond_framed(status: u16, body: JsonValue) -> Response<Cursor<Vec<u8>>> {
         ("Cache-Control", "no-store"),
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+        ("Access-Control-Allow-Headers", "content-type"),
+    ] {
+        if let Ok(header) = Header::from_bytes(name, value) {
+            response.add_header(header);
+        }
+    }
+    response
+}
+
+/// The preflight a phone's webview sends before a cross-origin POST. The
+/// listener serves two POST endpoints and nothing else, and it is only open
+/// while the panel is (§11.5); the code, not the origin, is what gates pairing.
+fn respond_preflight() -> Response<Cursor<Vec<u8>>> {
+    let mut response = Response::from_data(Vec::new()).with_status_code(204);
+    for (name, value) in [
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+        ("Access-Control-Allow-Headers", "content-type"),
+        ("Cache-Control", "no-store"),
     ] {
         if let Ok(header) = Header::from_bytes(name, value) {
             response.add_header(header);
@@ -550,15 +715,20 @@ fn serve(server: Server, gate: Arc<Gate>, shared: Arc<Shared>) {
 fn handle(mut request: Request, gate: &Gate) {
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or(&url);
-    if path != HELLO_PATH {
+    let hello = path == HELLO_PATH;
+    if !hello && path != REQUEST_PATH {
         let _ = request.respond(respond_framed(
             404,
             json!({
                 "ok": false,
                 "reason": "not-found",
-                "message": "the pairing listener serves only POST /pair/hello.",
+                "message": "the pairing listener serves POST /pair/hello and POST /pair/request.",
             }),
         ));
+        return;
+    }
+    if request.method() == &Method::Options {
+        let _ = request.respond(respond_preflight());
         return;
     }
     if request.method() != &Method::Post {
@@ -567,13 +737,15 @@ fn handle(mut request: Request, gate: &Gate) {
             json!({
                 "ok": false,
                 "reason": "method",
-                "message": "a pairing hello is POSTed.",
+                "message": "a pairing message is POSTed.",
             }),
         ));
         return;
     }
     // §11.3 before anything else: a revoked peer's key is not even looked at.
-    if gate.pin.as_ref().is_some_and(|pin| pin.revoked) {
+    // This gates sealed messages only — the rendezvous below *replaces* the
+    // pin, and a revocation must never be a lockout from re-pairing.
+    if hello && active_pin(gate).is_some_and(|pin| pin.revoked) {
         let _ = request.respond(refused_response(RefusalReply::refused(
             "revoked",
             "this device was revoked on the desktop; re-pair it before anything syncs (§11.3).",
@@ -589,7 +761,12 @@ fn handle(mut request: Request, gate: &Gate) {
             return;
         }
     };
-    match admit(gate, &body) {
+    let outcome = if hello {
+        admit(gate, &body)
+    } else {
+        rendezvous(gate, &body)
+    };
+    match outcome {
         Ok(reply) => {
             let _ = request.respond(respond_framed(200, reply));
         }
@@ -597,6 +774,207 @@ fn handle(mut request: Request, gate: &Gate) {
             let _ = request.respond(refused_response(refusal));
         }
     }
+}
+
+/// §11.1: digits only, six of them. Spaces and dashes are typing conveniences,
+/// exactly as `normalizeCode` in `src/lib/sync/pairing.ts` treats them.
+fn normalize_code(input: &str) -> Option<String> {
+    let digits: String = input
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
+    (digits.len() == 6 && digits.chars().all(|c| c.is_ascii_digit())).then_some(digits)
+}
+
+/// Constant-time compare: the length is fixed and public, so an early length
+/// check leaks nothing, and the bytes are never short-circuited.
+fn codes_equal(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The pin in force: the peer this window's code pinned, else the one the
+/// window was opened with.
+fn active_pin(gate: &Gate) -> Option<Pin> {
+    if let Some(paired) = gate
+        .paired
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        return Some(paired.pin.clone());
+    }
+    gate.pin.clone()
+}
+
+/// The code-confirmed first pairing (§11.1). The request is plaintext and
+/// proves only possession of the code: it is not sealed, because the desktop
+/// does not know the phone's key yet, and it never becomes a key. Accepting it
+/// pins that key for this window and answers under the ordinary envelope, so
+/// every message after it is authenticated by the pin (§11.2).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairRequest {
+    device_id: String,
+    public_key: String,
+    #[serde(default)]
+    pairing_id: Option<String>,
+    code: String,
+    protocol_version: u64,
+    schema_version: u64,
+    generation: u64,
+}
+
+fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
+    let Some(offer) = gate.offer.as_ref() else {
+        return Err(RefusalReply::refused(
+            "unpaired",
+            "this pairing window has no code; show a code on the desktop first (§11.1).",
+        ));
+    };
+    let text = decode_frame(body).map_err(RefusalReply::malformed)?;
+    let request: PairRequest = serde_json::from_str(&text).map_err(|_| {
+        RefusalReply::malformed(
+            "a pair request is a JSON object with deviceId, publicKey, pairingId and code.",
+        )
+    })?;
+    let mut state = offer.lock().unwrap_or_else(|e| e.into_inner());
+    if state.redeemed {
+        return Err(RefusalReply::refused(
+            "used",
+            "this pairing code was already used once (§11.1).",
+        ));
+    }
+    if now_ms() >= state.expires_at {
+        return Err(RefusalReply::refused(
+            "expired",
+            "this pairing code expired — show a new one on the desktop (§11.1).",
+        ));
+    }
+    if state.attempts >= PAIRING_MAX_ATTEMPTS {
+        return Err(RefusalReply::refused(
+            "locked",
+            "too many wrong codes — the desktop must show a new one (§11.1).",
+        ));
+    }
+    let Some(presented) = normalize_code(&request.code) else {
+        // A malformed code costs no attempt, exactly like `redeemCode`.
+        return Err(RefusalReply::malformed("the pairing code is six digits."));
+    };
+    if !codes_equal(&presented, &state.code) {
+        state.attempts += 1;
+        let left = PAIRING_MAX_ATTEMPTS.saturating_sub(state.attempts);
+        return Err(RefusalReply::code_refused(
+            "wrong-code",
+            if left == 0 {
+                "too many wrong codes — the desktop must show a new one (§11.1).".to_string()
+            } else {
+                format!("that code does not match ({left} attempt(s) left).")
+            },
+            left,
+        ));
+    }
+    if request.device_id == gate.local_device_id {
+        return Err(RefusalReply::refused(
+            "same-device",
+            "a device cannot pair with itself.",
+        ));
+    }
+    if let Some(expected) = gate.pairing_id.as_deref() {
+        if request.pairing_id.as_deref() != Some(expected) {
+            return Err(RefusalReply::refused(
+                "pairing-mismatch",
+                "this request belongs to a different pairing; show a new code (§11.4).",
+            ));
+        }
+    }
+    if request.protocol_version != gate.local_protocol_version {
+        return Err(RefusalReply::refused(
+            "protocol-unsupported",
+            format!(
+                "this build speaks protocol v{}; the peer sent v{}.",
+                gate.local_protocol_version, request.protocol_version
+            ),
+        ));
+    }
+    if request.schema_version != gate.local_schema_version {
+        return Err(RefusalReply::refused(
+            "schema-mismatch",
+            format!(
+                "the peers hold schema v{} and v{} — sync only between identical builds (§8.2).",
+                gate.local_schema_version, request.schema_version
+            ),
+        ));
+    }
+    if request.generation != gate.local_generation {
+        return Err(RefusalReply::refused(
+            "needs-re-pair",
+            "this device's data line changed since it paired; re-pair it (§10.2, §10.5).",
+        ));
+    }
+    let Some(public_key) =
+        envelope::from_hex(&request.public_key).filter(|bytes| bytes.len() == KEY_BYTES)
+    else {
+        return Err(RefusalReply::malformed(
+            "the phone's public key is not a 32-byte hex key.",
+        ));
+    };
+    let mut key = [0u8; KEY_BYTES];
+    key.copy_from_slice(&public_key);
+    let pin = Pin {
+        device_id: request.device_id.clone(),
+        public_key: key,
+        generation: request.generation,
+        revoked: false,
+    };
+    let ack = json!({
+        "kind": "paired",
+        "pairingId": gate.pairing_id,
+        "deviceId": gate.local_device_id,
+        "generation": gate.local_generation,
+        "schemaVersion": gate.local_schema_version,
+        "protocolVersion": gate.local_protocol_version,
+    });
+    let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let wire = envelope::seal(SealInput {
+        secret: &gate.local_secret,
+        peer_public: &key,
+        from: &gate.local_device_id,
+        to: &request.device_id,
+        message_id: &format!("paired:{counter}"),
+        counter,
+        message: &ack,
+        pairing_id: gate.pairing_id.as_deref(),
+        nonce: None,
+        ephemeral_secret: None,
+    })
+    .map_err(|_| RefusalReply::malformed("the phone's public key is not a usable X25519 point."))?;
+    // Single use, set before the reply leaves so two racing requests cannot both
+    // win the same code.
+    state.redeemed = true;
+    drop(state);
+    let public_key_hex = envelope::to_hex(&key);
+    let fingerprint = crate::pairing_key::fingerprint_of(&public_key_hex);
+    *gate.paired.lock().unwrap_or_else(|e| e.into_inner()) = Some(PairedPeer {
+        pin,
+        public_key_hex,
+        fingerprint,
+    });
+    Ok(json!({ "ok": true, "reason": "paired", "envelope": wire }))
 }
 
 /// Read at most one frame plus one byte, so an oversized body is refused rather
@@ -613,7 +991,7 @@ fn read_body(reader: impl Read) -> Result<Vec<u8>, ()> {
 
 /// §7.1's order, from the pin to the ack.
 fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
-    let Some(pin) = gate.pin.as_ref() else {
+    let Some(pin) = active_pin(gate) else {
         return Err(RefusalReply::refused(
             "unpaired",
             "this device has never paired; show a pairing code on the desktop first (§11.2).",
@@ -726,6 +1104,7 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         code: "internal",
         message,
         status: 500,
+        attempts_left: None,
     })?;
     Ok(json!({ "ok": true, "reason": "accepted", "envelope": wire }))
 }
@@ -760,6 +1139,7 @@ mod tests {
             local_protocol_version: 1,
             local_schema_version: 8,
             pairing_id: Some("pair-1".to_string()),
+            offer: None,
             peer: Some(PinnedPeer {
                 device_id: PHONE_ID.to_string(),
                 public_key: phone_public_hex(),
@@ -814,6 +1194,14 @@ mod tests {
     /// A POST with the framed reply decoded — the shape the phone sees.
     fn post(port: u16, body: &[u8]) -> (u16, String) {
         let (status, raw) = request(port, "POST /pair/hello", body);
+        let text =
+            decode_frame(&raw).unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned());
+        (status, text)
+    }
+
+    /// A POST to the rendezvous endpoint, decoded like `post`.
+    fn post_request(port: u16, body: &[u8]) -> (u16, String) {
+        let (status, raw) = request(port, "POST /pair/request", body);
         let text =
             decode_frame(&raw).unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned());
         (status, text)
@@ -1165,5 +1553,213 @@ mod tests {
             .expect_err("no listener may come up after the barrier");
         assert!(error.contains("restart"), "must say what to do: {error}");
         assert!(!state.status().expect("status").running);
+    }
+
+    // -- the code-confirmed first pairing (§11.1) --------------------------
+
+    /// A window offering the fixed test code, with no pin yet: this is what the
+    /// desktop's QR panel opens for a phone that has never paired.
+    fn offer_window(revoked: bool) -> PairingWindow {
+        let mut window = window(revoked);
+        window.peer = None;
+        window.offer = Some(PairingOffer {
+            code: "123456".to_string(),
+            expires_at: now_ms() + 60_000,
+        });
+        window
+    }
+
+    fn started_with_offer(revoked: bool) -> (PairingListenerState, u16) {
+        let state = PairingListenerState::default();
+        let info = state
+            .start("127.0.0.1", offer_window(revoked), desktop_identity())
+            .expect("start the pairing window");
+        (state, info.port.expect("a bound port"))
+    }
+
+    /// What the phone sends for a first pairing: plaintext, carrying its public
+    /// key and the code from the desktop's screen.
+    fn request_body(patch: impl FnOnce(&mut serde_json::Map<String, JsonValue>)) -> Vec<u8> {
+        let mut message = json!({
+            "kind": "pair-request",
+            "deviceId": PHONE_ID,
+            "publicKey": phone_public_hex(),
+            "pairingId": "pair-1",
+            "code": "123456",
+            "protocolVersion": 1,
+            "schemaVersion": 8,
+            "generation": 1,
+        });
+        patch(message.as_object_mut().expect("the request is an object"));
+        encode_frame(&message.to_string()).expect("frame the request")
+    }
+
+    #[test]
+    fn the_desktop_code_pins_the_phone_and_its_next_hello_is_accepted() {
+        let (state, port) = started_with_offer(false);
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 200, "{body}");
+
+        // The ack is a real sealed envelope, openable only by the phone's
+        // secret and the desktop key the offer carried.
+        let reply: JsonValue = serde_json::from_str(&body).expect("reply json");
+        let wire = reply["envelope"].as_str().expect("a sealed ack");
+        let opened = envelope::open(OpenInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            local_device_id: PHONE_ID,
+            expected_from: DESKTOP_ID,
+            last_counter: 0,
+            pairing_id: Some("pair-1"),
+            raw: wire,
+        })
+        .expect("the phone must open the ack the desktop sealed");
+        assert_eq!(opened.message["kind"], json!("paired"));
+        assert_eq!(opened.message["deviceId"], json!(DESKTOP_ID));
+
+        // §11.2: the rendezvous pinned that key, so a sealed hello from it is
+        // admitted — and reported to the panel, which persists the pin.
+        let (status, body) = post(port, &hello_frame(1));
+        assert_eq!(status, 200, "{body}");
+        let reported = state.status().expect("status");
+        assert_eq!(reported.peer_device_id.as_deref(), Some(PHONE_ID));
+        assert_eq!(
+            reported.peer_public_key.as_deref(),
+            Some(phone_public_hex().as_str())
+        );
+        assert!(reported.peer_fingerprint.is_some());
+        assert!(reported
+            .endpoint
+            .as_deref()
+            .is_some_and(|endpoint| endpoint.starts_with("127.0.0.1:")));
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_wrong_code_costs_an_attempt_and_five_lock_the_code() {
+        let (state, port) = started_with_offer(false);
+        for expected_left in (0..PAIRING_MAX_ATTEMPTS).rev() {
+            let (status, body) = post_request(
+                port,
+                &request_body(|message| {
+                    message.insert("code".to_string(), json!("000000"));
+                }),
+            );
+            assert_eq!(status, 403, "{body}");
+            assert_eq!(refusal_reason(&body), "wrong-code");
+            let parsed: JsonValue = serde_json::from_str(&body).expect("refusal json");
+            assert_eq!(parsed["attemptsLeft"], json!(expected_left), "{body}");
+        }
+        // Burnt: the right code is a lockout, not a retry.
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "locked");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_malformed_code_costs_no_attempt() {
+        let (state, port) = started_with_offer(false);
+        let (status, body) = post_request(
+            port,
+            &request_body(|message| {
+                message.insert("code".to_string(), json!("12ab"));
+            }),
+        );
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(refusal_reason(&body), "malformed");
+        // The right code still works: nothing was spent on the typo.
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn the_code_is_single_use_and_expires() {
+        let (state, port) = started_with_offer(false);
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "used");
+        state.stop().expect("stop");
+
+        let expired = PairingListenerState::default();
+        let mut stale = offer_window(false);
+        stale.offer = Some(PairingOffer {
+            code: "123456".to_string(),
+            expires_at: now_ms().saturating_sub(1),
+        });
+        let info = expired
+            .start("127.0.0.1", stale, desktop_identity())
+            .expect("start");
+        let (status, body) = post_request(info.port.expect("port"), &request_body(|_| {}));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "expired");
+        expired.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_window_without_a_code_admits_no_first_pairing() {
+        let state = PairingListenerState::default();
+        let mut pinless = window(false);
+        pinless.peer = None;
+        let info = state
+            .start("127.0.0.1", pinless, desktop_identity())
+            .expect("start");
+        let (status, body) = post(info.port.expect("port"), &request_body(|_| {}));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "unpaired");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_revoked_pin_is_refused_before_its_key_is_looked_at_but_never_blocks_re_pairing() {
+        // §11.3: a revoked peer's key is not even looked at — its sealed hello
+        // is refused before any envelope is opened.
+        let (revoked, revoked_port) = started(true);
+        let (status, body) = post(revoked_port, &hello_frame(1));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "revoked");
+        revoked.stop().expect("stop");
+
+        // The same revoked pin cannot lock the desktop out of re-pairing: the
+        // code replaces it, and the hello it pinned is admitted afterwards.
+        let state = PairingListenerState::default();
+        let mut repin = offer_window(false);
+        repin.peer = Some(PinnedPeer {
+            device_id: PHONE_ID.to_string(),
+            public_key: phone_public_hex(),
+            generation: 1,
+            revoked: true,
+        });
+        let info = state
+            .start("127.0.0.1", repin, desktop_identity())
+            .expect("start");
+        let port = info.port.expect("a bound port");
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = post(port, &hello_frame(1));
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            state.status().expect("status").peer_device_id.as_deref(),
+            Some(PHONE_ID)
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_request_from_another_build_line_is_refused() {
+        let (state, port) = started_with_offer(false);
+        let schema = post_request(
+            port,
+            &request_body(|message| {
+                message.insert("schemaVersion".to_string(), json!(7));
+            }),
+        );
+        assert_eq!(schema.0, 403, "{}", schema.1);
+        assert_eq!(refusal_reason(&schema.1), "schema-mismatch");
+
+        // Refusals before the pin leave the code unspent.
+        assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
+        state.stop().expect("stop");
     }
 }

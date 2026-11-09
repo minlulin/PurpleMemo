@@ -542,15 +542,18 @@
   font-weight: var(--weight-semibold, 600);
 }
 
-/* Pairing's QR placeholder: a shape, deliberately not a code. */
-.mobile-pair-qr {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  aspect-ratio: 1;
-  max-width: calc(var(--space-10) * 4);
-  border: var(--border-width) dashed currentColor;
+/* The phone's pairing camera preview: the frame `jsqr` reads. It is hidden
+ * while idle, and the shell's `[hidden]` rule outranks the card's display. */
+.mobile-pair-preview {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
   border-radius: var(--radius-lg);
-  opacity: 0.55;
-  letter-spacing: 0.2em;
+  background: var(--color-surface-subtle);
+}
+
+.mobile-pair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }

@@ -463,11 +463,30 @@ longer holds the phase open.
   accepting an unpinned envelope (§11.2). Added dependencies: `hkdf` 0.13.0
   (Rust, HKDF-SHA256 — already a transitive pin in `Cargo.lock`) and
   `@noble/hashes` 2.4.0 (TypeScript HKDF — already in the tree through
-  `@noble/ciphers`). Still open in this item: the desktop QR panel wiring and
-  the phone’s camera/numeric entry (next session — this listener admits a
-  *pinned* peer, so first pairing is the code-confirmed flow that UI drives);
-  and the two-device run (no emulator attached, and the Redmi stays
-  off-limits).
+  `@noble/ciphers`).  **SESSION 6 (2026-11-09): the desktop panel and the phone’s entry are wired;
+  the two-device run did not happen.** Q.1 — the desktop Settings has a
+  Pairing section (`src/components/PairingPanel.tsx`, state in
+  `src/lib/sync/pairingPanel.ts`) over four real commands (`pairing_local`,
+  `pairing_open`, `pairing_close`, `pairing_status`): the offer is minted by
+  `pairing.ts`, drawn from `qr.ts`’s matrix, and shown only while the listener
+  is bound and the code is live; expiry, lock, app background and the panel
+  closing all call `pairing_close`, which resolves only after the port refuses
+  a connect (§11.5). The listener gained the code-confirmed rendezvous the
+  spec describes in §11.1/§11.6.1 — `POST /pair/request`: the code gates the
+  rendezvous only, the presented key is pinned for the window, the ack is an
+  ordinary sealed envelope — **new wire surface, since §11.6.1 does not name
+  the request message; MinLulin’s approval is required**. Q.2 — the phone’s
+  pairing block is real (`src/components/MobilePairingCard.tsx`, logic in
+  `src/lib/sync/mobilePairing.ts`): camera frames decode through `jsqr` →
+  `parseOffer`, a typed code goes through `redeemCode`, and each refusal is the
+  module’s own wording. The camera path is **built and proven against a
+  rendered QR fixture, not on a camera**; the phone’s sealed client is **not
+  built**, so the phone cannot yet send its key, and the card says so. **Still
+  open in this item: the two-device run (Q.3).** The emulator booted
+  (`emulator-5554`, `purple_memo_test`) but no pairing can complete — the phone
+  has no sealed client and no adoption/upload engine exists — so there are no
+  row counts to record, no adoption claim is made, and the Redmi was not
+  touched.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync

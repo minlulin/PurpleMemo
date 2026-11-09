@@ -4168,3 +4168,61 @@ tbody .week-row {
   inset-block-start: 0;
   z-index: 1;
 }
+
+/* Pairing panel (Phase C Session 6) ---------------------------------------
+ * The QR is a fixed square so the code and the facts beside it hold still while
+ * the countdown ticks; the facts column never shrinks below a fingerprint. */
+.pairing-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.pairing-panel-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+.pairing-qr {
+  inline-size: 12rem;
+  block-size: 12rem;
+  flex: 0 0 auto;
+}
+
+.pairing-facts {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  min-inline-size: 12rem;
+}
+
+.pairing-facts dt {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.pairing-facts dd {
+  margin: 0;
+}
+
+.pairing-code {
+  font-size: var(--text-lg);
+  letter-spacing: 0.3em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pairing-fingerprint {
+  letter-spacing: 0.08em;
+}
+
+.pairing-error {
+  margin: 0;
+  font-weight: var(--weight-semibold, 600);
+}
+
+.pairing-actions {
+  display: flex;
+  gap: var(--space-2);
+}

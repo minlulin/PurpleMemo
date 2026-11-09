@@ -559,7 +559,9 @@ fn random_hex(bytes: usize) -> Result<String, String> {
 /// Best-effort local network address for the printed link. Binding a UDP
 /// socket and "connecting" it sends nothing — it only asks the OS which
 /// source address the default route would use.
-fn lan_ip() -> Option<String> {
+/// The LAN address a phone on the same network can reach (also the questing
+/// address the pairing offer puts in its QR, §11.1).
+pub(crate) fn lan_ip() -> Option<String> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     // RFC 5737 TEST-NEroutable-looking, never a real destination.
     socket.connect("192.0.2.1:80").ok()?;
