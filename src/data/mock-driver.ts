@@ -15,6 +15,7 @@ import type {
   DataDriver,
   ExecuteOutcome,
   PairingDriver,
+  PairingIdentityStatus,
   PairingListenerInfo,
   PairingLocalInfo,
   PairingOpenInput,
@@ -241,6 +242,18 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
   const thumbs = new Map<string, Uint8Array>();
 
   const nextRowid = () => ++lastRowid;
+
+  // Pairing identity state for tests: one keypair, and no re-pair needed until
+  // a test asks for the recovery (§11.2, N2).
+  let identity: PairingIdentityStatus = {
+    present: true,
+    publicKey: PAIRING_PUBLIC_KEY,
+    fingerprint: PAIRING_FINGERPRINT,
+    needsRePair: false,
+    lost: false,
+    rePairRequired: false,
+    note: null,
+  };
 
   const mock: MockDriver = {
     calls,
@@ -494,6 +507,32 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     async pairingStatus(): Promise<PairingListenerInfo> {
       record("pairingStatus", []);
       return { ...pairing };
+    },
+    async pairingIdentityStatus(): Promise<PairingIdentityStatus> {
+      record("pairingIdentityStatus", []);
+      return { ...identity };
+    },
+    // Mirrors `commands.rs`: no confirmation, no replacement, and only the
+    // pairing slot is replaced — the rest of the identity state stands (§11.4).
+    async pairingIdentityReplace(
+      confirm: boolean,
+    ): Promise<PairingIdentityStatus> {
+      record("pairingIdentityReplace", [confirm]);
+      if (!confirm) {
+        throw new Error(
+          "re-pairing replaces this device's pairing key; it needs an explicit confirmation (§11.4).",
+        );
+      }
+      identity = {
+        present: true,
+        publicKey: PAIRING_PUBLIC_KEY,
+        fingerprint: PAIRING_FINGERPRINT,
+        needsRePair: true,
+        lost: false,
+        rePairRequired: true,
+        note: null,
+      };
+      return { ...identity };
     },
     async sharePublish(snapshotJson: string): Promise<ShareInfo> {
       record("sharePublish", [snapshotJson]);

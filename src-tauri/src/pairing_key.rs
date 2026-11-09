@@ -11,10 +11,14 @@
 //!
 //! **Key loss is fail-closed** (the Session 0 rule): a stored value that is not
 //! a 32-byte key is an error, never silently replaced, and a device whose key is
-//! gone re-pairs with a new keypair instead of reusing an old pin. A fresh
-//! install mints here; a factory reset deletes the slot in
-//! `db::delete_db_key`, so the next launch mints again (and Session 2's rule
-//! mints a new device id with it).
+//! gone re-pairs with a new keypair instead of reusing an old pin. Only a fresh
+//! install mints, which is why [`load_or_mint`] is told the install's pairing
+//! history: with peers already pinned, an empty slot is key loss, so it fails
+//! closed, records `sync_state.re_pair_required` and waits for the person to
+//! confirm a replacement ([`replace_after_confirmation`]) — a silent rotation
+//! would leave every peer's pin naming a key this device no longer holds (§11.2,
+//! §11.4). A factory reset deletes the slot in `db::delete_db_key`, so the next
+//! launch mints again (and Session 2's rule mints a new device id with it).
 //!
 //! The fingerprint is the 24-hex-character grouping both pairing screens show.
 //! It is pinned against `keyFingerprint` in `src/lib/sync/pairing.ts` by a test,
@@ -25,7 +29,7 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::envelope::{from_hex, public_key, to_hex, KEY_BYTES};
-use crate::key_store::{self, Slot};
+use crate::key_store::{self, KeyStoreError, Slot};
 
 /// The device's own X25519 keypair.
 ///
@@ -107,25 +111,147 @@ pub fn fingerprint_of(public_key_hex: &str) -> String {
         .join(" ")
 }
 
-/// Load this install's keypair, minting it on first use.
-///
-/// A stored value that cannot be parsed is an error — never a silent re-mint.
-/// Re-minting over an unreadable slot would look like a new pairing to the peer
-/// while the desktop still held the old pin, so the honest outcome is the
-/// documented fail-closed one.
-pub fn load_or_mint() -> Result<PairingIdentity, String> {
-    match key_store::read(Slot::PairingIdentity) {
-        Ok(Some(stored)) => Ok(PairingIdentity::from_secret(parse_secret(&stored)?)),
-        Ok(None) => mint(),
-        Err(e) => Err(e.to_string()),
+/// Whether this install has ever paired — the fact that decides whether an
+/// empty slot may be minted (§11.2, wave 1 N2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingHistory {
+    /// No `sync_peers` rows: a fresh install, so the first identity is minted.
+    Never,
+    /// At least one pin exists (or existed). An empty slot is key loss, never a
+    /// fresh start.
+    Paired,
+}
+
+/// Why the pairing identity could not be loaded. Typed, because the recovery
+/// differs per class and the UI must not parse a message to find it (N2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairingKeyError {
+    /// The store is reachable and holds no identity while a pin exists. Fail
+    /// closed: `sync_state.re_pair_required` is recorded, and a replacement is
+    /// minted only on the person's explicit confirmation.
+    MissingWithPeers(String),
+    /// The stored identity is there but can never be opened again (Android
+    /// Keystore loss). `pairing_identity_replace` is the documented recovery.
+    Lost(String),
+    /// The store is unreachable, or the stored value is not a key. Never a
+    /// reason to mint.
+    Other(String),
+}
+
+impl PairingKeyError {
+    /// The reason, in the words the panel shows.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::MissingWithPeers(message) | Self::Lost(message) | Self::Other(message) => message,
+        }
+    }
+
+    /// True when confirming a fresh identity is what repairs this class — and so
+    /// also when `re_pair_required` must be recorded.
+    pub fn needs_re_pair_flag(&self) -> bool {
+        matches!(self, Self::MissingWithPeers(_) | Self::Lost(_))
     }
 }
 
-fn mint() -> Result<PairingIdentity, String> {
+impl fmt::Display for PairingKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl From<KeyStoreError> for PairingKeyError {
+    fn from(error: KeyStoreError) -> Self {
+        match error {
+            // The class is preserved, not flattened: `Lost` is what the
+            // dedicated recovery answers, and it must stay recognisable.
+            KeyStoreError::Lost(message) => Self::Lost(message),
+            KeyStoreError::Unavailable(message) | KeyStoreError::Failed(message) => {
+                Self::Other(message)
+            }
+        }
+    }
+}
+
+/// What loading is about to do. Pure, so the fail-closed policy is testable
+/// without an OS key store.
+#[derive(Debug)]
+pub enum IdentityPlan {
+    /// A stored key that parsed: use it.
+    Stored(PairingIdentity),
+    /// A fresh install: mint the first identity.
+    Mint,
+}
+
+/// The policy, in one place (§11.2, N2):
+///
+/// * a stored, parseable key is used;
+/// * an empty slot is a mint **only when this install has never paired**;
+/// * an empty slot over an existing pin fails closed — a replacement needs the
+///   person's confirmation, never a silent rotation of this device's identity;
+/// * an unopenable slot keeps its typed `Lost` class, so the dedicated recovery
+///   is reachable;
+/// * a malformed value or an unreachable store never mints.
+pub fn plan(
+    stored: Result<Option<String>, KeyStoreError>,
+    history: PairingHistory,
+) -> Result<IdentityPlan, PairingKeyError> {
+    match stored {
+        Ok(Some(value)) => parse_secret(&value)
+            .map(|secret| IdentityPlan::Stored(PairingIdentity::from_secret(secret)))
+            .map_err(PairingKeyError::Other),
+        Ok(None) => match history {
+            PairingHistory::Never => Ok(IdentityPlan::Mint),
+            PairingHistory::Paired => {
+                Err(PairingKeyError::MissingWithPeers(missing_identity_message()))
+            }
+        },
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn missing_identity_message() -> String {
+    "this device's pairing key is missing from the platform key store, but it has paired before. \
+     Purple Memo will not mint a replacement identity over an existing pin — confirm re-pairing to \
+     mint a fresh key, then pair the phone again"
+        .to_string()
+}
+
+/// Load this install's keypair, minting it only on a fresh install.
+pub fn load_or_mint(history: PairingHistory) -> Result<PairingIdentity, PairingKeyError> {
+    match plan(key_store::read(Slot::PairingIdentity), history)? {
+        IdentityPlan::Stored(identity) => Ok(identity),
+        IdentityPlan::Mint => mint(),
+    }
+}
+
+/// What the store says, without minting — what boot checks (N2).
+///
+/// `Ok(None)` is a fresh install; `MissingWithPeers` and `Lost` are the classes
+/// that need the confirmed re-pair.
+pub fn inspect(history: PairingHistory) -> Result<Option<PairingIdentity>, PairingKeyError> {
+    match plan(key_store::read(Slot::PairingIdentity), history)? {
+        IdentityPlan::Stored(identity) => Ok(Some(identity)),
+        IdentityPlan::Mint => Ok(None),
+    }
+}
+
+fn mint() -> Result<PairingIdentity, PairingKeyError> {
     let mut secret = [0u8; KEY_BYTES];
-    getrandom::fill(&mut secret).map_err(|e| format!("OS random source unavailable: {e}"))?;
-    key_store::write(Slot::PairingIdentity, &to_hex(&secret)).map_err(|e| e.to_string())?;
+    getrandom::fill(&mut secret)
+        .map_err(|e| PairingKeyError::Other(format!("OS random source unavailable: {e}")))?;
+    key_store::write(Slot::PairingIdentity, &to_hex(&secret)).map_err(PairingKeyError::from)?;
     Ok(PairingIdentity::from_secret(secret))
+}
+
+/// Mint a replacement identity after the person confirms re-pairing (§11.4, N2).
+///
+/// Only `Slot::PairingIdentity` is touched: the database slot and every note,
+/// task and photo stay exactly where they are, so this is re-pairing, not a
+/// factory reset. Deleting first is what recovers an Android slot whose wrapped
+/// blob can never be unwrapped again.
+pub fn replace_after_confirmation() -> Result<PairingIdentity, PairingKeyError> {
+    key_store::delete(Slot::PairingIdentity).map_err(PairingKeyError::from)?;
+    mint()
 }
 
 /// Parse a stored secret. Pure, so the shape rule is testable without a key
@@ -226,6 +352,97 @@ mod tests {
         let message = parse_secret(&"ab".repeat(31)).expect_err("wrong length");
         assert!(message.contains("re-pair"), "{message}");
         assert!(!message.contains("ab"), "{message}");
+    }
+
+    fn stored(value: Option<&str>) -> Result<Option<String>, KeyStoreError> {
+        Ok(value.map(str::to_string))
+    }
+
+    /// §11.2 (N2): an empty slot over an existing pin is key loss. Minting here
+    /// would rotate this device's identity behind the person's back and leave
+    /// every peer's pin naming a key that no longer exists.
+    #[test]
+    fn a_missing_identity_over_an_existing_pairing_fails_closed() {
+        let refused = plan(stored(None), PairingHistory::Paired)
+            .expect_err("a paired install must never mint silently");
+        assert!(matches!(refused, PairingKeyError::MissingWithPeers(_)));
+        assert!(refused.needs_re_pair_flag(), "this is a re-pair");
+        assert!(
+            refused.message().contains("re-pair") && refused.message().contains("confirm"),
+            "the message must name the recovery: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_fresh_install_mints_its_first_identity() {
+        match plan(stored(None), PairingHistory::Never).expect("a fresh install mints") {
+            IdentityPlan::Mint => {}
+            IdentityPlan::Stored(_) => panic!("an empty fresh install has nothing to load"),
+        }
+    }
+
+    /// The `Lost` class says the slot exists but can never be opened, which is
+    /// exactly what `pairing_identity_replace` answers; flattening it to a bare
+    /// string would hide that from the UI (§11.2, N2).
+    #[test]
+    fn a_lost_slot_keeps_its_typed_class() {
+        let lost = plan(
+            Err(KeyStoreError::Lost("keystore key gone".to_string())),
+            PairingHistory::Paired,
+        )
+        .expect_err("a lost identity is an error");
+        assert!(matches!(lost, PairingKeyError::Lost(_)));
+        assert!(lost.needs_re_pair_flag());
+        assert_eq!(lost.message(), "keystore key gone");
+    }
+
+    #[test]
+    fn a_stored_key_is_used_and_a_malformed_one_never_mints() {
+        let good = "11".repeat(KEY_BYTES);
+        match plan(stored(Some(&good)), PairingHistory::Paired).expect("stored key") {
+            IdentityPlan::Stored(identity) => {
+                assert_eq!(identity.public_key_hex(), RUST_VECTOR_PUBLIC)
+            }
+            IdentityPlan::Mint => panic!("a stored key must never be replaced"),
+        }
+        let malformed = plan(stored(Some("not-a-key")), PairingHistory::Never)
+            .expect_err("a malformed stored key is never a fresh start");
+        assert!(matches!(malformed, PairingKeyError::Other(_)));
+        assert!(!malformed.needs_re_pair_flag());
+    }
+
+    /// A store that is merely unreachable is retryable: it must neither mint nor
+    /// tell the person to re-pair.
+    #[test]
+    fn an_unreachable_store_never_mints_and_never_asks_for_a_re_pair() {
+        for error in [
+            KeyStoreError::Unavailable("locked".to_string()),
+            KeyStoreError::Failed("refused".to_string()),
+        ] {
+            let refused = plan(Err(error), PairingHistory::Never)
+                .expect_err("a store failure is never a fresh install");
+            assert!(matches!(refused, PairingKeyError::Other(_)));
+            assert!(!refused.needs_re_pair_flag(), "retryable, not a re-pair");
+        }
+    }
+
+    /// §10.3: a factory reset removes the pairing identity too, so a reset cannot
+    /// leave the old secret behind to resume a pairing the person erased.
+    #[test]
+    fn a_factory_reset_still_deletes_the_pairing_slot() {
+        let db = include_str!("db.rs");
+        let start = db.find("pub fn delete_db_key").expect("delete_db_key");
+        let body = &db[start..];
+        let end = body.find("\n}\n").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("Slot::PairingIdentity"),
+            "the reset must delete the pairing identity: {body}"
+        );
+        assert!(
+            body.contains("Slot::Database"),
+            "and the database key: {body}"
+        );
     }
 
     /// The pairing secret and the database key never share storage: a slot

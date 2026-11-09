@@ -27,6 +27,47 @@ test("each pairing command is one invoke site with the documented argument", () 
   );
   assert.match(driver, /pairingClose: \(\) => invoke\("pairing_close"\)/);
   assert.match(driver, /pairingStatus: \(\) => invoke\("pairing_status"\)/);
+  assert.match(
+    driver,
+    /pairingIdentityStatus: \(\) => invoke\("pairing_identity_status"\)/,
+  );
+  assert.match(
+    driver,
+    /pairingIdentityReplace: \(confirm\) =>\s*invoke\("pairing_identity_replace", \{ confirm \}\)/,
+  );
+});
+
+/**
+ * §11.2 (N2): a pairing identity that is gone must never be minted behind the
+ * person's back. The replacement is a separate command, it refuses without an
+ * explicit confirmation, and it deletes only the pairing slot.
+ */
+test("a replacement pairing identity needs an explicit confirmation", () => {
+  assert.match(
+    commands,
+    /pub fn pairing_identity_replace\(\s*app: tauri::AppHandle,\s*confirm: bool,\s*\)/,
+  );
+  assert.match(commands, /if !confirm \{/);
+  assert.match(commands, /pairing_key::replace_after_confirmation\(\)/);
+  assert.match(
+    commands,
+    /pairing_key::load_or_mint\(history\)/,
+    "the fail-closed load takes the pairing history",
+  );
+  const backing = readFileSync(
+    new URL("../../src-tauri/src/pairing_key.rs", import.meta.url),
+    "utf8",
+  );
+  assert.match(backing, /pub fn replace_after_confirmation\(\)/);
+  assert.match(
+    backing,
+    /key_store::delete\(Slot::PairingIdentity\)/,
+    "only the pairing slot is deleted — the database key stays",
+  );
+  assert.match(
+    backing,
+    /PairingHistory::Paired => \{\s*Err\(PairingKeyError::MissingWithPeers\(\s*missing_identity_message\(\)/,
+  );
 });
 
 test("the pairing commands are registered and the window binds the LAN", () => {
@@ -35,6 +76,8 @@ test("the pairing commands are registered and the window binds the LAN", () => {
     "pairing_open",
     "pairing_close",
     "pairing_status",
+    "pairing_identity_status",
+    "pairing_identity_replace",
   ]) {
     assert.ok(lib.includes(`commands::${name}`), `${name} must be registered`);
   }

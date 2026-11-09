@@ -362,6 +362,25 @@ export interface DataDriver {
  * [`PairingTransport`](../lib/sync/pairingPanel.ts) is the narrow contract, and
  * the production driver is the one object that satisfies both.
  */
+/**
+ * The pairing identity's state, for the re-pair recovery (§11.2, §11.4; N2).
+ * Reads only — nothing here mints or deletes a key.
+ */
+export interface PairingIdentityStatus {
+  /** Whether a keypair is stored and readable right now. */
+  present: boolean;
+  publicKey: string | null;
+  fingerprint: string | null;
+  /** Missing over an existing pin, or unopenable: the confirmed replacement fixes it. */
+  needsRePair: boolean;
+  /** The stored identity exists but the platform key store can no longer open it. */
+  lost: boolean;
+  /** `sync_state.re_pair_required` as stored. */
+  rePairRequired: boolean;
+  /** Why the identity is unusable, in the words the panel shows. */
+  note: string | null;
+}
+
 export interface PairingDriver {
   /**
    * This device's pairing identity and data line — reads only, no socket. The
@@ -383,6 +402,17 @@ export interface PairingDriver {
   pairingClose(): Promise<PairingListenerInfo>;
   /** Current window state, including the peer a code-confirmed rendezvous pinned. */
   pairingStatus(): Promise<PairingListenerInfo>;
+  /**
+   * The identity's state, so the panel can offer the confirmed re-pair instead
+   * of a dead end (§11.2, N2). Never mints anything.
+   */
+  pairingIdentityStatus(): Promise<PairingIdentityStatus>;
+  /**
+   * Replace this device's pairing identity after an explicit confirmation
+   * (§11.4). Deletes only the pairing slot — notes, tasks and the database key
+   * stay — and every peer then pairs again.
+   */
+  pairingIdentityReplace(confirm: boolean): Promise<PairingIdentityStatus>;
 }
 
 /** The one production driver: Tauri IPC commands. */
@@ -454,6 +484,9 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     pairingOpen: (input) => invoke("pairing_open", { input }),
     pairingClose: () => invoke("pairing_close"),
     pairingStatus: () => invoke("pairing_status"),
+    pairingIdentityStatus: () => invoke("pairing_identity_status"),
+    pairingIdentityReplace: (confirm) =>
+      invoke("pairing_identity_replace", { confirm }),
   };
 }
 

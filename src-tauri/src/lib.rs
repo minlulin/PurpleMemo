@@ -180,6 +180,8 @@ pub fn run() {
             commands::pairing_open,
             commands::pairing_close,
             commands::pairing_status,
+            commands::pairing_identity_status,
+            commands::pairing_identity_replace,
             commands::factory_reset,
             commands::app_restart,
             external_links::open_external_url,
@@ -192,6 +194,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| report_run_failure(&e.to_string()));
+}
+
+/// Boot-time check of `Slot::PairingIdentity` (§11.2, wave 1 N2).
+///
+/// A missing identity over an existing pin, or a stored one the platform can no
+/// longer open, records `sync_state.re_pair_required` so the confirmed re-pair
+/// is offered. A fresh install is left alone — its identity is minted on first
+/// pairing — and an unreachable key store is retryable, so neither writes
+/// anything. No branch here mints a replacement over a pin.
+fn surface_pairing_identity_loss(conn: &rusqlite::Connection) {
+    let Ok(history) = commands::pairing_history(conn) else {
+        return;
+    };
+    if let Err(crate::pairing_key::PairingKeyError::MissingWithPeers(_))
+    | Err(crate::pairing_key::PairingKeyError::Lost(_)) = crate::pairing_key::inspect(history)
+    {
+        if let Err(error) = commands::mark_re_pair_required(conn) {
+            // The flag could not be written, but the next pairing call still
+            // fails closed the same way; only the prompt would be late.
+            eprintln!("purple-memo: {error}");
+        }
+    }
 }
 
 /// Encrypted DB core (P1) — everything the app needs before the frontend can use
@@ -300,6 +324,11 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
             return Err(e.into());
         }
     };
+    // §11.2 (N2): the pairing identity is checked at boot for the same reason
+    // the database key is — a lost secret must surface with its own recovery
+    // path, not as a bare error the first time the pairing panel is opened.
+    // Nothing is minted and no data is touched: notes and tasks stay readable.
+    surface_pairing_identity_loss(&conn);
     app.manage(db::AppState {
         // `Some` until factory reset takes it; every DB command fails closed
         // with `db::DB_CLOSED_MESSAGE` once it is `None`.

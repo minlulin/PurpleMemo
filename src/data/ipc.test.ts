@@ -47,13 +47,14 @@ test("every command the driver invokes is registered in Rust", () => {
   // The exact surface: 23 commands, plus `factory_reset` and
   // `app_restart`, plus the import-lease pair (`backup_import_begin` /
   // `backup_import_end`, E5), plus the pairing window's four (`pairing_local`,
-  // `pairing_open`, `pairing_close`, `pairing_status`, §11.5) — 29. Bump
-  // deliberately, with the change that adds the command — the count is what
-  // catches a command dropped from BOTH sides at once.
+  // `pairing_open`, `pairing_close`, `pairing_status`, §11.5), plus the re-pair
+  // recovery pair (`pairing_identity_status`, `pairing_identity_replace`,
+  // §11.2) — 31. Bump deliberately, with the change that adds the command —
+  // the count is what catches a command dropped from BOTH sides at once.
   assert.equal(
     commands.length,
-    29,
-    `expected the full 29-command surface, got ${commands.length}`,
+    31,
+    `expected the full 31-command surface, got ${commands.length}`,
   );
   for (const command of commands) {
     assert.ok(

@@ -37,6 +37,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard};
 
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{Manager, State};
@@ -44,6 +45,7 @@ use tauri::{Manager, State};
 use crate::db::{self, AppState, BatchStatement, ExecuteOutcome, JsonObj};
 use crate::file_write;
 use crate::lifecycle::Lifecycle;
+use crate::pairing_key::{self, PairingHistory, PairingIdentity};
 use crate::pairing_listener::{
     PairingListenerInfo, PairingListenerState, PairingOffer, PairingOpenInput, PairingWindow,
     PROTOCOL_VERSION,
@@ -828,6 +830,66 @@ fn local_sync_facts(state: &AppState) -> CmdResult<(String, u64, u64)> {
     Ok((device_id, generation.max(0) as u64, schema.max(0) as u64))
 }
 
+/// Whether this install has ever paired — the one database fact `pairing_key`
+/// needs so a missing identity fails closed instead of rotating silently
+/// (§11.2, wave 1 N2).
+pub(crate) fn pairing_history(conn: &Connection) -> CmdResult<PairingHistory> {
+    let paired: bool = conn
+        .query_row("SELECT EXISTS (SELECT 1 FROM sync_peers)", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("could not read this device's pairing history: {e}"))?;
+    Ok(if paired {
+        PairingHistory::Paired
+    } else {
+        PairingHistory::Never
+    })
+}
+
+/// `sync_state.re_pair_required` as stored.
+pub(crate) fn re_pair_required(conn: &Connection) -> CmdResult<bool> {
+    let flag: i64 = conn
+        .query_row(
+            "SELECT re_pair_required FROM sync_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("could not read the re-pair flag: {e}"))?;
+    Ok(flag == 1)
+}
+
+/// Record that this install must re-pair (§11.4, N2). Idempotent, and it moves
+/// nothing else: notes, tasks and the database key stay exactly where they are.
+pub(crate) fn mark_re_pair_required(conn: &Connection) -> CmdResult<()> {
+    conn.execute(
+        "UPDATE sync_state SET re_pair_required = 1, \
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1",
+        [],
+    )
+    .map_err(|e| format!("could not record that this device must re-pair: {e}"))?;
+    Ok(())
+}
+
+/// This install's pairing identity, minting only on a fresh install (§11.2, N2).
+///
+/// A missing or unopenable identity over an existing pin is a re-pair, not a
+/// crash: the flag is recorded so the recovery path is offered even on a launch
+/// that missed boot's check, and the error carries the reason to show.
+fn load_pairing_identity(db_state: &AppState) -> CmdResult<PairingIdentity> {
+    let history = {
+        let conn = lock_conn(db_state)?;
+        pairing_history(&conn)?
+    };
+    pairing_key::load_or_mint(history).map_err(|error| {
+        if error.needs_re_pair_flag() {
+            if let Ok(conn) = lock_conn(db_state) {
+                let _ = mark_re_pair_required(&conn);
+            }
+        }
+        error.message().to_string()
+    })
+}
+
 /// This device's pairing identity and the data line it would pair on. Reads
 /// only — no socket is bound here.
 #[tauri::command]
@@ -836,7 +898,7 @@ pub fn pairing_local(app: tauri::AppHandle) -> CmdResult<PairingLocalInfo> {
         .try_state::<AppState>()
         .ok_or_else(|| "database state is not available — restart the app".to_string())?;
     let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
-    let identity = crate::pairing_key::load_or_mint()?;
+    let identity = load_pairing_identity(&db_state)?;
     Ok(PairingLocalInfo {
         device_id,
         generation,
@@ -862,7 +924,7 @@ pub fn pairing_open(
         .try_state::<AppState>()
         .ok_or_else(|| "database state is not available — restart the app".to_string())?;
     let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
-    let identity = crate::pairing_key::load_or_mint()?;
+    let identity = load_pairing_identity(&db_state)?;
     let offer = match (input.offer_code, input.offer_expires_at) {
         (Some(code), Some(expires_at)) => Some(PairingOffer { code, expires_at }),
         (None, None) => None,
@@ -897,9 +959,168 @@ pub fn pairing_status(state: State<'_, PairingListenerState>) -> CmdResult<Pairi
     state.status()
 }
 
+/// The pairing identity's state, for the re-pair recovery (§11.2, wave 1 N2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingIdentityStatus {
+    /// Whether a keypair is stored and readable right now.
+    pub present: bool,
+    pub public_key: Option<String>,
+    pub fingerprint: Option<String>,
+    /// The key is missing over an existing pairing, or can never be opened
+    /// again: the confirmed replacement is what repairs it.
+    pub needs_re_pair: bool,
+    /// The stored identity exists but the platform key store can no longer open
+    /// it — the typed `Lost` class, never inferred from a message.
+    pub lost: bool,
+    /// `sync_state.re_pair_required` as stored.
+    pub re_pair_required: bool,
+    /// Why the identity is unusable, in the words the panel shows.
+    pub note: Option<String>,
+}
+
+/// Report the identity without minting anything, so the panel can offer the
+/// confirmed re-pair instead of a dead end (N2).
+#[tauri::command]
+pub fn pairing_identity_status(app: tauri::AppHandle) -> CmdResult<PairingIdentityStatus> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (history, flagged) = {
+        let conn = lock_conn(&db_state)?;
+        (pairing_history(&conn)?, re_pair_required(&conn)?)
+    };
+    match pairing_key::inspect(history) {
+        Ok(stored) => Ok(PairingIdentityStatus {
+            present: stored.is_some(),
+            public_key: stored.as_ref().map(|identity| identity.public_key_hex()),
+            fingerprint: stored.as_ref().map(|identity| identity.fingerprint()),
+            needs_re_pair: flagged,
+            lost: false,
+            re_pair_required: flagged,
+            note: None,
+        }),
+        Err(error) => Ok(PairingIdentityStatus {
+            present: false,
+            public_key: None,
+            fingerprint: None,
+            needs_re_pair: error.needs_re_pair_flag() || flagged,
+            lost: matches!(error, crate::pairing_key::PairingKeyError::Lost(_)),
+            re_pair_required: flagged,
+            note: Some(error.message().to_string()),
+        }),
+    }
+}
+
+/// Mint a fresh pairing identity after an explicit confirmation (§11.4, N2).
+///
+/// Deletes only `Slot::PairingIdentity`: local notes, tasks and the database key
+/// are untouched, so this is re-pairing, not a factory reset. The flag is set
+/// because every peer's pin names the old key, so each peer pairs again.
+#[tauri::command]
+pub fn pairing_identity_replace(
+    app: tauri::AppHandle,
+    confirm: bool,
+) -> CmdResult<PairingIdentityStatus> {
+    if !confirm {
+        return Err(
+            "re-pairing replaces this device's pairing key; it needs an explicit confirmation \
+             (§11.4)."
+                .to_string(),
+        );
+    }
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let identity =
+        pairing_key::replace_after_confirmation().map_err(|error| error.message().to_string())?;
+    {
+        let conn = lock_conn(&db_state)?;
+        mark_re_pair_required(&conn)?;
+    }
+    Ok(PairingIdentityStatus {
+        present: true,
+        public_key: Some(identity.public_key_hex()),
+        fingerprint: Some(identity.fingerprint()),
+        needs_re_pair: true,
+        lost: false,
+        re_pair_required: true,
+        note: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::lock_conn;
+    use super::{lock_conn, mark_re_pair_required, pairing_history, re_pair_required};
+
+    /// A database just far enough along to answer the pairing-history question:
+    /// `sync_state` with its flag, and `sync_peers` with `pins` devices pinned.
+    fn pairing_db(pins: usize) -> crate::db::AppState {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sync_state (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 re_pair_required INTEGER NOT NULL DEFAULT 0,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT INTO sync_state (id, re_pair_required, updated_at)
+                 VALUES (1, 0, '2026-01-01T00:00:00Z');
+             CREATE TABLE sync_peers (device_id TEXT PRIMARY KEY);",
+        )
+        .expect("schema");
+        for index in 0..pins {
+            conn.execute(
+                "INSERT INTO sync_peers (device_id) VALUES (?1)",
+                [format!("peers-{index}")],
+            )
+            .expect("pin");
+        }
+        crate::db::AppState {
+            conn: std::sync::Mutex::new(Some(conn)),
+            txn_open: std::sync::atomic::AtomicBool::new(false),
+            reset_terminal: std::sync::atomic::AtomicBool::new(false),
+            data_dir: std::path::PathBuf::from("unused"),
+        }
+    }
+
+    /// §11.2 (N2): the fail-closed decision needs one database fact — has this
+    /// install ever paired — and a pin is what says so.
+    #[test]
+    fn the_pairing_history_is_whether_a_pin_exists() {
+        let fresh = pairing_db(0);
+        let conn = lock_conn(&fresh).expect("conn");
+        assert_eq!(
+            pairing_history(&conn).expect("history"),
+            crate::pairing_key::PairingHistory::Never
+        );
+        drop(conn);
+
+        let paired = pairing_db(1);
+        let conn = lock_conn(&paired).expect("conn");
+        assert_eq!(
+            pairing_history(&conn).expect("history"),
+            crate::pairing_key::PairingHistory::Paired,
+            "one pin is enough to make a missing key key loss"
+        );
+    }
+
+    /// The flag is what the panel reads to offer the confirmed re-pair, and
+    /// recording it must move nothing else (notes and tasks stay readable).
+    #[test]
+    fn recording_a_required_re_pair_moves_only_the_flag() {
+        let state = pairing_db(1);
+        let conn = lock_conn(&state).expect("conn");
+        assert!(!re_pair_required(&conn).expect("flag"));
+        mark_re_pair_required(&conn).expect("mark");
+        assert!(re_pair_required(&conn).expect("flag"));
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_state", [], |row| row.get(0))
+            .expect("state rows");
+        let peers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_peers", [], |row| row.get(0))
+            .expect("peer rows");
+        assert_eq!((rows, peers), (1, 1), "only the flag may change");
+    }
 
     /// Once factory reset has taken the connection, every DB command
     /// must fail closed with a clear message instead of touching a deleted
