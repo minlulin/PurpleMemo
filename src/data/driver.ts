@@ -135,6 +135,53 @@ export interface ShareInfo {
   note: string | null;
 }
 
+/**
+ * The pairing window's state (§11.5). `endpoint` is the `host:port` the offer's
+ * QR carries. `peerPublicKey`/`peerFingerprint` appear only after a
+ * code-confirmed rendezvous pinned a peer in THIS window (§11.1, §11.2) —
+ * public key material only, never a secret.
+ */
+export interface PairingListenerInfo {
+  running: boolean;
+  port: number | null;
+  endpoint: string | null;
+  publicKey: string | null;
+  fingerprint: string | null;
+  peerDeviceId: string | null;
+  peerPublicKey: string | null;
+  peerFingerprint: string | null;
+  note: string | null;
+}
+
+/** This device's own pairing facts. The public key and fingerprint are public. */
+export interface PairingLocalInfo {
+  deviceId: string;
+  generation: number;
+  schemaVersion: number;
+  protocolVersion: number;
+  publicKey: string;
+  fingerprint: string;
+}
+
+/** A pin the window is opened with, when the peer has paired before (§11.2). */
+export interface PairingPeerPin {
+  deviceId: string;
+  publicKey: string;
+  generation: number;
+  revoked?: boolean;
+}
+
+/** What the panel asks the listener for when it opens (§11.1, §11.5). */
+export interface PairingOpenInput {
+  pairingId: string | null;
+  /** The single-use code; `null` opens a window for a pinned peer only. */
+  offerCode: string | null;
+  /** Unix epoch milliseconds, when a code is offered. */
+  offerExpiresAt: number | null;
+  peer: PairingPeerPin | null;
+  lastCounter?: number;
+}
+
 /** The full driver surface — implemented by Tauri IPC and by test mocks. */
 export interface DataDriver {
   query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -302,8 +349,37 @@ export interface DataDriver {
   shareArm(): Promise<string>;
 }
 
+/**
+ * The pairing window's four commands, kept apart from [`DataDriver`] because a
+ * SQL-only test harness has no socket to open: the panel's own
+ * [`PairingTransport`](../lib/sync/pairingPanel.ts) is the narrow contract, and
+ * the production driver is the one object that satisfies both.
+ */
+export interface PairingDriver {
+  /**
+   * This device's pairing identity and data line — reads only, no socket. The
+   * panel needs the public key and fingerprint before it can mint an offer
+   * (§11.1).
+   */
+  pairingLocal(): Promise<PairingLocalInfo>;
+  /**
+   * Open the LAN pairing window (§11.5). The device id, generation and schema
+   * are read in Rust, never trusted from this call. Refused after a reset
+   * barrier; idempotent while a window is already live.
+   */
+  pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo>;
+  /**
+   * Close the window. Resolves only once the port itself is refused, so the
+   * panel's "closed" state and the socket agree (§11.5). Called on expiry, on
+   * the panel closing, on lock and on app background.
+   */
+  pairingClose(): Promise<PairingListenerInfo>;
+  /** Current window state, including the peer a code-confirmed rendezvous pinned. */
+  pairingStatus(): Promise<PairingListenerInfo>;
+}
+
 /** The one production driver: Tauri IPC commands. */
-export function createTauriDriver(): DataDriver {
+export function createTauriDriver(): DataDriver & PairingDriver {
   return {
     query: (sql, params) => invoke("db_query", { sql, params }),
     execute: (sql, params, lease) =>
@@ -365,6 +441,12 @@ export function createTauriDriver(): DataDriver {
     shareStop: (forLock) => invoke("share_stop", { forLock: forLock === true }),
     shareStatus: () => invoke("share_status"),
     sharePublish: (snapshotJson) => invoke("share_publish", { snapshotJson }),
+    // Pairing window (§11.5). One command site each, so the IPC surface this
+    // file is pinned against lists every command exactly once.
+    pairingLocal: () => invoke("pairing_local"),
+    pairingOpen: (input) => invoke("pairing_open", { input }),
+    pairingClose: () => invoke("pairing_close"),
+    pairingStatus: () => invoke("pairing_status"),
   };
 }
 

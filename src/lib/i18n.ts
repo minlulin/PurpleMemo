@@ -280,12 +280,24 @@ export const en = {
   "mobile.settings.syncHeading": "Sync",
   "mobile.settings.syncOff":
     "Off. This phone is local-only: nothing leaves it, and there is no account to sync with yet.",
-  "mobile.settings.pairHeading": "Pairing (prototype)",
+  "mobile.settings.pairHeading": "Pairing",
   "mobile.settings.pairBody":
-    "This shows what pairing will look like. It does nothing: no code is sent, no key is stored and no network request is made.",
-  "mobile.settings.pairCodeLabel": "Pairing code",
-  "mobile.settings.pairNumeric": "Type this code on the desktop: {code}",
-  "mobile.settings.pairRefresh": "New code",
+    "Pair with the desktop on this network. Scanning its QR is the primary way; typing its six-digit code is the fallback.",
+  "mobile.settings.pairScan": "Scan the desktop's QR",
+  "mobile.settings.pairScanning": "Scanning…",
+  "mobile.settings.pairCameraOff":
+    "This build cannot reach a camera here. Type the six-digit code shown on the desktop instead.",
+  "mobile.settings.pairNoOffer":
+    "Scan the desktop's QR first. A six-digit code on its own does not say which desktop to pair with.",
+  "mobile.settings.pairEndpoint": "Desktop endpoint: {endpoint}",
+  "mobile.settings.pairDesktopKey": "Desktop key fingerprint: {fingerprint}",
+  "mobile.settings.pairTypeLabel": "Six-digit code",
+  "mobile.settings.pairConfirm": "Confirm code",
+  "mobile.settings.pairConfirmed":
+    "Code confirmed. Compare the fingerprints on both screens before you trust the desktop.",
+  "mobile.settings.pairWireMissing":
+    "The desktop has not paired this phone: a phone cannot send its key until its sealed pairing client is built. Nothing was paired in this step.",
+  "mobile.settings.pairRefresh": "Scan again",
   "mobile.settings.permissionsHeading": "Permissions",
   "mobile.settings.notifications": "Notifications",
   "mobile.settings.notificationsOn":
@@ -1185,12 +1197,24 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.syncHeading": "စန့် (Sync)",
   "mobile.settings.syncOff":
     "ပိတ်ထားသည်။ ဤဖုန်းသည် ဒေသတွင်းသာ ဖြစ်သည် — မည်သည့်အရာမှ ပြင်ပသို့ မထွက်ပါ၊ စန့်လုပ်ရန် အကောင့်လည်း မရှိသေးပါ။",
-  "mobile.settings.pairHeading": "တွဲချိတ်ခြင်း (ရှေ့ပြေး)",
+  "mobile.settings.pairHeading": "တွဲချိတ်ခြင်း",
   "mobile.settings.pairBody":
-    "တွဲချိတ်ခြင်း မည်သို့ ဖြစ်မည်ကို ပြသခြင်းသာ ဖြစ်သည်။ ဘာမှ မလုပ်ပါ — ကုဒ် မပို့ပါ၊ ကီး မသိမ်းပါ၊ ကွန်ရက် တောင်းဆိုမှု မပြုပါ။",
-  "mobile.settings.pairCodeLabel": "တွဲချိတ်ကုဒ်",
-  "mobile.settings.pairNumeric": "ဤကုဒ်ကို ကွန်ပျူတာတွင် ရိုက်ထည့်ပါ — {code}",
-  "mobile.settings.pairRefresh": "ကုဒ်အသစ်",
+    "ဤကွန်ရက်ရှိ ကွန်ပျူတာနှင့် တွဲချိတ်ပါ။ ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ခြင်းက အဓိကနည်းလမ်းဖြစ်ပြီး ဂဏန်းခြောက်လုံးကုဒ် ရိုက်ထည့်ခြင်းက အရန်နည်းလမ်း ဖြစ်သည်။",
+  "mobile.settings.pairScan": "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ရန်",
+  "mobile.settings.pairScanning": "စကင်ဖတ်နေသည်…",
+  "mobile.settings.pairCameraOff":
+    "ဤတည်ဆောက်မှုတွင် ကင်မရာ မရနိုင်ပါ။ ကွန်ပျူတာပြသထားသော ဂဏန်းခြောက်လုံးကုဒ်ကို ရိုက်ထည့်ပါ။",
+  "mobile.settings.pairNoOffer":
+    "ပထမဦးစွာ ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ။ ဂဏန်းခြောက်လုံးကုဒ်တစ်ခုတည်းဖြင့် မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မသိနိုင်ပါ။",
+  "mobile.settings.pairEndpoint": "ကွန်ပျူတာ လိပ်စာ — {endpoint}",
+  "mobile.settings.pairDesktopKey": "ကွန်ပျူတာ ကီး လက်ဗွေ — {fingerprint}",
+  "mobile.settings.pairTypeLabel": "ဂဏန်းခြောက်လုံးကုဒ်",
+  "mobile.settings.pairConfirm": "ကုဒ် အတည်ပြုရန်",
+  "mobile.settings.pairConfirmed":
+    "ကုဒ် အတည်ပြုပြီးပါပြီ။ မယုံကြည်မီ စက်နှစ်ခု၏ လက်ဗွေများကို နှိုင်းယှဉ်ပါ။",
+  "mobile.settings.pairWireMissing":
+    "ကွန်ပျူတာက ဤဖုန်းကို မတွဲရသေးပါ — ဖုန်း၏ လုံခြုံသော တွဲချိတ်ပို့ချက် (sealed pairing client) ကို မတည်ဆောက်ရသေးပါ။ ဤအဆင့်တွင် ဘာမှ မတွဲချိတ်ရသေးပါ။",
+  "mobile.settings.pairRefresh": "ထပ်စကင်ဖတ်ရန်",
   "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
   "mobile.settings.notifications": "အသိပေးချက်များ",
   "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",

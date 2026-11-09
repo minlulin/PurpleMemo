@@ -68,6 +68,7 @@ import type {
 } from "../lib/types.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import { markdownComponents, markdownUrlTransform } from "./MarkdownLink.tsx";
+import { MobilePairingCard } from "./MobilePairingCard.tsx";
 import { useLocale, useT } from "./useTranslation.ts";
 
 /**
@@ -427,16 +428,6 @@ const EMPTY_FACTS: SettingsFacts = {
 };
 
 /**
- * Six digits for the pairing prototype, drawn from the OS CSPRNG and shown
- * only. Nothing is stored, sent, or derived from it: pairing is not built.
- */
-function pairingCode(): string {
-  const bytes = new Uint8Array(6);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => String(byte % 10)).join("");
-}
-
-/**
  * The phone's Settings (Phase B session 4, H.1).
  *
  * Every claim here is read from the device, never assumed: the sync status is
@@ -449,7 +440,6 @@ export function SettingsScreen() {
   const t = useT();
   const [facts, setFacts] = useState<SettingsFacts>(EMPTY_FACTS);
   const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);
-  const [code, setCode] = useState(pairingCode);
   const [asking, setAsking] = useState(false);
   const [opening, setOpening] = useState(false);
 
@@ -535,26 +525,7 @@ export function SettingsScreen() {
       <p className="mobile-section-kicker">
         {t("mobile.settings.pairHeading")}
       </p>
-      <div className="mobile-card">
-        <p className="mobile-note">{t("mobile.settings.pairBody")}</p>
-        <div
-          className="mobile-pair-qr"
-          role="img"
-          aria-label={t("mobile.settings.pairCodeLabel")}
-        >
-          <span aria-hidden="true">QR</span>
-        </div>
-        <p className="mobile-row-text">
-          {t("mobile.settings.pairNumeric", { code })}
-        </p>
-        <button
-          type="button"
-          className="btn btn-ghost"
-          onClick={() => setCode(pairingCode())}
-        >
-          {t("mobile.settings.pairRefresh")}
-        </button>
-      </div>
+      <MobilePairingCard />
 
       <p className="mobile-section-kicker">
         {t("mobile.settings.permissionsHeading")}

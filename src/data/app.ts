@@ -23,6 +23,7 @@ import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
 import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
+import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
 import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
 import { createTrashRepo } from "../lib/trash.ts";
@@ -107,6 +108,12 @@ export const shareRepo = createShareRepo(driver, {
   contacts: contactsRepo,
   notes: notesRepo,
 });
+
+/**
+ * The pairing panel's repo: the real listener plus the store's own pin
+ * statements, over the one driver. The panel never touches IPC itself.
+ */
+export const pairingRepo = createPairingRepo(driver);
 
 export function searchWorkspace(input: string, options?: SearchOptions) {
   return globalSearch(driver, input, options);

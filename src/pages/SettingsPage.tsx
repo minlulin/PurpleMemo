@@ -21,6 +21,7 @@ import {
   IconSun,
   IconUpload,
 } from "../components/icons.tsx";
+import { PairingPanel } from "../components/PairingPanel.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, useT } from "../components/useTranslation.ts";
 import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
@@ -92,6 +93,7 @@ const SETTINGS_SECTIONS = [
   { id: "key-export", label: "Key export" },
   { id: "backup", label: "Backup" },
   { id: "share", label: "Share" },
+  { id: "pairing", label: "Pairing" },
   { id: "updates", label: "Updates" },
   { id: "about", label: "About" },
   { id: "danger", label: "Danger zone" },
@@ -135,7 +137,8 @@ const SETTINGS_ALIASES: Record<string, string[]> = {
   vault: ["secret", "password", "encrypt", "aes"],
   "key-export": ["key", "backup key", "encryption", "master"],
   backup: ["restore", "import", "export", "zip", "archive", "recovery"],
-  share: ["lan", "network", "phone", "pairing", "code", "link"],
+  share: ["lan", "network", "phone", "link"],
+  pairing: ["qr", "code", "phone", "sync", "pair", "fingerprint"],
   updates: ["update", "version", "release", "download", "upgrade"],
   about: ["version", "info", "offline", "open source"],
   danger: ["factory", "reset", "erase", "wipe", "delete everything"],
@@ -1293,6 +1296,18 @@ export default function SettingsPage(p: SettingsPageProps) {
           shareState.note !== null && (
             <p className="alert alert-note">{shareState.note}</p>
           )}
+      </section>
+
+      <section
+        className="settings-section"
+        id="settings-pairing"
+        hidden={!shows("pairing")}
+      >
+        <div className="dash-card-head">
+          <h3 className="settings-heading">Pair a phone</h3>
+          <span className="badge">Protocol v1</span>
+        </div>
+        <PairingPanel />
       </section>
 
       <section

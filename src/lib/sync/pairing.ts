@@ -240,6 +240,15 @@ function refusalMessage(state: Exclude<PairingSessionState, "active">): string {
 }
 
 /**
+ * The reason a session in this state shows. Exported so the panel surfaces the
+ * message `redeemCode` would return instead of inventing a second wording for
+ * the same refusal (`null` while the session is active).
+ */
+export function pairingStateMessage(state: PairingSessionState): string | null {
+  return state === "active" ? null : refusalMessage(state);
+}
+
+/**
  * The QR payload (§11.1): the endpoint, the single-use secret and the public
  * key the phone pins. A plain URI rather than JSON so a scanner hands back
  * something a person can also read out over the phone if the camera fails.

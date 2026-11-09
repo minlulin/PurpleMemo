@@ -14,6 +14,10 @@ import type {
   BatchStatement,
   DataDriver,
   ExecuteOutcome,
+  PairingDriver,
+  PairingListenerInfo,
+  PairingLocalInfo,
+  PairingOpenInput,
   Queryable,
   ShareInfo,
 } from "./driver.ts";
@@ -33,7 +37,7 @@ const NO_CONSENT =
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
 
 export interface RecordedCall {
-  method: keyof DataDriver;
+  method: keyof DataDriver | keyof PairingDriver;
   args: unknown[];
 }
 
@@ -136,9 +140,9 @@ function parseSnapshot(json: string): { generatedAt: string } {
   return { generatedAt: object.generatedAt };
 }
 
-export interface MockDriver extends DataDriver {
+export interface MockDriver extends DataDriver, PairingDriver {
   calls: RecordedCall[];
-  callsTo(method: keyof DataDriver): RecordedCall[];
+  callsTo(method: keyof DataDriver | keyof PairingDriver): RecordedCall[];
   lastCall(): RecordedCall | undefined;
   /** Append canned `query` results (for rows only known after earlier calls). */
   pushResults(rows: Queryable[][]): void;
@@ -156,8 +160,29 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     publishedAt: null,
     note: null,
   };
+  // Pairing window state for tests: closed until `pairingOpen` (§11.5), and no
+  // pin until a rendezvous reports one.
+  const stoppedPairing = (): PairingListenerInfo => ({
+    running: false,
+    port: null,
+    endpoint: null,
+    publicKey: null,
+    fingerprint: null,
+    peerDeviceId: null,
+    peerPublicKey: null,
+    peerFingerprint: null,
+    note: null,
+  });
+  /** The fixed `0x11…` vector's public key and the grouping both screens show. */
+  const PAIRING_PUBLIC_KEY =
+    "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
+  const PAIRING_FINGERPRINT = "7B4E 909B BE7F FE44 C465 A220";
+  let pairing: PairingListenerInfo = stoppedPairing();
 
-  const record = (method: keyof DataDriver, args: unknown[]) => {
+  const record = (
+    method: keyof DataDriver | keyof PairingDriver,
+    args: unknown[],
+  ) => {
     calls.push({ method, args });
   };
 
@@ -423,6 +448,51 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       record("shareStatus", []);
       return { ...share };
     },
+    async pairingLocal(): Promise<PairingLocalInfo> {
+      record("pairingLocal", []);
+      return {
+        deviceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        generation: 1,
+        schemaVersion: 8,
+        protocolVersion: 1,
+        publicKey: PAIRING_PUBLIC_KEY,
+        fingerprint: PAIRING_FINGERPRINT,
+      };
+    },
+    async pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo> {
+      record("pairingOpen", [input]);
+      // Mirrors `pairing_listener.rs`: a code must be six digits and live, and
+      // an expired one refuses to open at all rather than opening a dead door.
+      if (input.offerCode !== null) {
+        if (!/^\d{6}$/.test(input.offerCode.replace(/[\s-]/g, ""))) {
+          throw new Error("the pairing code must be six digits");
+        }
+        if ((input.offerExpiresAt ?? 0) <= Date.now()) {
+          throw new Error("this pairing code expired");
+        }
+      }
+      pairing = {
+        running: true,
+        port: 8788,
+        endpoint: "192.168.1.5:8788",
+        publicKey: PAIRING_PUBLIC_KEY,
+        fingerprint: PAIRING_FINGERPRINT,
+        peerDeviceId: null,
+        peerPublicKey: null,
+        peerFingerprint: null,
+        note: null,
+      };
+      return { ...pairing };
+    },
+    async pairingClose(): Promise<PairingListenerInfo> {
+      record("pairingClose", []);
+      pairing = stoppedPairing();
+      return { ...pairing };
+    },
+    async pairingStatus(): Promise<PairingListenerInfo> {
+      record("pairingStatus", []);
+      return { ...pairing };
+    },
     async sharePublish(snapshotJson: string): Promise<ShareInfo> {
       record("sharePublish", [snapshotJson]);
       // Validated even when not running (`share.rs` `publish`): a malformed
@@ -442,7 +512,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       share = { ...share, publishedAt: snapshot.generatedAt };
       return { ...share };
     },
-    callsTo(method: keyof DataDriver): RecordedCall[] {
+    callsTo(method: keyof DataDriver | keyof PairingDriver): RecordedCall[] {
       return calls.filter((c) => c.method === method);
     },
     lastCall(): RecordedCall | undefined {

@@ -50,6 +50,7 @@ import { ToastProvider, useToast } from "./components/Toast.tsx";
 import { usePlural, useT } from "./components/useTranslation.ts";
 import {
   inboxRepo,
+  pairingRepo,
   settingsRepo,
   shareRepo,
   tasksRepo,
@@ -655,6 +656,10 @@ function AppShell() {
   const lockNow = useCallback(() => {
     const epoch = shareStopEpoch.current + 1;
     shareStopEpoch.current = epoch;
+    // §11.5: locking ends the pairing window too, and `pairing_close` resolves
+    // only once the port is refused — so the lock screen cannot be raised over
+    // a socket that still accepts a phone.
+    void pairingRepo.close().catch(() => {});
     lockSession({
       lockVault: () => vaultRepo.lockVault(),
       // The lock's stop, not an ordinary one (D2a): it revokes a consent
@@ -685,6 +690,19 @@ function AppShell() {
         unlockedRef.current || shareStopEpoch.current !== epoch,
     });
   }, [shareStopFailed, toast]);
+
+  // §11.5: app background ends the pairing window, exactly like the lock. The
+  // webview reports a hidden document when the window is minimised or the phone
+  // app leaves the foreground; closing is idempotent.
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") {
+        void pairingRepo.close().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => document.removeEventListener("visibilitychange", onHidden);
+  }, []);
 
   /**
    * Cache eviction on pause (decision 6): when the phone goes to the background
