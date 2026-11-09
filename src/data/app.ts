@@ -23,6 +23,7 @@ import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
 import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
+import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
 import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
@@ -114,6 +115,9 @@ export const shareRepo = createShareRepo(driver, {
  * statements, over the one driver. The panel never touches IPC itself.
  */
 export const pairingRepo = createPairingRepo(driver);
+
+/** The phone's side of pairing: redeem, wire, then pin (§11.6.1, Session 7 T2). */
+export const mobilePairingRepo = createMobilePairingRepo(driver);
 
 export function searchWorkspace(input: string, options?: SearchOptions) {
   return globalSearch(driver, input, options);

@@ -22,6 +22,7 @@
 import type { BatchStatement } from "../../data/driver.ts";
 import { type Hello, handshake, PROTOCOL_VERSION } from "./protocol.ts";
 import {
+  type PeerRow,
   registerPeerStatements,
   rePairStatements,
   revokePeerStatements,
@@ -498,6 +499,74 @@ export function pinStatements(
       pairingId: peer.pairingId,
       publicKey: peer.publicKey,
       displayName: peer.displayName ?? "",
+    },
+    now,
+  );
+}
+
+/**
+ * The desktop's facts the phone learns from its sealed ack (§11.6.1). The
+ * `PhonePairResult` the IPC command returns satisfies this shape.
+ */
+export interface DesktopAck {
+  desktopDeviceId: string;
+  desktopPublicKey: string;
+  pairingId: string;
+  generation: number;
+  schemaVersion: number;
+  protocolVersion: number;
+}
+
+/** A pin with its pairing id known — what the wire step always produces. */
+export interface DesktopPin extends PinnedPeer {
+  pairingId: string;
+}
+
+/**
+ * The pin the phone stores (§11.2): the key the QR carried — the one the ack was
+ * authenticated under — and the generation the desktop's own ack delivered
+ * (Option A, §10.2). Never the number the phone remembers, which a restore can
+ * leave stale.
+ */
+export function pinFromDesktop(
+  ack: DesktopAck,
+  offer: PairingOffer,
+): DesktopPin {
+  if (ack.pairingId !== offer.pairingId) {
+    throw new Error(
+      "the acknowledgement belongs to a different pairing (§11.4).",
+    );
+  }
+  return {
+    deviceId: ack.desktopDeviceId,
+    publicKey: offer.publicKey,
+    generation: ack.generation,
+    pairingId: ack.pairingId,
+    revoked: false,
+  };
+}
+
+/**
+ * The statements that store a desktop's pin, made only after the sealed hello
+ * has been acknowledged (N1). A desktop already in `sync_peers` is re-paired
+ * through `rePairStatements` (§11.4) — new pairing id, both cursors zeroed, the
+ * old pairing's acks dropped — and keeps the name the person gave it.
+ */
+export function desktopPinStatements(
+  ack: DesktopAck,
+  offer: PairingOffer,
+  existing: Pick<PeerRow, "display_name"> | null,
+  now: Date = new Date(),
+): BatchStatement[] {
+  const pin = pinFromDesktop(ack, offer);
+  if (existing === null) return pinStatements(pin, now);
+  return rePairStatements(
+    {
+      deviceId: pin.deviceId,
+      generation: pin.generation,
+      pairingId: pin.pairingId,
+      publicKey: pin.publicKey,
+      displayName: existing.display_name,
     },
     now,
   );

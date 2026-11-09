@@ -1,17 +1,20 @@
 /**
- * The phone's pairing block (Phase C Session 6, Q.2).
+ * The phone's pairing block (Phase C Session 6 Q.2; Session 7 T2).
  *
  * Two entries, one set of values: a camera frame goes through `qr.ts`'s decode
  * and `parseOffer`; a typed code goes through `redeemCode`, so every refusal
- * the protocol names is the one the tested module returns. The card states
- * plainly that the phone's *wire* step is not built — the desktop hears
- * nothing from this screen yet, and nothing here claims a pairing completed.
+ * the protocol names is the one the tested module returns.
+ *
+ * Confirming runs `mobilePairing.ts`'s order: the code is redeemed, the sealed
+ * request → ack → hello happens in Rust, and only then is the pin written. The
+ * card words a success as a pairing only because that command resolved.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { mobilePairingRepo } from "../data/app.ts";
 import {
-  confirmTypedCode,
   isCompleteCode,
   offerFromFrame,
+  type PairingOutcome,
 } from "../lib/sync/mobilePairing.ts";
 import {
   keyFingerprint,
@@ -33,6 +36,8 @@ export function MobilePairingCard() {
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<PairingOutcome | null>(null);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -87,6 +92,7 @@ export function MobilePairingCard() {
               usedAt: null,
             });
             setTyped("");
+            setOutcome(null);
             setScanning("idle");
             stopCamera();
             return;
@@ -101,17 +107,25 @@ export function MobilePairingCard() {
     }
   }, [stopCamera]);
 
-  const confirm = () => {
-    if (session === null) return;
-    const { verdict, session: next } = confirmTypedCode(session, typed);
-    setSession(next);
-    if (verdict.ok) {
-      setError(null);
-      setNotice(t("mobile.settings.pairConfirmed"));
-      return;
-    }
+  const confirm = async () => {
+    if (session === null || busy) return;
+    setBusy(true);
+    setError(null);
     setNotice(null);
-    setError(verdict.message);
+    try {
+      const result = await mobilePairingRepo.pairWithDesktop(session, typed);
+      setSession(result.session);
+      setOutcome(result);
+      if (result.paired) {
+        setNotice(t("mobile.settings.pairConfirmed"));
+      } else {
+        // The protocol's own words: the desktop's refusal when it refused, and
+        // `redeemCode`'s when the code was wrong here.
+        setError(result.refusal?.message ?? result.verdict.message);
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -168,11 +182,18 @@ export function MobilePairingCard() {
           <button
             type="button"
             className="btn"
-            disabled={!isCompleteCode(typed)}
-            onClick={confirm}
+            disabled={!isCompleteCode(typed) || busy}
+            onClick={() => void confirm()}
           >
             {t("mobile.settings.pairConfirm")}
           </button>
+          {outcome?.paired && outcome.desktop !== null ? (
+            <p className="mobile-row-text">
+              {t("mobile.settings.pairDesktopKey", {
+                fingerprint: keyFingerprint(outcome.desktop.desktopPublicKey),
+              })}
+            </p>
+          ) : null}
         </>
       )}
       {error !== null ? (
@@ -185,7 +206,6 @@ export function MobilePairingCard() {
           {notice}
         </p>
       ) : null}
-      <p className="mobile-note">{t("mobile.settings.pairWireMissing")}</p>
     </div>
   );
 }
