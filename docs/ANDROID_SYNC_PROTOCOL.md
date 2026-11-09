@@ -699,7 +699,10 @@ A request is one JSON object (camelCase, framed like every message):
 | `code` | string | the six digits from the desktop's screen; separators ignored |
 | `protocolVersion` | number | must equal the desktop's |
 | `schemaVersion` | number | must equal the desktop's (§8.2) |
-| `generation` | number | the desktop's generation as the offer carried it; a mismatch is `needs-re-pair` (§10.2) |
+
+The request carries **no** `generation` (Option A, below). A field of that name
+sent by an older client is parsed and ignored, so both shapes stay
+wire-compatible.
 
 The check order matters, and every refusal has zero effect except that a wrong
 code spends one of the five attempts:
@@ -711,8 +714,11 @@ code spends one of the five attempts:
 5. protocol → `protocol-unsupported`; schema → `schema-mismatch`;
 6. code already redeemed → `used`; past its 120 s → `expired`; five failures → `locked`;
 7. `code` not six digits → `malformed` (no attempt); otherwise wrong → `wrong-code` with `attemptsLeft`;
-8. `deviceId` is this desktop → `same-device`;
-9. `generation` differs from the desktop's → `needs-re-pair`.
+8. `deviceId` is this desktop → `same-device`.
+
+The phone's own idea of the data line is never checked here: it cannot be the
+reason a pairing fails, or a phone whose stored generation predates a desktop
+restore could never pair again.
 
 Steps 1–5 come **before** the code is compared, so a malformed request can
 neither spend an attempt nor learn whether a guessed code was right (wave 1
@@ -730,11 +736,15 @@ pairing id, whose payload is
  "schemaVersion":8,"protocolVersion":1}
 ```
 
-Those values are authoritative. The phone stores the desktop's `generation`
-as the data line it paired with (§10.2); the request's copy exists only so the
-desktop can refuse a stale one, and no later message asks the phone to assume
-it. This is generation **Option A** as decision D1 records it: the desktop owns
-the number and the sealed ack delivers it.
+Those values are authoritative. Generation **Option A**, as decision D1 settles
+it: a request carries **no** generation — the desktop owns the number — and the
+sealed ack delivers the authoritative `local_generation`, which the phone stores
+as the data line it paired with (§10.2). A phone that still believes in an
+older line therefore pairs normally and learns the new one from the ack,
+instead of being refused for echoing a stale value. The staged pin records the
+desktop's generation, so every later hello is checked against the line the
+pairing was actually made on (§10.2). No wire change beyond that: a sender that
+still includes `generation` parses and is ignored.
 
 **Implementation status (wave 1, as built).** The offer and its QR are
 implemented and tested (`src/lib/sync/qr.ts`, `pairing.ts`: render → decode →

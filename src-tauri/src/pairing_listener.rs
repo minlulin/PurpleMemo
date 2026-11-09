@@ -1024,7 +1024,11 @@ struct PairRequest {
     code: String,
     protocol_version: u64,
     schema_version: u64,
-    generation: u64,
+    // §11.6.1 (D1, Option A): there is deliberately no `generation` here. The
+    // desktop owns the data line, and refusing a phone's stale copy would
+    // deadlock it after a restore — it would never pair again. Serde ignores
+    // unknown fields, so a sender that still includes one parses fine and is
+    // ignored.
 }
 
 fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
@@ -1127,16 +1131,14 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
             "a device cannot pair with itself.",
         ));
     }
-    if request.generation != gate.local_generation {
-        return Err(RefusalReply::refused(
-            "needs-re-pair",
-            "this device's data line changed since it paired; re-pair it (§10.2, §10.5).",
-        ));
-    }
+    // §11.6.1 (D1, Option A): the pin names the data line the pairing was
+    // actually made on — the desktop's. A phone that still believes in an older
+    // line is told the current one by the sealed ack below; it is never refused
+    // for echoing a stale number.
     let pin = Pin {
         device_id: request.device_id.clone(),
         public_key: key,
-        generation: request.generation,
+        generation: gate.local_generation,
         revoked: false,
     };
     let ack = json!({
@@ -1857,6 +1859,87 @@ mod tests {
         });
         patch(message.as_object_mut().expect("the request is an object"));
         encode_frame(&message.to_string()).expect("frame the request")
+    }
+
+    /// A window with an offer whose desktop data line is `generation`.
+    fn started_at_generation(generation: u64) -> (PairingListenerState, u16) {
+        let state = PairingListenerState::default();
+        let mut window = window(false);
+        window.local_generation = generation;
+        window.peer = None;
+        window.offer = Some(PairingOffer {
+            code: "123456".to_string(),
+            expires_at: now_ms() + 60_000,
+        });
+        let info = state
+            .start("127.0.0.1", window, desktop_identity())
+            .expect("start the pairing listener");
+        (state, info.port.expect("a bound port"))
+    }
+
+    /// §11.6.1 (D1, Option A): the request carries no generation. A phone that
+    /// omits it pairs — the desktop owns the data line.
+    #[test]
+    fn a_request_without_a_generation_pairs() {
+        let (state, port) = started_with_offer(false);
+        let (status, body) = post_request(
+            port,
+            &request_body(|message| {
+                message.remove("generation");
+            }),
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            state.status().expect("status").peer_device_id.as_deref(),
+            Some(PHONE_ID)
+        );
+        state.stop().expect("stop");
+    }
+
+    /// The deadlock this decision removes: a phone whose stored generation
+    /// predates a desktop restore must still pair. The value it sends is
+    /// ignored, the ack carries the desktop's line, and the pin records that
+    /// line — so the sealed hello carrying the ack's number is admitted.
+    #[test]
+    fn a_stale_request_generation_is_ignored_and_the_pin_takes_the_desktops() {
+        let (state, port) = started_at_generation(2);
+        let (status, body) = post_request(port, &request_body(|_| {}));
+        assert_eq!(
+            status, 200,
+            "a phone that still believes in generation 1 must pair: {body}"
+        );
+        let reply: JsonValue = serde_json::from_str(&body).expect("reply json");
+        let opened = envelope::open(OpenInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            local_device_id: PHONE_ID,
+            expected_from: DESKTOP_ID,
+            last_counter: 0,
+            pairing_id: Some("pair-1"),
+            raw: reply["envelope"].as_str().expect("a sealed ack"),
+        })
+        .expect("the phone must open the ack the desktop sealed");
+        assert_eq!(
+            opened.message["generation"],
+            json!(2),
+            "the ack names the desktop's line, not the phone's stale one"
+        );
+
+        // The staged pin took generation 2, so this hello is admitted; had it
+        // kept the phone's 1, `admit` would refuse `needs-re-pair` here.
+        let hello = encode_frame(&hello_wire(1, |message| {
+            message.insert("generation".to_string(), json!(2));
+        }))
+        .expect("frame the hello");
+        let (status, body) = post(port, &hello);
+        assert_eq!(status, 200, "{body}");
+        let reported = state.status().expect("status");
+        assert_eq!(reported.peer_device_id.as_deref(), Some(PHONE_ID));
+        assert!(
+            reported.peer_hello_received,
+            "the desktop's own line is what the pin records"
+        );
+        state.stop().expect("stop");
     }
 
     #[test]
