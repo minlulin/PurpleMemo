@@ -673,11 +673,25 @@ test("a replayed tombstone is written forward only", () => {
       },
     ],
   );
-  assert.equal(statements.length, 1);
+  assert.equal(
+    statements.length,
+    2,
+    "the tombstone is recorded and the row it outranks is deleted",
+  );
   assert.match(
     statements[0]?.sql ?? "",
     /WHERE excluded\.counter > sync_tombstones\.counter/,
     "an older delete can never replace a newer one",
+  );
+  assert.match(
+    statements[0]?.sql ?? "",
+    /LEFT JOIN sync_row_stamps/,
+    "and a delete the live row outranks is not recorded at all",
+  );
+  assert.match(
+    statements[1]?.sql ?? "",
+    /DELETE FROM "notes" WHERE uid = \?/,
+    "§5: the row itself is deleted, not merely marked",
   );
 });
 

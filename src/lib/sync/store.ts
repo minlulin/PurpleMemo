@@ -692,9 +692,20 @@ export function snapshotStatements(
   for (const op of sorted) statements.push(...snapshotRowStatements(op, now));
   for (const tombstone of tombstones) {
     assertSyncTable(tombstone.table);
+    const outranks = tombstoneOutranksRow(
+      tombstone.table,
+      tombstone.uid,
+      tombstone.stamp,
+    );
     statements.push({
+      // `INSERT … SELECT … WHERE` rather than `VALUES`, because the tombstone
+      // itself is guarded: one the live row outranks is not recorded at all.
+      // §4 gives the newer write the win, and a tombstone row here would claim
+      // the opposite. The conflict clause keeps an older tombstone from
+      // replacing a newer one.
       sql: `INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            SELECT ?, ?, ?, ?, ?, ?
+            WHERE ${outranks.sql}
             ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
               counter = excluded.counter,
               device_id = excluded.device_id,
@@ -708,8 +719,60 @@ export function snapshotStatements(
         tombstone.stamp.deviceId,
         tombstone.stamp.opId,
         nowIso(now),
+        ...outranks.params,
       ],
+    });
+    statements.push({
+      // §5: a tombstone means the row is **deleted**, not merely recorded. On a
+      // first adoption this finds nothing — the phone's uids are its own — but
+      // on a re-adopted snapshot (§9.4) it is the difference between a record
+      // the desktop has deleted and one still on screen. The same §4 guard
+      // decides: a row the tombstone does not outrank stays.
+      sql: `DELETE FROM "${tombstone.table}" WHERE uid = ? AND ${outranks.sql}`,
+      params: [tombstone.uid, ...outranks.params],
     });
   }
   return statements;
+}
+
+/**
+ * §4's comparison as SQL: does `stamp` outrank the stamp recorded for
+ * `table`/`uid`?
+ *
+ * `compareStamps`'s order exactly — counter, then device id, then op id — read
+ * here by subselect inside the transaction, so it sees the row the same
+ * statement list has just written rather than a snapshot taken before it. A
+ * row with no stamp row is pre-history (counter 0), so any tombstone outranks
+ * it: that is the first-adoption case, and the one a row that predates v9
+ * stamps falls into.
+ */
+function tombstoneOutranksRow(
+  table: string,
+  uid: string,
+  stamp: SnapshotStamp,
+): { sql: string; params: unknown[] } {
+  return {
+    sql: `(
+      SELECT CASE
+               WHEN s.counter IS NULL THEN 1
+               WHEN s.counter < ? THEN 1
+               WHEN s.counter = ? AND s.device_id < ? THEN 1
+               WHEN s.counter = ? AND s.device_id = ? AND s.op_id < ? THEN 1
+               ELSE 0
+             END
+        FROM (SELECT 1) AS one
+        LEFT JOIN sync_row_stamps s
+          ON s.entity_table = ? AND s.entity_uid = ?
+    ) = 1`,
+    params: [
+      stamp.counter,
+      stamp.counter,
+      stamp.deviceId,
+      stamp.counter,
+      stamp.deviceId,
+      stamp.opId,
+      table,
+      uid,
+    ],
+  };
 }

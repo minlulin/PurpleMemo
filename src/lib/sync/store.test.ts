@@ -788,3 +788,98 @@ test("the pull's order and budget are the Rust constants, not copies of them", (
     "the phone's accepted batch budget must equal the desktop's served one",
   );
 });
+
+/** A live note plus the stamp of the write that produced it. */
+async function seedStampedNote(
+  driver: DataDriver,
+  uid: string,
+  counter: number,
+): Promise<void> {
+  await driver.batch([
+    insertNote(uid),
+    {
+      sql: "INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at) VALUES ('notes', ?, ?, ?, ?, '{}', '2026-11-09')",
+      params: [uid, counter, UID_PEER_A, `op-${counter}`],
+    },
+  ]);
+}
+
+test("a re-adopted tombstone deletes the row it outranks", async () => {
+  const { db, driver } = openStore();
+  // §9.4: a second pairing re-takes the snapshot. The phone still holds a note
+  // the desktop has since deleted, with an older stamp than that delete.
+  await seedStampedNote(driver, UID_CHILD, 5);
+  await driver.batch(
+    snapshotStatements(
+      [],
+      [
+        {
+          table: "notes",
+          uid: UID_CHILD,
+          stamp: { counter: 9, deviceId: UID_PEER_A, opId: "op-9" },
+        },
+      ],
+    ),
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM notes"),
+    0,
+    "§5: a tombstone means the row is deleted, not merely recorded",
+  );
+  assert.equal(
+    count(
+      db,
+      "SELECT count(*) AS n FROM sync_tombstones WHERE entity_uid = ?",
+      [UID_CHILD],
+    ),
+    1,
+    "and the delete itself is recorded",
+  );
+});
+
+test("a tombstone the row outranks leaves the row and records nothing", async () => {
+  const { db, driver } = openStore();
+  await seedStampedNote(driver, UID_CHILD, 9);
+  await driver.batch(
+    snapshotStatements(
+      [],
+      [
+        {
+          table: "notes",
+          uid: UID_CHILD,
+          stamp: { counter: 5, deviceId: UID_PEER_A, opId: "op-5" },
+        },
+      ],
+    ),
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM notes"),
+    1,
+    "§4: the newer write wins, so the note stays",
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_tombstones"),
+    0,
+    "a delete the live row outranks must not be recorded as authoritative",
+  );
+});
+
+/** The first-adoption shape: the desktop's tombstones name uids this phone's
+ * own rows never had, so the delete finds nothing and nothing appears. */
+test("a tombstone for a uid this phone never held is recorded and reveals no row", async () => {
+  const { db, driver } = openStore();
+  await driver.batch(
+    snapshotStatements(
+      [],
+      [
+        {
+          table: "tasks",
+          uid: UID_CHILD,
+          stamp: { counter: 3, deviceId: UID_PEER_A, opId: "op-3" },
+        },
+      ],
+    ),
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM tasks"), 0);
+  assert.equal(count(db, "SELECT count(*) AS n FROM sync_tombstones"), 1);
+});

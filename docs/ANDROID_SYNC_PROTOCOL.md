@@ -467,9 +467,10 @@ pairing frame.
 The snapshot is a consistent point-in-time read of the 17 tables **plus** their
 tombstones, taken in one transaction on the desktop, applied in one transaction
 on the phone, and then acknowledged as a whole. A snapshot is not a cursor and
-carries no `seq`; after it, the snapshot point becomes the starting cursor. If
-the snapshot is interrupted, nothing is applied and it is re-taken — the phone
-never holds half a snapshot.
+carries no `seq`, and it moves no cursor: the **adopted row stamps are the merge
+baseline** for every record the snapshot carried (§8.5), and `cursor_in`
+advances only through §6.4's operation path. If the snapshot is interrupted,
+nothing is applied and it is re-taken — the phone never holds half a snapshot.
 
 #### §8.5 The snapshot transport (`/pair/snapshot`)
 
@@ -512,6 +513,14 @@ leaves the desktop.
    already acknowledged in this pull), `revoked`, and `snapshot-busy` (a second
    stream in one window: a request that skips past the batch the phone has not
    acknowledged yet).
+
+**A snapshot moves no cursor.** Its adopted row stamps are the merge baseline
+for every record it carried — which value the row holds, and which write it
+came from — while `cursor_in` advances only through §6.4's operation path. A
+snapshot carries no `seq` (§8.4), so there is no number it could advance a
+cursor to; inventing one would make the next op batch look already applied. The
+adoption's checkpoint (`appliedBatches == totalBatches`) is what remembers that
+the snapshot finished.
 
 The desktop reads the snapshot **once**, on the first request in a window, and
 holds it for the life of the window; a new window re-takes it (§11.4). Nothing

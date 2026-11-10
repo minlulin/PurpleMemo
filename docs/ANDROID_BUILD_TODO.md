@@ -487,11 +487,11 @@ longer holds the phase open.
   the ack and answers with the sealed hello, so the card can pair for real;
   the sentence here that said the phone “cannot yet send its key” was true in
   Session 6 and is not any more. **Still open in this item: the two-device run
-  (Q.3).** The emulator booted
-  (`emulator-5554`, `purple_memo_test`) but no pairing can complete — the phone
-  has no sealed client and no adoption/upload engine exists — so there are no
-  row counts to record, no adoption claim is made, and the Redmi was not
-  touched.
+  (Q.3).** *(The paragraph that used to sit here said the emulator booted but
+  no pairing could complete, because the phone had no sealed client and no
+  adoption engine. That was true until Session 7 T1/T2 built both; it is kept
+  only as the record of why Q.3 was open, and the two-device run is now the
+  one thing missing.)*
   **SESSION 7 (2026-11-10): the snapshot transport is built on both sides; the
   upload and the two-device run are not.** T1 added `/pair/snapshot` to the
   desktop's listener (`pairing_listener.rs`, `pairing_snapshot.rs`,
@@ -510,11 +510,14 @@ longer holds the phase open.
   parents-first with `<column>_uid` → `(SELECT id FROM parent WHERE uid = ?)`,
   and only then adopted. `bootstrap.ts`'s `rowBytes` now measures UTF-8 bytes
   (`TextEncoder`), because `.length` counted a Burmese letter as 1 where the
-  wire pays 3. **Proof:** a seeded snapshot pulled over loopback in **4 batches
-  / 78 rows / 1 tombstone**, adopted with those exact counts (Rust, real
-  crypto); the phone's path is proven against sealed envelopes it opens with
-  its own keypair. **Not done:** the §9.1 upload (a phone's own records still
-  do not reach the desktop, and the card says so), and the two-device run.
+  wire pays 3. **Proof, and which half proved it:** T1's *serve* proof is the
+  seeded-desktop test in `pairing_listener.rs` — **4 batches / 78 rows / 1
+  tombstone** served and adopted with those exact counts, over loopback with
+  real crypto. T2's *pull* proofs are separate and smaller: a 3-row pull and a
+  250-row (2-batch) pull in Rust against a live window, and a 4-row / 3-batch
+  pull in TypeScript against sealed envelopes it opens with its own keypair.
+  **Not done:** the §9.1 upload (a phone's own records still do not reach the
+  desktop, and the card says so), and the two-device run.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
