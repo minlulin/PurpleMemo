@@ -1097,6 +1097,216 @@ pub fn pairing_phone_pair(
     })
 }
 
+/// What the phone must name to pull: the pinned desktop, and the address the
+/// offer carried. The key, the data line and the pairing id are the PIN's —
+/// read in Rust from `sync_peers`, never taken from the caller (§11.2).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotPullInput {
+    pub endpoint: String,
+    pub desktop_device_id: String,
+}
+
+/// One batch as the phone's UI receives it: still unvalidated, because
+/// validation is `store.ts`'s (§8.4 — the payload is the desktop's document,
+/// not this side's statement).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotBatchResult {
+    /// The pairing the batch belongs to, echoed from the sealed document so the
+    /// webview can refuse one that names another (§11.4) — the same check this
+    /// side already made, made again where the rows are used.
+    pub pairing_id: String,
+    pub batch: u64,
+    pub total: u64,
+    pub ops: Vec<serde_json::Value>,
+    pub tombstones: Vec<serde_json::Value>,
+}
+
+/// The pinned desktop's facts for one pull.
+struct PinnedPull {
+    pairing_id: String,
+    public_key: String,
+    generation: u64,
+}
+
+/// Read the pin, refusing an unpinned or revoked desktop before any socket
+/// exists. This is what stops the webview from naming a peer that was never
+/// proven: it supplies an address, never a key.
+fn pinned_pull(db_state: &AppState, device_id: &str) -> CmdResult<PinnedPull> {
+    let conn = lock_conn(db_state)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT pairing_id, public_key, generation FROM sync_peers \
+             WHERE device_id = ? AND revoked_at IS NULL",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut rows = statement
+        .query([device_id])
+        .map_err(|error| error.to_string())?;
+    let Some(row) = rows.next().map_err(|error| error.to_string())? else {
+        return Err(
+            "this phone has not pinned that desktop, or the pairing was revoked, so there is \
+             nothing to pull (§11.2)."
+                .to_string(),
+        );
+    };
+    let pairing_id: Option<String> = row.get(0).map_err(|error| error.to_string())?;
+    let public_key: Option<String> = row.get(1).map_err(|error| error.to_string())?;
+    // `sync_peers.generation` is a SQLite INTEGER: i64 in, u64 out.
+    let generation: i64 = row.get(2).map_err(|error| error.to_string())?;
+    let generation = u64::try_from(generation).unwrap_or(0);
+    let pairing_id = pairing_id
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "that pin carries no pairing id, so it cannot be pulled from (§11.4).".to_string()
+        })?;
+    let public_key = public_key
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "that pin carries no desktop key, so it cannot be pulled from (§11.2).".to_string()
+        })?;
+    Ok(PinnedPull {
+        pairing_id,
+        public_key,
+        generation,
+    })
+}
+
+/// Request one batch of the §8.4 snapshot.
+///
+/// The sealed exchange runs in Rust because the phone's key does (§11.2): the
+/// webview receives rows, never ciphertext and never the secret. Nothing is
+/// written — what the phone does with a batch is its own one transaction, at
+/// the end.
+#[tauri::command]
+pub fn pairing_snapshot_request(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    batch: u64,
+) -> CmdResult<SnapshotBatchResult> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &pin.pairing_id,
+        desktop_public_key: &pin.public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: pin.generation,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    let reply = crate::pairing_client::request_snapshot(
+        &pull,
+        &facts,
+        &identity,
+        crate::pairing_client::process_counters(),
+        batch,
+    )
+    .map_err(|error| error.to_string())?;
+    let list = |key: &str| {
+        reply
+            .get(key)
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    Ok(SnapshotBatchResult {
+        pairing_id: pin.pairing_id.clone(),
+        batch,
+        total: reply
+            .get("total")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1),
+        ops: list("ops"),
+        tombstones: list("tombstones"),
+    })
+}
+
+/// Acknowledge one staged batch. The desktop keeps the bookkeeping; the phone
+/// has still applied nothing (§8.4).
+#[tauri::command]
+pub fn pairing_snapshot_applied(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    batch: u64,
+) -> CmdResult<()> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &pin.pairing_id,
+        desktop_public_key: &pin.public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: pin.generation,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    crate::pairing_client::acknowledge_batch(
+        &pull,
+        &facts,
+        &identity,
+        crate::pairing_client::process_counters(),
+        batch,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Acknowledge the whole snapshot, with the counts the §9.3 summary shows.
+///
+/// This is the only message that closes a pull, and the desktop refuses it
+/// unless every batch was acknowledged: the phone must not be able to call a
+/// partly-received snapshot adopted (§8.4).
+#[tauri::command]
+pub fn pairing_snapshot_adopted(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    rows: u64,
+    tombstones: u64,
+) -> CmdResult<()> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &pin.pairing_id,
+        desktop_public_key: &pin.public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: pin.generation,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    crate::pairing_client::acknowledge_snapshot(
+        &pull,
+        &facts,
+        &identity,
+        crate::pairing_client::process_counters(),
+        rows,
+        tombstones,
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Mint a fresh pairing identity after an explicit confirmation (§11.4, N2).
 ///
 /// Deletes only `Slot::PairingIdentity`: local notes, tasks and the database key

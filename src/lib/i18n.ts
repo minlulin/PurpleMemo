@@ -298,6 +298,17 @@ export const en = {
   "mobile.settings.pairWireMissing":
     "The desktop has not paired this phone: a phone cannot send its key until its sealed pairing client is built. Nothing was paired in this step.",
   "mobile.settings.pairRefresh": "Scan again",
+  "mobile.settings.pullHeading": "Copy from the desktop",
+  "mobile.settings.pullBody":
+    "This copies the desktop's records to this phone in one step: either the whole snapshot arrives or none of it does. Nothing is deleted on either device.",
+  "mobile.settings.pullMissing":
+    "Records you created on this phone stay here, and they are not sent to the desktop yet — that direction is not built.",
+  "mobile.settings.pullStart": "Copy records from the desktop",
+  "mobile.settings.pullProgress": "Batch {batch} of {total}…",
+  "mobile.settings.pullDone":
+    "Copied: {rows} record(s) and {tombstones} deletion(s).",
+  "mobile.settings.pullFailed":
+    "Nothing was copied. The whole snapshot has to arrive before any of it is applied — try again.",
   "mobile.settings.permissionsHeading": "Permissions",
   "mobile.settings.notifications": "Notifications",
   "mobile.settings.notificationsOn":
@@ -1215,6 +1226,17 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pairWireMissing":
     "ကွန်ပျူတာက ဤဖုန်းကို မတွဲရသေးပါ — ဖုန်း၏ လုံခြုံသော တွဲချိတ်ပို့ချက် (sealed pairing client) ကို မတည်ဆောက်ရသေးပါ။ ဤအဆင့်တွင် ဘာမှ မတွဲချိတ်ရသေးပါ။",
   "mobile.settings.pairRefresh": "ထပ်စကင်ဖတ်ရန်",
+  "mobile.settings.pullHeading": "ကွန်ပျူတာမှ ကူးယူရန်",
+  "mobile.settings.pullBody":
+    "ကွန်ပျူတာရှိ မှတ်တမ်းများကို ဤဖုန်းသို့ တစ်ဆင့်တည်းဖြင့် ကူးယူပါသည်။ အစုအစည်းတစ်ခုလုံး ရောက်လာမည်၊ သို့မဟုတ် တစ်ခုမျှ မရောက်ပါ။ မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",
+  "mobile.settings.pullMissing":
+    "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများ ဤနေရာတွင် ကျန်ရှိမည်ဖြစ်ပြီး ကွန်ပျူတာသို့ မပို့ရသေးပါ — ထိုလမ်းကြောင်းကို မတည်ဆောက်ရသေးပါ။",
+  "mobile.settings.pullStart": "ကွန်ပျူတာမှ မှတ်တမ်းများ ကူးယူရန်",
+  "mobile.settings.pullProgress": "အစုအစည်း {batch} / {total}…",
+  "mobile.settings.pullDone":
+    "ကူးယူပြီးပါပြီ — မှတ်တမ်း {rows} ခု၊ ဖျက်မှတ် {tombstones} ခု။",
+  "mobile.settings.pullFailed":
+    "ဘာမျှ မကူးယူရသေးပါ။ အစုအစည်းတစ်ခုလုံး ရောက်မှသာ သိမ်းဆည်းမည်ဖြစ်သည် — ထပ်ကြိုးစားပါ။",
   "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
   "mobile.settings.notifications": "အသိပေးချက်များ",
   "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",

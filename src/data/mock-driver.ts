@@ -24,6 +24,8 @@ import type {
   PhonePairResult,
   Queryable,
   ShareInfo,
+  SnapshotBatchResult,
+  SnapshotPullInput,
 } from "./driver.ts";
 
 /** `lifecycle.rs` IMPORT_BLOCKED — refused for anyone but the lease-holder. */
@@ -39,6 +41,18 @@ const NO_CONSENT =
 
 /** `share.rs` MAX_SNAPSHOT_BYTES — the ceiling `parse_snapshot` enforces. */
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
+
+/** The one desktop this mock knows how to be pinned to (§11.2). */
+const MOCK_DESKTOP_DEVICE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+/** `commands.rs` `pinned_pull`: a pull for an unpinned desktop is refused. */
+function requirePinned(input: SnapshotPullInput): void {
+  if (input.desktopDeviceId !== MOCK_DESKTOP_DEVICE_ID) {
+    throw new Error(
+      "this phone has not pinned that desktop, or the pairing was revoked, so there is nothing to pull (§11.2).",
+    );
+  }
+}
 
 export interface RecordedCall {
   method: keyof DataDriver | keyof PairingDriver;
@@ -525,7 +539,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       }
       return {
         // A canonical v4 id for the mock desktop the fixtures describe.
-        desktopDeviceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        desktopDeviceId: MOCK_DESKTOP_DEVICE_ID,
         desktopPublicKey: input.publicKey,
         desktopFingerprint: keyFingerprint(input.publicKey),
         pairingId: input.pairingId,
@@ -555,6 +569,49 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         note: null,
       };
       return { ...identity };
+    },
+    // §8.4's pull, mirrored at the depth a mock can honestly reach: the pin is
+    // checked before anything is served (Rust reads it from `sync_peers`), the
+    // empty desktop is still one batch, and the application itself is the
+    // real store's job — these methods only record and refuse.
+    async pairingSnapshotRequest(
+      input: SnapshotPullInput,
+      batch: number,
+    ): Promise<SnapshotBatchResult> {
+      record("pairingSnapshotRequest", [input, batch]);
+      requirePinned(input);
+      if (batch !== 0) {
+        throw new Error(
+          `this snapshot has 1 batch(es); there is no batch ${batch}.`,
+        );
+      }
+      // The batch's own pairing id is the pin's, which this mock does not
+      // model beyond "the one pairing the fixtures describe".
+      return {
+        pairingId: "pair-1",
+        batch: 0,
+        total: 1,
+        ops: [],
+        tombstones: [],
+      };
+    },
+    async pairingSnapshotApplied(
+      input: SnapshotPullInput,
+      batch: number,
+    ): Promise<void> {
+      record("pairingSnapshotApplied", [input, batch]);
+      requirePinned(input);
+      if (batch !== 0) {
+        throw new Error("that batch was never served in this pull.");
+      }
+    },
+    async pairingSnapshotAdopted(
+      input: SnapshotPullInput,
+      rows: number,
+      tombstones: number,
+    ): Promise<void> {
+      record("pairingSnapshotAdopted", [input, rows, tombstones]);
+      requirePinned(input);
     },
     async sharePublish(snapshotJson: string): Promise<ShareInfo> {
       record("sharePublish", [snapshotJson]);

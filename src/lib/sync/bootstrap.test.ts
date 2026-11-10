@@ -50,6 +50,37 @@ const PHONE_ROWS: SyncedRow[] = [
   row("tasks", "task-d1", 7, { title: "Desktop task" }, "phone-91ab"),
 ];
 
+/**
+ * §8.3's byte bound is the wire's, so it is measured in UTF-8 bytes.
+ *
+ * `.length` counts UTF-16 code units: a letter of Burmese is 1 character and 3
+ * bytes, so a 400-character note measured ~530 "bytes" here and cost ~1,330 on
+ * the wire. Two such notes fit a 2,000-byte budget when measured in
+ * characters, and do not when measured the way the frame is filled.
+ */
+test("the snapshot budget counts UTF-8 bytes, not UTF-16 characters", () => {
+  const burmese =
+    "\u{1019}\u{103c}\u{1014}\u{103a}\u{1019}\u{102c}\u{1005}\u{102c}".repeat(
+      50,
+    );
+  assert.equal(burmese.length, 400, "400 characters");
+  assert.equal(new TextEncoder().encode(burmese).length, 1_200, "1,200 bytes");
+  const rows = [
+    row("notes", "note-a", 1, { title: burmese }),
+    row("notes", "note-b", 2, { title: burmese }),
+  ];
+  assert.equal(
+    batchSnapshot(rows, { maxBytes: 2_000 }).length,
+    2,
+    "1,330 bytes each: two of them do not fit 2,000",
+  );
+  assert.equal(
+    batchSnapshot(rows, { maxBytes: 3_000 }).length,
+    1,
+    "both fit 3,000, so the split above is the measurement and not a floor",
+  );
+});
+
 test("first pairing between two populated devices keeps every row on both sides", () => {
   const plan = planBootstrap(DESKTOP_ROWS, PHONE_ROWS);
 

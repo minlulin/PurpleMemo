@@ -54,6 +54,50 @@ test("the phone's wire step is one invoke site and is registered", () => {
 });
 
 /**
+ * §8.4's pull is the same contract: one invoke site per message, registered in
+ * Rust, and the pin — not the webview — supplies the key and the data line.
+ */
+test("the snapshot pull is three invoke sites and each is registered", () => {
+  assert.match(
+    driver,
+    /pairingSnapshotRequest: \(input, batch\) =>\s*invoke\("pairing_snapshot_request", \{ input, batch \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSnapshotApplied: \(input, batch\) =>\s*invoke\("pairing_snapshot_applied", \{ input, batch \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSnapshotAdopted: \(input, rows, tombstones\) =>\s*invoke\("pairing_snapshot_adopted", \{ input, rows, tombstones \}\)/,
+  );
+  for (const name of [
+    "pairing_snapshot_request",
+    "pairing_snapshot_applied",
+    "pairing_snapshot_adopted",
+  ]) {
+    assert.ok(lib.includes(`commands::${name}`), `${name} must be registered`);
+  }
+  // The caller names an address and a pinned device; it never names a key. The
+  // key and the data line are read from `sync_peers` in Rust (§11.2).
+  assert.match(
+    driver,
+    /export interface SnapshotPullInput \{\s*endpoint: string;\s*desktopDeviceId: string;\s*\}/,
+  );
+  assert.match(
+    commands,
+    /fn pinned_pull\(db_state: &AppState, device_id: &str\)/,
+  );
+  assert.match(
+    commands,
+    /SELECT pairing_id, public_key, generation FROM sync_peers/,
+  );
+  assert.ok(
+    !driver.includes("/pair/snapshot"),
+    "the webview must not name the snapshot path; the client is in Rust",
+  );
+});
+
+/**
  * §11.2 (N2): a pairing identity that is gone must never be minted behind the
  * person's back. The replacement is a separate command, it refuses without an
  * explicit confirmation, and it deletes only the pairing slot.

@@ -16,7 +16,12 @@
  * truth.
  */
 import type { BatchStatement, DataDriver } from "../../data/driver.ts";
-import { isSyncTable, type OpKind, type SyncTable } from "./protocol.ts";
+import {
+  isSyncTable,
+  type OpKind,
+  SYNC_TABLES,
+  type SyncTable,
+} from "./protocol.ts";
 
 /** The single row of `sync_state` (`id INTEGER PRIMARY KEY CHECK (id = 1)`). */
 export const SYNC_STATE_ID = 1;
@@ -491,4 +496,220 @@ export async function pendingCount(driver: DataDriver): Promise<number> {
     "SELECT count(*) AS pending FROM sync_outbox",
   );
   return row?.pending ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// §8.4 — adopting the desktop's snapshot.
+// ---------------------------------------------------------------------------
+
+/**
+ * The synced tables' foreign keys, as a snapshot names them.
+ *
+ * A foreign key is not portable: `notes.collection_id` is a local integer that
+ * means nothing on another device, so the snapshot carries the parent's uid as
+ * `collection_uid` and this map is what turns it back into a local `id`. Only
+ * the referenced tables appear here; every other table's keys are its own.
+ */
+const FOREIGN_KEYS: Partial<Record<SyncTable, Record<string, SyncTable>>> = {
+  notes: { collection_uid: "collections" },
+  income_entries: { category_uid: "income_categories", wallet_uid: "wallets" },
+  expense_entries: {
+    category_uid: "expense_categories",
+    wallet_uid: "wallets",
+  },
+  jobs: { shop_uid: "shops" },
+  shopping_items: { list_uid: "shopping_lists" },
+  habit_logs: { habit_uid: "habits" },
+};
+
+/** The one §4.2 stamp a snapshot row (or tombstone) carries. */
+export interface SnapshotStamp {
+  counter: number;
+  deviceId: string;
+  opId: string;
+}
+
+/** One record as the snapshot carries it (§8.4). */
+export interface SnapshotOp {
+  table: SyncTable;
+  uid: string;
+  stamp: SnapshotStamp;
+  fields: Record<string, unknown>;
+}
+
+/** One deletion's proof as the snapshot carries it (§5.1). */
+export interface SnapshotTombstoneOp {
+  table: SyncTable;
+  uid: string;
+  stamp: SnapshotStamp;
+}
+
+/** A name a payload may name: lowercase, unquoted, and never SQL. */
+const IDENTIFIER = /^[a-z][a-z0-9_]*$/;
+
+function assertIdentifier(name: string, owner: string): void {
+  if (!IDENTIFIER.test(name)) {
+    throw new Error(
+      `${JSON.stringify(name)} is not a name ${owner} may receive (§8.4).`,
+    );
+  }
+}
+
+/**
+ * §8.4's row write: the record and its stamp, as two statements.
+ *
+ * A foreign key is resolved by subselect — `(SELECT id FROM "collections"
+ * WHERE uid = ?)` — never by a read before the transaction. That is what makes
+ * "parents first" a property of the batch instead of a race: the parent is
+ * inserted earlier in the SAME transaction, so the subselect finds it.
+ *
+ * An absent parent resolves to NULL. The `NOT NULL` foreign keys
+ * (`income_entries`, `expense_entries`, `shopping_items`, `habit_logs`) then
+ * refuse, and the whole batch adopts nothing; the nullable two
+ * (`notes.collection_id`, `jobs.shop_id`) would land that record unlinked.
+ * That is unreachable from a well-formed snapshot — the reader walks all 17
+ * tables in one transaction, parents first — and a row with no parent at all
+ * arrives as an explicit `null` `_uid`, which is written as a literal NULL
+ * rather than a subselect, so the two cases cannot be confused.
+ *
+ * The stamp is written too (§4.2): the row's value came from that write, and
+ * a merge that read it as pre-history would let any edit win over it.
+ * `field_stamps` stays empty because the snapshot carries a row stamp; claiming
+ * per-field stamps here would claim more than the desktop sent.
+ */
+export function snapshotRowStatements(
+  op: SnapshotOp,
+  now: Date = new Date(),
+): BatchStatement[] {
+  assertSyncTable(op.table);
+  const foreignKeys = FOREIGN_KEYS[op.table] ?? {};
+  const columns: string[] = ["uid"];
+  const values: string[] = ["?"];
+  const params: unknown[] = [op.uid];
+  for (const [key, value] of Object.entries(op.fields)) {
+    if (key === "uid") continue;
+    if (key === "id") {
+      throw new Error(
+        `a snapshot must not carry ${op.table}'s local id; the uid is its identity (§8.4).`,
+      );
+    }
+    const parent = foreignKeys[key];
+    if (parent !== undefined) {
+      assertIdentifier(parent, op.table);
+      columns.push(`${key.slice(0, -"_uid".length)}_id`);
+      if (value === null || value === undefined) {
+        // An unlinked row: the desktop's own `NULL` foreign key. Spelled as
+        // NULL rather than a subselect, so it cannot be confused with a parent
+        // this batch merely failed to find.
+        values.push("NULL");
+      } else {
+        values.push(`(SELECT id FROM "${parent}" WHERE uid = ?)`);
+        params.push(value);
+      }
+      continue;
+    }
+    if (key.endsWith("_uid")) {
+      throw new Error(
+        `the snapshot sent ${op.table}.${key}, which names no parent table this build keeps (§8.4).`,
+      );
+    }
+    assertIdentifier(key, op.table);
+    columns.push(key);
+    values.push("?");
+    params.push(value);
+  }
+  if (columns.length === 1) {
+    throw new Error(
+      `the snapshot sent ${op.table} ${op.uid} with no fields (§8.4).`,
+    );
+  }
+  const updates = columns
+    .filter((column) => column !== "uid")
+    .map((column) => `"${column}" = excluded."${column}"`);
+  return [
+    {
+      sql: `INSERT INTO "${op.table}" (${columns
+        .map((column) => `"${column}"`)
+        .join(", ")})
+            VALUES (${values.join(", ")})
+            ON CONFLICT(uid) DO UPDATE SET ${updates.join(", ")}`,
+      params,
+    },
+    {
+      sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+            VALUES (?, ?, ?, ?, ?, '{}', ?)
+            ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
+              counter = excluded.counter,
+              device_id = excluded.device_id,
+              op_id = excluded.op_id,
+              field_stamps = excluded.field_stamps,
+              updated_at = excluded.updated_at`,
+      params: [
+        op.table,
+        op.uid,
+        op.stamp.counter,
+        op.stamp.deviceId,
+        op.stamp.opId,
+        nowIso(now),
+      ],
+    },
+  ];
+}
+
+/**
+ * §8.4's apply, whole: every staged row and tombstone as ONE statement list.
+ *
+ * The caller gives this to one `driver.batch`, which is the snapshot's single
+ * transaction — a failure leaves no adopted row behind, and an interruption is
+ * re-taken from the start rather than resumed.
+ *
+ * Rows are ordered parents-first (`UID_TABLES`'s own order) no matter what
+ * order the batches arrived in, because a child's subselect only finds a parent
+ * that was written earlier in the same batch.
+ *
+ * A tombstone is only ever written forward: `excluded.counter >` the stored one
+ * makes a re-delivered delete a no-op instead of a second, older record.
+ */
+export function snapshotStatements(
+  ops: readonly SnapshotOp[],
+  tombstones: readonly SnapshotTombstoneOp[] = [],
+  now: Date = new Date(),
+): BatchStatement[] {
+  // `SYNC_TABLES` is declared in `UID_TABLES`'s order — parents before children
+  // — and `store.test.ts` pins the two against each other, so this sort cannot
+  // quietly stop being parents-first.
+  const order = new Map(
+    (Object.keys(SYNC_TABLES) as SyncTable[]).map((table, index) => [
+      table,
+      index,
+    ]),
+  );
+  const sorted = [...ops].sort(
+    (left, right) =>
+      (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
+  );
+  const statements: BatchStatement[] = [];
+  for (const op of sorted) statements.push(...snapshotRowStatements(op, now));
+  for (const tombstone of tombstones) {
+    assertSyncTable(tombstone.table);
+    statements.push({
+      sql: `INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
+              counter = excluded.counter,
+              device_id = excluded.device_id,
+              op_id = excluded.op_id,
+              deleted_at = excluded.deleted_at
+            WHERE excluded.counter > sync_tombstones.counter`,
+      params: [
+        tombstone.table,
+        tombstone.uid,
+        tombstone.stamp.counter,
+        tombstone.stamp.deviceId,
+        tombstone.stamp.opId,
+        nowIso(now),
+      ],
+    });
+  }
+  return statements;
 }

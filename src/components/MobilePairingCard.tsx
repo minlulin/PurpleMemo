@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mobilePairingRepo } from "../data/app.ts";
+import type { PhonePairResult } from "../data/driver.ts";
 import { isCompleteCode, offerFromFrame } from "../lib/sync/mobilePairing.ts";
 import {
   keyFingerprint,
@@ -33,6 +34,17 @@ export function MobilePairingCard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // §8.4's pull, offered only once a desktop acknowledged this phone (§11.2).
+  const [paired, setPaired] = useState<PhonePairResult | null>(null);
+  const [progress, setProgress] = useState<{
+    batch: number;
+    total: number;
+  } | null>(null);
+  const [pulled, setPulled] = useState<{
+    rows: number;
+    tombstones: number;
+  } | null>(null);
+  const [pullError, setPullError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -114,6 +126,7 @@ export function MobilePairingCard() {
       const result = await mobilePairingRepo.pairWithDesktop(session, typed);
       setSession(result.session);
       if (result.paired) {
+        setPaired(result.desktop);
         setNotice(t("mobile.settings.pairConfirmed"));
       } else {
         // The protocol's own words: the desktop's refusal when it refused, and
@@ -122,6 +135,36 @@ export function MobilePairingCard() {
       }
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Copy the desktop's records (§8.4). The whole snapshot is one transaction,
+   * so either everything arrives or the message says nothing was copied —
+   * never a half-adopted state the person would have to guess at.
+   */
+  const copyFromDesktop = async () => {
+    if (paired === null || offer === null || progress !== null) return;
+    setPullError(null);
+    setPulled(null);
+    setProgress({ batch: 0, total: 0 });
+    try {
+      const outcome = await mobilePairingRepo.pullSnapshot(
+        { endpoint: offer.endpoint, desktopDeviceId: paired.desktopDeviceId },
+        paired.pairingId,
+        (next) => setProgress(next),
+      );
+      if (outcome.applied) {
+        setPulled({ rows: outcome.rows, tombstones: outcome.tombstones });
+      } else {
+        setPullError(
+          outcome.refusal === null
+            ? t("mobile.settings.pullFailed")
+            : `${t("mobile.settings.pullFailed")} ${outcome.refusal.message}`,
+        );
+      }
+    } finally {
+      setProgress(null);
     }
   };
 
@@ -196,6 +239,41 @@ export function MobilePairingCard() {
           {notice}
         </p>
       ) : null}
+      {paired === null ? null : (
+        <section className="mobile-section">
+          <h3 className="mobile-section-heading">
+            {t("mobile.settings.pullHeading")}
+          </h3>
+          <p className="mobile-note">{t("mobile.settings.pullBody")}</p>
+          <p className="mobile-note">{t("mobile.settings.pullMissing")}</p>
+          <button
+            type="button"
+            className="btn"
+            disabled={progress !== null}
+            onClick={() => void copyFromDesktop()}
+          >
+            {progress === null
+              ? t("mobile.settings.pullStart")
+              : t("mobile.settings.pullProgress", {
+                  batch: progress.batch,
+                  total: progress.total,
+                })}
+          </button>
+          {pulled !== null ? (
+            <p className="alert alert-note" role="status">
+              {t("mobile.settings.pullDone", {
+                rows: pulled.rows,
+                tombstones: pulled.tombstones,
+              })}
+            </p>
+          ) : null}
+          {pullError !== null ? (
+            <p className="mobile-error" role="alert">
+              {pullError}
+            </p>
+          ) : null}
+        </section>
+      )}
     </div>
   );
 }

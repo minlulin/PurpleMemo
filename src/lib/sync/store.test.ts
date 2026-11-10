@@ -13,6 +13,8 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { BatchStatement, DataDriver } from "../../data/driver.ts";
+import { MAX_PAIRING_SNAPSHOT_BYTES } from "./bootstrap.ts";
+import { SYNC_TABLES } from "./protocol.ts";
 import {
   ackStatements,
   applyStatements,
@@ -27,6 +29,8 @@ import {
   registerPeerStatements,
   restoreStatements,
   revokePeerStatements,
+  type SnapshotOp,
+  snapshotStatements,
 } from "./store.ts";
 
 const SCHEMA_RS = readFileSync(
@@ -103,6 +107,18 @@ function openStore(): Store {
   db.exec(V7_FIXTURE);
   db.exec(migrationDdl());
   db.exec(rowStampDdl());
+  // The real schema gives every synced table a UNIQUE uid index (the v7
+  // backfill); the fixture declares the columns, so the indexes are added here
+  // for the same reason: `ON CONFLICT(uid)` is only meaningful with one.
+  for (const table of Object.keys(SYNC_TABLES)) {
+    try {
+      db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_uid ON ${table}(uid)`,
+      );
+    } catch {
+      // The fixture carries only the tables these tests touch.
+    }
+  }
   const run = (sql: string, params: unknown[] = []): void => {
     db.prepare(sql).run(...(params as never[]));
   };
@@ -580,5 +596,195 @@ test("field stamps travel with the operation, and the reminders marker stays unr
   assert.ok(
     !storeSource.includes("created_by_device_id"),
     "the §13.1 marker must stay unwired until that decision is made",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// §8.4 — adopting the desktop's snapshot.
+// ---------------------------------------------------------------------------
+
+const UID_PARENT = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
+const UID_CHILD = "2f2f2f2f-2f2f-4f2f-8f2f-2f2f2f2f2f2f";
+const DESKTOP_STAMP = { deviceId: UID_PEER_A, opId: "op-desktop" };
+
+function snapshotOp(
+  table: SnapshotOp["table"],
+  uid: string,
+  counter: number,
+  fields: Record<string, unknown>,
+): SnapshotOp {
+  return { table, uid, stamp: { ...DESKTOP_STAMP, counter }, fields };
+}
+
+test("a snapshot's child row lands linked to its parent, in the same batch", async () => {
+  const { db, driver } = openStore();
+  // Child FIRST: the statements must reorder, because the subselect can only
+  // find a parent that was written earlier in this transaction.
+  await driver.batch(
+    snapshotStatements([
+      snapshotOp("notes", UID_CHILD, 9, {
+        title: "Child",
+        content: "",
+        created_at: "2026-11-10",
+        updated_at: "2026-11-10",
+        collection_uid: UID_PARENT,
+      }),
+      snapshotOp("collections", UID_PARENT, 8, {
+        name: "Pull cash",
+        created_at: "2026-11-10",
+      }),
+    ]),
+  );
+
+  const parent = db
+    .prepare("SELECT id, name FROM collections WHERE uid = ?")
+    .get(UID_PARENT) as { id: number; name: string } | undefined;
+  assert.ok(parent, "the parent arrived");
+  assert.equal(parent.name, "Pull cash");
+  const child = db
+    .prepare("SELECT collection_id FROM notes WHERE uid = ?")
+    .get(UID_CHILD) as { collection_id: number | null } | undefined;
+  assert.equal(
+    child?.collection_id,
+    parent.id,
+    "the child points at the parent's LOCAL id, resolved by uid",
+  );
+
+  // §4.2: the stamp came with the row, so a later merge compares against the
+  // desktop's write instead of reading the value as pre-history.
+  const stamp = db
+    .prepare(
+      "SELECT counter, device_id, op_id FROM sync_row_stamps WHERE entity_table = 'notes' AND entity_uid = ?",
+    )
+    .get(UID_CHILD) as
+    | { counter: number; device_id: string; op_id: string }
+    | undefined;
+  assert.deepEqual(
+    { ...stamp },
+    { counter: 9, device_id: UID_PEER_A, op_id: "op-desktop" },
+  );
+});
+
+test("a REQUIRED parent that was never sent adopts nothing at all", async () => {
+  const { db, driver } = openStore();
+  const statements = snapshotStatements([
+    snapshotOp("shopping_lists", UID_PARENT, 1, {
+      name: "Orphan list",
+      created_at: "2026-11-10",
+    }),
+    snapshotOp("shopping_items", UID_CHILD, 2, {
+      text: "orphan item",
+      done: 0,
+      sort_order: 0,
+      // No such list in this snapshot, and `list_id` is NOT NULL.
+      list_uid: "3f3f3f3f-3f3f-4f3f-8f3f-3f3f3f3f3f3f",
+    }),
+  ]);
+  await assert.rejects(driver.batch(statements));
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM shopping_items"),
+    0,
+    "the failed batch left no adopted item",
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM shopping_lists"),
+    0,
+    "nor the list the batch had already inserted",
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM sync_row_stamps"), 0);
+});
+
+/**
+ * A row with no parent is a row with a NULL foreign key, which is what the
+ * desktop sends — not a parent this side failed to find. Those are written as
+ * a literal NULL, never as a subselect that could quietly resolve to one.
+ */
+test("an unlinked row is written unlinked, not silently dropped", async () => {
+  const { db, driver } = openStore();
+  await driver.batch(
+    snapshotStatements([
+      snapshotOp("notes", UID_CHILD, 3, {
+        title: "Loose note",
+        content: "",
+        created_at: "2026-11-10",
+        updated_at: "2026-11-10",
+        collection_uid: null,
+      }),
+    ]),
+  );
+  const note = db
+    .prepare("SELECT collection_id, title FROM notes WHERE uid = ?")
+    .get(UID_CHILD) as
+    | { collection_id: number | null; title: string }
+    | undefined;
+  assert.equal(note?.title, "Loose note");
+  assert.equal(note.collection_id, null);
+});
+
+test("applying the same snapshot twice is a no-op, tombstone included", async () => {
+  const { db, driver } = openStore();
+  const ops = [
+    snapshotOp("shopping_lists", UID_PARENT, 4, {
+      name: "Pull walk",
+      created_at: "2026-11-10",
+    }),
+  ];
+  const tombstones = [
+    {
+      table: "notes" as const,
+      uid: UID_CHILD,
+      stamp: { ...DESKTOP_STAMP, counter: 7 },
+    },
+  ];
+  await driver.batch(snapshotStatements(ops, tombstones));
+  await driver.batch(snapshotStatements(ops, tombstones));
+
+  assert.equal(count(db, "SELECT count(*) AS n FROM shopping_lists"), 1);
+  assert.equal(count(db, "SELECT count(*) AS n FROM sync_tombstones"), 1);
+  // An OLDER delete can never replace the newer one that is already recorded.
+  const older = {
+    table: "notes" as const,
+    uid: UID_CHILD,
+    stamp: { ...DESKTOP_STAMP, counter: 3 },
+  };
+  await driver.batch(snapshotStatements([], [older]));
+  const kept = db
+    .prepare("SELECT counter FROM sync_tombstones WHERE entity_uid = ?")
+    .get(UID_CHILD) as { counter: number } | undefined;
+  assert.equal(kept?.counter, 7, "the newer delete still owns the record");
+});
+
+test("the pull's order and budget are the Rust constants, not copies of them", () => {
+  // Parents-first is `UID_TABLES`'s order in schema.rs. If SYNC_TABLES is ever
+  // reordered, a child could be written before its parent and the subselect
+  // would resolve to NULL — so the two lists are pinned together.
+  const declared =
+    /pub const UID_TABLES: \[&str; 17\] = \[([\s\S]*?)\];/.exec(
+      SCHEMA_RS,
+    )?.[1] ?? "";
+  const rustTables = [...declared.matchAll(/"([a-z_]+)"/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    Object.keys(SYNC_TABLES),
+    rustTables,
+    "SYNC_TABLES must stay in UID_TABLES' parents-first order",
+  );
+
+  // And the byte budget is one number on both sides: 30 KiB, hex-sealed into
+  // the 64 KiB pairing frame.
+  const pairingSnapshot = readFileSync(
+    new URL("../../../src-tauri/src/pairing_snapshot.rs", import.meta.url),
+    "utf8",
+  );
+  const bytes =
+    /pub const MAX_SNAPSHOT_BATCH_BYTES: usize = (\d+) \* 1024;/.exec(
+      pairingSnapshot,
+    );
+  assert.ok(bytes?.[1], "MAX_SNAPSHOT_BATCH_BYTES not found in Rust");
+  assert.equal(
+    Number(bytes[1]) * 1024,
+    MAX_PAIRING_SNAPSHOT_BYTES,
+    "the phone's accepted batch budget must equal the desktop's served one",
   );
 });

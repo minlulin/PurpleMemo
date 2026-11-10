@@ -202,6 +202,34 @@ export interface PairingPhoneInput {
 }
 
 /**
+ * The pinned desktop a snapshot pull is for (§8.4).
+ *
+ * The endpoint came from the offer; the key, the pairing id and the data line
+ * are the pin, read in Rust out of `sync_peers` — never supplied here. A pull
+ * that names a desktop this phone has not pinned is refused before a socket
+ * exists (§11.2).
+ */
+export interface SnapshotPullInput {
+  endpoint: string;
+  desktopDeviceId: string;
+}
+
+/**
+ * One batch of the §8.4 snapshot, opened by Rust and **not yet validated**:
+ * `ops` and `tombstones` are the desktop's own document, narrowed by the sync
+ * store's validator before a single statement is built. A batch that fails
+ * that validation writes nothing.
+ */
+export interface SnapshotBatchResult {
+  /** The pairing the batch belongs to; the store refuses another (§11.4). */
+  pairingId: string;
+  batch: number;
+  total: number;
+  ops: unknown[];
+  tombstones: unknown[];
+}
+
+/**
  * What the panel asks the listener for when it opens (§11.1, §11.5).
  * `pairingId` is required: it is the envelope's HKDF salt, so a window cannot
  * open without one (§11.6.1, N9).
@@ -447,6 +475,33 @@ export interface PairingDriver {
    * this resolves — i.e. only after the sealed hello proved possession.
    */
   pairingPhonePair(input: PairingPhoneInput): Promise<PhonePairResult>;
+  /**
+   * Ask for one batch of the §8.4 snapshot. The sealed exchange runs in Rust,
+   * sealed with the pin's key; this side receives rows and writes nothing.
+   * Batch 0 begins a pull and takes whatever snapshot the desktop holds now.
+   */
+  pairingSnapshotRequest(
+    input: SnapshotPullInput,
+    batch: number,
+  ): Promise<SnapshotBatchResult>;
+  /**
+   * Acknowledge one staged batch. Pure bookkeeping on the desktop (§8.4): the
+   * phone has applied nothing yet, so this changes no local row.
+   */
+  pairingSnapshotApplied(
+    input: SnapshotPullInput,
+    batch: number,
+  ): Promise<void>;
+  /**
+   * Acknowledge the whole snapshot with its counts. The desktop refuses this
+   * unless every batch was acknowledged, which is what makes "adopted" mean
+   * the whole of it rather than its last batch (§8.4).
+   */
+  pairingSnapshotAdopted(
+    input: SnapshotPullInput,
+    rows: number,
+    tombstones: number,
+  ): Promise<void>;
 }
 
 /** The one production driver: Tauri IPC commands. */
@@ -522,6 +577,13 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     pairingIdentityReplace: (confirm) =>
       invoke("pairing_identity_replace", { confirm }),
     pairingPhonePair: (input) => invoke("pairing_phone_pair", { input }),
+    // §8.4's pull — one invoke site each, like every command above.
+    pairingSnapshotRequest: (input, batch) =>
+      invoke("pairing_snapshot_request", { input, batch }),
+    pairingSnapshotApplied: (input, batch) =>
+      invoke("pairing_snapshot_applied", { input, batch }),
+    pairingSnapshotAdopted: (input, rows, tombstones) =>
+      invoke("pairing_snapshot_adopted", { input, rows, tombstones }),
   };
 }
 

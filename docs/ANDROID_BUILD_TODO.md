@@ -439,7 +439,9 @@ longer holds the phase open.
   `Debug` shows the fingerprint), a stored value that is not a key fails closed
   instead of being replaced, and a factory reset deletes the slot so the next
   launch mints a new keypair and device id. The listener is
-  `src-tauri/src/pairing_listener.rs`: `tiny_http`, `POST /pair/hello`, a
+  `src-tauri/src/pairing_listener.rs`: `std::net` (a hand-rolled HTTP head on a
+  `TcpListener` — `tiny_http` was never a dependency and the earlier line here
+  said so wrongly), `POST /pair/hello`, a
   four-byte big-endian length-prefixed UTF-8 JSON body (the phone's half is
   `src/lib/sync/frame.ts`, pinned to the same `00000011` vector on both sides),
   admission in §7.1 order (revoked → unpaired → envelope version/recipient/
@@ -476,17 +478,43 @@ longer holds the phase open.
   rendezvous only, the presented key is pinned for the window, the ack is an
   ordinary sealed envelope — **new wire surface, since §11.6.1 does not name
   the request message; MinLulin’s approval is required**. Q.2 — the phone’s
-  pairing block is real (`src/components/MobilePairingCard.tsx`, logic in
+  pairing block is real (  `src/components/MobilePairingCard.tsx`, logic in
   `src/lib/sync/mobilePairing.ts`): camera frames decode through `jsqr` →
   `parseOffer`, a typed code goes through `redeemCode`, and each refusal is the
   module’s own wording. The camera path is **built and proven against a
-  rendered QR fixture, not on a camera**; the phone’s sealed client is **not
-  built**, so the phone cannot yet send its key, and the card says so. **Still
-  open in this item: the two-device run (Q.3).** The emulator booted
+  rendered QR fixture, not on a camera**. The phone’s sealed client **is built
+  now** — `pairing_phone_pair` (Session 7 T1) sends the sealed request, opens
+  the ack and answers with the sealed hello, so the card can pair for real;
+  the sentence here that said the phone “cannot yet send its key” was true in
+  Session 6 and is not any more. **Still open in this item: the two-device run
+  (Q.3).** The emulator booted
   (`emulator-5554`, `purple_memo_test`) but no pairing can complete — the phone
   has no sealed client and no adoption/upload engine exists — so there are no
   row counts to record, no adoption claim is made, and the Redmi was not
   touched.
+  **SESSION 7 (2026-11-10): the snapshot transport is built on both sides; the
+  upload and the two-device run are not.** T1 added `/pair/snapshot` to the
+  desktop's listener (`pairing_listener.rs`, `pairing_snapshot.rs`,
+  `commands.rs`): the snapshot is read once per window and held, admission is
+  the SAME path the hello uses (no route can lose a check), and the batch
+  budget is **30 KiB** of rows — not the 48 KiB this item first said, and not
+  32 KiB, because `envelope::seal` hex-encodes: measured here, a full batch is
+  30,660 bytes of plaintext → 61,641 sealed → **61,645 framed of 65,536**, and
+  32 KiB of plaintext seals to 65,857 and is refused. Two tests pin that
+  boundary. T2 added the phone's half — `request_snapshot` /
+  `acknowledge_batch` / `acknowledge_snapshot` in `pairing_client.rs` behind
+  `pairing_snapshot_request` / `_applied` / `_adopted` (the pin supplies the key
+  and the data line; the webview supplies an address), and `pullSnapshot` in
+  `mobilePairing.ts`: every batch is staged in memory with real sealed
+  envelopes, then the **whole** snapshot is written in ONE transaction,
+  parents-first with `<column>_uid` → `(SELECT id FROM parent WHERE uid = ?)`,
+  and only then adopted. `bootstrap.ts`'s `rowBytes` now measures UTF-8 bytes
+  (`TextEncoder`), because `.length` counted a Burmese letter as 1 where the
+  wire pays 3. **Proof:** a seeded snapshot pulled over loopback in **4 batches
+  / 78 rows / 1 tombstone**, adopted with those exact counts (Rust, real
+  crypto); the phone's path is proven against sealed envelopes it opens with
+  its own keypair. **Not done:** the §9.1 upload (a phone's own records still
+  do not reach the desktop, and the card says so), and the two-device run.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync

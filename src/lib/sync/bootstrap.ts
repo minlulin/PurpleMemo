@@ -21,6 +21,17 @@ import {
   type VersionStamp,
 } from "./protocol.ts";
 
+/**
+ * The pairing frame's budget for one snapshot batch (§8.3).
+ *
+ * The pairing frame is 64 KiB, and `envelope::seal` **hex**-encodes its
+ * ciphertext, so a batch is 30 KiB of plaintext — `MAX_SNAPSHOT_BATCH_BYTES` in
+ * `src-tauri/src/pairing_snapshot.rs`. Deliberately not `MAX_BATCH_BYTES`
+ * (256 KiB): that is the export's bound, not a sealed frame's, and using it
+ * here would let the phone accept a batch the desktop can never send.
+ */
+export const MAX_PAIRING_SNAPSHOT_BYTES = 30 * 1024;
+
 /** One synced record as a snapshot or an upload carries it (§3.1). */
 export interface SyncedRow {
   table: SyncTable;
@@ -97,15 +108,25 @@ export interface BatchLimits {
   aggregateOf?: (row: SyncedRow) => string | null;
 }
 
-/** The bytes an op costs on the wire, conservatively (§3.2's 256 KiB). */
+/**
+ * The bytes an op costs on the wire, measured the way the wire measures.
+ *
+ * `String.length` counts UTF-16 code units, so a Burmese letter measures 1
+ * here and costs 3 bytes on the wire: a Burmese note measured a third of its
+ * real size, and a batch that said it fitted could overflow the frame it was
+ * sealed into. `TextEncoder` is the same measurement Rust's `String::len`
+ * makes (§8.3).
+ */
 function rowBytes(row: SyncedRow): number {
   return (
-    JSON.stringify({
-      table: row.table,
-      uid: row.uid,
-      stamp: row.stamp,
-      fields: row.fields,
-    }).length + 64
+    new TextEncoder().encode(
+      JSON.stringify({
+        table: row.table,
+        uid: row.uid,
+        stamp: row.stamp,
+        fields: row.fields,
+      }),
+    ).length + 64
   );
 }
 

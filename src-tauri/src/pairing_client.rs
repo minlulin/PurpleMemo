@@ -25,10 +25,12 @@
 //! `generation`, and the hello sends that value back, so the phone can never
 //! deadlock a pairing by holding an older number.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value as JsonValue};
@@ -142,7 +144,7 @@ pub fn request_pairing(
     identity: &PairingIdentity,
 ) -> Result<PairingAck, PairingClientError> {
     let body = frame(&request_body(target, facts, identity).to_string())?;
-    let reply = post(target, REQUEST_PATH, &body)?;
+    let reply = post(target.endpoint, REQUEST_PATH, &body)?;
     let wire = reply
         .get("envelope")
         .and_then(JsonValue::as_str)
@@ -158,7 +160,7 @@ pub fn request_pairing(
     // sender — the header is the AEAD's associated data, so an altered sender
     // fails the tag rather than being believed.
     let sender = claimed_sender(wire)?;
-    let desktop_key = desktop_key(target)?;
+    let desktop_key = desktop_key(target.desktop_public_key)?;
     let opened = envelope::open(OpenInput {
         secret: identity.secret(),
         peer_public: &desktop_key,
@@ -219,7 +221,7 @@ pub fn send_hello(
         "schemaVersion": facts.schema_version,
         "generation": ack.generation,
     });
-    let desktop_key = desktop_key(target)?;
+    let desktop_key = desktop_key(target.desktop_public_key)?;
     let wire = envelope::seal(SealInput {
         secret: identity.secret(),
         peer_public: &desktop_key,
@@ -234,7 +236,7 @@ pub fn send_hello(
     })
     .map_err(|message| PairingClientError::local("sealed", message))?;
 
-    let reply = post(target, HELLO_PATH, &frame(&wire)?)?;
+    let reply = post(target.endpoint, HELLO_PATH, &frame(&wire)?)?;
     let reply_wire = reply
         .get("envelope")
         .and_then(JsonValue::as_str)
@@ -271,6 +273,241 @@ pub fn send_hello(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// The §8.4 pull: request a batch, acknowledge it, acknowledge the whole.
+// ---------------------------------------------------------------------------
+
+/// §8.4's endpoint, beside the rendezvous and the hello.
+const SNAPSHOT_PATH: &str = "/pair/snapshot";
+
+/// The desktop as this phone pinned it (§11.2), plus the build and data line
+/// both sides agreed on at the hello (Option A, D1).
+#[derive(Debug, Clone)]
+pub struct SnapshotPull<'a> {
+    pub endpoint: &'a str,
+    pub pairing_id: &'a str,
+    pub desktop_public_key: &'a str,
+    pub desktop_device_id: &'a str,
+    /// The generation the ack delivered. Admission compares it to its own; the
+    /// phone never chooses it, it only echoes what it was given.
+    pub generation: u64,
+}
+
+/// The highest desktop counter this build has accepted, per pairing.
+///
+/// §7.2 needs the highest counter *already accepted*, and that has to live on
+/// this side of the IPC boundary: a webview allowed to pass `last_counter`
+/// could pass 0 and accept a replay. So the number is kept here, in Rust, and
+/// every sealed reply the phone opens advances it.
+#[derive(Default)]
+pub struct ReplyCounter {
+    inner: Mutex<HashMap<String, u64>>,
+}
+
+impl ReplyCounter {
+    /// The highest counter accepted from `pairing_id`, or 0 for a fresh pull.
+    pub fn last(&self, pairing_id: &str) -> u64 {
+        *self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(pairing_id)
+            .unwrap_or(&0)
+    }
+
+    /// Record `counter`. False means it did not advance, so it is a replay.
+    fn accept(&self, pairing_id: &str, counter: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let seen = inner.entry(pairing_id.to_string()).or_insert(0);
+        if counter <= *seen {
+            return false;
+        }
+        *seen = counter;
+        true
+    }
+
+    /// A pull begins at batch 0 and a window's `send_counter` begins again at 1
+    /// (§11.4), so the counters a previous window left behind are retired.
+    fn restart(&self, pairing_id: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(pairing_id);
+    }
+}
+
+/// The one process-wide set of counters. The pull commands are per-call, so the
+/// replay state outlives them here rather than in the webview.
+pub fn process_counters() -> &'static ReplyCounter {
+    static COUNTERS: OnceLock<ReplyCounter> = OnceLock::new();
+    COUNTERS.get_or_init(ReplyCounter::default)
+}
+
+/// Ask for one batch (§8.4). Batch 0 starts a pull: it retires the pairing's
+/// counters and takes whatever snapshot the desktop holds now, because an
+/// interrupted pull is re-taken from the start, never resumed from the middle.
+pub fn request_snapshot(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    batch: u64,
+) -> Result<JsonValue, PairingClientError> {
+    if batch == 0 {
+        counters.restart(pull.pairing_id);
+    }
+    let reply = exchange(
+        pull,
+        facts,
+        identity,
+        counters,
+        &json!({
+            "kind": "snapshot-request",
+            "batch": batch,
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("kind").and_then(JsonValue::as_str) != Some("snapshot") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply is not a snapshot batch.",
+        ));
+    }
+    // The batch the phone asked for. A reply that names a different index would
+    // be staged under the wrong one, so it is refused rather than renumbered.
+    if reply.get("batch").and_then(JsonValue::as_u64) != Some(batch) {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop answered with a different batch than the one requested.",
+        ));
+    }
+    if reply.get("pairingId").and_then(JsonValue::as_str) != Some(pull.pairing_id) {
+        return Err(PairingClientError::local(
+            "pairing-mismatch",
+            "that batch belongs to a different pairing.",
+        ));
+    }
+    if reply.get("total").and_then(JsonValue::as_u64).unwrap_or(0) == 0 {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's snapshot names no batches.",
+        ));
+    }
+    Ok(reply)
+}
+
+/// Tell the desktop one batch was staged. Nothing is applied on this side, so
+/// this is bookkeeping — it is what lets the desktop refuse a duplicate
+/// acknowledgement and an adoption that skipped a batch.
+pub fn acknowledge_batch(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    batch: u64,
+) -> Result<(), PairingClientError> {
+    exchange(
+        pull,
+        facts,
+        identity,
+        counters,
+        &json!({
+            "kind": "applied",
+            "batch": batch,
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    Ok(())
+}
+
+/// Tell the desktop the whole snapshot was applied, with the counts the §9.3
+/// summary shows. The desktop refuses this unless every batch was acknowledged
+/// first: "applied the last one" is not "applied all of them" (§8.4).
+pub fn acknowledge_snapshot(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    rows: u64,
+    tombstones: u64,
+) -> Result<(), PairingClientError> {
+    exchange(
+        pull,
+        facts,
+        identity,
+        counters,
+        &json!({
+            "kind": "adopted",
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+            "counts": { "rows": rows, "tombstones": tombstones },
+        }),
+    )?;
+    Ok(())
+}
+
+/// Seal one message, post it, and open whatever the desktop sealed back.
+///
+/// A `snapshot-request` is answered with a sealed batch; `applied` and `adopted`
+/// are answered with an ordinary accepted reply, which carries no counter to
+/// guard because nothing in it is acted on — a forged `ok` only makes the phone
+/// send the next message, which the desktop then refuses on its own terms.
+fn exchange(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    message: &JsonValue,
+) -> Result<JsonValue, PairingClientError> {
+    let counter = next_hello_counter();
+    let desktop_key = desktop_key(pull.desktop_public_key)?;
+    let wire = envelope::seal(SealInput {
+        secret: identity.secret(),
+        peer_public: &desktop_key,
+        from: facts.device_id,
+        to: pull.desktop_device_id,
+        message_id: &format!("snapshot:{counter}"),
+        counter,
+        message,
+        pairing_id: Some(pull.pairing_id),
+        nonce: None,
+        ephemeral_secret: None,
+    })
+    .map_err(|message| PairingClientError::local("sealed", message))?;
+
+    let reply = post(pull.endpoint, SNAPSHOT_PATH, &frame(&wire)?)?;
+    // `applied` and `adopted` are answered with an ordinary accepted reply, not
+    // a sealed one: nothing in it is acted on, so there is no counter to guard.
+    let Some(reply_wire) = reply.get("envelope").and_then(JsonValue::as_str) else {
+        return Ok(reply);
+    };
+    let opened = envelope::open(OpenInput {
+        secret: identity.secret(),
+        peer_public: &desktop_key,
+        local_device_id: facts.device_id,
+        expected_from: pull.desktop_device_id,
+        last_counter: counters.last(pull.pairing_id),
+        pairing_id: Some(pull.pairing_id),
+        raw: reply_wire,
+    })
+    .map_err(PairingClientError::refused)?;
+    if !counters.accept(pull.pairing_id, opened.header.counter) {
+        return Err(PairingClientError::local(
+            "replayed",
+            "the desktop re-used an envelope counter in this pull (§7.2).",
+        ));
+    }
+    Ok(opened.message)
+}
+
 /// The request body the desktop's `POST /pair/request` accepts (§11.6.1). No
 /// `generation` (Option A, D1); the desktop ignores one if an older client
 /// sends it, so this is a narrowing, not a wire break.
@@ -292,25 +529,18 @@ fn request_body(
 /// One request, one reply. The desktop's server requires `Content-Length`,
 /// refuses chunked bodies and always closes the connection, so this client
 /// sends exactly that shape and reads to EOF.
-fn post(
-    target: &PairingTarget<'_>,
-    path: &str,
-    body: &[u8],
-) -> Result<JsonValue, PairingClientError> {
-    let address = endpoint_address(target.endpoint)?;
+fn post(endpoint: &str, path: &str, body: &[u8]) -> Result<JsonValue, PairingClientError> {
+    let address = endpoint_address(endpoint)?;
     let mut stream = TcpStream::connect_timeout(&address, CLIENT_TIMEOUT).map_err(|error| {
         if error.kind() == std::io::ErrorKind::TimedOut {
             PairingClientError::local(
                 "timeout",
-                format!("the desktop at {} did not answer in time.", target.endpoint),
+                format!("the desktop at {endpoint} did not answer in time."),
             )
         } else {
             PairingClientError::local(
                 "unreachable",
-                format!(
-                    "could not reach the desktop at {}: {error}",
-                    target.endpoint
-                ),
+                format!("could not reach the desktop at {endpoint}: {error}"),
             )
         }
     })?;
@@ -324,7 +554,7 @@ fn post(
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/octet-stream\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n",
-        target.endpoint,
+        endpoint,
         body.len()
     );
     stream
@@ -414,8 +644,8 @@ fn endpoint_address(endpoint: &str) -> Result<SocketAddr, PairingClientError> {
     })
 }
 
-fn desktop_key(target: &PairingTarget<'_>) -> Result<[u8; KEY_BYTES], PairingClientError> {
-    let bytes = envelope::from_hex(target.desktop_public_key)
+fn desktop_key(hex: &str) -> Result<[u8; KEY_BYTES], PairingClientError> {
+    let bytes = envelope::from_hex(hex)
         .filter(|bytes| bytes.len() == KEY_BYTES)
         .ok_or_else(|| {
             PairingClientError::local(
@@ -524,7 +754,10 @@ fn decode_frame(body: &[u8]) -> Result<String, PairingClientError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pairing_listener::{PairingListenerState, PairingOffer, PairingWindow};
+    use crate::pairing_listener::{
+        PairingListenerState, PairingOffer, PairingWindow, SnapshotSource,
+    };
+    use crate::pairing_snapshot::{Snapshot, SnapshotRow, Stamp};
     use std::net::TcpListener;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -738,5 +971,183 @@ mod tests {
         assert_eq!(decode_frame(&framed).expect("decode it"), text);
         assert!(decode_frame(&framed[..framed.len() - 1]).is_err());
         assert!(decode_frame(b"\x00\x00\x00\x01\xff").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // The §8.4 pull, over a real window and real crypto.
+    // -----------------------------------------------------------------------
+
+    /// A desktop window that can serve a snapshot: a live code to pair with,
+    /// and a source that reads `rows` notes.
+    fn serving(rows: usize) -> (PairingListenerState, u16) {
+        let state = PairingListenerState::default();
+        let window = PairingWindow {
+            local_device_id: DESKTOP_ID.to_string(),
+            local_generation: 1,
+            local_protocol_version: 1,
+            local_schema_version: 8,
+            pairing_id: PAIRING_ID.to_string(),
+            offer: Some(PairingOffer {
+                code: CODE.to_string(),
+                expires_at: expires_at(),
+            }),
+            peer: None,
+            last_counter: 0,
+        };
+        let source: SnapshotSource = std::sync::Arc::new(move || Ok(snapshot_of(rows)));
+        let info = state
+            .start(
+                "127.0.0.1",
+                window,
+                PairingIdentity::from_secret(DESKTOP_SECRET),
+                Some(source),
+            )
+            .expect("start the pairing listener");
+        (state, info.port.expect("a bound port"))
+    }
+
+    fn snapshot_of(rows: usize) -> Snapshot {
+        Snapshot {
+            rows: (0..rows)
+                .map(|index| SnapshotRow {
+                    table: "notes".to_string(),
+                    uid: format!("11111111-1111-4111-8111-{index:012}"),
+                    stamp: Stamp {
+                        counter: 1,
+                        device_id: DESKTOP_ID.to_string(),
+                        op_id: format!("op-{index}"),
+                    },
+                    fields: serde_json::Map::from_iter([(
+                        "title".to_string(),
+                        json!(format!("pull note {index}")),
+                    )]),
+                })
+                .collect(),
+            tombstones: Vec::new(),
+        }
+    }
+
+    fn pulling<'a>(endpoint: &'a str) -> SnapshotPull<'a> {
+        SnapshotPull {
+            endpoint,
+            pairing_id: PAIRING_ID,
+            desktop_public_key: desktop_public_hex(),
+            desktop_device_id: DESKTOP_ID,
+            generation: 1,
+        }
+    }
+
+    /// Pair and prove possession, exactly as the app does before a pull: the
+    /// snapshot route admits only a peer that already opened a hello.
+    fn paired(endpoint: &str) -> PairingIdentity {
+        let target = target(endpoint, CODE);
+        let identity = phone_identity();
+        let ack = request_pairing(&target, &facts(), &identity).expect("the code is accepted");
+        send_hello(&target, &facts(), &identity, &ack, 1).expect("the hello is accepted");
+        identity
+    }
+
+    #[test]
+    fn a_pull_walks_every_batch_and_adopts_the_whole_snapshot() {
+        let (state, port) = serving(3);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+
+        let mut rows = 0u64;
+        let mut batch = 0u64;
+        let mut total = 1u64;
+        while batch < total {
+            let reply = request_snapshot(&pull, &facts(), &identity, &counters, batch)
+                .expect("every batch the phone asks for is served");
+            rows += reply["ops"].as_array().expect("ops").len() as u64;
+            total = reply["total"].as_u64().expect("a total");
+            acknowledge_batch(&pull, &facts(), &identity, &counters, batch).expect("applied");
+            batch += 1;
+        }
+        assert_eq!(rows, 3, "every row arrived exactly once");
+        assert_eq!(total, 1, "three small rows are one batch");
+        assert!(
+            counters.last(PAIRING_ID) > 0,
+            "every sealed reply advanced the replay guard"
+        );
+        acknowledge_snapshot(&pull, &facts(), &identity, &counters, rows, 0)
+            .expect("the whole snapshot was adopted");
+        state.stop().expect("stop");
+    }
+
+    /// §8.4 is one stream in order: a batch that was never served cannot be
+    /// acknowledged, so a second, jumping pull cannot close the first one.
+    #[test]
+    fn a_batch_that_was_never_served_cannot_be_acknowledged() {
+        let (state, port) = serving(250);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+
+        let reply = request_snapshot(&pull, &facts(), &identity, &counters, 0).expect("batch 0");
+        assert!(reply["total"].as_u64().unwrap_or(0) > 1);
+        let error = acknowledge_batch(&pull, &facts(), &identity, &counters, 1)
+            .expect_err("batch 1 was never served");
+        assert_eq!(error.code, "malformed");
+        assert!(error.message.contains("never served"), "{}", error.message);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn an_adoption_that_skipped_a_batch_is_refused() {
+        let (state, port) = serving(250);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+
+        let reply = request_snapshot(&pull, &facts(), &identity, &counters, 0).expect("batch 0");
+        let total = reply["total"].as_u64().expect("a total");
+        assert!(total > 1, "250 rows are more than one batch (§8.3)");
+        acknowledge_batch(&pull, &facts(), &identity, &counters, 0).expect("applied");
+        let error = acknowledge_snapshot(&pull, &facts(), &identity, &counters, 250, 0)
+            .expect_err("the whole is not the last batch");
+        assert_eq!(error.code, "malformed");
+        assert!(error.message.contains("acknowledged"), "{}", error.message);
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_closed_window_refuses_the_pull_instead_of_hanging() {
+        let (state, port) = serving(3);
+        state.stop().expect("stop");
+        let endpoint = format!("127.0.0.1:{port}");
+        let error = request_snapshot(
+            &pulling(&endpoint),
+            &facts(),
+            &phone_identity(),
+            &ReplyCounter::default(),
+            0,
+        )
+        .expect_err("nothing is listening any more");
+        assert_eq!(error.code, "unreachable");
+    }
+
+    /// §7.2 on the phone's side: a counter that does not advance is a replay,
+    /// and a new pull is allowed to start again from the window's first value.
+    #[test]
+    fn a_counter_that_does_not_advance_is_a_replay() {
+        let counters = ReplyCounter::default();
+        assert_eq!(counters.last(PAIRING_ID), 0);
+        assert!(counters.accept(PAIRING_ID, 4));
+        assert!(!counters.accept(PAIRING_ID, 4), "the same counter twice");
+        assert!(!counters.accept(PAIRING_ID, 3), "an older counter");
+        assert!(counters.accept(PAIRING_ID, 5));
+        assert_eq!(counters.last(PAIRING_ID), 5);
+        counters.restart(PAIRING_ID);
+        assert_eq!(
+            counters.last(PAIRING_ID),
+            0,
+            "a new window restarts its counter"
+        );
+        assert!(counters.accept(PAIRING_ID, 1));
     }
 }
