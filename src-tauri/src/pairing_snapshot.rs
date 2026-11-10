@@ -21,18 +21,33 @@
 
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
-use serde_json::{Map as JsonMap, Number, Value as JsonValue};
+use serde_json::{json, Map as JsonMap, Number, Value as JsonValue};
 
 use crate::schema::UID_TABLES;
 
 /// §8.3's op bound, applied to rows in one batch.
 pub const MAX_SNAPSHOT_BATCH_OPS: usize = 200;
 
-/// The JSON budget of one batch, not the wire's 256 KiB: the pairing frame cap
-/// is 64 KiB, and a sealed envelope plus its base64 grows a payload by roughly
-/// a third, so 32 KiB of rows stays inside the frame with room for the
-/// envelope's own fields.
-pub const MAX_SNAPSHOT_BATCH_BYTES: usize = 32 * 1024;
+/// The rows budget of one batch, not the wire's 256 KiB.
+///
+/// The pairing frame cap is 64 KiB — 65,536 bytes, `MAX_FRAME_BYTES`, enforced
+/// by the listener, the frame module and the client — and `envelope::seal`
+/// **hex**-encodes the ciphertext: the body is **2× the plaintext**, not
+/// base64's 4/3. The arithmetic at the boundary, with the authenticated header
+/// (~270 bytes), the `{header,body}` wrapper (~20) and the frame's 4-byte
+/// length prefix:
+///
+/// * `48 * 1024` rows → ~98 KiB sealed: refused;
+/// * `32 * 1024` rows → ~66 KiB sealed: refused, and the header alone would
+///   refuse it even if the estimate were exact (2 × (32,768 + 16) = 65,568 >
+///   65,536);
+/// * **`30 * 1024` (30,720) → ~62 KiB sealed: fits, with ~3.5 KiB spare.**
+///
+/// Two tests pin this: one seals a max-size batch and asserts the framed
+/// envelope fits the cap, the other seals a 32 KiB plaintext batch and asserts
+/// it does not. That pair is what would have caught the 48 KiB and 32 KiB
+/// figures this constant used to carry — the happy path alone would not.
+pub const MAX_SNAPSHOT_BATCH_BYTES: usize = 30 * 1024;
 
 /// The §4.2 stamp of the value a row holds — or of the write that deleted it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +93,48 @@ pub struct SnapshotBatch {
     pub tombstones: Vec<SnapshotTombstone>,
 }
 
+impl SnapshotBatch {
+    /// The wire document one batch travels as (§8.4). It is sealed whole and
+    /// is the only thing in the envelope's plaintext: `kind`, the pairing it
+    /// belongs to, its index out of `total`, and the ops and tombstones it
+    /// carries.
+    pub fn to_json(&self, pairing_id: &str) -> JsonValue {
+        json!({
+            "kind": "snapshot",
+            "pairingId": pairing_id,
+            "batch": self.index,
+            "total": self.total,
+            "ops": self.rows.iter().map(row_json).collect::<Vec<_>>(),
+            "tombstones": self.tombstones.iter().map(tombstone_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
+fn stamp_json(stamp: &Stamp) -> JsonValue {
+    json!({
+        "counter": stamp.counter,
+        "deviceId": stamp.device_id,
+        "opId": stamp.op_id,
+    })
+}
+
+fn row_json(row: &SnapshotRow) -> JsonValue {
+    json!({
+        "table": row.table,
+        "uid": row.uid,
+        "stamp": stamp_json(&row.stamp),
+        "fields": JsonValue::Object(row.fields.clone()),
+    })
+}
+
+fn tombstone_json(tombstone: &SnapshotTombstone) -> JsonValue {
+    json!({
+        "table": tombstone.table,
+        "uid": tombstone.uid,
+        "stamp": stamp_json(&tombstone.stamp),
+    })
+}
+
 impl Snapshot {
     /// Cut the read into batches under the frame's budget (§8.3).
     ///
@@ -114,7 +171,10 @@ impl Snapshot {
             bytes += size;
             tombstones.push(tombstone.clone());
         }
-        if !rows.is_empty() || !tombstones.is_empty() {
+        // §8.4: an empty desktop is still a snapshot, and the exchange needs a
+        // batch 0 to request and acknowledge. A snapshot with no cuts would
+        // leave the phone with nothing to ask for and no way to adopt.
+        if !rows.is_empty() || !tombstones.is_empty() || cuts.is_empty() {
             cuts.push((rows, tombstones));
         }
         let total = cuts.len();
@@ -374,6 +434,7 @@ fn json_value(value: ValueRef<'_>, table: &str, column: &str) -> Result<JsonValu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::envelope::{self, SealInput, KEY_BYTES};
     use crate::schema::BASELINE_SQL;
 
     const NOTE: &str = "11111111-1111-4111-8111-111111111111";
@@ -572,5 +633,158 @@ mod tests {
         let tombstoned: usize = batches.iter().map(|batch| batch.tombstones.len()).sum();
         assert_eq!(tombstoned, snapshot.tombstone_count());
         assert_eq!(batches.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_snapshot_still_has_one_batch_to_adopt() {
+        // §8.4: an empty desktop is a snapshot too. With no batch 0 the phone
+        // would have nothing to request and could never adopt.
+        let batches = Snapshot::default().batches(MAX_SNAPSHOT_BATCH_BYTES);
+        assert_eq!(batches.len(), 1);
+        assert!(batches[0].rows.is_empty());
+        assert!(batches[0].tombstones.is_empty());
+        assert_eq!(batches[0].index, 0);
+        assert_eq!(batches[0].total, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // §8.4's transport bound. `envelope::seal` hex-encodes the ciphertext,
+    // so the wire is 2x the plaintext, not base64's 4/3 — the number both the
+    // 48 KiB and the 32 KiB figures got wrong.
+    // ------------------------------------------------------------------
+
+    const DESKTOP: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const PHONE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    fn one_batch(rows: Vec<SnapshotRow>) -> SnapshotBatch {
+        SnapshotBatch {
+            index: 0,
+            total: 1,
+            rows,
+            tombstones: Vec::new(),
+        }
+    }
+
+    fn plaintext_len(batch: &SnapshotBatch) -> usize {
+        serde_json::to_vec(&batch.to_json("pair-1"))
+            .expect("serialize the batch")
+            .len()
+    }
+
+    /// One note row whose `content` is `chars` ASCII bytes long.
+    fn padded_row(chars: usize) -> SnapshotRow {
+        let mut fields = JsonMap::new();
+        fields.insert("title".to_string(), json!("Note"));
+        fields.insert("content".to_string(), json!("x".repeat(chars)));
+        fields.insert("tags".to_string(), json!(""));
+        fields.insert("collection_uid".to_string(), JsonValue::Null);
+        fields.insert("pinned".to_string(), json!(0));
+        fields.insert("archived".to_string(), json!(0));
+        fields.insert("created_at".to_string(), json!("2026-01-01T00:00:00Z"));
+        fields.insert("updated_at".to_string(), json!("2026-01-01T00:00:00Z"));
+        SnapshotRow {
+            table: "notes".to_string(),
+            uid: "11111111-1111-4111-8111-111111111111".to_string(),
+            stamp: Stamp {
+                counter: 1,
+                device_id: DESKTOP.to_string(),
+                op_id: "op-1".to_string(),
+            },
+            fields,
+        }
+    }
+
+    /// A batch whose reader-estimated size lands on `target` — the budget
+    /// `batches(max_bytes)` actually enforces.
+    fn batch_of_estimate(target: usize) -> SnapshotBatch {
+        let empty = est_row_bytes(&padded_row(0));
+        let mut rows: Vec<SnapshotRow> = Vec::new();
+        let mut used = 0usize;
+        while used + empty + 4096 <= target {
+            let row = padded_row(4000);
+            used += est_row_bytes(&row);
+            rows.push(row);
+        }
+        let pad = target.saturating_sub(used + empty);
+        rows.push(padded_row(pad));
+        one_batch(rows)
+    }
+
+    /// A batch whose *serialized plaintext* is at least `target` bytes — the
+    /// quantity the frame cap is really about.
+    fn batch_of_plaintext(target: usize) -> SnapshotBatch {
+        let mut pad = target.saturating_sub(plaintext_len(&one_batch(vec![padded_row(0)])));
+        let mut batch = one_batch(vec![padded_row(pad)]);
+        while plaintext_len(&batch) < target {
+            pad += target - plaintext_len(&batch);
+            batch = one_batch(vec![padded_row(pad)]);
+        }
+        batch
+    }
+
+    fn seal_batch(batch: &SnapshotBatch) -> String {
+        envelope::seal(SealInput {
+            secret: &[0x11u8; KEY_BYTES],
+            peer_public: &envelope::public_key(&[0x22u8; KEY_BYTES]),
+            from: DESKTOP,
+            to: PHONE,
+            message_id: "snapshot:0:1",
+            counter: 1,
+            message: &batch.to_json("pair-1"),
+            pairing_id: Some("pair-1"),
+            nonce: None,
+            ephemeral_secret: None,
+        })
+        .expect("seal the batch")
+    }
+
+    #[test]
+    fn a_batch_travels_as_the_documented_document() {
+        let wire = one_batch(vec![padded_row(4)]).to_json("pair-1");
+        assert_eq!(wire["kind"], json!("snapshot"));
+        assert_eq!(wire["pairingId"], json!("pair-1"));
+        assert_eq!(wire["batch"], json!(0));
+        assert_eq!(wire["total"], json!(1));
+        assert_eq!(wire["tombstones"], json!([]));
+        let op = &wire["ops"][0];
+        assert_eq!(op["table"], json!("notes"));
+        assert_eq!(op["stamp"]["counter"], json!(1));
+        assert_eq!(op["stamp"]["deviceId"], json!(DESKTOP));
+        assert_eq!(op["stamp"]["opId"], json!("op-1"));
+        assert_eq!(op["fields"]["content"], json!("xxxx"));
+        assert!(
+            op.get("id").is_none(),
+            "a local rowid never leaves its device"
+        );
+    }
+
+    /// The test the 48 KiB and 32 KiB figures would both have failed.
+    #[test]
+    fn a_max_size_batch_seals_and_frames_inside_the_cap() {
+        let batch = batch_of_estimate(MAX_SNAPSHOT_BATCH_BYTES);
+        assert_eq!(
+            batch.rows.iter().map(est_row_bytes).sum::<usize>(),
+            MAX_SNAPSHOT_BATCH_BYTES,
+            "a full budget of rows"
+        );
+        let wire = seal_batch(&batch);
+        let framed = crate::pairing_listener::encode_frame(&wire)
+            .expect("30 KiB of rows must fit one 64 KiB frame");
+        assert!(
+            framed.len() <= crate::pairing_listener::MAX_FRAME_BYTES,
+            "{} bytes framed",
+            framed.len()
+        );
+    }
+
+    #[test]
+    fn a_thirty_two_kib_batch_does_not_fit() {
+        let batch = batch_of_plaintext(32 * 1024);
+        assert!(plaintext_len(&batch) >= 32 * 1024);
+        let wire = seal_batch(&batch);
+        assert!(
+            crate::pairing_listener::encode_frame(&wire).is_err(),
+            "32 KiB of plaintext is 64 KiB of hex before the header: it cannot frame"
+        );
     }
 }

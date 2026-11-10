@@ -583,6 +583,7 @@ mod tests {
                 "127.0.0.1",
                 window,
                 PairingIdentity::from_secret(DESKTOP_SECRET),
+                None,
             )
             .expect("start the pairing listener");
         (state, info.port.expect("a bound port"))

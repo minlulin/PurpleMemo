@@ -451,6 +451,17 @@ pinned key (§11.2).
 200 ops / 256 KiB per batch (§3.2); the sender chooses the size, the receiver
 enforces the bound. An aggregate is never split (§1.4).
 
+**The pairing frame is tighter than §3.2.** A pairing message is capped at
+64 KiB (§11.6.1), and the sealed envelope **hex**-encodes its ciphertext — the
+body is 2× the plaintext, not base64's 4/3 — so one snapshot batch carries at
+most **30 KiB of rows (30,720 bytes)** and 200 ops. That is ~62 KiB sealed,
+leaving ~3.5 KiB of the frame for the envelope's own header and the frame's
+length prefix. 32 KiB of rows would be ~66 KiB and is refused before it leaves
+the desktop; 48 KiB would be ~98 KiB. A test seals a max-size batch and asserts
+the framed envelope fits, and seals 32 KiB of plaintext and asserts it does not.
+The §3.2 bound still governs the ordinary operation path, which does not use the
+pairing frame.
+
 #### §8.4 Initial snapshot
 
 The snapshot is a consistent point-in-time read of the 17 tables **plus** their
@@ -459,6 +470,54 @@ on the phone, and then acknowledged as a whole. A snapshot is not a cursor and
 carries no `seq`; after it, the snapshot point becomes the starting cursor. If
 the snapshot is interrupted, nothing is applied and it is re-taken — the phone
 never holds half a snapshot.
+
+#### §8.5 The snapshot transport (`/pair/snapshot`)
+
+Phase C Session 3. All four messages are sealed envelopes (§11.6.1) POSTed to
+`/pair/snapshot`, framed like every pairing message and bounded by the same 5 s
+budgets. Admission is the hello's, in §7.1 order — revoked → unpinned → key
+mismatch → pairing id → protocol → schema → generation → replay — so a revoked
+peer's request is refused before the snapshot is even read: not one batch byte
+leaves the desktop.
+
+1. phone → sealed `{kind:"snapshot-request", pairingId, protocolVersion,
+   schemaVersion, generation, batch}` — asks for batch N (0-based).
+2. desktop → sealed `{kind:"snapshot", pairingId, batch, total,
+   ops:[{table, uid, stamp, fields}], tombstones:[{table, uid, stamp}]}` — one
+   batch: ≤ 200 ops and ≤ 30 KiB of rows (§8.3). A single row larger than the
+   budget still travels: a record that cannot be sent is worse than a frame over
+   the target.
+3. phone validates the batch (op count, plaintext budget, every `uid`
+   well-formed, every table in §2.1's 17, every stamp well-formed) and stages it
+   **unapplied**.
+4. phone → sealed `{kind:"applied", pairingId, batch}`. The desktop records it;
+   asking for the same batch again re-serves it, and acknowledging it twice in
+   one pull is `replayed`.
+5. after the last batch is staged, the phone applies the whole snapshot in
+   **one** transaction (§8.4), records the checkpoint
+   (`appliedBatches == totalBatches`), and sends sealed
+   `{kind:"adopted", pairingId, counts:{rows, tombstones}}`. The desktop accepts
+   that only once every batch was acknowledged: "applied the last one" is not
+   "applied all of them".
+6. foreign keys travel as `<column>_uid` — the parent's uid, never a local rowid
+   — and the phone resolves them to its own ids while applying, parents first.
+   §2.1's table order already puts every parent before its children
+   (`collections` before `notes`, categories and `wallets` before entries,
+   `shops` before `jobs`, `shopping_lists` before `shopping_items`, `habits`
+   before `habit_logs`), so one ordered pass suffices.
+7. refusals, named and effectless: `not-allowed` (a kind this route does not
+   serve, a table outside the 17), `pairing-mismatch`, `malformed`,
+   `needs-re-pair` (canonical, never `generation-mismatch`), `unauthenticated`,
+   `schema-mismatch`, `replayed` (an envelope counter already accepted, a batch
+   already acknowledged in this pull), `revoked`, and `snapshot-busy` (a second
+   stream in one window: a request that skips past the batch the phone has not
+   acknowledged yet).
+
+The desktop reads the snapshot **once**, on the first request in a window, and
+holds it for the life of the window; a new window re-takes it (§11.4). Nothing
+it serves is applied on its side, so an interrupted pull costs it nothing and
+the phone re-takes from batch 0 — precisely §8.4's "nothing is applied and it is
+re-taken".
 
 ---
 
@@ -605,9 +664,14 @@ satisfy these properties; the properties are not negotiable.
 #### §11.6.1 The choice (Phase C Session 4)
 
 Chosen here, as §11.6 requires. **Framing:** length-prefixed UTF-8 JSON
-messages over HTTP/1.1 on the LAN — `tiny_http` on the desktop (already a
-dependency, the same listener the read-only share page uses), `fetch` on the
-phone — bound to the pairing window only (§11.5). After pairing, every message
+messages over HTTP/1.1 on the LAN — `std::net` on **both** sides,
+`src-tauri/src/pairing_listener.rs` on the desktop and
+`src-tauri/src/pairing_client.rs` on the phone, bound to the pairing window only
+(§11.5). Session 7's deferred correction: the phone does **not** use a webview
+`fetch`, because the long-term key lives behind the platform keystore and a
+webview that could seal a message could also read the secret; the listener was
+never `tiny_http` either — it owns its accept loop so a stalled client cannot
+hold the window open. After pairing, every message
 is a sealed envelope: a fresh ephemeral X25519 keypair per message, combined
 with the pinned long-term agreement through HKDF-SHA256, then
 XChaCha20-Poly1305 with a per-message 24-byte nonce and the message header as
@@ -651,6 +715,17 @@ ephemeral–ephemeral forward secrecy is **deferred**, not claimed; what bounds
 the exposure today is §11.5's short-lived LAN window together with the
 per-message nonce and counter (a replayed envelope is undecryptable or a
 no-op). No wire change is implied by this paragraph (decision D2).
+
+**Endpoints, kinds and refusals (as built).** `POST /pair/request` (plaintext,
+code-gated), `POST /pair/hello` (sealed, `hello`), and `POST /pair/snapshot`
+(sealed, `snapshot-request` / `applied` / `adopted`; §8.5 — Phase C Session 3).
+Each route has its own kind allowlist and all three share one admission path, so
+no route can lose a check the others have. The refusal codes are `revoked`,
+`unpaired`, `unauthenticated`, `wrong-sender`, `wrong-recipient`,
+`wrong-version`, `replayed`, `pairing-mismatch`, `protocol-unsupported`,
+`schema-mismatch`, `needs-re-pair`, `not-allowed`, `snapshot-busy`,
+`same-device`, `malformed`, and on the rendezvous only `wrong-code`, `expired`,
+`used`, `locked`. Every one is named, actionable and effectless.
 
 How each property is met:
 

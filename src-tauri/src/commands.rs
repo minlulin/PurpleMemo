@@ -940,9 +940,20 @@ pub fn pairing_open(
         peer: input.peer,
         last_counter: input.last_counter.unwrap_or(0),
     };
+    // §8.4: the snapshot is read in Rust, under the same connection lock every
+    // other reader takes, because §8.4 requires one transaction across the whole
+    // read and the webview cannot hold one across an IPC round trip.
+    let reader = app.clone();
+    let snapshot: crate::pairing_listener::SnapshotSource = std::sync::Arc::new(move || {
+        let db_state = reader
+            .try_state::<AppState>()
+            .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        let conn = lock_conn(&db_state)?;
+        crate::pairing_snapshot::read_snapshot(&conn)
+    });
     // §11.5: the window is on the LAN only while pairing is on screen; the
     // panel closes it on expiry, on close, on lock and on app background.
-    listener.start("0.0.0.0", window, identity)
+    listener.start("0.0.0.0", window, identity, Some(snapshot))
 }
 
 /// Close the pairing window. Idempotent, and called by the lock and app-

@@ -19,10 +19,10 @@
 //! 2. a sealed hello from a device with no pin is refused as unpaired;
 //! 3. then the envelope: version, recipient, pinned sender, replay, and the
 //!    AEAD tag;
-//! 4. then the payload: the message kind allowlist (`hello` only — the §2.3
-//!    seam; table/field allowlists apply to the operation path, which does not
-//!    exist yet), the pairing id, protocol version, schema version and the data
-//!    line.
+//! 4. then the payload: the message kind allowlist (the §2.3 seam — `hello` on
+//!    `/pair/hello`, `snapshot-request`/`applied`/`adopted` on `/pair/snapshot`;
+//!    table/field allowlists apply to the operation path, which does not exist
+//!    yet), the pairing id, protocol version, schema version and the data line.
 //!
 //! **First pairing (§11.1, Phase C Session 6).** A window opened with an
 //! *offer* also serves `POST /pair/request`: the phone presents its device id,
@@ -64,11 +64,23 @@
 //! spawned. No response ever grants a browser origin — the phone's sealed client
 //! invokes HTTP from Rust, not from a WebView `fetch` (§11.6.1).
 //!
+//! **The snapshot pull (§8.4).** `POST /pair/snapshot` serves the initial
+//! snapshot: the phone asks for one batch at a time (`snapshot-request`),
+//! acknowledges each (`applied`), and closes the whole pull (`adopted`). The
+//! desktop reads the snapshot **once**, on the first snapshot-request, holds it
+//! for the life of the window, and re-takes it on a new window (§11.4). Nothing
+//! it serves is applied here: §8.4's one transaction is the phone's, so an
+//! interrupted pull leaves the desktop with nothing to undo. The admission path
+//! is the hello's, shared by parameter rather than copied — a revoked peer's
+//! snapshot-request is refused before the reader is even called, so not one
+//! batch byte leaves the desktop.
+//!
 //! **Framing (§11.6.1).** Each message is a length-prefixed UTF-8 JSON
 //! document: four big-endian bytes of body length, then exactly that many bytes
 //! of the envelope wire string. `src/lib/sync/frame.ts` is the phone's half, and
 //! both sides are pinned to the same byte vector by a test.
 
+use std::collections::HashSet;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -79,12 +91,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
-use crate::envelope::{self, OpenInput, Refusal, SealInput, KEY_BYTES};
+use crate::envelope::{self, OpenInput, Opened, Refusal, SealInput, KEY_BYTES};
 use crate::lifecycle::Lifecycle;
 use crate::pairing_key::PairingIdentity;
+use crate::pairing_snapshot::{Snapshot, SnapshotBatch, MAX_SNAPSHOT_BATCH_BYTES};
 
 /// A sealed message from the pinned peer (§11.6.1).
 const HELLO_PATH: &str = "/pair/hello";
+
+/// The §8.4 snapshot pull: sealed `snapshot-request` / `applied` / `adopted`.
+const SNAPSHOT_PATH: &str = "/pair/snapshot";
 
 /// The code-confirmed rendezvous that pins a peer for the first time (§11.1).
 const REQUEST_PATH: &str = "/pair/request";
@@ -102,9 +118,13 @@ pub const FRAME_HEADER_BYTES: usize = 4;
 /// stranger from making the desktop buffer megabytes.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
-/// The message kinds a pairing window speaks (§2.3's server-side seam). An
+/// The message kinds `/pair/hello` speaks (§2.3's server-side seam). An
 /// operation of any other kind is refused before it can have an effect.
 const ACCEPTED_KINDS: [&str; 1] = ["hello"];
+
+/// The kinds `/pair/snapshot` speaks — its own accepted set, never appended to
+/// the hello's: a window that pulled data would be one a hello could not close.
+const SNAPSHOT_ACCEPTED_KINDS: [&str; 3] = ["snapshot-request", "applied", "adopted"];
 
 /// How long the accept loop sleeps between non-blocking accepts: the bound on
 /// how long a `stop` waits to be seen, and on how long a phone waits to be
@@ -322,9 +342,35 @@ struct Gate {
     /// advancing this is one step under one lock, so two racing copies of the
     /// same envelope cannot both be accepted.
     last_counter: Mutex<u64>,
-    /// This device's own counter for acks: per-sender and monotonic.
+    /// This device's own counter for acks and snapshot batches: per-sender and
+    /// monotonic, one sequence for every message this window seals.
     send_counter: AtomicU64,
+    /// The held §8.4 snapshot: read once per window, then served from memory.
+    snapshot: Mutex<SnapshotStream>,
+    /// Where the snapshot comes from. `None` is a window that serves the hello
+    /// and the rendezvous only — every snapshot-request is then `not-allowed`.
+    snapshot_source: Option<SnapshotSource>,
 }
+
+/// The one consistent §8.4 read this window holds, and the pull's progress
+/// through it. All of it is the window's: a new window re-takes the snapshot
+/// (§11.4), so nothing here outlives the port.
+#[derive(Default)]
+struct SnapshotStream {
+    /// The pairing id the held read was taken for. `None` means no read yet.
+    pairing_id: Option<String>,
+    batches: Vec<SnapshotBatch>,
+    /// Batches that left the desktop. Asking for one again re-serves it.
+    served: HashSet<usize>,
+    /// Batches the phone acknowledged, in arrival order.
+    acked: HashSet<usize>,
+    adopted: bool,
+}
+
+/// The snapshot reader the shell hands in: `pairing_snapshot::read_snapshot`
+/// over the app's own connection, so the one-transaction read happens in Rust
+/// (a webview cannot hold a transaction across an IPC round trip).
+pub type SnapshotSource = Arc<dyn Fn() -> Result<Snapshot, String> + Send + Sync>;
 
 #[derive(Default)]
 struct Shared {
@@ -408,6 +454,7 @@ impl PairingListenerState {
         bind: &str,
         window: PairingWindow,
         identity: PairingIdentity,
+        snapshot: Option<SnapshotSource>,
     ) -> Result<PairingListenerInfo, String> {
         // Fail before binding anything if a reset or import owns the app (E2).
         self.lifecycle.ensure_share_allowed()?;
@@ -492,6 +539,8 @@ impl PairingListenerState {
             paired: Mutex::new(None),
             last_counter: Mutex::new(window.last_counter),
             send_counter: AtomicU64::new(0),
+            snapshot: Mutex::new(SnapshotStream::default()),
+            snapshot_source: snapshot,
         });
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
@@ -809,13 +858,14 @@ fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
         Err(refusal) => return (refusal.status, Some(refusal.body())),
     };
     let hello = path == HELLO_PATH;
-    if !hello && path != REQUEST_PATH {
+    let snapshot = path == SNAPSHOT_PATH;
+    if !hello && !snapshot && path != REQUEST_PATH {
         return (
             404,
             Some(json!({
                 "ok": false,
                 "reason": "not-found",
-                "message": "the pairing listener serves POST /pair/hello and POST /pair/request.",
+                "message": "the pairing listener serves POST /pair/hello, POST /pair/request and POST /pair/snapshot.",
             })),
         );
     }
@@ -835,8 +885,10 @@ fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
     }
     // §11.3 before anything else: a revoked peer's key is not even looked at.
     // This gates sealed messages only — the rendezvous below *replaces* the
-    // pin, and a revocation must never be a lockout from re-pairing.
-    if hello && active_pin(gate).is_some_and(|pin| pin.revoked) {
+    // pin, and a revocation must never be a lockout from re-pairing. On the
+    // snapshot route it also means the reader is never called, so not one batch
+    // byte leaves the desktop.
+    if (hello || snapshot) && active_pin(gate).is_some_and(|pin| pin.revoked) {
         let refusal = RefusalReply::refused(
             "revoked",
             "this device was revoked on the desktop; re-pair it before anything syncs (§11.3).",
@@ -844,7 +896,11 @@ fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
         return (refusal.status, Some(refusal.body()));
     }
     let outcome = if hello {
-        admit(gate, &body)
+        admit(gate, &body, &ACCEPTED_KINDS)
+            .and_then(|(pin, opened)| acknowledged(gate, &pin, opened))
+    } else if snapshot {
+        admit(gate, &body, &SNAPSHOT_ACCEPTED_KINDS)
+            .and_then(|(pin, opened)| snapshot_answer(gate, &pin, &opened))
     } else {
         rendezvous(gate, &body)
     };
@@ -1186,8 +1242,12 @@ fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     Ok(json!({ "ok": true, "reason": "paired", "envelope": wire }))
 }
 
-/// §7.1's order, from the pin to the ack.
-fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
+/// §7.1's order, from the pin to the accepted message.
+///
+/// The hello and snapshot routes share every check, so they share this
+/// function: `accepted` is the one thing that differs, and a second copy of
+/// these checks is how one route quietly loses one of them (N5).
+fn admit(gate: &Gate, body: &[u8], accepted: &[&str]) -> Result<(Pin, Opened), RefusalReply> {
     let Some(pin) = active_pin(gate) else {
         return Err(RefusalReply::refused(
             "unpaired",
@@ -1216,18 +1276,18 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     })
     .map_err(RefusalReply::from_envelope)?;
 
-    // §2.3's server-side seam: a pairing window speaks hellos and nothing else.
+    // §2.3's server-side seam: a route speaks only the kinds it serves.
     let kind = opened
         .message
         .get("kind")
         .and_then(JsonValue::as_str)
         .unwrap_or_default();
-    if !ACCEPTED_KINDS.contains(&kind) {
+    if !accepted.contains(&kind) {
         return Err(RefusalReply::refused(
             "not-allowed",
             format!(
-                "a pairing window accepts only {}; {kind:?} is not one of them (§2.3).",
-                ACCEPTED_KINDS.join(", ")
+                "this endpoint accepts only {}; {kind:?} is not one of them (§2.3).",
+                accepted.join(", ")
             ),
         ));
     }
@@ -1282,8 +1342,8 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         ));
     }
 
-    // Accepted. The counter advance is the one effect an admitted hello has, and
-    // it is what makes a second copy of the same envelope a replay.
+    // Accepted. The counter advance is the one effect an admitted message has,
+    // and it is what makes a second copy of the same envelope a replay.
     *last_counter = opened.header.counter;
     drop(last_counter);
 
@@ -1302,6 +1362,12 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
         }
     }
 
+    Ok((pin, opened))
+}
+
+/// Answer an admitted hello with the sealed acknowledgement — the hello route's
+/// only reply.
+fn acknowledged(gate: &Gate, pin: &Pin, opened: Opened) -> Result<JsonValue, RefusalReply> {
     let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
     let ack = json!({
         "kind": "ack",
@@ -1330,6 +1396,198 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
     Ok(json!({ "ok": true, "reason": "accepted", "envelope": wire }))
 }
 
+/// The §8.4 pull, after admission: `snapshot-request` → one sealed batch,
+/// `applied` → recorded, `adopted` → the whole-snapshot acknowledgement.
+///
+/// Nothing here writes to the database. The desktop only serves what
+/// `read_snapshot` took, so an interrupted pull costs it nothing, and §8.4's one
+/// applying transaction remains the phone's.
+fn snapshot_answer(gate: &Gate, pin: &Pin, opened: &Opened) -> Result<JsonValue, RefusalReply> {
+    let kind = opened
+        .message
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let batch = || {
+        opened
+            .message
+            .get("batch")
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| RefusalReply::malformed("a snapshot message names its batch."))
+    };
+    match kind {
+        "snapshot-request" => serve_batch(gate, pin, batch()? as usize),
+        "applied" => record_applied(gate, batch()? as usize),
+        "adopted" => record_adopted(gate, &opened.message),
+        // `admit` filtered the kind against `SNAPSHOT_ACCEPTED_KINDS`; a refusal
+        // is still the right answer if that ever drifts.
+        other => Err(RefusalReply::refused(
+            "not-allowed",
+            format!("{other:?} is not a snapshot message (§8.4)."),
+        )),
+    }
+}
+
+/// One batch, sealed with this window's own monotonic counter (the hello-ack
+/// precedent). Asking for a batch already served re-serves it: a pull that lost
+/// a reply has nothing to replay against, so it simply asks again.
+fn serve_batch(gate: &Gate, pin: &Pin, requested: usize) -> Result<JsonValue, RefusalReply> {
+    let mut stream = gate.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+    if stream.pairing_id.is_none() {
+        let Some(source) = gate.snapshot_source.as_ref() else {
+            return Err(RefusalReply::refused(
+                "not-allowed",
+                "this pairing window serves no snapshot (§8.4).",
+            ));
+        };
+        // §8.4: one consistent read, taken on the first request and held for the
+        // life of the window. The lock is held across it on purpose — one
+        // streaming snapshot per window is the rule, not a race to be managed.
+        let snapshot = source().map_err(|message| RefusalReply {
+            code: "internal",
+            message: format!("the snapshot could not be read: {message}"),
+            status: 500,
+            attempts_left: None,
+        })?;
+        stream.batches = snapshot.batches(MAX_SNAPSHOT_BATCH_BYTES);
+        stream.pairing_id = Some(gate.pairing_id.clone());
+        stream.served.clear();
+        stream.acked.clear();
+        stream.adopted = false;
+    }
+    // A request under a different pairing id while one snapshot streams is a
+    // second window's pull arriving on this one: one streaming snapshot per
+    // window (§11.4). Admission refuses a foreign pairing id as
+    // `pairing-mismatch` before this, so the check is kept as the invariant it
+    // guards rather than the reachable refusal.
+    if stream.pairing_id.as_deref() != Some(gate.pairing_id.as_str()) {
+        return Err(RefusalReply::refused(
+            "snapshot-busy",
+            "one snapshot streams per pairing window; finish or restart this pull (§8.4).",
+        ));
+    }
+    let total = stream.batches.len();
+    if requested >= total {
+        return Err(RefusalReply::malformed(format!(
+            "this snapshot has {total} batch(es); there is no batch {requested}."
+        )));
+    }
+    // One stream, in order. A request that skips past the batch the phone has
+    // not acknowledged yet is a second, parallel pull; asking again for one
+    // already served is not.
+    if requested != stream.acked.len() && !stream.served.contains(&requested) {
+        return Err(RefusalReply::refused(
+            "snapshot-busy",
+            "one snapshot streams per pairing window; finish or restart this pull (§8.4).",
+        ));
+    }
+    stream.served.insert(requested);
+    let batch = stream.batches[requested].clone();
+    drop(stream);
+
+    let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let wire = envelope::seal(SealInput {
+        secret: &gate.local_secret,
+        peer_public: &pin.public_key,
+        from: &gate.local_device_id,
+        to: &pin.device_id,
+        message_id: &format!("snapshot:{requested}:{counter}"),
+        counter,
+        message: &batch.to_json(gate.pairing_id.as_str()),
+        pairing_id: Some(gate.pairing_id.as_str()),
+        nonce: None,
+        ephemeral_secret: None,
+    })
+    .map_err(|message| RefusalReply {
+        code: "internal",
+        message,
+        status: 500,
+        attempts_left: None,
+    })?;
+    Ok(json!({
+        "ok": true,
+        "reason": "snapshot",
+        "batch": requested,
+        "total": batch.total,
+        "envelope": wire,
+    }))
+}
+
+/// The phone staged a batch. The desktop records it so a pull can be followed
+/// and a duplicate acknowledged batch is `replayed`; it applies nothing.
+fn record_applied(gate: &Gate, requested: usize) -> Result<JsonValue, RefusalReply> {
+    let mut stream = gate.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(total) = stream.pairing_id.as_ref().map(|_| stream.batches.len()) else {
+        return Err(RefusalReply::refused(
+            "snapshot-busy",
+            "no snapshot is streaming in this window (§8.4).",
+        ));
+    };
+    if requested >= total {
+        return Err(RefusalReply::malformed(format!(
+            "this snapshot has {total} batch(es); there is no batch {requested}."
+        )));
+    }
+    if stream.acked.contains(&requested) {
+        return Err(RefusalReply::refused(
+            "replayed",
+            "that batch was already acknowledged in this pull (§7.2).",
+        ));
+    }
+    if !stream.served.contains(&requested) {
+        return Err(RefusalReply::malformed(
+            "that batch was never served in this pull.",
+        ));
+    }
+    stream.acked.insert(requested);
+    Ok(json!({
+        "ok": true,
+        "reason": "applied",
+        "batch": requested,
+        "total": total,
+    }))
+}
+
+/// The whole-snapshot acknowledgement (§8.4). It closes the pull only once every
+/// batch was acknowledged: "applied the last one" is not "applied all of them".
+fn record_adopted(gate: &Gate, message: &JsonValue) -> Result<JsonValue, RefusalReply> {
+    let count = |key: &str| {
+        message
+            .get("counts")
+            .and_then(|counts| counts.get(key))
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0)
+    };
+    let mut stream = gate.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(total) = stream.pairing_id.as_ref().map(|_| stream.batches.len()) else {
+        return Err(RefusalReply::refused(
+            "snapshot-busy",
+            "no snapshot is streaming in this window (§8.4).",
+        ));
+    };
+    if stream.adopted {
+        return Err(RefusalReply::refused(
+            "replayed",
+            "this snapshot was already adopted (§7.2).",
+        ));
+    }
+    if stream.acked.len() != total {
+        return Err(RefusalReply::malformed(format!(
+            "{} of {total} batch(es) were acknowledged; an adoption acknowledges the whole \
+             snapshot (§8.4).",
+            stream.acked.len()
+        )));
+    }
+    stream.adopted = true;
+    Ok(json!({
+        "ok": true,
+        "reason": "adopted",
+        "total": total,
+        "rows": count("rows"),
+        "tombstones": count("tombstones"),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Tests — run with `cargo test`. Real crypto, real loopback socket, no stubs.
 // ---------------------------------------------------------------------------
@@ -1337,6 +1595,7 @@ fn admit(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalReply> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use std::io::Write;
     use std::net::TcpStream as StdTcpStream;
 
@@ -1381,7 +1640,7 @@ mod tests {
     fn started(revoked: bool) -> (PairingListenerState, u16) {
         let state = PairingListenerState::default();
         let info = state
-            .start("127.0.0.1", window(revoked), desktop_identity())
+            .start("127.0.0.1", window(revoked), desktop_identity(), None)
             .expect("start the pairing listener");
         (state, info.port.expect("a bound port"))
     }
@@ -1585,7 +1844,7 @@ mod tests {
         let mut unpinned = window(false);
         unpinned.peer = None;
         let info = state
-            .start("127.0.0.1", unpinned, desktop_identity())
+            .start("127.0.0.1", unpinned, desktop_identity(), None)
             .expect("a pinless window still opens");
         let port = info.port.expect("port");
         let (status, body) = post(port, &hello_frame(1));
@@ -1602,7 +1861,7 @@ mod tests {
         rekeyed.peer.as_mut().expect("peer").public_key =
             envelope::to_hex(&envelope::public_key(&[0x44u8; KEY_BYTES]));
         let info = state
-            .start("127.0.0.1", rekeyed, desktop_identity())
+            .start("127.0.0.1", rekeyed, desktop_identity(), None)
             .expect("start");
         let (status, body) = post(info.port.expect("port"), &hello_frame(1));
         assert_eq!(status, 403, "{body}");
@@ -1720,7 +1979,7 @@ mod tests {
 
         // Opening again after a stop is a fresh window, not a reused socket.
         let reopened = locked
-            .start("127.0.0.1", window(false), desktop_identity())
+            .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect("reopen");
         assert!(reopened.port.is_some());
         assert_eq!(reopened.port, locked.status().expect("status").port);
@@ -1731,10 +1990,10 @@ mod tests {
     fn one_window_one_socket() {
         let state = PairingListenerState::default();
         let first = state
-            .start("127.0.0.1", window(false), desktop_identity())
+            .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect("start");
         let second = state
-            .start("127.0.0.1", window(false), desktop_identity())
+            .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect("start again");
         assert_eq!(first.port, second.port, "a live window is reused");
         state.stop().expect("stop");
@@ -1799,7 +2058,7 @@ mod tests {
         let state = PairingListenerState::default();
         state.lifecycle.raise_reset();
         let error = state
-            .start("127.0.0.1", window(false), desktop_identity())
+            .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect_err("no listener may come up after the barrier");
         assert!(error.contains("restart"), "must say what to do: {error}");
         assert!(!state.status().expect("status").running);
@@ -1822,7 +2081,7 @@ mod tests {
     fn started_with_offer(revoked: bool) -> (PairingListenerState, u16) {
         let state = PairingListenerState::default();
         let info = state
-            .start("127.0.0.1", offer_window(revoked), desktop_identity())
+            .start("127.0.0.1", offer_window(revoked), desktop_identity(), None)
             .expect("start the pairing window");
         (state, info.port.expect("a bound port"))
     }
@@ -1839,7 +2098,7 @@ mod tests {
             revoked: false,
         });
         let info = state
-            .start("127.0.0.1", window, desktop_identity())
+            .start("127.0.0.1", window, desktop_identity(), None)
             .expect("start the pairing window");
         (state, info.port.expect("a bound port"))
     }
@@ -1872,7 +2131,7 @@ mod tests {
             expires_at: now_ms() + 60_000,
         });
         let info = state
-            .start("127.0.0.1", window, desktop_identity())
+            .start("127.0.0.1", window, desktop_identity(), None)
             .expect("start the pairing listener");
         (state, info.port.expect("a bound port"))
     }
@@ -2051,7 +2310,7 @@ mod tests {
             expires_at: now_ms().saturating_sub(1),
         });
         let info = expired
-            .start("127.0.0.1", stale, desktop_identity())
+            .start("127.0.0.1", stale, desktop_identity(), None)
             .expect("start");
         let (status, body) = post_request(info.port.expect("port"), &request_body(|_| {}));
         assert_eq!(status, 403, "{body}");
@@ -2068,7 +2327,7 @@ mod tests {
         let mut pinless = window(false);
         pinless.peer = None;
         let info = state
-            .start("127.0.0.1", pinless, desktop_identity())
+            .start("127.0.0.1", pinless, desktop_identity(), None)
             .expect("start");
         let (status, body) = post_request(info.port.expect("port"), &request_body(|_| {}));
         assert_eq!(status, 403, "{body}");
@@ -2080,7 +2339,7 @@ mod tests {
         // accepted a hello from this pin.
         let pinned = PairingListenerState::default();
         let info = pinned
-            .start("127.0.0.1", window(false), desktop_identity())
+            .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("port");
         let (status, body) = post_request(port, &request_body(|_| {}));
@@ -2097,7 +2356,7 @@ mod tests {
         let mut idless = window(false);
         idless.pairing_id = String::new();
         let error = state
-            .start("127.0.0.1", idless, desktop_identity())
+            .start("127.0.0.1", idless, desktop_identity(), None)
             .expect_err("no window may seal under the zero salt (§11.6.1)");
         assert!(error.contains("pairing id"), "{error}");
         assert!(!state.status().expect("status").running);
@@ -2111,7 +2370,7 @@ mod tests {
         peer.device_id = DESKTOP_ID.to_string();
         peer.public_key = envelope::to_hex(&envelope::public_key(&DESKTOP_SECRET));
         let info = state
-            .start("127.0.0.1", selfish, desktop_identity())
+            .start("127.0.0.1", selfish, desktop_identity(), None)
             .expect("start");
         // The pin names this device, so no envelope is even opened (§1.2, N9).
         let (status, body) = post(info.port.expect("port"), &hello_frame(1));
@@ -2141,7 +2400,7 @@ mod tests {
             revoked: true,
         });
         let info = state
-            .start("127.0.0.1", repin, desktop_identity())
+            .start("127.0.0.1", repin, desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("a bound port");
         let (status, body) = post_request(port, &request_body(|_| {}));
@@ -2314,7 +2573,7 @@ mod tests {
         // A previous window admitted counters up to 7 from some peer.
         window.last_counter = 7;
         let info = state
-            .start("127.0.0.1", window, desktop_identity())
+            .start("127.0.0.1", window, desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("a bound port");
         assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
@@ -2435,5 +2694,488 @@ mod tests {
             assert!(!head.contains("access-control"), "{line}: {head}");
         }
         state.stop().expect("stop");
+    }
+
+    // ------------------------------------------------------------------
+    // §8.4 — the snapshot pull, over the real socket and a real database.
+    // ------------------------------------------------------------------
+
+    fn seeded_db(extra_notes: usize, body: usize) -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(crate::schema::BASELINE_SQL)
+            .expect("baseline schema");
+        seed_all(&conn, extra_notes, body);
+        conn
+    }
+
+    /// One row in each of the 17 tables with its foreign keys resolved, plus
+    /// `extra_notes` notes of `body` bytes each, plus one tombstone.
+    fn seed_all(conn: &Connection, extra_notes: usize, body: usize) {
+        let col = "c0000000-0000-4000-8000-000000000001";
+        let wallet = "c0000000-0000-4000-8000-000000000002";
+        let income = "c0000000-0000-4000-8000-000000000003";
+        let expense = "c0000000-0000-4000-8000-000000000004";
+        let shop = "c0000000-0000-4000-8000-000000000005";
+        let habit = "c0000000-0000-4000-8000-000000000006";
+        let list = "c0000000-0000-4000-8000-000000000007";
+        // Distinct names: the baseline seeds its own collections, wallets and
+        // categories, and every one of those names is UNIQUE.
+        let mut sql = format!(
+            "INSERT INTO collections (uid, name, created_at) VALUES ('{col}', 'Pull work', '2026-01-01');
+             INSERT INTO wallets (uid, name, created_at) VALUES ('{wallet}', 'Pull cash', '2026-01-01');
+             INSERT INTO income_categories (uid, name, created_at) VALUES ('{income}', 'Pull salary', '2026-01-01');
+             INSERT INTO expense_categories (uid, name, created_at) VALUES ('{expense}', 'Pull food', '2026-01-01');
+             INSERT INTO shops (uid, name, created_at) VALUES ('{shop}', 'Pull shop', '2026-01-01');
+             INSERT INTO habits (uid, name, created_at) VALUES ('{habit}', 'Pull run', '2026-01-01');
+             INSERT INTO shopping_lists (uid, name, created_at) VALUES ('{list}', 'Pull groceries', '2026-01-01');
+             INSERT INTO notes (uid, title, content, collection_id, created_at, updated_at)
+               VALUES ('c0000000-0000-4000-8000-000000000011', 'Note', 'body',
+                       (SELECT id FROM collections WHERE uid = '{col}'), '2026-01-01', '2026-01-01');
+             INSERT INTO tasks (uid, title, created_at)
+               VALUES ('c0000000-0000-4000-8000-000000000012', 'Task', '2026-01-01');
+             INSERT INTO reminders (uid, title, remind_at, created_at)
+               VALUES ('c0000000-0000-4000-8000-000000000013', 'Remind', '2026-01-02', '2026-01-01');
+             INSERT INTO income_entries (uid, amount_cents, category_id, wallet_id, entry_date, created_at)
+               VALUES ('c0000000-0000-4000-8000-000000000014', 100,
+                       (SELECT id FROM income_categories WHERE uid = '{income}'),
+                       (SELECT id FROM wallets WHERE uid = '{wallet}'), '2026-01-01', '2026-01-01');
+             INSERT INTO expense_entries (uid, amount_cents, category_id, wallet_id, entry_date, created_at)
+               VALUES ('c0000000-0000-4000-8000-000000000015', 100,
+                       (SELECT id FROM expense_categories WHERE uid = '{expense}'),
+                       (SELECT id FROM wallets WHERE uid = '{wallet}'), '2026-01-01', '2026-01-01');
+             INSERT INTO jobs (uid, title, shop_id, total_cents, job_date, created_at)
+               VALUES ('c0000000-0000-4000-8000-000000000016', 'Job',
+                       (SELECT id FROM shops WHERE uid = '{shop}'), 100, '2026-01-01', '2026-01-01');
+             INSERT INTO loans (uid, counterparty, direction, amount_cents, created_at)
+               VALUES ('c0000000-0000-4000-8000-000000000017', 'Friend', 'lent', 100, '2026-01-01');
+             INSERT INTO habit_logs (uid, habit_id, log_date)
+               VALUES ('c0000000-0000-4000-8000-000000000018',
+                       (SELECT id FROM habits WHERE uid = '{habit}'), '2026-01-01');
+             INSERT INTO shopping_items (uid, list_id, text)
+               VALUES ('c0000000-0000-4000-8000-000000000019',
+                       (SELECT id FROM shopping_lists WHERE uid = '{list}'), 'Milk');
+             INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+               VALUES ('c0000000-0000-4000-8000-00000000001a', 'Vault', 'c', 's', 'i',
+                       '2026-01-01', '2026-01-01');
+             INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+               VALUES ('tasks', 'c0000000-0000-4000-8000-0000000000ff', 3, 'dev-2', 'op-9', '2026-01-01');"
+        );
+        let content = "x".repeat(body);
+        for index in 0..extra_notes {
+            sql.push_str(&format!(
+                "INSERT INTO notes (uid, title, content, created_at, updated_at)
+                   VALUES ('d{index:07x}-0000-4000-8000-000000000000', 'Bulk {index}', '{content}',
+                           '2026-01-01', '2026-01-01');"
+            ));
+        }
+        conn.execute_batch(&sql).expect("seed the 17 tables");
+    }
+
+    fn snapshot_source(conn: Arc<Mutex<Connection>>) -> SnapshotSource {
+        Arc::new(move || {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            crate::pairing_snapshot::read_snapshot(&conn)
+        })
+    }
+
+    fn started_with_snapshot(
+        revoked: bool,
+        conn: Arc<Mutex<Connection>>,
+    ) -> (PairingListenerState, u16) {
+        let state = PairingListenerState::default();
+        let info = state
+            .start(
+                "127.0.0.1",
+                window(revoked),
+                desktop_identity(),
+                Some(snapshot_source(conn)),
+            )
+            .expect("start the pairing listener");
+        (state, info.port.expect("a bound port"))
+    }
+
+    /// A snapshot message from the pinned phone, sealed and framed. It carries
+    /// the same protocol/schema/generation fields a hello does — admission is
+    /// the same admission — plus the pairing id and its own kind.
+    fn seal_snapshot(counter: u64, message: &JsonValue) -> Vec<u8> {
+        let mut body = message.clone();
+        let object = body
+            .as_object_mut()
+            .expect("a snapshot message is an object");
+        object.insert("pairingId".to_string(), json!("pair-1"));
+        object.insert("protocolVersion".to_string(), json!(1));
+        object.insert("schemaVersion".to_string(), json!(8));
+        object.insert("generation".to_string(), json!(1));
+        let wire = envelope::seal(SealInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            from: PHONE_ID,
+            to: DESKTOP_ID,
+            message_id: &format!("snapshot-{counter}"),
+            counter,
+            message: &body,
+            pairing_id: Some("pair-1"),
+            nonce: None,
+            ephemeral_secret: None,
+        })
+        .expect("seal the snapshot message");
+        encode_frame(&wire).expect("frame it")
+    }
+
+    fn post_snapshot(port: u16, body: &[u8]) -> (u16, String) {
+        let (status, raw) = request(port, "POST /pair/snapshot", body);
+        let text =
+            decode_frame(&raw).unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned());
+        (status, text)
+    }
+
+    /// Open one sealed batch, with `last` as the highest desktop counter the
+    /// phone has already accepted. Returns the batch document and its counter.
+    fn opened_batch(reply: &str, last: u64) -> (JsonValue, u64) {
+        let parsed: JsonValue = serde_json::from_str(reply).expect("reply json");
+        let wire = parsed["envelope"].as_str().expect("a sealed batch");
+        let opened = envelope::open(OpenInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            local_device_id: PHONE_ID,
+            expected_from: DESKTOP_ID,
+            last_counter: last,
+            pairing_id: Some("pair-1"),
+            raw: wire,
+        })
+        .expect("the phone opens the batch");
+        (opened.message, opened.header.counter)
+    }
+
+    #[test]
+    fn a_snapshot_pulls_batch_by_batch_and_adopts_whole() {
+        let conn = Arc::new(Mutex::new(seeded_db(45, 2000)));
+        let expected = {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let read = crate::pairing_snapshot::read_snapshot(&conn).expect("read");
+            (read.record_count(), read.tombstone_count())
+        };
+        let (state, port) = started_with_snapshot(false, Arc::clone(&conn));
+
+        let mut phone = 0u64;
+        let mut desktop = 0u64;
+        let mut batch = 0u64;
+        let mut total: u64;
+        let mut rows = 0usize;
+        let mut tombstones = 0usize;
+        loop {
+            phone += 1;
+            let (status, reply) = post_snapshot(
+                port,
+                &seal_snapshot(
+                    phone,
+                    &json!({ "kind": "snapshot-request", "batch": batch }),
+                ),
+            );
+            assert_eq!(status, 200, "{reply}");
+            let (document, counter) = opened_batch(&reply, desktop);
+            desktop = counter;
+            assert_eq!(document["kind"], json!("snapshot"));
+            assert_eq!(document["pairingId"], json!("pair-1"));
+            assert_eq!(document["batch"], json!(batch));
+            total = document["total"].as_u64().expect("a total");
+            rows += document["ops"].as_array().expect("ops").len();
+            tombstones += document["tombstones"].as_array().expect("tombstones").len();
+
+            phone += 1;
+            let (status, ack) = post_snapshot(
+                port,
+                &seal_snapshot(phone, &json!({ "kind": "applied", "batch": batch })),
+            );
+            assert_eq!(status, 200, "{ack}");
+            let ack: JsonValue = serde_json::from_str(&ack).expect("ack json");
+            assert_eq!(ack["reason"], json!("applied"));
+            batch += 1;
+            if batch >= total {
+                break;
+            }
+        }
+        assert!(
+            total >= 3,
+            "the seeded desktop is cut into at least three batches, got {total}"
+        );
+        assert_eq!(rows, expected.0, "every row of every table travelled once");
+        assert_eq!(tombstones, expected.1);
+
+        phone += 1;
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(
+                phone,
+                &json!({
+                    "kind": "adopted",
+                    "counts": { "rows": rows, "tombstones": tombstones },
+                }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let adopted: JsonValue = serde_json::from_str(&reply).expect("adopted json");
+        assert_eq!(adopted["reason"], json!("adopted"));
+        assert_eq!(adopted["rows"], json!(rows as u64));
+        assert_eq!(adopted["tombstones"], json!(tombstones as u64));
+        assert_eq!(adopted["total"], json!(total));
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_burmese_note_travels_intact_measured_in_utf8_bytes() {
+        // The N8 lesson: Rust's `String::len` is UTF-8 bytes (3 per Burmese
+        // character here), and the batch budget is measured in those — never in
+        // characters, never in JS UTF-16 units.
+        let burmese = "မြန်မာစာ".repeat(400);
+        // 3,200 characters at 3 UTF-8 bytes each: 9,600 bytes, never 3,200.
+        assert_eq!(burmese.chars().count(), 3200);
+        assert_eq!(burmese.len(), 9600);
+        let conn = Arc::new(Mutex::new(seeded_db(0, 0)));
+        {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute_batch(&format!(
+                "INSERT INTO notes (uid, title, content, created_at, updated_at)
+                   VALUES ('e0000000-0000-4000-8000-000000000001', 'မြန်မာ', '{burmese}',
+                           '2026-01-01', '2026-01-01');"
+            ))
+            .expect("seed the Burmese note");
+        }
+        let (state, port) = started_with_snapshot(false, conn);
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 0 })),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let (document, _) = opened_batch(&reply, 0);
+        let op = document["ops"]
+            .as_array()
+            .expect("ops")
+            .iter()
+            .find(|op| op["uid"] == json!("e0000000-0000-4000-8000-000000000001"))
+            .expect("the Burmese note is in the snapshot");
+        assert_eq!(op["fields"]["content"], json!(burmese));
+        assert_eq!(op["fields"]["title"], json!("မြန်မာ"));
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_revoked_peer_never_reaches_the_snapshot_reader() {
+        let reads = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&reads);
+        let state = PairingListenerState::default();
+        let info = state
+            .start(
+                "127.0.0.1",
+                window(true),
+                desktop_identity(),
+                Some(Arc::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(crate::pairing_snapshot::Snapshot::default())
+                })),
+            )
+            .expect("start");
+        let (status, reply) = post_snapshot(
+            info.port.expect("port"),
+            &seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 0 })),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "revoked");
+        assert!(
+            !reply.contains("envelope"),
+            "not one batch byte leaves a revoked pairing: {reply}"
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "the reader was never called"
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_snapshot_request_from_another_pairing_is_a_mismatch() {
+        let conn = Arc::new(Mutex::new(seeded_db(0, 0)));
+        let (state, port) = started_with_snapshot(false, conn);
+        // Sealed under this pairing's salt (so it opens), but claiming another
+        // pairing in its payload: the pairing-id check is what refuses it.
+        let wire = envelope::seal(SealInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            from: PHONE_ID,
+            to: DESKTOP_ID,
+            message_id: "foreign-pairing",
+            counter: 1,
+            message: &json!({
+                "kind": "snapshot-request",
+                "batch": 0,
+                "pairingId": "pair-9",
+                "protocolVersion": 1,
+                "schemaVersion": 8,
+                "generation": 1,
+            }),
+            pairing_id: Some("pair-1"),
+            nonce: None,
+            ephemeral_secret: None,
+        })
+        .expect("seal");
+        let (status, reply) = post_snapshot(port, &encode_frame(&wire).expect("frame"));
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "pairing-mismatch");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_replayed_snapshot_envelope_is_refused_and_a_re_request_re_serves() {
+        let conn = Arc::new(Mutex::new(seeded_db(0, 0)));
+        let (state, port) = started_with_snapshot(false, conn);
+        let frame = seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 0 }));
+        assert_eq!(post_snapshot(port, &frame).0, 200);
+        let (status, reply) = post_snapshot(port, &frame);
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "replayed");
+        // A fresh envelope for the same batch is a re-request, not a replay:
+        // the batch is served again, unchanged.
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(2, &json!({ "kind": "snapshot-request", "batch": 0 })),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let (document, _) = opened_batch(&reply, 0);
+        assert_eq!(document["batch"], json!(0));
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_second_stream_cannot_skip_ahead_and_an_early_adoption_is_refused() {
+        let conn = Arc::new(Mutex::new(seeded_db(45, 2000)));
+        let (state, port) = started_with_snapshot(false, conn);
+
+        // Batch 2 before batch 0 is a second, parallel pull.
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 2 })),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "snapshot-busy");
+
+        // The pull's own start is served, and adoption before the last batch is
+        // not an adoption of the whole snapshot (§8.4).
+        assert_eq!(
+            post_snapshot(
+                port,
+                &seal_snapshot(2, &json!({ "kind": "snapshot-request", "batch": 0 }))
+            )
+            .0,
+            200
+        );
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(
+                3,
+                &json!({ "kind": "adopted", "counts": { "rows": 0, "tombstones": 0 } }),
+            ),
+        );
+        assert_eq!(status, 400, "{reply}");
+        assert_eq!(refusal_reason(&reply), "malformed");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_batch_acknowledged_twice_is_a_replay() {
+        let conn = Arc::new(Mutex::new(seeded_db(0, 0)));
+        let (state, port) = started_with_snapshot(false, conn);
+        assert_eq!(
+            post_snapshot(
+                port,
+                &seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 0 }))
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            post_snapshot(
+                port,
+                &seal_snapshot(2, &json!({ "kind": "applied", "batch": 0 }))
+            )
+            .0,
+            200
+        );
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(3, &json!({ "kind": "applied", "batch": 0 })),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "replayed");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn the_snapshot_route_speaks_only_its_own_kinds() {
+        let conn = Arc::new(Mutex::new(seeded_db(0, 0)));
+        let (state, port) = started_with_snapshot(false, conn);
+        let (status, reply) = post_snapshot(port, &seal_snapshot(1, &json!({ "kind": "hello" })));
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "not-allowed");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn an_interrupted_pull_re_takes_the_snapshot_from_the_start() {
+        let conn = Arc::new(Mutex::new(seeded_db(45, 2000)));
+        let reads = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&reads);
+        let source_conn = Arc::clone(&conn);
+        let source: SnapshotSource = Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let conn = source_conn.lock().unwrap_or_else(|e| e.into_inner());
+            crate::pairing_snapshot::read_snapshot(&conn)
+        });
+        let state = PairingListenerState::default();
+        let info = state
+            .start("127.0.0.1", window(false), desktop_identity(), Some(source))
+            .expect("start");
+        let port = info.port.expect("port");
+
+        // Pull two batches and acknowledge them, then stop dead mid-pull. The
+        // desktop applied nothing, so there is no cursor to resume from.
+        let mut phone = 0u64;
+        let mut desktop = 0u64;
+        for batch in 0..2u64 {
+            phone += 1;
+            let (status, reply) = post_snapshot(
+                port,
+                &seal_snapshot(
+                    phone,
+                    &json!({ "kind": "snapshot-request", "batch": batch }),
+                ),
+            );
+            assert_eq!(status, 200, "{reply}");
+            let (_, counter) = opened_batch(&reply, desktop);
+            desktop = counter;
+            phone += 1;
+            assert_eq!(
+                post_snapshot(
+                    port,
+                    &seal_snapshot(phone, &json!({ "kind": "applied", "batch": batch }))
+                )
+                .0,
+                200
+            );
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "one read per window");
+        state.stop().expect("stop");
+
+        // A second window re-takes it and serves batch 0 again, whole.
+        let (second, port) = started_with_snapshot(false, Arc::clone(&conn));
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 0 })),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let (document, _) = opened_batch(&reply, 0);
+        assert_eq!(document["batch"], json!(0));
+        assert!(!document["ops"].as_array().expect("ops").is_empty());
+        second.stop().expect("stop");
     }
 }

@@ -173,18 +173,32 @@ answered; the shape below is the proposal the approval covers.
   `{kind:"snapshot", pairingId, batch, total, ops:[{table, uid, stamp, fields}],
   tombstones:[…]}`, answered with a sealed `{kind:"applied", pairingId, batch}`;
   the last batch answers `{kind:"adopted", counts}`.
-- **Batching under the existing cap.** Re-cut with
-  `batchSnapshot(rows, { maxBytes: 48 * 1024 })` so every body fits today's
-  64 KiB frame limit. No protocol bound changes; the cost is more round trips.
-  (The alternative — raising `MAX_FRAME_BYTES` for this path — is the other
-  approval question.)
+- **Batching under the existing cap.** Re-cut at **30 KiB of rows** so every
+  body fits today's 64 KiB frame limit. Corrected 2026-11-10: the 48 KiB figure
+  this line used to carry could not fit, and neither could 32 KiB.
+  `envelope::seal` **hex**-encodes the ciphertext, so the body is **2× the
+  plaintext**, not base64's 4/3. With the authenticated header (~270 bytes), the
+  `{header,body}` wrapper and the frame's 4-byte prefix: 48 KiB → ~98 KiB
+  (refused), 32 KiB → ~66 KiB (refused), 30,720 bytes → ~62 KiB (fits with
+  ~3.5 KiB spare). `MAX_SNAPSHOT_BATCH_BYTES = 30 * 1024`, pinned by a test that
+  seals a max-size batch and asserts the framed envelope fits and seals 32 KiB
+  of plaintext and asserts it does not. No protocol bound changes; the cost is
+  more round trips. (The alternative — raising `MAX_FRAME_BYTES` for this path
+  — is the other approval question.)
 - **Desktop:** read the 17 tables plus tombstones in **one transaction**
   (§8.4), seal per batch, hold the snapshot for the life of the window, and
   re-take it on a new pairing id (§11.4).
 - **Phone:** validate before applying (`isSyncTable`, `writeAllowed`, schema),
-  apply each batch through `applyStatements` (one transaction per batch,
-  §7.4), record an `AdoptionCheckpoint`, and finish with `adoptionSummary`.
+  **stage** each batch unapplied, and apply the whole snapshot through
+  `applyStatements` in **one** transaction once the last batch has arrived;
+  then record an `AdoptionCheckpoint` and finish with `adoptionSummary`.
   Interruption restarts the snapshot — `resumeAdoption` already decides that.
+  Corrected 2026-11-10: this line used to say "one transaction per batch", which
+  contradicts §8.4 ("applied in one transaction on the phone... If the snapshot
+  is interrupted, nothing is applied") and the two modules already written
+  against it — `pairing_snapshot.rs`'s `SnapshotBatch` comment ("nothing is
+  applied before the last") and `bootstrap.ts` (`AdoptionCheckpoint`: "the only
+  meaningful values are 0 and 'all of them'"). The spec wins.
 - **Refusals, named and effectless:** `not-allowed`, `pairing-mismatch`,
   `malformed`, `needs-re-pair`, `unauthenticated`, `schema-mismatch`,
   `replayed`, plus `snapshot-busy` when a second pairing asks while one
@@ -235,19 +249,18 @@ only).
 
 ## Approvals and open decisions
 
-1. **New wire surface (Session 3).** `/pair/snapshot` with kinds `snapshot`,
-   `applied`, `adopted` is new protocol, and the frame-cap choice is a bound
-   change if the 48 KiB re-cut is rejected. Wave 1 recorded the rule: new wire
-   surface needs MinLulin's approval. Until it is given, Sessions 1–2 are the
-   whole of Session 7 that may be implemented.
+1. **New wire surface (Session 3). — SETTLED 2026-11-10.** MinLulin approved
+   the wire surface: `/pair/snapshot` with kinds `snapshot-request`,
+   `applied`, `adopted` may be built. The frame cap does **not** change
+   (64 KiB); the batch budget is the 30 KiB re-cut above, inside it.
 2. **Snapshot read path.** The proposal reads in Rust (`pairing_snapshot.rs`)
    because §8.4 requires one transaction; the alternative is a TS reader over
    `db_query`, which cannot hold a transaction across the read. State the
    choice in the report when Session 3 starts.
-3. **Snapshot row stamps.** Decided: **A** (2026-11-09). Schema v9's
-   `sync_row_stamps` records the §4.2 stamp of the value each row holds, written
-   with the mutation and backfilled by the migration; the snapshot transport
-   reads it. See **Status** below.
+3. **Snapshot row stamps — SETTLED: A** (2026-11-09, re-affirmed 2026-11-10).
+   Schema v9's `sync_row_stamps` records the §4.2 stamp of the value each row
+   holds, written with the mutation and backfilled by the migration; the
+   snapshot transport reads it. See **Status** below.
 
 Settled and not to be re-decided here: N1 (no pin without a proved hello and a
 human Trust), N2 (a missing key fails closed), D1 Option A (the request carries
@@ -329,6 +342,16 @@ device's current Lamport counter and `migration-8-9` as the operation id. A row
 with no stamp row reads as counter 0: pre-history, older than any edit written
 after v9. The snapshot transport is built on this next.
 
+**Session 3, Task 1 — done** (2026-11-10). The desktop serves the snapshot:
+`POST /pair/snapshot` beside the hello and the rendezvous, all three sharing one
+admission path (`admit` takes the route's kind allowlist as a parameter, so a
+second copy of the checks cannot drift). `read_snapshot` is handed in as the
+`SnapshotSource` the command builds over the app's connection lock, read once
+per window and held. `MAX_SNAPSHOT_BATCH_BYTES` is `30 * 1024` with the hex
+arithmetic in its comment, and two tests pin the boundary (a max-size batch
+frames; 32 KiB of plaintext does not). Task 2 — the phone's pull, the
+`strip`-free mapping in `store.ts`, the apply-once transaction — is not started.
+
 ## Out of scope
 
 The ordinary operation/outbox sync loop, conflict merging on the wire, Stage 1
@@ -343,8 +366,8 @@ uploads its own new records.
 - The phone holds exactly one `sync_peers` row naming the desktop's key and the
   ack's generation, written only after the hello; a re-pair goes through
   `rePairStatements`.
-- The snapshot applies batch-by-batch in transactions, resumes by restarting,
-  and never splits an aggregate; every refusal names its reason with zero
-  effect.
+- The snapshot is staged batch-by-batch and applies in **one** transaction
+  (§8.4), resumes by restarting, and never splits an aggregate; every refusal
+  names its reason with zero effect.
 - `npm run verify` green on the final commit; no new dependencies; the
   two-device run recorded or explicitly reported as not run.
