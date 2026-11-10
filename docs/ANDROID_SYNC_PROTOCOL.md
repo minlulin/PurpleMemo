@@ -890,7 +890,7 @@ The one open decision this document carries into review.
 
 ## 13. Open tensions — recorded, not silently settled
 
-#### §13.1 Who owns a reminder definition? (`reminder-definition-owner`) *(open — needs MinLulin's call)*
+#### §13.1 Who owns a reminder definition? (`reminder-definition-owner`) *(decided — Option A, 2026-11-10)*
 
 The design has two statements that point different ways: the sync contract says
 "wallets/categories and reminder definitions desktop-owned", while decision 9
@@ -904,11 +904,7 @@ phone would arm them too and both devices would fire.
 | **A (recommended)** | Definitions are two-way. Both devices hold every reminder; a device arms and notifies **only** the reminders whose `created_by_device_id` is its own. | A `created_by_device_id` column on `reminders`; a delivery filter on both sides. Keeps decision 9 literally true and keeps `reminders` inside the 17-table core. |
 | B | Definitions stay desktop-owned (desktop→phone read-only). A phone-created reminder never syncs; it lives and notifies on the phone only. | The phone shows desktop reminders but must not arm them — the same column or an equivalent marker is still needed. A reminder set on the phone is invisible on the desktop, which the user may not expect. |
 
-**Recommendation: A.** Either option needs a marker saying which device created
-the row; A gives that marker a job (who notifies) and keeps the phone's
-reminders visible where the user works. The decision is not taken here: it
-changes what the phone arms, so it is MinLulin's. Until he decides, Stage 1
-treats `reminders` as two-way per A and adds no reminder-specific delivery code.
+**Decided: A (2026-11-10, MinLulin's call — "2 way လုပ်လို့ရရင် လုပ်မယ်").** Definitions are two-way: both devices hold every reminder, and a device arms and notifies only the reminders whose `created_by_device_id` is its own. The column already exists (`reminders.created_by_device_id`, added in Session 2, nullable, no behavior wired yet); the delivery filter on both sides is Stage 1 work, and the implementation confirms feasibility there. Stage 1 treats `reminders` as two-way per A.
 
 #### §13.2 Conflict losers go to per-device local trash *(confirmed)*
 

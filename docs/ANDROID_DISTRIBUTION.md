@@ -163,4 +163,6 @@ does not roll the data back.
 - **Split APKs / app bundles** — a single universal APK per ABI, one file to
   hand over.
 - **Older Android than 8.0 (API 26)** — `minSdk` is still Tauri's default 24;
-  raising it is an open decision (see `docs/ANDROID_TOOLCHAIN.md`, known gaps).
+  raising it to 26 is **decided (2026-11-10, Muus's call on MinLulin's
+  delegation — decision 11 already said API 26)**; the gradle change lands in
+  the next build session (see `docs/ANDROID_TOOLCHAIN.md`, known gaps).

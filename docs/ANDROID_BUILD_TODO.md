@@ -344,8 +344,13 @@ longer holds the phase open.
 ## Phase C — Staged sync, narrow first
 
 - [x] Protocol specification + failure-injection harness — **written
-  2026-11-08, awaiting MinLulin's approval** (approval is his call after he reads
-  the spec; this tick records delivery, not sign-off). Spec: protocol v1 in
+  2026-11-08, approved 2026-11-10** (approved by Muus on MinLulin's delegation —
+  he asked Muus to approve it. The approval is of the spec as the working
+  contract, with two recorded exceptions: §10.1's "and by a re-pair" wording is
+  wrong and Wave 3 (D3) removes it; the restore-bumps-generation behavior is
+  specified but not yet implemented in code — Session 2 carry-over, "Backup
+  payload rules" item. The 6 pending harness invariants are unwritten tests,
+  not spec gaps.) Spec: protocol v1 in
   `docs/ANDROID_SYNC_PROTOCOL.md`, superseding `ANDROID_DESIGN.md` §5 wherever
   they conflict (`updated_at` LWW + watermark replaced by Lamport version
   stamps and transactional cursors).
@@ -517,7 +522,11 @@ longer holds the phase open.
   250-row (2-batch) pull in Rust against a live window, and a 4-row / 3-batch
   pull in TypeScript against sealed envelopes it opens with its own keypair.
   **Not done:** the §9.1 upload (a phone's own records still do not reach the
-  desktop, and the card says so), and the two-device run.
+  desktop, and the card says so), and the two-device run. **Wire surface
+  approved 2026-11-10 (Muus's call on MinLulin's delegation):** the upload may
+  add a `/pair/` route following the `/pair/snapshot` pattern — same `admit`
+  path, same envelope, kinds `upload`/`uploaded` — detailed in the upload
+  session prompt; no new surface beyond that without approval.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
