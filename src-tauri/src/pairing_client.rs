@@ -851,7 +851,9 @@ mod tests {
         assert_eq!(staged.peer_device_id.as_deref(), Some(PHONE_ID));
         assert!(!staged.peer_hello_received);
 
-        send_hello(&target, &facts(), &identity, &ack, 1)
+        // The counter comes from the process-wide allocator, as production does
+        // (`commands.rs`), so a later `exchange` in this process cannot reuse it.
+        send_hello(&target, &facts(), &identity, &ack, next_hello_counter())
             .expect("the sealed hello must be accepted");
         let reported = state.status().expect("status");
         assert!(
@@ -891,7 +893,7 @@ mod tests {
 
         let ack = request_pairing(&target, &facts(), &identity).expect("the code is accepted");
         assert_eq!(ack.generation, 3);
-        send_hello(&target, &facts(), &identity, &ack, 1)
+        send_hello(&target, &facts(), &identity, &ack, next_hello_counter())
             .expect("a hello carrying the desktop's own line is admitted");
         assert!(state.status().expect("status").peer_hello_received);
         state.stop().expect("stop");
@@ -1043,7 +1045,12 @@ mod tests {
         let target = target(endpoint, CODE);
         let identity = phone_identity();
         let ack = request_pairing(&target, &facts(), &identity).expect("the code is accepted");
-        send_hello(&target, &facts(), &identity, &ack, 1).expect("the hello is accepted");
+        // `next_hello_counter()`, not a literal: `exchange` takes its counter
+        // from the same allocator, and a hardcoded 1 here made a snapshot-pull
+        // request carry 1 as well whenever this helper ran first in the
+        // process — which the desktop rightly refused as a replay (§7.2).
+        send_hello(&target, &facts(), &identity, &ack, next_hello_counter())
+            .expect("the hello is accepted");
         identity
     }
 
