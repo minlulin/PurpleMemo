@@ -61,6 +61,18 @@ keyring = "4.2.0"
 jni = "0.21.1"
 ndk-context = "0.1.1"
 
+# Windows only: `GetAdaptersAddresses` is how the pairing offer finds a LAN
+# address when the machine has no default route (N7, `share::lan_ip`).
+# `windows-sys` is already pinned in `Cargo.lock` through Tauri, so this
+# declares an existing version rather than adding a crate to download.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
 [profile.release]
 codegen-units = 1
 lto = true

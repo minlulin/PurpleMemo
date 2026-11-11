@@ -756,6 +756,15 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             if close_to_tray_enabled(&handle) {
                 api.prevent_close();
+                // §11.5: hiding may not fire `visibilitychange` on every desktop
+                // WebView, so closing the window is the pairing port's stop as
+                // well. The lock path (not an ordinary stop) raises the epoch,
+                // so a window that was still opening cannot bind behind the
+                // hidden app either (N4).
+                if let Some(pairing) = handle.try_state::<pairing_listener::PairingListenerState>()
+                {
+                    let _ = pairing.stop_for_lock();
+                }
                 if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = window.hide();
                 }

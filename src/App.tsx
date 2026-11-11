@@ -656,17 +656,19 @@ function AppShell() {
   const lockNow = useCallback(() => {
     const epoch = shareStopEpoch.current + 1;
     shareStopEpoch.current = epoch;
-    // §11.5: locking ends the pairing window too, and `pairing_close` resolves
-    // only once the port is refused — so the lock screen cannot be raised over
-    // a socket that still accepts a phone.
-    void pairingRepo.close().catch(() => {});
     lockSession({
       lockVault: () => vaultRepo.lockVault(),
       // The lock's stop, not an ordinary one (D2a): it revokes a consent
       // token the user armed before locking and supersedes one an in-flight
       // start has already spent, so no listener can bind a moment after the
       // shell decided sharing ends here.
-      stopSharing: () => shareRepo.stopForLock(),
+      // §11.5: locking ends the pairing window too, and `pairing_close`
+      // resolves only once the port is refused — so the lock screen is never
+      // raised over a socket that still accepts a phone. A close that fails is
+      // retried and reported by the same teardown that reports a failed share
+      // stop, instead of being swallowed (N4).
+      stopSharing: () =>
+        Promise.all([shareRepo.stopForLock(), pairingRepo.close()]),
       onLocked: () => {
         unlockedRef.current = false;
         setUnlocked(false);

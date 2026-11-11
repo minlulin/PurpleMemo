@@ -1307,7 +1307,10 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">Pair a phone</h3>
           <span className="badge">Protocol v1</span>
         </div>
-        <PairingPanel />
+        {/* A filtered-away section must unmount, not just hide: `hidden` left
+            the panel mounted and its listener serving a code nobody can see
+            (§11.5, N4). */}
+        {shows("pairing") ? <PairingPanel /> : null}
       </section>
 
       <section

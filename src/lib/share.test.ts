@@ -498,8 +498,8 @@ test("the shell's lock port stops sharing through the lock path (D2a)", () => {
   const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
   assert.match(
     app,
-    /stopSharing: \(\) => shareRepo\.stopForLock\(\)/,
-    "the lock must stop sharing through stopForLock",
+    /stopSharing: \(\) =>\s*Promise\.all\(\[shareRepo\.stopForLock\(\), pairingRepo\.close\(\)\]\)/,
+    "the lock must stop sharing through stopForLock and close the pairing port (N4)",
   );
   assert.doesNotMatch(
     app,

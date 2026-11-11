@@ -153,6 +153,10 @@ export interface PairingListenerInfo {
   peerPublicKey: string | null;
   peerFingerprint: string | null;
   peerHelloReceived: boolean;
+  /** §11.1: wrong guesses burned on this window's code (wave 2, N3). */
+  offerAttempts: number;
+  /** §11.1: the single-use code has been redeemed, so it is spent (N3). */
+  offerRedeemed: boolean;
   note: string | null;
 }
 

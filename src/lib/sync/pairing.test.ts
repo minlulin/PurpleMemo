@@ -20,6 +20,7 @@ import {
   keyFingerprint,
   PAIRING_CODE_LIFETIME_MS,
   PAIRING_MAX_ATTEMPTS,
+  type ParsedOffer,
   type PinnedPeer,
   pairingState,
   parseOffer,
@@ -67,7 +68,9 @@ CREATE TABLE reminders (
   fired INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );`;
 
-const DESKTOP_KEY = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+// A 32-byte (64 hex) key, the only shape an offer may carry (§11.6.1, N7).
+const DESKTOP_KEY =
+  "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const PHONE_KEY = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 const DESKTOP_DEVICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PHONE_DEVICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -506,6 +509,86 @@ test("re-pair refuses while the outbox owes writes, and otherwise starts a new p
     "acks from the old pairing are not evidence for the new one",
   );
   assert.equal((await readState(phone.driver)).rePairRequired, false);
+});
+
+test("an offer is never filled in with defaults, nor trusted for its key and address (N7)", () => {
+  const source = offerFor(DESKTOP_DEVICE).offer;
+  const tamper = (patch: (params: URLSearchParams) => void): ParsedOffer => {
+    const url = new URL(encodeOffer(source));
+    patch(url.searchParams);
+    return parseOffer(url.toString());
+  };
+  const refused = (result: ParsedOffer, reason: RegExp, note?: string) => {
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.reason : "", reason, note);
+  };
+
+  // An omitted numeric used to coerce to 0 and pass `Number.isFinite`.
+  refused(
+    tamper((params) => {
+      params.delete("generation");
+    }),
+    /incomplete/,
+  );
+  refused(
+    tamper((params) => {
+      params.set("protocol", "");
+    }),
+    /incomplete/,
+  );
+  refused(
+    tamper((params) => {
+      params.set("schema", "-1");
+    }),
+    /incomplete/,
+  );
+  refused(
+    tamper((params) => {
+      params.set("created", "1.5");
+    }),
+    /incomplete/,
+  );
+  refused(
+    tamper((params) => {
+      params.set("expires", String(source.createdAt));
+    }),
+    /incomplete/,
+    "an expiry that is not after the mint time is not an offer",
+  );
+
+  refused(
+    tamper((params) => {
+      params.set("key", "nothex");
+    }),
+    /public key/,
+  );
+  refused(
+    tamper((params) => {
+      params.set("key", "ab".repeat(31));
+    }),
+    /public key/,
+    "a 32-character key is not a 32-byte key",
+  );
+
+  refused(
+    tamper((params) => {
+      params.set("endpoint", "https://example.com/pair");
+    }),
+    /LAN address/,
+  );
+  refused(
+    tamper((params) => {
+      params.set("endpoint", "192.168.1.20:70000");
+    }),
+    /LAN address/,
+  );
+
+  // The untouched offer still parses: the stricter rules refuse forgeries, never
+  // the shape the desktop actually renders.
+  const valid = parseOffer(encodeOffer(source));
+  assert.ok(valid.ok);
+  assert.equal(valid.offer.publicKey, source.publicKey);
+  assert.equal(valid.offer.endpoint, source.endpoint);
 });
 
 test("the pairing listener exists only while pairing is on", () => {

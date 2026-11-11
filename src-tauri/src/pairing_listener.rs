@@ -274,6 +274,12 @@ pub struct PairingListenerInfo {
     /// proved it holds the key it presented. The panel may not offer Trust
     /// before this is true (§11.1, wave 1 N1).
     pub peer_hello_received: bool,
+    /// §11.1: wrong guesses burned on this window's code. The panel projects
+    /// it into its session so a locked-out code never renders as live (N3).
+    pub offer_attempts: u32,
+    /// §11.1: the single-use code has been redeemed, so it is spent. The panel
+    /// hides the QR and the digits the moment this is true (N3).
+    pub offer_redeemed: bool,
     pub note: Option<String>,
 }
 
@@ -289,6 +295,8 @@ impl PairingListenerInfo {
             peer_public_key: None,
             peer_fingerprint: None,
             peer_hello_received: false,
+            offer_attempts: 0,
+            offer_redeemed: false,
             note,
         }
     }
@@ -401,6 +409,13 @@ impl Running {
 
     fn info(&self, note: Option<String>) -> PairingListenerInfo {
         let paired = self.gate.paired.lock().unwrap_or_else(|e| e.into_inner());
+        // The code's live state lives in Rust (`Gate.offer`); the panel cannot
+        // compute a lockout or a redemption from its own session (N3).
+        let (offer_attempts, offer_redeemed) =
+            self.gate.offer.as_ref().map_or((0, false), |offer| {
+                let offer = offer.lock().unwrap_or_else(|e| e.into_inner());
+                (offer.attempts, offer.redeemed)
+            });
         PairingListenerInfo {
             running: true,
             port: Some(self.port),
@@ -414,6 +429,8 @@ impl Running {
             peer_public_key: paired.as_ref().map(|peer| peer.public_key_hex.clone()),
             peer_fingerprint: paired.as_ref().map(|peer| peer.fingerprint.clone()),
             peer_hello_received: paired.as_ref().is_some_and(|peer| peer.hello_received),
+            offer_attempts,
+            offer_redeemed,
             note,
         }
     }
@@ -423,6 +440,13 @@ impl Running {
 #[derive(Default)]
 pub struct PairingListenerState {
     inner: Mutex<Option<Running>>,
+    /// The lock epoch (D2a), bumped by [`Self::stop_for_lock`] and
+    /// [`Self::stop_for_reset`]. A `start` records it before preparing and
+    /// re-checks it under the listener lock, so a window can never bind
+    /// `0.0.0.0` a moment after the shell locked. Ordinary `stop` deliberately
+    /// does not bump it: closing the panel is not the shell deciding the
+    /// session ended, and it must not refuse the next open.
+    lock_epoch: AtomicU64,
     /// The SAME barrier the share server and the DB commands consult (E2). A
     /// private barrier would be two states pretending to be one.
     lifecycle: Arc<Lifecycle>,
@@ -455,6 +479,31 @@ impl PairingListenerState {
         window: PairingWindow,
         identity: PairingIdentity,
         snapshot: Option<SnapshotSource>,
+    ) -> Result<PairingListenerInfo, String> {
+        self.start_with_epoch(
+            bind,
+            window,
+            identity,
+            snapshot,
+            self.lock_epoch.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Open the window, refusing if a lock or reset landed after `epoch` was
+    /// read (D2a, mirrored from `ShareState`).
+    ///
+    /// The preparation between reading the epoch and taking the listener lock
+    /// is where a lock can land. Both paths raise their barrier *before* they
+    /// stop anything, so every interleaving ends one of two ways: this check
+    /// passed first (and the lock's stop then reaps the window this call
+    /// binds), or the barrier was first (and this refuses, binding nothing).
+    fn start_with_epoch(
+        &self,
+        bind: &str,
+        window: PairingWindow,
+        identity: PairingIdentity,
+        snapshot: Option<SnapshotSource>,
+        epoch: u64,
     ) -> Result<PairingListenerInfo, String> {
         // Fail before binding anything if a reset or import owns the app (E2).
         self.lifecycle.ensure_share_allowed()?;
@@ -491,11 +540,19 @@ impl PairingListenerState {
         // Re-check under the server lock: a reset that landed while this start
         // was preparing must not be followed by a bind.
         self.lifecycle.ensure_share_allowed()?;
-        if let Some(running) = guard.as_ref() {
-            if !running.finished() {
-                return Ok(running.info(None));
-            }
+        // …and neither must a lock (D2a): the barrier was raised before the
+        // lock's stop, so a start carrying a superseded epoch binds nothing
+        // behind the lock screen.
+        if self.lock_epoch.load(Ordering::SeqCst) != epoch {
+            return Err(
+                "pairing ended when the app locked before this window opened: unlock and show a fresh code"
+                    .to_string(),
+            );
         }
+        // N4: a new window REPLACES the running one. Returning the old window's
+        // info handed the panel a freshly minted code the live listener did not
+        // gate on — a QR that always failed on the phone. Reopening the panel
+        // now always yields a code the listener accepts.
         if let Some(stale) = guard.take() {
             reap(stale)?;
         }
@@ -577,16 +634,22 @@ impl PairingListenerState {
 
     /// The lock path (§11.5): locking the app ends the pairing window.
     ///
-    /// Same stop as [`Self::stop`], unlike the LAN share's lock path: no
-    /// consent token or pairing code lives in Rust, so there is nothing to
-    /// revoke before the socket closes. The shell calls this on lock, on app
-    /// background, and when the pairing screen closes.
+    /// The lock epoch is raised BEFORE the socket is reaped (D2a, mirroring
+    /// `ShareState::stop_for_lock`), so a `start` preparing right now is
+    /// superseded instead of binding `0.0.0.0` a moment after the shell locked.
+    /// The window's code does live in Rust now (`Gate.offer`); closing the
+    /// socket is what makes it unreachable — there is no separate token to
+    /// revoke before the close, only a start to supersede.
     pub fn stop_for_lock(&self) -> Result<PairingListenerInfo, String> {
+        self.lock_epoch.fetch_add(1, Ordering::SeqCst);
         self.stop()
     }
 
     /// The reset path: close the window and report whether one was open.
     pub fn stop_for_reset(&self) -> Result<bool, String> {
+        // Same barrier as the lock: a start in flight must not bind after a
+        // factory reset has taken the data.
+        self.lock_epoch.fetch_add(1, Ordering::SeqCst);
         let mut guard = self.lock()?;
         let removed = match guard.take() {
             Some(running) => {
@@ -1995,7 +2058,17 @@ mod tests {
         let second = state
             .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect("start again");
-        assert_eq!(first.port, second.port, "a live window is reused");
+        // One window, one socket — and the window that is up is the NEW one
+        // (N4): the old port is reaped before the replacement binds, so there
+        // is never a second pairing door, and the panel's freshly minted code
+        // is the one the live listener checks.
+        assert_ne!(first.port, second.port, "the running window is replaced");
+        let old = first.port.expect("a bound port");
+        assert!(
+            StdTcpStream::connect(("127.0.0.1", old)).is_err(),
+            "the replaced window's socket is closed"
+        );
+        assert_eq!(second.port, state.status().expect("status").port);
         state.stop().expect("stop");
     }
 
@@ -2084,6 +2157,87 @@ mod tests {
             .start("127.0.0.1", offer_window(revoked), desktop_identity(), None)
             .expect("start the pairing window");
         (state, info.port.expect("a bound port"))
+    }
+
+    /// N3: the panel learns the code's live state from the listener — the
+    /// attempts it has burned and the redemption it performed — instead of
+    /// guessing from a session Rust never updates.
+    #[test]
+    fn the_info_reports_the_code_the_listener_actually_gates_on() {
+        let (state, port) = started_with_offer(false);
+        let before = state.status().expect("status");
+        assert_eq!(before.offer_attempts, 0);
+        assert!(!before.offer_redeemed);
+
+        let (status, _) = post_request(
+            port,
+            &request_body(|message| {
+                message.insert("code".to_string(), json!("000000"));
+            }),
+        );
+        assert_eq!(status, 403);
+        let after = state.status().expect("status");
+        assert_eq!(after.offer_attempts, 1, "a wrong guess is reported");
+        assert!(!after.offer_redeemed, "a refused guess spends nothing");
+
+        let (status, _) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 200);
+        let redeemed = state.status().expect("status");
+        assert!(redeemed.offer_redeemed, "the single-use code is spent");
+    }
+
+    /// N4 (D2a): a lock that lands while a start is preparing supersedes it;
+    /// nothing binds behind the lock screen.
+    #[test]
+    fn a_lock_during_start_refuses_to_bind() {
+        let state = PairingListenerState::default();
+        let armed = state.lock_epoch.load(Ordering::SeqCst);
+        state.stop_for_lock().expect("lock stop");
+        let refused = state.start_with_epoch(
+            "127.0.0.1",
+            offer_window(false),
+            desktop_identity(),
+            None,
+            armed,
+        );
+        assert!(refused.is_err(), "the superseded start must refuse");
+        assert!(
+            refused.unwrap_err().contains("locked"),
+            "the refusal says why"
+        );
+        assert!(!state.status().expect("status").running);
+    }
+
+    /// N4: a second open replaces the running window — the code the panel now
+    /// shows is the code the listener checks.
+    #[test]
+    fn a_new_window_replaces_the_running_one() {
+        let (state, first) = started_with_offer(false);
+        let mut window = offer_window(false);
+        window.offer = Some(PairingOffer {
+            code: "654321".to_string(),
+            expires_at: now_ms() + 60_000,
+        });
+        let second = state
+            .start("127.0.0.1", window, desktop_identity(), None)
+            .expect("replace the window");
+        let port = second.port.expect("a bound port");
+        assert_ne!(port, first, "the old window was reaped, not reused");
+        assert!(
+            StdTcpStream::connect(("127.0.0.1", first)).is_err(),
+            "the replaced window's port refuses a connect"
+        );
+
+        // The code from the FIRST window is not what the live gate accepts.
+        let (status, _) = post_request(port, &request_body(|_| {}));
+        assert_eq!(status, 403, "the stale code is wrong on this window");
+        let (status, _) = post_request(
+            port,
+            &request_body(|message| {
+                message.insert("code".to_string(), json!("654321"));
+            }),
+        );
+        assert_eq!(status, 200, "the new code is the one the listener checks");
     }
 
     /// A window opened with the stored pin *and* a code: what a re-pair of an

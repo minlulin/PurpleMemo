@@ -78,7 +78,7 @@ export const en = {
   "shell.notificationsBlocked":
     "Notifications are blocked — due reminders stay listed in Tasks.",
   "shell.shareStopFailed":
-    "Sharing to your phone did not stop — turn it off in Settings, Backup & share.",
+    "A phone link did not stop — turn sharing off in Settings, Backup & share, and close the pairing panel.",
 
   "nav.dashboard": "Dashboard",
   "nav.inbox": "Inbox",
@@ -286,9 +286,11 @@ export const en = {
   "mobile.settings.pairScan": "Scan the desktop's QR",
   "mobile.settings.pairScanning": "Scanning…",
   "mobile.settings.pairCameraOff":
-    "This build cannot reach a camera here. Type the six-digit code shown on the desktop instead.",
+    "This build cannot reach a camera here. Paste the desktop's pairing code below to pair without a camera.",
   "mobile.settings.pairNoOffer":
-    "Scan the desktop's QR first. A six-digit code on its own does not say which desktop to pair with.",
+    "Scan the desktop's QR, or paste its pairing code below. A six-digit code on its own does not say which desktop to pair with.",
+  "mobile.settings.pairPasteLabel": "Pairing code from the desktop",
+  "mobile.settings.pairPasteAction": "Use this code",
   "mobile.settings.pairEndpoint": "Desktop endpoint: {endpoint}",
   "mobile.settings.pairDesktopKey": "Desktop key fingerprint: {fingerprint}",
   "mobile.settings.pairTypeLabel": "Six-digit code",
@@ -1011,7 +1013,7 @@ export const my: Record<MessageKey, string> = {
   "shell.notificationsBlocked":
     "အသိပေးချက်များ ပိတ်ထားသည် — ရောက်ရှိနေသော သတိပေးချက်များကို လုပ်ငန်းများတွင် စာရင်းပြထားဆဲဖြစ်သည်။",
   "shell.shareStopFailed":
-    "ဖုန်းသို့ မျှဝေခြင်း မရပ်တန့်နိုင်ပါ — ဆက်တင်များ (Backup & share) တွင် ပိတ်ပါ။",
+    "ဖုန်းချိတ်ဆက်မှု မရပ်တန့်နိုင်ပါ — ဆက်တင်များ (Backup & share) တွင် မျှဝေခြင်းကို ပိတ်ပြီး တွဲချိတ်အကန့်ကို ပိတ်ပါ။",
 
   "nav.dashboard": "ဒက်ရှ်ဘုတ်",
   "nav.inbox": "ဝင်စာ",
@@ -1214,9 +1216,11 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pairScan": "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ရန်",
   "mobile.settings.pairScanning": "စကင်ဖတ်နေသည်…",
   "mobile.settings.pairCameraOff":
-    "ဤတည်ဆောက်မှုတွင် ကင်မရာ မရနိုင်ပါ။ ကွန်ပျူတာပြသထားသော ဂဏန်းခြောက်လုံးကုဒ်ကို ရိုက်ထည့်ပါ။",
+    "ဤတည်ဆောက်မှုတွင် ကင်မရာ မရနိုင်ပါ။ ကင်မရာမပါဘဲ တွဲချိတ်ရန် ကွန်ပျူတာ၏ တွဲချိတ်ကုဒ်ကို အောက်တွင် ကူးထည့်ပါ။",
   "mobile.settings.pairNoOffer":
-    "ပထမဦးစွာ ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ။ ဂဏန်းခြောက်လုံးကုဒ်တစ်ခုတည်းဖြင့် မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မသိနိုင်ပါ။",
+    "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ သို့မဟုတ် ၎င်း၏ တွဲချိတ်ကုဒ်ကို အောက်တွင် ကူးထည့်ပါ။ ဂဏန်းခြောက်လုံးကုဒ်တစ်ခုတည်းဖြင့် မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မသိနိုင်ပါ။",
+  "mobile.settings.pairPasteLabel": "ကွန်ပျူတာမှ တွဲချိတ်ကုဒ်",
+  "mobile.settings.pairPasteAction": "ဤကုဒ်ကို အသုံးပြုရန်",
   "mobile.settings.pairEndpoint": "ကွန်ပျူတာ လိပ်စာ — {endpoint}",
   "mobile.settings.pairDesktopKey": "ကွန်ပျူတာ ကီး လက်ဗွေ — {fingerprint}",
   "mobile.settings.pairTypeLabel": "ဂဏန်းခြောက်လုံးကုဒ်",

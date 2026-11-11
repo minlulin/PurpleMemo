@@ -12,7 +12,9 @@
  *   live, and its `host:port` is the endpoint the listener really bound;
  * - expiry, use and lockout close the socket (`settlePairingPanel`) before the
  *   code disappears from the screen, so "no code after it expires" and "no port
- *   after the code dies" are one step, not two;
+ *   after the code dies" are one step, not two — and the attempts, redemption
+ *   and port state come from the listener, which is the only place that knows
+ *   them (N3);
  * - a peer the listener's code-confirmed rendezvous pinned is written to
  *   `sync_peers` with the store's own statements, so the pin is a row (§11.2)
  *   and a re-pair is a re-pair (§11.4), never a silent overwrite.
@@ -34,6 +36,7 @@ import {
   createPairingSession,
   encodeOffer,
   keyFingerprint,
+  PAIRING_MAX_ATTEMPTS,
   type PairingOffer,
   type PairingSession,
   type PairingSessionState,
@@ -63,7 +66,12 @@ export interface PairingPanelState {
   listener: PairingListenerInfo;
 }
 
-export type PanelPhase = PairingSessionState;
+/**
+ * What the panel may say about the code. `closed` is the state `pairing.ts`
+ * does not have: the session is still live, but the listener has stopped, so
+ * there is nothing reachable to show (N3).
+ */
+export type PanelPhase = PairingSessionState | "closed";
 
 /**
  * Mint the offer and open the window. The listener comes up *before* any QR is
@@ -98,11 +106,21 @@ export async function openPairingPanel(
       listener.note ?? "the pairing listener did not start; no code is shown.",
     );
   }
+  const endpoint = listener.endpoint;
+  if (endpoint === null || endpoint === "") {
+    // A code with no address is a QR nobody can dial (N7). Close the window
+    // rather than draw a dead code: leaving it bound would serve a port whose
+    // code is not on screen.
+    await transport.pairingClose().catch(() => undefined);
+    throw new Error(
+      "this desktop has no local network address to pair on — connect it to the same network as the phone, then show a fresh code.",
+    );
+  }
   return {
     local,
     session,
     listener,
-    offer: { ...session.offer, endpoint: listener.endpoint ?? "" },
+    offer: { ...session.offer, endpoint },
   };
 }
 
@@ -115,7 +133,45 @@ export function panelPhase(
   state: PairingPanelState,
   now: number = Date.now(),
 ): PanelPhase {
-  return pairingState(state.session, now);
+  // While the listener is up it is the authority: its wrong-guess count and its
+  // redemption decide the phase, not a local session Rust never updates (N3).
+  // A stopped listener reports zeros, so the session settle recorded is kept.
+  const session = state.listener.running
+    ? projectSession(state.session, state.listener, now)
+    : state.session;
+  const phase = pairingState(session, now);
+  // The listener closing while the code is still live is its own state (N3):
+  // the digits are not expired, they are unreachable — saying "expired" over
+  // "95 s left" was the contradiction this state removes.
+  if (phase === "active" && !state.listener.running) return "closed";
+  return phase;
+}
+
+/** The one word the code cell shows when there is no live code to show. */
+export function panelPhaseLabel(phase: PanelPhase): string {
+  switch (phase) {
+    case "active":
+      return "";
+    case "expired":
+      return "expired";
+    case "used":
+      return "used";
+    case "locked":
+      return "locked";
+    case "closed":
+      return "closed";
+  }
+}
+
+/**
+ * The reason a phase shows. `closed` is the panel's own state; the rest are
+ * `pairing.ts`'s words, so a refusal never grows a second wording here.
+ */
+export function panelPhaseMessage(phase: PanelPhase): string | null {
+  if (phase === "closed") {
+    return "the pairing listener closed — show a fresh code on the desktop.";
+  }
+  return pairingStateMessage(phase);
 }
 
 export function remainingSeconds(
@@ -138,6 +194,8 @@ export interface PairingPanelView {
   fingerprint: string;
   peerFingerprint: string | null;
   listenerRunning: boolean;
+  /** True when no code is live: the panel offers a fresh one instead (N3). */
+  freshCode: boolean;
 }
 
 /** What the panel may draw, for one instant. */
@@ -146,17 +204,18 @@ export function panelView(
   now: number = Date.now(),
 ): PairingPanelView {
   const phase = panelPhase(state, now);
-  const live = phase === "active" && state.listener.running;
+  const live = phase === "active";
   return {
     phase,
     code: live ? state.offer.code : null,
     payload: live ? offerPayload(state) : null,
     remainingSeconds: remainingSeconds(state, now),
-    reason: pairingStateMessage(phase),
+    reason: panelPhaseMessage(phase),
     endpoint: state.listener.endpoint,
     fingerprint: state.local.fingerprint,
     peerFingerprint: state.listener.peerFingerprint,
     listenerRunning: state.listener.running,
+    freshCode: !live,
   };
 }
 
@@ -263,16 +322,45 @@ export function pendingConfirmation(
  * Rust suite (a connect is refused); here the state value and the socket are
  * kept in step. A tick never pins: the pin is the person's decision.
  */
+/**
+ * The session the listener's own report implies (N3). Rust owns the code's live
+ * state — it counts the wrong guesses and performs the single redemption — so
+ * those two facts are projected into the session before `pairingState` reads
+ * it. A local counter would have kept a locked-out code on screen forever.
+ */
+export function projectSession(
+  session: PairingSession,
+  listener: PairingListenerInfo,
+  now: number = Date.now(),
+): PairingSession {
+  const attempts = Math.max(
+    0,
+    Math.min(PAIRING_MAX_ATTEMPTS, Math.trunc(listener.offerAttempts)),
+  );
+  return {
+    ...session,
+    failedAttempts: Array.from({ length: attempts }, () => now),
+    // The listener is authoritative in both directions: a window whose code was
+    // never redeemed has no `usedAt`, whatever this session once believed.
+    usedAt: listener.offerRedeemed ? (session.usedAt ?? now) : session.usedAt,
+  };
+}
+
 export async function settlePairingPanel(
   transport: PairingTransport,
   state: PairingPanelState,
   now: number = Date.now(),
 ): Promise<PairingPanelState> {
   const current = await transport.pairingStatus();
-  if (pairingState(state.session, now) !== "active" && current.running) {
-    return { ...state, listener: await transport.pairingClose() };
+  // The listener's code state comes first: a lockout on the wire or a phone's
+  // redemption must close the socket on this tick, not when the 120 s timer
+  // happens to run out — and the panel must learn it on the same tick (N3).
+  const session = projectSession(state.session, current, now);
+  const next = { ...state, session, listener: current };
+  if (pairingState(session, now) !== "active" && current.running) {
+    return { ...next, listener: await transport.pairingClose() };
   }
-  return { ...state, listener: current };
+  return next;
 }
 
 /** Close the window for any reason — panel close, lock, app background. */

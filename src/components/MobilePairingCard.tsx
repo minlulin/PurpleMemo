@@ -12,11 +12,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mobilePairingRepo } from "../data/app.ts";
 import type { PhonePairResult } from "../data/driver.ts";
-import { isCompleteCode, offerFromFrame } from "../lib/sync/mobilePairing.ts";
+import {
+  isCompleteCode,
+  offerFromFrame,
+  scannedSession,
+} from "../lib/sync/mobilePairing.ts";
 import {
   keyFingerprint,
   type PairingOffer,
   type PairingSession,
+  parseOffer,
 } from "../lib/sync/pairing.ts";
 import { useT } from "./useTranslation.ts";
 
@@ -31,6 +36,9 @@ export function MobilePairingCard() {
   const [offer, setOffer] = useState<PairingOffer | null>(null);
   const [session, setSession] = useState<PairingSession | null>(null);
   const [typed, setTyped] = useState("");
+  // §11.1: the camera-less entry. The desktop's offer is a URI a person can
+  // copy, and it is the same proof a scan is — `parseOffer` decides.
+  const [pasted, setPasted] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,9 +61,31 @@ export function MobilePairingCard() {
     if (videoRef.current !== null) videoRef.current.srcObject = null;
   }, []);
 
+  /** False once the card unmounts, so a late `getUserMedia` is released (N6). */
+  const mountedRef = useRef(true);
+
   // A camera left running behind a tab change is a light and a battery, and it
   // would keep decoding frames nobody is reading.
-  useEffect(() => () => stopCamera(), [stopCamera]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stopCamera();
+    };
+  }, [stopCamera]);
+
+  // A hidden document must not keep the camera lit or keep decoding frames
+  // nobody sees — the mobile lock grace keeps the app alive in the background
+  // after its screen is gone (N6).
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState !== "hidden") return;
+      stopCamera();
+      setScanning((current) => (current === "scanning" ? "idle" : current));
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => document.removeEventListener("visibilitychange", onHidden);
+  }, [stopCamera]);
 
   const scan = useCallback(async () => {
     setError(null);
@@ -69,6 +99,14 @@ export function MobilePairingCard() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
       });
+      // The permission prompt can outlive the card. If it unmounted, or the app
+      // went to the background while the prompt was open, the cleanup already
+      // ran while `streamRef` was still null — so the hardware is released here
+      // rather than running on behind another screen (N6).
+      if (!mountedRef.current || document.visibilityState === "hidden") {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
       streamRef.current = stream;
       video.srcObject = stream;
       await video.play();
@@ -93,12 +131,17 @@ export function MobilePairingCard() {
           const result = offerFromFrame(frame);
           if (result.ok) {
             setOffer(result.offer);
-            setSession({
-              offer: result.offer,
-              failedAttempts: [],
-              usedAt: null,
-            });
+            // Local expiry runs on this phone's clock from the scan (N6).
+            setSession(scannedSession(result.offer));
             setTyped("");
+            setScanning("idle");
+            stopCamera();
+            return;
+          }
+          if (result.kind === "invalid-qr") {
+            // A readable QR this phone refuses. Looping would keep the camera
+            // on forever and never surface the reason (N6), so stop and say it.
+            setError(result.reason);
             setScanning("idle");
             stopCamera();
             return;
@@ -109,9 +152,28 @@ export function MobilePairingCard() {
       requestAnimationFrame(step);
     } catch {
       stopCamera();
-      setScanning("unavailable");
+      if (mountedRef.current) setScanning("unavailable");
     }
   }, [stopCamera]);
+
+  /**
+   * Pair without a camera (§11.1: "manual entry must remain first-class"):
+   * paste the desktop's pairing string, which `parseOffer` validates exactly as
+   * it validates a scanned one.
+   */
+  const usePastedOffer = () => {
+    setError(null);
+    setNotice(null);
+    const parsed = parseOffer(pasted);
+    if (!parsed.ok) {
+      setError(parsed.reason);
+      return;
+    }
+    setOffer(parsed.offer);
+    setSession(scannedSession(parsed.offer));
+    setTyped("");
+    setScanning("idle");
+  };
 
   // A used code is spent: the button stops offering a second attempt that can
   // only come back "used".
@@ -192,11 +254,34 @@ export function MobilePairingCard() {
               : t("mobile.settings.pairRefresh")}
         </button>
       </div>
-      {scanning === "unavailable" ? (
+      {/* The two notes never stack: "type the code" and "scan first" side by
+          side, with no field, was the dead end this replaces (N6). */}
+      {scanning === "unavailable" && offer === null ? (
         <p className="mobile-note">{t("mobile.settings.pairCameraOff")}</p>
       ) : null}
       {offer === null ? (
-        <p className="mobile-note">{t("mobile.settings.pairNoOffer")}</p>
+        <>
+          <p className="mobile-note">{t("mobile.settings.pairNoOffer")}</p>
+          <label className="mobile-field">
+            <span>{t("mobile.settings.pairPasteLabel")}</span>
+            <input
+              className="input"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="purplememo-pair://v1?…"
+              value={pasted}
+              onChange={(e) => setPasted(e.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn"
+            disabled={pasted.trim().length === 0}
+            onClick={usePastedOffer}
+          >
+            {t("mobile.settings.pairPasteAction")}
+          </button>
+        </>
       ) : (
         <>
           <p className="mobile-row-text">
@@ -213,7 +298,9 @@ export function MobilePairingCard() {
               className="input"
               inputMode="numeric"
               autoComplete="one-time-code"
-              maxLength={7}
+              // Spaced and dashed codes are supported ("12 34 56", "123 - 456"):
+              // 7 truncated them mid-code and disabled Confirm silently (N6).
+              maxLength={12}
               placeholder="000000"
               value={typed}
               onChange={(e) => setTyped(e.target.value)}

@@ -119,12 +119,32 @@ export function decodeQr(pixels: QrPixels): string | null {
  * a code that is not ours, and a malformed offer are all refusals with a
  * reason — the phone never pairs on half a payload.
  */
-export function scanOffer(pixels: QrPixels): ParsedOffer {
+/**
+ * What a scan found. The two refusals are distinct on purpose (N6):
+ *
+ * - `empty-frame` — no QR symbol at all, which is the normal state of a camera
+ *   still looking for the desktop's screen; scanning continues.
+ * - `invalid-qr` — a QR *was* read and `parseOffer` refused it (a foreign code,
+ *   a wrong format version, an incomplete offer). Scanning must stop and the
+ *   refusal must be shown; looping forever hid the reason completely.
+ */
+export type ScanResult =
+  | { ok: true; offer: PairingOffer }
+  | { ok: false; kind: "empty-frame" | "invalid-qr"; reason: string };
+
+export function scanOffer(pixels: QrPixels): ScanResult {
   const payload = decodeQr(pixels);
   if (payload === null) {
-    return { ok: false, reason: "no pairing code in view." };
+    return {
+      ok: false,
+      kind: "empty-frame",
+      reason: "no pairing code in view.",
+    };
   }
-  return parseOffer(payload);
+  const parsed = parseOffer(payload);
+  return parsed.ok
+    ? parsed
+    : { ok: false, kind: "invalid-qr", reason: parsed.reason };
 }
 
 /** The end-to-end proof, used by the tests and by the desktop's own smoke
@@ -132,5 +152,6 @@ export function scanOffer(pixels: QrPixels): ParsedOffer {
 export function verifyOfferQr(offer: PairingOffer): ParsedOffer {
   const payload = encodeOffer(offer);
   const matrix = qrMatrix(payload);
-  return scanOffer(qrPixels(matrix));
+  const scanned = scanOffer(qrPixels(matrix));
+  return scanned.ok ? scanned : { ok: false, reason: scanned.reason };
 }

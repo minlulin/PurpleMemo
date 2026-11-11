@@ -278,6 +278,47 @@ export type ParsedOffer =
 /** Parse what a scanner read. A malformed offer is refused with a reason —
  * never partially trusted, and never filled in with defaults that would make
  * a forged payload look like a valid one. */
+/**
+ * One decimal integer from the offer, or `null`. `Number(null)` and
+ * `Number("")` are both `0`, and `Number.isFinite(0)` is true — which is how
+ * an omitted field used to become a valid-looking number (N7). Digits only, so
+ * negatives, floats (`1.5`) and `0x…` are refused too.
+ */
+function offerInteger(
+  get: (name: string) => string | null,
+  name: string,
+): number | null {
+  const raw = get(name);
+  if (raw === null || raw === "") return null;
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/**
+ * A bare LAN socket address and nothing else: dotted IPv4 or bracketed IPv6,
+ * then a decimal port in 1..65535 (N7).
+ *
+ * The phone dials this string, so a full URL, a path, a hostname or credentials
+ * are all refused: a QR is not trusted to name anything but the address it was
+ * rendered for.
+ */
+function isLanEndpoint(value: string): boolean {
+  const match =
+    /^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9a-fA-F:.]+)\]):(\d{1,5})$/.exec(
+      value,
+    );
+  if (match === null) return false;
+  const port = Number(match[3]);
+  if (port < 1 || port > 65_535) return false;
+  const ipv4 = match[1];
+  if (ipv4 !== undefined) {
+    return ipv4.split(".").every((part) => Number(part) <= 255);
+  }
+  // The bracketed half must still be an IPv6 literal, not an arbitrary word.
+  return (match[2] ?? "").includes(":");
+}
+
 export function parseOffer(text: string): ParsedOffer {
   let url: URL;
   try {
@@ -289,7 +330,7 @@ export function parseOffer(text: string): ParsedOffer {
     return { ok: false, reason: "that is not a Purple Memo pairing code." };
   }
   const get = (name: string): string | null => url.searchParams.get(name);
-  const version = Number(get("v"));
+  const version = offerInteger(get, "v");
   if (version !== PAIRING_OFFER_VERSION) {
     return {
       ok: false,
@@ -301,24 +342,46 @@ export function parseOffer(text: string): ParsedOffer {
   const deviceId = get("device");
   const endpoint = get("endpoint");
   const publicKey = get("key");
-  const generation = Number(get("generation"));
-  const protocolVersion = Number(get("protocol"));
-  const schemaVersion = Number(get("schema"));
-  const createdAt = Number(get("created"));
-  const expiresAt = Number(get("expires"));
+  const generation = offerInteger(get, "generation");
+  const protocolVersion = offerInteger(get, "protocol");
+  const schemaVersion = offerInteger(get, "schema");
+  const createdAt = offerInteger(get, "created");
+  const expiresAt = offerInteger(get, "expires");
   if (
     code === null ||
-    !pairingId ||
-    !deviceId ||
-    !endpoint ||
-    !publicKey ||
-    !Number.isFinite(generation) ||
-    !Number.isFinite(protocolVersion) ||
-    !Number.isFinite(schemaVersion) ||
-    !Number.isFinite(createdAt) ||
-    !Number.isFinite(expiresAt)
+    pairingId === null ||
+    pairingId === "" ||
+    deviceId === null ||
+    deviceId === "" ||
+    endpoint === null ||
+    publicKey === null ||
+    generation === null ||
+    generation < 1 ||
+    protocolVersion === null ||
+    protocolVersion < 1 ||
+    schemaVersion === null ||
+    schemaVersion < 1 ||
+    createdAt === null ||
+    createdAt < 1 ||
+    expiresAt === null ||
+    expiresAt <= createdAt
   ) {
+    // Never filled in with defaults: every field above is either the value the
+    // desktop encoded or a refusal.
     return { ok: false, reason: "that pairing code is incomplete." };
+  }
+  if (!/^[0-9a-f]{64}$/.test(publicKey)) {
+    return {
+      ok: false,
+      reason: "this pairing code's key is not a 32-byte X25519 public key.",
+    };
+  }
+  if (!isLanEndpoint(endpoint)) {
+    return {
+      ok: false,
+      reason:
+        "this pairing code does not name a LAN address (host:port) to pair on.",
+    };
   }
   return {
     ok: true,

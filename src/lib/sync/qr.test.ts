@@ -24,7 +24,9 @@ function offer() {
   return createPairingSession({
     deviceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     endpoint: "192.168.1.20:47820",
-    publicKey: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    // 32 bytes of lowercase hex — the only key shape an offer may carry (N7).
+    publicKey:
+      "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
     generation: 3,
     schemaVersion: 8,
     now: NOW,

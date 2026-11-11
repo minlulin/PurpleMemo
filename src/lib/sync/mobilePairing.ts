@@ -53,17 +53,37 @@ import {
 
 export type FrameOutcome =
   | { ok: true; offer: PairingOffer }
-  | { ok: false; reason: string };
+  | { ok: false; kind: "empty-frame" | "invalid-qr"; reason: string };
 
 /**
  * One camera frame through the same decode path the rendered QR is proven
- * against: RGBA pixels → `jsqr` → `parseOffer`.
+ * against: RGBA pixels → `jsqr` → `parseOffer`. The refusal carries its kind, so
+ * the caller can keep scanning an empty frame but stop on a QR it refused.
  */
 export function offerFromFrame(pixels: QrPixels): FrameOutcome {
-  const scanned = scanOffer(pixels);
-  return scanned.ok
-    ? { ok: true, offer: scanned.offer }
-    : { ok: false, reason: scanned.reason };
+  return scanOffer(pixels);
+}
+
+/**
+ * The session a scan starts (§11.1, §4.1).
+ *
+ * The offer's timestamps are the *desktop's* clock, and the phone's is a
+ * different clock that can be minutes or days off. Judging local expiry against
+ * `expiresAt` with `Date.now()` (the bug, N6) made a fast phone reject a code it
+ * had just scanned. Instead the code's lifetime is measured from the scan — the
+ * one instant both sides agree is "now" — and the desktop stays authoritative
+ * on whether the window itself is still open.
+ */
+export function scannedSession(
+  offer: PairingOffer,
+  now: number = Date.now(),
+): PairingSession {
+  const lifetime = Math.max(0, offer.expiresAt - offer.createdAt);
+  return {
+    offer: { ...offer, createdAt: now, expiresAt: now + lifetime },
+    failedAttempts: [],
+    usedAt: null,
+  };
 }
 
 /** What the numeric entry knows: the scanned offer and its own attempts. */

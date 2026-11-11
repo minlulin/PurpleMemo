@@ -7,6 +7,7 @@
  * device proof waits for a real camera.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type {
   PhonePairResult,
@@ -25,13 +26,16 @@ import {
   readSnapshotBatch,
   SNAPSHOT_PULL_MISSING,
   type SnapshotPullTransport,
+  scannedSession,
   snapshotSummary,
 } from "./mobilePairing.ts";
 import {
   createPairingSession,
   encodeOffer,
+  PAIRING_CODE_LIFETIME_MS,
   type PairingOffer,
   type PairingSession,
+  parseOffer,
   pinFromDesktop,
 } from "./pairing.ts";
 import { qrMatrix, qrPixels } from "./qr.ts";
@@ -81,6 +85,81 @@ test("a frame with no code is a named refusal, not a partial pairing", () => {
   const scanned = offerFromFrame(blank);
   assert.equal(scanned.ok, false);
   if (!scanned.ok) assert.match(scanned.reason, /no pairing code/);
+});
+
+// ---------------------------------------------------------------------------
+// N6: the phone entry is honest about refusals, works without a camera, and
+// judges expiry on its own clock.
+// ---------------------------------------------------------------------------
+
+test("an empty frame and a refused QR are different answers", () => {
+  const blank = {
+    data: new Uint8ClampedArray(64 * 64 * 4).fill(255),
+    width: 64,
+    height: 64,
+  };
+  const empty = offerFromFrame(blank);
+  assert.equal(empty.ok, false);
+  if (!empty.ok) assert.equal(empty.kind, "empty-frame");
+
+  // A readable QR this build refuses must stop the scan, not loop forever.
+  const wrongVersion = qrPixels(
+    qrMatrix(encodeOffer({ ...offer(), version: 2 })),
+  );
+  const refused = offerFromFrame(wrongVersion);
+  assert.equal(refused.ok, false);
+  if (!refused.ok) {
+    assert.equal(refused.kind, "invalid-qr");
+    assert.match(refused.reason, /format v2/);
+  }
+});
+
+test("a pasted offer pairs without a camera", () => {
+  const source = offer();
+  const pasted = parseOffer(encodeOffer(source));
+  assert.ok(pasted.ok, "the desktop's own string is what a person pastes");
+  const session = scannedSession(pasted.offer);
+  assert.equal(session.usedAt, null);
+  assert.ok(
+    confirmTypedCode(session, "12 34 56", session.offer.createdAt + 1_000)
+      .verdict.ok,
+    "the typed code works with an offer that never touched a camera",
+  );
+});
+
+test("a phone whose clock is minutes fast still accepts a fresh scan", () => {
+  const source = offer();
+  // The phone is five minutes ahead of the desktop at the moment it scans.
+  const scannedAt = source.createdAt + 5 * 60_000;
+  const session = scannedSession(source, scannedAt);
+  assert.equal(
+    session.offer.expiresAt - session.offer.createdAt,
+    PAIRING_CODE_LIFETIME_MS,
+    "the code keeps its lifetime, measured from the scan",
+  );
+  assert.ok(
+    confirmTypedCode(session, source.code, scannedAt + 1_000).verdict.ok,
+    "a phone clock ahead of the desktop's no longer rejects a fresh code",
+  );
+});
+
+test("the card fits a spaced code and releases a late camera", () => {
+  const card = readFileSync(
+    new URL("../../components/MobilePairingCard.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(card, /maxLength=\{12\}/, "a spaced code is not truncated");
+  assert.match(
+    card,
+    /if \(!mountedRef\.current \|\| document\.visibilityState === "hidden"\)/,
+    "a camera that arrives after unmount or a hidden screen is stopped",
+  );
+  assert.match(card, /getTracks\(\)\) track\.stop\(\)/);
+  assert.match(
+    card,
+    /mobile\.settings\.pairPasteAction/,
+    "manual entry is wired",
+  );
 });
 
 test("the typed code uses redeemCode's own attempts and refusals", () => {

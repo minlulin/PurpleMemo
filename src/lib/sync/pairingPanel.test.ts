@@ -21,6 +21,7 @@ import { createMockDriver } from "../../data/mock-driver.ts";
 import {
   keyFingerprint,
   PAIRING_CODE_LIFETIME_MS,
+  PAIRING_MAX_ATTEMPTS,
   type PairingOffer,
   parseOffer,
   pinStatements,
@@ -31,6 +32,7 @@ import {
   openPairingPanel,
   type PairingPanelState,
   type PairingTransport,
+  panelPhaseLabel,
   panelView,
   pendingConfirmation,
   pinAdmittedPeer,
@@ -94,6 +96,8 @@ function listener(
     peerPublicKey: null,
     peerFingerprint: null,
     peerHelloReceived: false,
+    offerAttempts: 0,
+    offerRedeemed: false,
     note: null,
     ...over,
   };
@@ -522,5 +526,145 @@ test("a deviceId collision shows the existing phone and its fingerprint", async 
     pending.peer.fingerprint,
     pending.existing?.fingerprint,
     "the presented key and the pinned one are shown side by side",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// N3: the panel tells the truth about the listener's code state.
+// ---------------------------------------------------------------------------
+
+test("a code locked out on the wire closes the socket and never renders as live", async () => {
+  const driver = createMockDriver();
+  const locked = listener({ offerAttempts: PAIRING_MAX_ATTEMPTS });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => locked,
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: async () => locked,
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: locked,
+  };
+
+  const view = panelView(state);
+  assert.equal(view.phase, "locked", "the listener's count is the state");
+  assert.equal(view.code, null, "a locked code is never shown as live");
+  assert.equal(view.payload, null, "and neither is its QR");
+  assert.equal(view.freshCode, true);
+  assert.match(view.reason ?? "", /too many wrong codes/);
+
+  const settled = await settlePairingPanel(transport, state);
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+  assert.equal(settled.listener.running, false, "the socket is closed");
+  assert.equal(panelView(settled).phase, "locked");
+});
+
+test("a redeemed code is spent on screen before the timer runs out", async () => {
+  const driver = createMockDriver();
+  const redeemed = listener({ offerRedeemed: true });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => redeemed,
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: async () => redeemed,
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: redeemed,
+  };
+
+  const view = panelView(state);
+  assert.equal(view.phase, "used");
+  assert.equal(view.code, null, "the spent digits are hidden");
+  assert.equal(view.payload, null, "and the spent QR with them");
+  assert.match(view.reason ?? "", /already used/);
+
+  const settled = await settlePairingPanel(transport, state);
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+  assert.equal(settled.listener.running, false);
+  assert.equal(panelView(settled).phase, "used");
+});
+
+test("a listener that stopped while the code is live is closed, never expired", () => {
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: listener({ running: false, endpoint: null }),
+  };
+  const view = panelView(state);
+  assert.equal(view.phase, "closed");
+  assert.equal(view.code, null);
+  assert.equal(view.payload, null);
+  assert.equal(view.freshCode, true, "the panel offers a fresh code");
+  assert.doesNotMatch(view.reason ?? "", /expired/);
+  assert.equal(
+    view.reason,
+    "the pairing listener closed — show a fresh code on the desktop.",
+  );
+  assert.equal(panelPhaseLabel("closed"), "closed");
+});
+
+test("expiry hides the code even when the listener still reports running", () => {
+  const state = panelState("pair-1");
+  const view = panelView(state, state.offer.expiresAt);
+  assert.equal(view.phase, "expired");
+  assert.equal(view.code, null);
+  assert.equal(view.payload, null);
+  assert.equal(view.freshCode, true);
+});
+
+test("no QR is drawn when the listener has no LAN address", async () => {
+  const driver = createMockDriver();
+  let closed = 0;
+  const transport: PairingTransport = {
+    pairingLocal: () => driver.pairingLocal(),
+    pairingOpen: async () => listener({ endpoint: null }),
+    pairingClose: async () => {
+      closed += 1;
+      return driver.pairingClose();
+    },
+    pairingStatus: () => driver.pairingStatus(),
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+  };
+  await assert.rejects(() => openPairingPanel(transport), /network address/);
+  assert.equal(closed, 1, "the addressless window is closed, not left serving");
+});
+
+// ---------------------------------------------------------------------------
+// N4: nothing may keep a port open behind a screen that is gone.
+// ---------------------------------------------------------------------------
+
+test("an open that lands after unmount leaves no port behind", () => {
+  const panel = readFileSync(
+    new URL("../../components/PairingPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /unmountedRef\.current = true/);
+  assert.match(
+    panel,
+    /if \(unmountedRef\.current\) \{[\s\S]{0,200}?pairingRepo\.close\(\)/,
+    "a late open closes the listener instead of setting state",
+  );
+});
+
+test("a filtered-away pairing section unmounts the panel", () => {
+  const settings = readFileSync(
+    new URL("../../pages/SettingsPage.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(settings, /\{shows\("pairing"\) \? <PairingPanel \/> : null\}/);
+});
+
+test("the lock teardown closes the pairing port through the retried stop", () => {
+  const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
+  assert.match(
+    app,
+    /stopSharing: \(\) =>\s*Promise\.all\(\[shareRepo\.stopForLock\(\), pairingRepo\.close\(\)\]\)/,
+    "a failed pairing close is retried and reported, not swallowed",
   );
 });

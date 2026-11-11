@@ -22,6 +22,7 @@ import {
   identityRecovery,
   type PairingPanelState,
   type PinWrite,
+  panelPhaseLabel,
   panelView,
   pendingConfirmation,
 } from "../lib/sync/pairingPanel.ts";
@@ -75,16 +76,22 @@ export function PairingPanel() {
   const startingRef = useRef(false);
   const stateRef = useRef<PairingPanelState | null>(null);
   stateRef.current = state;
+  /**
+   * True once the panel is gone, so an `open()` that was awaiting the listener
+   * cannot leave a bound `0.0.0.0` port behind a screen nobody can see (N4).
+   */
+  const unmountedRef = useRef(false);
 
   // §11.5: closing the panel closes the port. `pairing_close` resolves only
   // once the socket refuses a connect, so unmounting here is the whole closed
   // window — the listener state and the socket agree by construction.
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
       void pairingRepo.close().catch(() => {});
-    },
-    [],
-  );
+    };
+  }, []);
 
   /** The identity's state, so a lost key is visible before anything is opened. */
   const refreshIdentity = useCallback(async () => {
@@ -104,19 +111,26 @@ export function PairingPanel() {
     setPin(null);
     try {
       const opened = await pairingRepo.open();
+      if (unmountedRef.current) {
+        // The panel went away while the listener was binding. Nothing may be
+        // set after unmount, and nothing may keep serving: close it now (N4).
+        void pairingRepo.close().catch(() => {});
+        return;
+      }
       stateRef.current = opened;
       setState(opened);
       // A staged candidate is compared against the rows already pinned, so a
       // re-pair can say whose key it replaces (§11.4).
       setPeers(await pairingRepo.peers().catch(() => []));
     } catch (e) {
+      if (unmountedRef.current) return;
       setError(errText(e));
       // A missing or unopenable pairing key is *why* opening failed; show the
       // recovery beside the error instead of leaving a dead end (N2).
       await refreshIdentity();
     } finally {
       startingRef.current = false;
-      setBusy(false);
+      if (!unmountedRef.current) setBusy(false);
     }
   }, [refreshIdentity]);
 
@@ -267,7 +281,11 @@ export function PairingPanel() {
             <dl className="pairing-facts">
               <div>
                 <dt>Pairing code</dt>
-                <dd className="pairing-code">{view.code ?? "expired"}</dd>
+                <dd className="pairing-code">
+                  {/* The phase's own word, never a hardcoded "expired": a
+                      locked, used or unreachable code says what it is (N3). */}
+                  {view.code ?? panelPhaseLabel(view.phase)}
+                </dd>
               </div>
               <div>
                 <dt>Code lifetime</dt>
@@ -371,6 +389,18 @@ export function PairingPanel() {
           ) : null}
           {pending === null || pin !== null ? (
             <div className="pairing-actions">
+              {/* No live code: the honest action is a fresh one, not a
+                  "Stop pairing" button beside a code that cannot pair (N3). */}
+              {view.freshCode ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy}
+                  onClick={() => void open()}
+                >
+                  Show a fresh code
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn"
