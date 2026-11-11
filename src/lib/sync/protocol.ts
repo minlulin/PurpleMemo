@@ -313,7 +313,7 @@ export function handshake(local: Hello, remote: Hello): Handshake {
       ok: false,
       code: "generation-mismatch",
       message:
-        "the desktop's data line changed (a restore, reset or re-pair); re-pair this phone before syncing (§10.2, §10.5).",
+        "the desktop's data line changed (a restore or a reset, not a re-pair); re-pair this phone before syncing (§10.2, §10.5).",
     };
   }
   return { ok: true, protocolVersion: PROTOCOL_VERSION };

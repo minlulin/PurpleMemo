@@ -258,6 +258,26 @@ export function seal(input: SealInput): string {
   return JSON.stringify({ header, body: toHex(sealed) });
 }
 
+/** The exact fields the wire and its header carry — no more, no fewer (§11.6.1). */
+const WIRE_KEYS = ["header", "body"] as const;
+const HEADER_KEYS = [
+  "v",
+  "from",
+  "to",
+  "messageId",
+  "counter",
+  "nonce",
+  "eph",
+] as const;
+
+function hasExactKeys(value: object, keys: readonly string[]): boolean {
+  const present = Object.keys(value);
+  return (
+    present.length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
 function parseWire(
   raw: string,
 ): { header: EnvelopeHeader; body: Uint8Array } | null {
@@ -268,18 +288,28 @@ function parseWire(
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
+  // An injected key is not authenticated — the AEAD's associated data is the
+  // header alone — so a wire carrying one is refused, never shrugged at.
+  if (!hasExactKeys(parsed, WIRE_KEYS)) return null;
   const record = parsed as { header?: unknown; body?: unknown };
   if (typeof record.body !== "string") return null;
   const body = fromHex(record.body);
   if (!body) return null;
   if (typeof record.header !== "object" || record.header === null) return null;
+  if (!hasExactKeys(record.header, HEADER_KEYS)) return null;
   const header = record.header as Partial<EnvelopeHeader>;
   if (
     typeof header.v !== "number" ||
+    !Number.isSafeInteger(header.v) ||
     typeof header.from !== "string" ||
     typeof header.to !== "string" ||
     typeof header.messageId !== "string" ||
     typeof header.counter !== "number" ||
+    // A counter Rust signs as `u64`: a fraction fails its deserialization, and
+    // one above 2^53 - 1 would round here, so `headerBytes` would authenticate
+    // a different integer than the peer sealed (N11).
+    !Number.isSafeInteger(header.counter) ||
+    header.counter < 1 ||
     typeof header.nonce !== "string" ||
     !fromHex(header.nonce) ||
     (fromHex(header.nonce)?.length ?? 0) !== NONCE_BYTES ||

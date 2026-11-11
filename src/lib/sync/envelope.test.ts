@@ -333,6 +333,135 @@ test("the wire format is the one the Rust side writes", () => {
 });
 
 /**
+ * N11: one spelling of hex and one shape for the wire, so this side and
+ * `src-tauri/src/envelope.rs` give the same bytes the same verdict. Rust used
+ * to accept `A-F` here and this side always refused them, so an envelope could
+ * be "malformed" on the phone and openable on the desktop.
+ */
+test("only lowercase hex in exactly two wire fields is accepted", () => {
+  const { desktop, phone } = pair();
+  const sealed = seal({
+    secretKey: desktop.secretKey,
+    peerPublicKey: phone.publicKey,
+    from: DESKTOP,
+    to: PHONE,
+    messageId: "msg-1",
+    counter: 1,
+    message: { shape: "one" },
+    pairingId: PAIRING,
+  });
+  const wire = JSON.parse(sealed) as {
+    header: Record<string, unknown>;
+    body: string;
+  };
+  const refusal = (raw: string) => {
+    const result = open({
+      secretKey: phone.secretKey,
+      peerPublicKey: desktop.publicKey,
+      localDeviceId: PHONE,
+      expectedFrom: DESKTOP,
+      lastCounter: 0,
+      pairingId: PAIRING,
+      raw,
+    });
+    return result.ok ? "" : result.reason;
+  };
+
+  assert.equal(refusal(sealed), "", "the honest wire still opens");
+  assert.equal(fromHex("00FF10"), null, "upper-case hex is not this wire's");
+
+  assert.equal(
+    refusal(
+      JSON.stringify({ header: wire.header, body: wire.body.toUpperCase() }),
+    ),
+    "malformed",
+    "an upper-case body is hex this format does not speak",
+  );
+  for (const field of ["nonce", "eph"] as const) {
+    const upper = {
+      ...wire.header,
+      [field]: String(wire.header[field]).toUpperCase(),
+    };
+    assert.equal(
+      refusal(JSON.stringify({ header: upper, body: wire.body })),
+      "malformed",
+      `${field} in upper-case hex`,
+    );
+  }
+
+  // The associated data is the header alone, so an injected key is
+  // unauthenticated: refused, never ignored.
+  assert.equal(
+    refusal(JSON.stringify({ ...wire, extra: 1 })),
+    "malformed",
+    "an extra field on the wire",
+  );
+  assert.equal(
+    refusal(
+      JSON.stringify({ header: { ...wire.header, extra: 1 }, body: wire.body }),
+    ),
+    "malformed",
+    "an extra field in the header",
+  );
+  const withoutEph = { ...wire.header };
+  delete withoutEph.eph;
+  assert.equal(
+    refusal(JSON.stringify({ header: withoutEph, body: wire.body })),
+    "malformed",
+    "a missing header field",
+  );
+});
+
+/**
+ * A counter is a `u64` on the Rust side. A fraction fails its deserialization
+ * and anything above `2^53 - 1` rounds in `JSON.parse`, which would make
+ * `headerBytes` authenticate a different integer than the peer sealed.
+ */
+test("a counter that is not a safe positive integer is refused", () => {
+  const { desktop, phone } = pair();
+  const sealed = seal({
+    secretKey: desktop.secretKey,
+    peerPublicKey: phone.publicKey,
+    from: DESKTOP,
+    to: PHONE,
+    messageId: "msg-1",
+    counter: 1,
+    message: { once: true },
+    pairingId: PAIRING,
+  });
+  const wire = JSON.parse(sealed) as {
+    header: Record<string, unknown>;
+    body: string;
+  };
+  const refusalFor = (counter: unknown) => {
+    const result = open({
+      secretKey: phone.secretKey,
+      peerPublicKey: desktop.publicKey,
+      localDeviceId: PHONE,
+      expectedFrom: DESKTOP,
+      lastCounter: 0,
+      pairingId: PAIRING,
+      raw: JSON.stringify({
+        header: { ...wire.header, counter },
+        body: wire.body,
+      }),
+    });
+    return result.ok ? "" : result.reason;
+  };
+
+  for (const counter of [0.5, 0, -1, 2 ** 53, 2 ** 53 + 2, "3", null, true]) {
+    assert.equal(
+      refusalFor(counter),
+      "malformed",
+      `counter ${String(counter)} is not a u64`,
+    );
+  }
+  // A well-formed counter is still refused by the tag, not by the parser: the
+  // strictness above did not start refusing real envelopes.
+  assert.equal(refusalFor(2), "unauthenticated");
+});
+
+/**
  * Cross-language proof, this direction: this test writes the vector the Rust
  * suite opens (`an_envelope_written_by_the_typescript_side_opens_here`).
  *

@@ -59,6 +59,7 @@ pub const KDF_INFO_PREFIX: &str = "purple-memo-envelope-v1";
 /// TypeScript side serializes the same fields in this order, and the bytes are
 /// the AEAD's associated data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Header {
     pub v: u8,
     pub from: String,
@@ -129,8 +130,16 @@ pub fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Lowercase hex, and nothing else (N11).
+///
+/// `is_ascii_hexdigit` also accepts `A-F`, so this side opened envelopes that
+/// `envelope.ts` called malformed and `Header`'s own docstrings call lowercase:
+/// one wire, two verdicts. The stricter rule is the one both sides share.
 pub fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let lowercase_hex = text
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if text.len() % 2 != 0 || !lowercase_hex {
         return None;
     }
     let mut out = Vec::with_capacity(text.len() / 2);
@@ -138,6 +147,19 @@ pub fn from_hex(text: &str) -> Option<Vec<u8>> {
         out.push(u8::from_str_radix(&text[index..index + 2], 16).ok()?);
     }
     Some(out)
+}
+
+/// The wire object: exactly `header` and `body`, nothing else (N11).
+///
+/// Deserialized as a struct rather than picked field by field out of a
+/// `JsonValue`, so an injected third key is refused instead of ignored: the
+/// AEAD's associated data is the header alone, and a parser that shrugged at
+/// extra keys accepted a wire carrying data the tag never covered.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Wire<'a> {
+    header: Header,
+    body: &'a str,
 }
 
 /// The public half of a key. The secret is only ever read from the platform key
@@ -328,15 +350,9 @@ pub struct OpenInput<'a> {
 /// Open one message. Refusals are values, and every check happens before the
 /// message is returned, so a caller can never act on a half-checked envelope.
 pub fn open(input: OpenInput<'_>) -> Result<Opened, Refusal> {
-    let parsed: JsonValue = serde_json::from_str(input.raw).map_err(|_| Refusal::Malformed)?;
-    let body_hex = parsed
-        .get("body")
-        .and_then(JsonValue::as_str)
-        .ok_or(Refusal::Malformed)?;
-    let body = from_hex(body_hex).ok_or(Refusal::Malformed)?;
-    let header: Header =
-        serde_json::from_value(parsed.get("header").cloned().ok_or(Refusal::Malformed)?)
-            .map_err(|_| Refusal::Malformed)?;
+    let wire: Wire = serde_json::from_str(input.raw).map_err(|_| Refusal::Malformed)?;
+    let body = from_hex(wire.body).ok_or(Refusal::Malformed)?;
+    let header = wire.header;
     let nonce = from_hex(&header.nonce).ok_or(Refusal::Malformed)?;
     if nonce.len() != NONCE_BYTES {
         return Err(Refusal::Malformed);
@@ -592,6 +608,70 @@ mod tests {
         let mut short_eph = parsed.clone();
         short_eph["header"]["eph"] = json!("0011");
         assert_eq!(open_raw(&short_eph.to_string()), Err(Refusal::Malformed));
+    }
+
+    /// N11, this side: one spelling of hex and one shape for the wire, so this
+    /// implementation and `envelope.ts` give the same bytes the same verdict.
+    #[test]
+    fn only_lowercase_hex_in_exactly_two_wire_fields_is_accepted() {
+        let (wire, desktop_secret, phone_secret) = sealed_between();
+        let desktop_public = public_key(&desktop_secret);
+        let open_raw = |raw: &str| open_wire(raw, &phone_secret, &desktop_public);
+        let parsed: JsonValue = serde_json::from_str(&wire).expect("json");
+
+        assert_eq!(from_hex("00ff10"), Some(vec![0x00, 0xff, 0x10]));
+        assert_eq!(
+            from_hex("00FF10"),
+            None,
+            "upper-case hex is not this wire's spelling"
+        );
+        assert_eq!(
+            from_hex("0"),
+            None,
+            "an odd number of digits is not hex data"
+        );
+
+        // Upper-case hex in the body or in either header key is malformed — not
+        // a tag failure — because that is exactly what the TypeScript side says.
+        let mut upper_body = parsed.clone();
+        upper_body["body"] =
+            JsonValue::String(parsed["body"].as_str().expect("body").to_uppercase());
+        assert_eq!(open_raw(&upper_body.to_string()), Err(Refusal::Malformed));
+
+        // The header's two hex fields, spelled with letters so upper-casing is
+        // an actual change: the fixed nonce in `sealed_between` is all 3s.
+        let mut upper_nonce = parsed.clone();
+        upper_nonce["header"]["nonce"] = JsonValue::String("AB".repeat(NONCE_BYTES));
+        assert_eq!(open_raw(&upper_nonce.to_string()), Err(Refusal::Malformed));
+        let eph_hex = parsed["header"]["eph"].as_str().expect("eph");
+        assert_ne!(
+            eph_hex,
+            eph_hex.to_uppercase(),
+            "the vector's ephemeral key carries letters, so upper-casing it matters"
+        );
+        let mut upper_eph = parsed.clone();
+        upper_eph["header"]["eph"] = JsonValue::String(eph_hex.to_uppercase());
+        assert_eq!(open_raw(&upper_eph.to_string()), Err(Refusal::Malformed));
+
+        // An injected key is unauthenticated, so it is refused, not ignored.
+        let mut extra_wire = parsed.clone();
+        extra_wire["extra"] = json!("not in the associated data");
+        assert_eq!(open_raw(&extra_wire.to_string()), Err(Refusal::Malformed));
+        let mut extra_header = parsed.clone();
+        extra_header["header"]["extra"] = json!(1);
+        assert_eq!(open_raw(&extra_header.to_string()), Err(Refusal::Malformed));
+
+        // And a missing field is no better than an extra one.
+        let mut missing = parsed.clone();
+        missing["header"]
+            .as_object_mut()
+            .expect("header is an object")
+            .remove("eph");
+        assert_eq!(open_raw(&missing.to_string()), Err(Refusal::Malformed));
+
+        // The untouched wire still opens: the strictness narrowed the parser,
+        // not the format.
+        assert!(open_raw(&wire).is_ok());
     }
 
     #[test]

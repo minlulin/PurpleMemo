@@ -594,9 +594,14 @@ records cannot conflict: the phone never changes an existing row there.
 #### §10.1 The generation names the data line
 
 The desktop database carries a `generation` integer, bumped by **any** restore
-(whatever the backup's age), by a factory reset, and by a re-pair. It is not a
-clock and it does not order data: it says "this is a different line of history
-from the one you knew".
+(whatever the backup's age) and by a factory reset. It is not a clock and it
+does not order data: it says "this is a different line of history from the one
+you knew".
+
+A re-pair does **not** bump it (D3). `rePairStatements` gives the re-paired peer
+a fresh `pairing_id` (§11.4), which already isolates its new session; bumping the
+generation as well would invalidate every *other* paired peer's session for a
+change that touched none of their data.
 
 #### §10.2 A generation mismatch refuses to sync
 
