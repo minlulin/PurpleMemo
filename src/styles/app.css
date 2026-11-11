@@ -4191,6 +4191,31 @@ tbody .week-row {
   flex: 0 0 auto;
 }
 
+/* The offer as text (§11.1): the phone's camera-less entry reads this exact
+ * string, so it wraps instead of overflowing and selects as one value. */
+.pairing-offer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  max-inline-size: 26rem;
+}
+
+.pairing-offer figcaption {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.pairing-offer-text {
+  display: block;
+  inline-size: 100%;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .pairing-facts {
   display: grid;
   gap: var(--space-2);

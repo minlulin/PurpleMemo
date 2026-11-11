@@ -494,6 +494,27 @@ test("the panel replaces the identity only through the two-step confirmation", (
   );
 });
 
+test("the panel prints the offer so a camera-less phone can paste it", () => {
+  const panel = readFileSync(
+    new URL("../../components/PairingPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  // The QR is not a carrier a camera-less phone can read: the same string has
+  // to be on screen, selectable, and copyable (§11.1 manual entry).
+  assert.match(panel, /pairing-offer-text/, "the offer string is rendered");
+  assert.match(panel, /Copy pairing string/, "and it can be copied");
+  assert.match(
+    panel,
+    /navigator\.clipboard\.writeText\(text\)/,
+    "copy uses the platform clipboard",
+  );
+  assert.match(
+    panel,
+    /selectNodeContents\(node\)/,
+    "a refused clipboard selects the string instead of claiming a copy",
+  );
+});
+
 test("a deviceId collision shows the existing phone and its fingerprint", async () => {
   const { driver } = openDb();
   await driver.batch(

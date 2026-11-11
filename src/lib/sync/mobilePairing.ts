@@ -107,6 +107,20 @@ export function isCompleteCode(typed: string): boolean {
   return normalizeCode(typed) !== null;
 }
 
+/**
+ * True when what was pasted is nothing but the six-digit code (§11.1).
+ *
+ * The digits identify one pairing *window*, never a desktop: the offer carries
+ * the endpoint, the pinned key and the pairing id, and `parseOffer` has nothing
+ * to read them from. So the card answers this case with its own sentence —
+ * "paste the whole purplememo-pair:// string" — instead of `parseOffer`'s
+ * *"that is not a Purple Memo pairing code"*, which sounds like a typo of a
+ * code the field would otherwise accept.
+ */
+export function isBareCode(text: string): boolean {
+  return normalizeCode(text) !== null;
+}
+
 /** The phone's pin of the desktop (§11.2) — the key the QR carried. */
 export function desktopPin(offer: PairingOffer): {
   deviceId: string;

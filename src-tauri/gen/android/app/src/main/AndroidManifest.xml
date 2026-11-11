@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Pairing scans the desktop's QR (§11.1). Android WebView only exposes
+         `navigator.mediaDevices.getUserMedia` to an app that declares CAMERA —
+         without this the card reports "This build cannot reach a camera here".
+         The runtime grant is requested when a scan starts; `required=false`
+         keeps the APK installable on a device without a camera, where the card
+         falls back to pasting the offer string. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- Reminders: the notification itself, the exact-alarm grant the UI
          falls back from when it is missing, and the boot listener that
          re-arms alarms (AlarmManager does not keep them across a reboot). -->

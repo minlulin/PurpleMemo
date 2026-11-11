@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { mobilePairingRepo } from "../data/app.ts";
 import type { PhonePairResult } from "../data/driver.ts";
 import {
+  isBareCode,
   isCompleteCode,
   offerFromFrame,
   scannedSession,
@@ -164,7 +165,15 @@ export function MobilePairingCard() {
   const usePastedOffer = () => {
     setError(null);
     setNotice(null);
-    const parsed = parseOffer(pasted);
+    const entry = pasted.trim();
+    // The digits are the code of a window, not a desktop: they carry no
+    // endpoint and no key, so say what is missing instead of letting
+    // `parseOffer` call them "not a Purple Memo pairing code".
+    if (isBareCode(entry)) {
+      setError(t("mobile.settings.pairDigitsOnly"));
+      return;
+    }
+    const parsed = parseOffer(entry);
     if (!parsed.ok) {
       setError(parsed.reason);
       return;

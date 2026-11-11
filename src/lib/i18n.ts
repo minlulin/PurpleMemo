@@ -286,11 +286,13 @@ export const en = {
   "mobile.settings.pairScan": "Scan the desktop's QR",
   "mobile.settings.pairScanning": "Scanning…",
   "mobile.settings.pairCameraOff":
-    "This build cannot reach a camera here. Paste the desktop's pairing code below to pair without a camera.",
+    "This build cannot reach a camera here. Pair without a camera by pasting the desktop's pairing string below — press “Copy pairing string” beside the desktop's QR.",
   "mobile.settings.pairNoOffer":
-    "Scan the desktop's QR, or paste its pairing code below. A six-digit code on its own does not say which desktop to pair with.",
-  "mobile.settings.pairPasteLabel": "Pairing code from the desktop",
-  "mobile.settings.pairPasteAction": "Use this code",
+    "Scan the desktop's QR, or paste the whole purplememo-pair:// string shown with it. The six digits alone do not say which desktop to pair with.",
+  "mobile.settings.pairPasteLabel": "Pairing string from the desktop",
+  "mobile.settings.pairPasteAction": "Use this pairing string",
+  "mobile.settings.pairDigitsOnly":
+    "Those are the six digits, which say which window to pair with but not which desktop. Paste the whole purplememo-pair:// string shown with the desktop's QR.",
   "mobile.settings.pairEndpoint": "Desktop endpoint: {endpoint}",
   "mobile.settings.pairDesktopKey": "Desktop key fingerprint: {fingerprint}",
   "mobile.settings.pairTypeLabel": "Six-digit code",
@@ -1216,11 +1218,13 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pairScan": "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ရန်",
   "mobile.settings.pairScanning": "စကင်ဖတ်နေသည်…",
   "mobile.settings.pairCameraOff":
-    "ဤတည်ဆောက်မှုတွင် ကင်မရာ မရနိုင်ပါ။ ကင်မရာမပါဘဲ တွဲချိတ်ရန် ကွန်ပျူတာ၏ တွဲချိတ်ကုဒ်ကို အောက်တွင် ကူးထည့်ပါ။",
+    "ဤတည်ဆောက်မှုတွင် ကင်မရာ မရနိုင်ပါ။ ကင်မရာမပါဘဲ တွဲချိတ်ရန် ကွန်ပျူတာ၏ တွဲချိတ်စာသားကို အောက်တွင် ကူးထည့်ပါ — ကွန်ပျူတာ၏ QR ဘေးရှိ “Copy pairing string” ကို နှိပ်ပါ။",
   "mobile.settings.pairNoOffer":
-    "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ သို့မဟုတ် ၎င်း၏ တွဲချိတ်ကုဒ်ကို အောက်တွင် ကူးထည့်ပါ။ ဂဏန်းခြောက်လုံးကုဒ်တစ်ခုတည်းဖြင့် မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မသိနိုင်ပါ။",
-  "mobile.settings.pairPasteLabel": "ကွန်ပျူတာမှ တွဲချိတ်ကုဒ်",
-  "mobile.settings.pairPasteAction": "ဤကုဒ်ကို အသုံးပြုရန်",
+    "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ သို့မဟုတ် ၎င်းနှင့်အတူ ပြသထားသော purplememo-pair:// စာသားတစ်ခုလုံးကို အောက်တွင် ကူးထည့်ပါ။ ဂဏန်းခြောက်လုံးတည်းဖြင့် မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မသိနိုင်ပါ။",
+  "mobile.settings.pairPasteLabel": "ကွန်ပျူတာမှ တွဲချိတ်စာသား",
+  "mobile.settings.pairPasteAction": "ဤစာသားကို အသုံးပြုရန်",
+  "mobile.settings.pairDigitsOnly":
+    "၎င်းသည် ဂဏန်းခြောက်လုံးသာ ဖြစ်သည် — မည်သည့်တွဲချိတ်ပြတင်းနှင့် တွဲမည်ကို ပြသော်လည်း မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မပြနိုင်ပါ။ ကွန်ပျူတာ၏ QR နှင့်အတူ ပြသထားသော purplememo-pair:// စာသားတစ်ခုလုံးကို ကူးထည့်ပါ။",
   "mobile.settings.pairEndpoint": "ကွန်ပျူတာ လိပ်စာ — {endpoint}",
   "mobile.settings.pairDesktopKey": "ကွန်ပျူတာ ကီး လက်ဗွေ — {fingerprint}",
   "mobile.settings.pairTypeLabel": "ဂဏန်းခြောက်လုံးကုဒ်",

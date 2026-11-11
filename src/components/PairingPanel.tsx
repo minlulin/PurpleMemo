@@ -73,6 +73,9 @@ export function PairingPanel() {
   const [error, setError] = useState<string | null>(null);
   const [pin, setPin] = useState<PinWrite | null>(null);
   const [identity, setIdentity] = useState<PairingIdentityStatus | null>(null);
+  // §11.1: the offer is a string a person can carry to a phone with no camera.
+  const [copied, setCopied] = useState(false);
+  const offerTextRef = useRef<HTMLElement | null>(null);
   const startingRef = useRef(false);
   const stateRef = useRef<PairingPanelState | null>(null);
   stateRef.current = state;
@@ -149,6 +152,30 @@ export function PairingPanel() {
   }, []);
 
   const pairingId = state?.offer.pairingId ?? null;
+
+  /**
+   * Copy the offer, or — when the clipboard is refused — select it, so the
+   * person can copy it by hand instead of being told "copied" over an empty
+   * clipboard. The string is the same one the QR carries, not a second kind of
+   * pairing: `parseOffer` validates it exactly as it validates a scan.
+   */
+  const copyOffer = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      const node = offerTextRef.current;
+      if (node !== null) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      setCopied(false);
+    }
+    window.setTimeout(() => setCopied(false), 2_000);
+  }, []);
 
   // One tick a second: a dead code closes the socket before the code leaves the
   // screen, and a live one reports whatever the listener has learned. The tick
@@ -276,8 +303,31 @@ export function PairingPanel() {
       ) : (
         <>
           <div className="pairing-panel-body">
-            {/* No QR without a live code and a bound port (§11.5). */}
-            {view.payload !== null ? <QrCode payload={view.payload} /> : null}
+            {/* No QR without a live code and a bound port (§11.5). The same
+                string is printed beside it: a phone with no camera can only
+                pair by pasting it, and nothing else on this screen carries
+                the endpoint and the pinned key. */}
+            {view.payload !== null ? (
+              <figure className="pairing-offer">
+                <QrCode payload={view.payload} />
+                <figcaption>
+                  <p className="muted">
+                    No camera on the phone? Paste this string into its pairing
+                    card — it is the same offer the QR carries.
+                  </p>
+                  <code className="pairing-offer-text" ref={offerTextRef}>
+                    {view.payload}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void copyOffer(view.payload ?? "")}
+                  >
+                    {copied ? "Copied" : "Copy pairing string"}
+                  </button>
+                </figcaption>
+              </figure>
+            ) : null}
             <dl className="pairing-facts">
               <div>
                 <dt>Pairing code</dt>

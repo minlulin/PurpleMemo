@@ -18,6 +18,7 @@ import { generateKeyPair, open, seal } from "./envelope.ts";
 import {
   confirmTypedCode,
   desktopPin,
+  isBareCode,
   isCompleteCode,
   offerFromFrame,
   type PairingPhoneTransport,
@@ -112,6 +113,21 @@ test("an empty frame and a refused QR are different answers", () => {
     assert.equal(refused.kind, "invalid-qr");
     assert.match(refused.reason, /format v2/);
   }
+});
+
+test("the six digits alone are named, not called a foreign code", () => {
+  // A camera-less phone has one field. Handing it the digits it can read off
+  // the desktop must not answer "not a Purple Memo pairing code": the digits
+  // are ours, they just name a window and not a desktop (§11.1).
+  assert.equal(isBareCode("144866"), true);
+  assert.equal(isBareCode("14 48 66"), true, "a spaced code is still ours");
+  assert.equal(isBareCode("123 - 456"), true, "so is a dashed one");
+  assert.equal(isBareCode("14486"), false, "five digits are not a code");
+  assert.equal(
+    isBareCode("purplememo-pair://v1?code=144866"),
+    false,
+    "the whole offer is not a bare code",
+  );
 });
 
 test("a pasted offer pairs without a camera", () => {

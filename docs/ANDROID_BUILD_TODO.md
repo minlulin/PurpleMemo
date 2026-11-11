@@ -527,6 +527,74 @@ longer holds the phase open.
   add a `/pair/` route following the `/pair/snapshot` pattern — same `admit`
   path, same envelope, kinds `upload`/`uploaded` — detailed in the upload
   session prompt; no new surface beyond that without approval.
+  **PHASE C SESSION 4 (2026-11-11): the two-device run was attempted on the
+  real hardware and STOPPED before pairing — evidence, not a pass.** Built and
+  installed: the aarch64 debug APK (arm64-v8a only; no other ABI in the
+  archive) from dev HEAD `855b1ce`, on the Redmi `4c61bf7a`; the desktop ran
+  from this dev clone (`npm run tauri dev`, `target\debug\purple-memo.exe`,
+  window "Purple Memo"). The phone was a **fresh install** (no purplememo
+  package present), so first-run setup was completed on it through real input
+  events (PIN + recovery question); Settings then read **schema version 9** and
+  Keystore backing **TEE**. The desktop panel minted a live window: code
+  `846404` at `117 s left`, a rendered QR, and "Listening on
+  `100.96.0.19:52608`". **Where it stopped:** that endpoint is the
+  **CloudflareWARP** adapter's address — `share::lan_ip()` prefers
+  `default_route_ip()`, the source address a UDP connect to 192.0.2.1:80 picks,
+  so a VPN tunnel's default route wins over the LAN — and the phone cannot
+  reach it (`nc -w 3 100.96.0.19 52608` → `nc: Timeout`). The real LAN address
+  did not answer either (`nc -w 3 192.168.100.232 52608` → `nc: Timeout`) while
+  the same phone reached its own gateway (`192.168.100.1:80`, rc=0) and ARP
+  showed both devices behind one gateway MAC (`6c:eb:b6:aa:28:3f`); Windows
+  already holds Allow/Public/TCP+UDP inbound rules for the exact dev binary
+  (`...\src-tauri\target\debug\purple-memo.exe`). A **control listener** (a
+  plain Node HTTP server on `0.0.0.0:8099`, `LISTENING`) showed the same
+  `nc: Timeout` from the phone, so the failure is not specific to the pairing
+  port: while CloudflareWARP is active on this Public-profile machine, no
+  inbound TCP from the phone's WiFi reaches this PC at all — either WARP's
+  filters or wireless/wired client isolation at the AP (`ZEN Mobile Service`,
+  gateway MAC `6c:eb:b6:aa:28:3f` on both sides). Per the session rule (a wrong
+  offer address is reported, never hand-edited) the agent did not pair; the
+  owner then tried the phone's own entry by hand and could not complete it (see
+  the entry defects below). Nothing was sent and nothing was adopted, so the
+  desktop's records are unchanged. The panel was driven by screenshot-and-click on the window
+  (WebView2's remote-debugging port never bound, so there was no CDP), and it
+  then hit the shell's own lock ("Purple Memo is locked"; the listener closed
+  with it, §11.5). The owner supplied the desktop PIN and the run resumed: a
+  fresh window minted code `144866` on `100.96.0.19:55559`, and while that
+  port was `LISTENING` the phone still timed out on both `100.96.0.19:55559`
+  and `192.168.100.232:55559` while answering its gateway in the same breath.
+  The run therefore stops at reachability, not at the offered address alone:
+  the address is wrong **and** no inbound TCP from the phone reaches this PC.
+  **Also observed on the way:** a never-paired desktop shows *"This
+  device's pairing key is gone or unreadable"* with the confirmed replacement,
+  because `identityRecovery` treats `present: false` as `needed`; and the panel
+  shows no device id or key fingerprint of its own before a peer is staged, so
+  the run's step 1 (record them "as the panel shows them") has no source on
+  screen. **And the phone's pairing entry could not pair at all on that build,**
+  independently of the network: *Scan the desktop's QR* answered *"This build
+  cannot reach a camera here"* — `getUserMedia` was undefined because the
+  generated manifest declared no `android.permission.CAMERA` — and the
+  no-camera field is labelled *"Pairing code from the desktop"* while
+  `usePastedOffer` runs `parseOffer`, so the six digits the desktop shows were
+  refused with *"that is not a Purple Memo pairing code."* (`pairing.ts:327`,
+  the `new URL()` catch). The six-digit entry that `redeemCode` serves only
+  renders once `offer !== null`, and an offer existed only after a scan or a
+  pasted `purplememo-pair://v1?…` URI — which the panel never displayed. So
+  §11.1's "manual entry must remain first-class" was unreachable on that build.
+  **Both halves are fixed and proven on the Redmi in the same session, after
+  the run above was reported:** `AndroidManifest.xml` now declares
+  `android.permission.CAMERA` (plus `<uses-feature android.hardware.camera
+  required="false"/>`), which is the gate that hides `navigator.mediaDevices`;
+  the existing `RustWebChromeClient` then asks for the runtime grant at scan
+  time (with the grant revoked, `getUserMedia` brought up
+  `GrantPermissionsActivity`), and tapping *Scan the desktop's QR* opened a live
+  back-facing stream — `video` visible, `480×640`, track `camera 0, facing
+  back:live`. The panel also prints the offer as selectable text under the QR
+  with a *Copy pairing string* action (it selects the string when the clipboard
+  is refused), and the phone answers a bare six digits with its own sentence
+  instead of *"not a Purple Memo pairing code"* (`isBareCode` in
+  `mobilePairing.ts`, EN + MY copy). The Q.3 two-device run itself still needs a
+  network path the phone can reach.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
