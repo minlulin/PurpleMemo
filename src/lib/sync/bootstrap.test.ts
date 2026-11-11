@@ -181,6 +181,10 @@ test("a snapshot is bounded and never splits an aggregate", () => {
     row("shopping_items", "item-L2", 502, { text: "eggs" }),
   ];
   const cut = batchSnapshot(boundary, { maxOps: 200, aggregateOf });
+  // D4: the bound counts aggregates, so the list waits for a batch with room
+  // rather than pushing a 202-op batch past a receiver that will refuse it.
+  assert.equal(cut.length, 2, "the 199 notes, then the list on its own");
+  assert.equal(cut[0]?.length, 199, "batch 1 stops at the 199 notes");
   const holder = cut.find((batch) => batch.some((r) => r.uid === "item-L2"));
   assert.ok(holder, "the aggregate is somewhere");
   for (const uid of ["list-L", "item-L1", "item-L2"]) {
@@ -189,10 +193,17 @@ test("a snapshot is bounded and never splits an aggregate", () => {
       `${uid} was split across batches — §8.3 forbids it`,
     );
   }
-  assert.ok(
-    holder.length <= 202,
-    "the aggregate exception may exceed the bound by the aggregate only",
+  assert.equal(
+    holder.length,
+    3,
+    "the aggregate rides whole in batch 2, inside the bound",
   );
+  for (const batch of cut) {
+    assert.ok(
+      batch.length <= 200,
+      `batch of ${batch.length} exceeds an enforceable bound`,
+    );
+  }
 
   // A tiny byte bound still yields whole batches rather than dropping rows.
   const byBytes = batchSnapshot(many.slice(0, 10), { maxBytes: 300 });
@@ -201,6 +212,94 @@ test("a snapshot is bounded and never splits an aggregate", () => {
     "each row is its own batch under a tiny bound",
   );
   assert.equal(byBytes.flat().length, 10);
+});
+
+test("a list and its items ride together when the snapshot is read table by table", () => {
+  // §8.3 read the way the desktop actually reads: parents, then a table of
+  // unrelated rows, then the children that belong to the parent above.
+  const aggregateOf = (candidate: SyncedRow): string | null =>
+    candidate.table === "shopping_lists" || candidate.table === "shopping_items"
+      ? "list-L"
+      : null;
+  const rows = [
+    row("shopping_lists", "list-L", 1, { name: "Groceries" }),
+    ...Array.from({ length: 200 }, (_, index) =>
+      row("notes", `n-${index}`, index + 2),
+    ),
+    row("shopping_items", "item-L1", 300, { text: "milk" }),
+    row("shopping_items", "item-L2", 301, { text: "eggs" }),
+  ];
+  const batches = batchSnapshot(rows, { maxOps: 200, aggregateOf });
+  const holders = batches.filter((batch) =>
+    batch.some(
+      (r) => r.table === "shopping_lists" || r.table === "shopping_items",
+    ),
+  );
+  assert.equal(holders.length, 1, "the list and its items landed in one batch");
+  for (const uid of ["list-L", "item-L1", "item-L2"]) {
+    assert.ok(
+      holders[0]?.some((r) => r.uid === uid),
+      `${uid} was split across batches — §8.3 forbids it`,
+    );
+  }
+  assert.equal(batches.flat().length, rows.length, "batching loses nothing");
+  for (const batch of batches) {
+    assert.ok(
+      batch.length <= 200,
+      `batch of ${batch.length} exceeds the bound`,
+    );
+  }
+});
+
+test("an aggregate larger than a whole batch travels whole, and alone", () => {
+  const aggregateOf = (candidate: SyncedRow): string | null =>
+    candidate.table === "shopping_items" ? "list-big" : null;
+  const big = Array.from({ length: 8 }, (_, index) =>
+    row("shopping_items", `item-big-${index}`, index + 2, {
+      text: `i${index}`,
+    }),
+  );
+  const rows = [row("notes", "n-0", 1), ...big, row("notes", "n-1", 20)];
+  const batches = batchSnapshot(rows, { maxOps: 5, aggregateOf });
+  const holder = batches.find((batch) =>
+    batch.some((r) => r.uid === "item-big-7"),
+  );
+  assert.ok(holder, "the oversized aggregate is somewhere");
+  assert.deepEqual(
+    holder.map((r) => r.uid),
+    big.map((r) => r.uid),
+    "the over-bound batch is the aggregate and nothing else",
+  );
+  assert.equal(batches.flat().length, rows.length);
+  for (const batch of batches) {
+    if (batch === holder) continue;
+    assert.ok(batch.length <= 5, "every other batch is inside the bound");
+  }
+});
+
+test("a UID is only the same record inside its own table", () => {
+  const desktop = [row("notes", "shared-uid", 3, { title: "A note" })];
+  const phone = [
+    row("tasks", "shared-uid", 4, { title: "A task" }, "phone-91ab"),
+  ];
+  const plan = planBootstrap(desktop, phone);
+  assert.equal(
+    plan.counts.upload,
+    1,
+    "tasks/shared-uid is a new record (§9.2)",
+  );
+  assert.equal(plan.counts.alreadyKnown, 0, "and never a merge — §1.1, §14.2");
+  assert.equal(plan.counts.desktopOnly, 1, "notes/shared-uid is desktop-only");
+  assert.equal(plan.upload[0]?.table, "tasks");
+
+  // The same table and the same uid is still the same record: the fix narrows
+  // the match, it does not empty it.
+  const both = planBootstrap(desktop, [
+    row("notes", "shared-uid", 9, { title: "A note" }, "phone-91ab"),
+  ]);
+  assert.equal(both.counts.alreadyKnown, 1);
+  assert.equal(both.counts.upload, 0);
+  assert.equal(both.counts.desktopOnly, 0);
 });
 
 test("an interrupted snapshot applies nothing and is re-taken", () => {
@@ -291,6 +390,78 @@ test("only mutable entities archive a conflict loser, and only the loser does", 
       },
     ]),
     [],
+  );
+});
+
+test("identical field values are not a conflict, whatever order they were built in", () => {
+  assert.deepEqual(
+    conflictLosers([
+      {
+        table: "notes",
+        uid: "note-ord",
+        desktop: row("notes", "note-ord", 9, {
+          title: "same",
+          body: "same",
+          pinned: false,
+        }),
+        mobile: row(
+          "notes",
+          "note-ord",
+          4,
+          { pinned: false, body: "same", title: "same" },
+          "phone-91ab",
+        ),
+      },
+    ]),
+    [],
+    "key order is not a value difference (§9.5)",
+  );
+
+  // Nested objects too: two devices that built the same record the same way
+  // must not archive a trash copy for it.
+  assert.deepEqual(
+    conflictLosers([
+      {
+        table: "shopping_lists",
+        uid: "list-ord",
+        desktop: row("shopping_lists", "list-ord", 9, {
+          name: "Groceries",
+          meta: { pinned: true, colour: "green" },
+          tags: ["a", "b"],
+        }),
+        mobile: row(
+          "shopping_lists",
+          "list-ord",
+          4,
+          {
+            tags: ["a", "b"],
+            meta: { colour: "green", pinned: true },
+            name: "Groceries",
+          },
+          "phone-91ab",
+        ),
+      },
+    ]),
+    [],
+  );
+
+  // Array order is data, so it is still a difference.
+  assert.equal(
+    conflictLosers([
+      {
+        table: "shopping_lists",
+        uid: "list-arr",
+        desktop: row("shopping_lists", "list-arr", 9, { tags: ["a", "b"] }),
+        mobile: row(
+          "shopping_lists",
+          "list-arr",
+          4,
+          { tags: ["b", "a"] },
+          "phone-91ab",
+        ),
+      },
+    ]).length,
+    1,
   );
 });
 

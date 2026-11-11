@@ -8,7 +8,8 @@
  *    and every record on both sides survives — the caller gets the counts, so a
  *    test can compare them to the rows it started with.
  * 2. **Bounded, aggregate-safe batches** (§8.3): a snapshot is cut at 200 ops /
- *    256 KiB, and a caller-declared aggregate is never split across two.
+ *    256 KiB, and a caller-declared aggregate is never split across two — even
+ *    when the snapshot is read table by table and its rows are far apart.
  * 3. **An interrupted snapshot leaves nothing half-applied** (§8.4, §9.4): the
  *    snapshot is one transaction, so a crash restarts it; what the phone had
  *    already adopted is skipped by UID, never re-inserted.
@@ -67,6 +68,19 @@ export interface BootstrapPlan {
 }
 
 /**
+ * §1.1/§14.2: a record's identity is `(table, uid)`.
+ *
+ * SQLite's unique indexes are per table (`schema.rs`), so the same UID in two
+ * tables is two different records. Keyed by `uid` alone, the later table
+ * silently overwrote the earlier one in the map, and a phone row was called
+ * `alreadyKnown` — merged into a record it had never seen — on no evidence but
+ * a coincidence of UIDs.
+ */
+function rowKey(row: SyncedRow): string {
+  return `${row.table}\u0000${row.uid}`;
+}
+
+/**
  * What a first pairing moves, per §9.1–§9.2. Nothing on either side is
  * dropped: the desktop's rows are all in `snapshot`, and every phone row is in
  * `upload` or `alreadyKnown`.
@@ -75,11 +89,11 @@ export function planBootstrap(
   desktop: readonly SyncedRow[],
   mobile: readonly SyncedRow[],
 ): BootstrapPlan {
-  const desktopByUid = new Map(desktop.map((row) => [row.uid, row]));
-  const mobileUids = new Set(mobile.map((row) => row.uid));
-  const upload = mobile.filter((row) => !desktopByUid.has(row.uid));
-  const alreadyKnown = mobile.filter((row) => desktopByUid.has(row.uid));
-  const desktopOnly = desktop.filter((row) => !mobileUids.has(row.uid));
+  const desktopKeys = new Set(desktop.map(rowKey));
+  const mobileKeys = new Set(mobile.map(rowKey));
+  const upload = mobile.filter((row) => !desktopKeys.has(rowKey(row)));
+  const alreadyKnown = mobile.filter((row) => desktopKeys.has(rowKey(row)));
+  const desktopOnly = desktop.filter((row) => !mobileKeys.has(rowKey(row)));
   return {
     snapshot: desktop,
     upload,
@@ -101,9 +115,9 @@ export interface BatchLimits {
   maxOps?: number;
   maxBytes?: number;
   /**
-   * The §8.3 aggregate rule: two rows that answer the same non-null value here
-   * land in the same batch. Defaults to no grouping — each row is its own
-   * aggregate.
+   * The §8.3 aggregate rule: every row that answers the same non-null value
+   * here lands in the same batch, adjacent in the input or not. Defaults to no
+   * grouping — each row is its own aggregate.
    */
   aggregateOf?: (row: SyncedRow) => string | null;
 }
@@ -130,10 +144,28 @@ function rowBytes(row: SyncedRow): number {
   );
 }
 
+/** The rows that must move together (§8.3), and what they cost. */
+interface BatchUnit {
+  readonly rows: SyncedRow[];
+  bytes: number;
+}
+
 /**
  * Cut a snapshot into batches (§8.3). A batch is a transaction, so this is
  * also the unit an interruption loses: never more than the limits allow, and
  * never a split aggregate.
+ *
+ * Aggregates are collected *before* the cut, so a snapshot read table by table
+ * (`shopping_lists` → 200 `notes` → `shopping_items`) still carries a list and
+ * its items in one batch: grouping rows as they arrive let the parent flush in
+ * batch 1 and its children land in batch 2, which splits a transaction that
+ * §8.3 and foreign keys both require to be whole.
+ *
+ * D4: the bound is applied to whole aggregates, never to single rows. A batch
+ * is flushed before an aggregate would cross it — 199 notes then a 3-row list
+ * is a 199-op batch and a 3-op batch, not 202 ops — so a batch only exceeds
+ * 200 ops / 256 KiB when one aggregate alone is larger than a whole batch, and
+ * that aggregate travels whole in a batch of its own (§3.2, §8.3).
  */
 export function batchSnapshot(
   rows: readonly SyncedRow[],
@@ -142,36 +174,74 @@ export function batchSnapshot(
   const maxOps = limits.maxOps ?? MAX_BATCH_OPS;
   const maxBytes = limits.maxBytes ?? MAX_BATCH_BYTES;
   const aggregateOf = limits.aggregateOf ?? (() => null);
+
+  // One unit per aggregate, keeping the order its first row appeared in.
+  const units: BatchUnit[] = [];
+  const byAggregate = new Map<string, BatchUnit>();
+  for (const row of rows) {
+    const bytes = rowBytes(row);
+    const aggregate = aggregateOf(row);
+    if (aggregate === null) {
+      units.push({ rows: [row], bytes });
+      continue;
+    }
+    const existing = byAggregate.get(aggregate);
+    if (existing) {
+      existing.rows.push(row);
+      existing.bytes += bytes;
+      continue;
+    }
+    const unit: BatchUnit = { rows: [row], bytes };
+    byAggregate.set(aggregate, unit);
+    units.push(unit);
+  }
+
   const batches: SyncedRow[][] = [];
   let current: SyncedRow[] = [];
   let currentBytes = 0;
-  let currentAggregates = new Set<string>();
-
   const flush = (): void => {
     if (current.length > 0) batches.push(current);
     current = [];
     currentBytes = 0;
-    currentAggregates = new Set();
   };
 
-  for (const row of rows) {
-    const aggregate = aggregateOf(row);
-    const bytes = rowBytes(row);
+  for (const unit of units) {
     const wouldOverflow =
-      current.length >= maxOps || currentBytes + bytes > maxBytes;
-    // §8.3's aggregate rule outranks the bound: once part of an aggregate is
-    // in this batch, the rest joins it even if that takes the batch over the
-    // op count (by one aggregate at most). A single oversized row still
-    // travels for the same reason — a record that cannot be sent is worse.
-    const aggregateStarted =
-      aggregate !== null && currentAggregates.has(aggregate);
-    if (current.length > 0 && !aggregateStarted && wouldOverflow) flush();
-    current.push(row);
-    currentBytes += bytes;
-    if (aggregate !== null) currentAggregates.add(aggregate);
+      current.length + unit.rows.length > maxOps ||
+      currentBytes + unit.bytes > maxBytes;
+    // An aggregate that is over the bound on its own still travels: a record
+    // that cannot be sent is worse than a batch that cannot be split.
+    if (current.length > 0 && wouldOverflow) flush();
+    for (const row of unit.rows) current.push(row);
+    currentBytes += unit.bytes;
   }
   flush();
   return batches;
+}
+
+/**
+ * A value as text, with object keys sorted at every depth.
+ *
+ * `JSON.stringify` keeps insertion order, so two devices holding the very same
+ * field values produced different text whenever they built the object in a
+ * different order — and a comparison that said "different" archived a trash
+ * copy for a conflict that never happened (§9.5, §13.2). Array order is data,
+ * so it is kept; only key order is normalized.
+ */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+      );
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 /** Two rows claiming the same UID with different values: the §4 merge decides. */
@@ -215,9 +285,7 @@ export function conflictLosers(shared: readonly SharedUid[]): ConflictLoser[] {
     const order = compareStamps(item.desktop.stamp, item.mobile.stamp);
     if (order === 0) continue;
     const desktopWins = order > 0;
-    if (
-      JSON.stringify(item.desktop.fields) === JSON.stringify(item.mobile.fields)
-    ) {
+    if (canonical(item.desktop.fields) === canonical(item.mobile.fields)) {
       continue;
     }
     losers.push({

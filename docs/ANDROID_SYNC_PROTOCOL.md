@@ -174,7 +174,11 @@ about what it built on (§4.5).
 #### §3.2 Batches are bounded and never split an aggregate
 
 At most 200 ops or 256 KiB per batch, whichever binds first; an aggregate is
-never split across batches (§8.3).
+never split across batches (§8.3). The sender cuts between whole aggregates, so
+a batch exceeds the bound **only** when one aggregate alone is larger than a
+whole batch — and that aggregate then travels whole, in a batch of its own. The
+receiver applies the same rule: an over-bound batch is accepted only as that one
+whole aggregate, and refused otherwise.
 
 #### §3.3 Transport is authenticated, encrypted and replay-proof
 
@@ -449,7 +453,17 @@ pinned key (§11.2).
 #### §8.3 Bounds
 
 200 ops / 256 KiB per batch (§3.2); the sender chooses the size, the receiver
-enforces the bound. An aggregate is never split (§1.4).
+enforces the bound. An aggregate is never split (§1.4) — not even when a snapshot
+is read table by table and its rows arrive far apart.
+
+**The bound counts aggregates, not rows (D4).** The sender flushes before an
+aggregate would cross the bound: 199 unrelated notes followed by a 3-row shopping
+list is a 199-op batch and then a 3-op batch, never 202 ops. A batch is therefore
+over 200 ops or 256 KiB only when one aggregate alone is larger than a whole
+batch, and that aggregate travels whole in a batch of its own. The receiver
+enforces the same rule — a single whole aggregate is the only over-bound batch it
+accepts — so a sender and a receiver cannot disagree about whether a batch is
+legal.
 
 **The pairing frame is tighter than §3.2.** A pairing message is capped at
 64 KiB (§11.6.1), and the sealed envelope **hex**-encodes its ciphertext — the
