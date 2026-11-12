@@ -1471,6 +1471,22 @@ function baselineSql(): string {
   return sql;
 }
 
+/**
+ * The schema version the shipped `schema.rs` declares. Read rather than
+ * retyped, for the same reason `baselineSql()` is: the test must fail when the
+ * app's version and the test's assumption part ways, and it must fail on the
+ * line that says which version the assertion was about.
+ */
+function shippedSchemaVersion(): number {
+  const src = readFileSync(
+    new URL("../../src-tauri/src/schema.rs", import.meta.url),
+    "utf8",
+  );
+  const match = /pub const SCHEMA_VERSION: i64 = (\d+);/.exec(src);
+  assert.ok(match?.[1], "SCHEMA_VERSION must be readable from schema.rs");
+  return Number(match[1]);
+}
+
 const OFF_SHARE = {
   running: false,
   url: null,
@@ -1616,6 +1632,72 @@ test("a hand-crafted payload with a dangling row is refused and the current data
     foreign_keys: number;
   };
   assert.equal(fk.foreign_keys, 1, "FK must be restored after the refusal");
+});
+
+test("a v9-era Trash fixture restores into the v10 schema and round-trips unchanged", async () => {
+  // v10 widens `trash_items.entity_type` and changes nothing about the row's
+  // shape, so there is no backup format bump (§13.2, Task 1) — but that is a
+  // claim about the payload, so it is checked against the shipped schema: the
+  // fixture is a Trash row exactly as v9 could write it, it is imported into a
+  // database built from `BASELINE_SQL`, and then exported again.
+  const driver = importDriver();
+  const schemaVersion = shippedSchemaVersion();
+  assert.equal(schemaVersion, 10, "the Trash widening is the v10 step");
+  driver.db.exec(`PRAGMA user_version = ${schemaVersion}`);
+
+  const noteUid = "11111111-1111-4111-8111-111111111111";
+  const trashRow = {
+    id: 1,
+    entity_type: "note",
+    entity_id: 1,
+    snapshot: JSON.stringify({
+      version: 1,
+      snapshotId: "22222222-2222-4222-8222-222222222222",
+      entity: {
+        id: 1,
+        uid: noteUid,
+        title: "Trashed note",
+        content: "body",
+        tags: "",
+        collection_id: null,
+        pinned: 0,
+        archived: 0,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+      channels: [],
+      tags: [],
+      photoRefs: [],
+      links: [],
+      inboxRefs: [],
+    }),
+    deleted_at: "2026-02-01",
+    created_at: "2026-02-01",
+  };
+  const payload: BackupPayload = {
+    app: BACKUP_APP,
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: "2026-10-12T03:00:00.000Z",
+    data: {
+      ...emptyTables(),
+      notes: [{ ...NOTE_ROW, uid: noteUid }],
+      trash_items: [trashRow],
+    },
+  };
+
+  const applied = await applyBackup(driver, { payload, photos: [] });
+  assert.equal(applied.rows, 2, "the note and its Trash copy were written");
+  const version = driver.db.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  assert.equal(version.user_version, schemaVersion);
+
+  // The v10 export carries the same row back, byte for byte: the payload shape
+  // did not change with the schema.
+  const { bytes } = await createBackupRepo(driver).exportBackup();
+  const roundTrip = parseBackupZip(bytes);
+  assert.deepEqual(roundTrip.payload.data.trash_items, [trashRow]);
+  assert.equal(roundTrip.payload.version, BACKUP_FORMAT_VERSION);
 });
 
 test("a clean payload still imports — the FK canary stays silent (P3-5)", async () => {

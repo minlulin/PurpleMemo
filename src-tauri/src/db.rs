@@ -758,6 +758,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         6 => Some(schema::migration_6_7()),
         7 => Some(schema::MIGRATION_7_8),
         8 => Some(schema::migration_8_9()),
+        9 => Some(schema::MIGRATION_9_10),
         _ => None,
     }
 }
@@ -2800,6 +2801,188 @@ mod tests {
             "reminders",
         ]);
         for name in names {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
+    /// A populated version-9 database: the shipped baseline with `trash_items`
+    /// rebuilt at the v9 CHECK (five entity types), stamped 9.
+    ///
+    /// Built by rebuilding rather than by subtraction: v9's table differs from
+    /// the baseline in exactly one constraint, and rewriting that constraint is
+    /// the difference v10 makes. The rows are the point — a migration test
+    /// against an empty table proves nothing about what it preserved.
+    fn seeded_v9(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        conn.execute_batch(
+            "DROP INDEX idx_trash_items_entity;
+             DROP INDEX idx_trash_items_deleted;
+             ALTER TABLE trash_items RENAME TO trash_items_v10;
+             CREATE TABLE trash_items (
+               id             INTEGER PRIMARY KEY,
+               entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry')),
+               entity_id      INTEGER NOT NULL CHECK (entity_id > 0),
+               snapshot       TEXT NOT NULL CHECK (json_valid(snapshot)),
+               deleted_at     TEXT NOT NULL,
+               created_at     TEXT NOT NULL
+             );
+             INSERT INTO trash_items (id, entity_type, entity_id, snapshot, deleted_at, created_at)
+               SELECT id, entity_type, entity_id, snapshot, deleted_at, created_at FROM trash_items_v10;
+             DROP TABLE trash_items_v10;
+             CREATE INDEX idx_trash_items_entity ON trash_items(entity_type, entity_id);
+             CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);",
+        )
+        .expect("rebuild trash_items at the v9 CHECK");
+        conn.pragma_update(None, "user_version", 9i64)
+            .expect("stamp v9");
+        // One row per type v9 could hold. The snapshot text is not a valid
+        // Trash snapshot on purpose: this test is about the table, and the
+        // bytes are compared exactly, so any rewrite of them would show.
+        conn.execute_batch(
+            "INSERT INTO trash_items (id, entity_type, entity_id, snapshot, deleted_at, created_at) VALUES
+               (1, 'note',          7, '{\"entity\":{\"id\":7,\"title\":\"note copy\"}}',          '2026-02-01', '2026-02-01'),
+               (2, 'task',          8, '{\"entity\":{\"id\":8,\"title\":\"task copy\"}}',          '2026-02-02', '2026-02-02'),
+               (3, 'contact',       9, '{\"entity\":{\"id\":9,\"name\":\"contact copy\"}}',        '2026-02-03', '2026-02-03'),
+               (4, 'memory',       10, '{\"entity\":{\"id\":10,\"title\":\"memory copy\"}}',      '2026-02-04', '2026-02-04'),
+               (5, 'journal_entry', 11, '{\"entity\":{\"id\":11,\"entry_date\":\"2026-02-05\"}}', '2026-02-05', '2026-02-05');",
+        )
+        .expect("seed representative v9 Trash rows");
+        (dir, conn)
+    }
+
+    /// Every `trash_items` column, in id order — the comparison the v10 test
+    /// makes before and after the step.
+    fn trash_rows(conn: &Connection) -> Vec<(i64, String, i64, String, String, String)> {
+        conn.prepare(
+            "SELECT id, entity_type, entity_id, snapshot, deleted_at, created_at FROM trash_items ORDER BY id",
+        )
+        .expect("prepare trash read")
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .expect("query trash rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect trash rows")
+    }
+
+    #[test]
+    fn migration_9_10_widens_the_trash_check_and_keeps_every_row() {
+        let (_dir, conn) = seeded_v9("trash-v10-migration");
+        let before = trash_rows(&conn);
+        assert_eq!(before.len(), 5, "the fixture must be populated");
+        // The v9 constraint really refuses a shopping type — otherwise the
+        // fixture is not v9 and the test proves nothing.
+        assert!(
+            conn.execute(
+                "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+                 VALUES ('shopping_list', 1, '{}', '2026-02-06', '2026-02-06')",
+                [],
+            )
+            .is_err(),
+            "the fixture must start at the v9 CHECK"
+        );
+
+        init_schema(&conn).expect("migrate 9 -> 10");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(version, 10, "this test is about the v10 step");
+
+        assert_eq!(
+            trash_rows(&conn),
+            before,
+            "every Trash row must survive the rebuild byte for byte"
+        );
+
+        // The widened CHECK accepts the two shopping types §13.2 needs…
+        conn.execute(
+            "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+             VALUES ('shopping_list', 3, '{}', '2026-02-06', '2026-02-06')",
+            [],
+        )
+        .expect("a shopping_list conflict copy must be storable");
+        conn.execute(
+            "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+             VALUES ('shopping_item', 4, '{}', '2026-02-06', '2026-02-06')",
+            [],
+        )
+        .expect("a shopping_item conflict copy must be storable");
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM trash_items"), 7);
+
+        // …and still refuses anything else: widening is not dropping.
+        assert!(
+            conn.execute(
+                "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+                 VALUES ('photo', 1, '{}', '2026-02-07', '2026-02-07')",
+                [],
+            )
+            .is_err(),
+            "the CHECK must still name exactly the supported types"
+        );
+
+        // The rebuild recreates both indexes, and nothing else moved.
+        for index in ["idx_trash_items_entity", "idx_trash_items_deleted"] {
+            assert_eq!(
+                scalar_i64(
+                    &conn,
+                    &format!(
+                        "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='{index}'"
+                    )
+                ),
+                1,
+                "{index} must exist after the rebuild"
+            );
+        }
+        assert_eq!(table_count(&conn), 39, "v10 adds no table");
+    }
+
+    #[test]
+    fn a_migrated_trash_table_matches_a_fresh_baseline() {
+        // The baseline repeats the rebuilt DDL (one raw string cannot
+        // reference a const), so the agreement is pinned rather than trusted.
+        let (_fresh_dir, fresh) = open_baseline("trash-structure-fresh");
+        let (_v9_dir, migrated) = seeded_v9("trash-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        for name in [
+            "trash_items",
+            "idx_trash_items_entity",
+            "idx_trash_items_deleted",
+        ] {
             let a: String = fresh
                 .query_row(
                     "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",

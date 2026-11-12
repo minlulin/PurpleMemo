@@ -1,7 +1,7 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 39 tables at `PRAGMA user_version = 9`: 38 regular tables + the
+//! 39 tables at `PRAGMA user_version = 10`: 38 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
 //! shadow tables are FTS internals, not part of the 38).
 //!
@@ -28,7 +28,7 @@
 /// The schema version this build expects and stamps.
 use std::sync::OnceLock;
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -453,6 +453,48 @@ CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps(entity_uid);\n\n\
     })
 }
 
+/// Schema v9 → v10: `trash_items` learns the shopping types (§13.2).
+///
+/// §9.5/§13.2 archive the losing side of a conflict for the mutable entities,
+/// and Shopping is one of them — but `trash_items.entity_type` was pinned to
+/// the five types of `MIGRATION_3_4`, so a note or task conflict loser had
+/// somewhere to land and a shopping one did not.
+///
+/// SQLite cannot widen a CHECK constraint in place, so this is the established
+/// table rebuild: the old table steps aside under a temporary name, the
+/// replacement is created with the widened CHECK under the real name, every
+/// row is copied across, the old table is dropped, and both indexes are
+/// recreated. Nothing else about the row shape changes, and the ids, snapshots
+/// and timestamps travel unchanged — a Trash item written before v10 restores
+/// exactly as it did.
+pub const MIGRATION_9_10: &str = r#"
+-- The old table steps aside under a temporary name so the replacement can be
+-- created with the name it must keep: SQLite records a renamed table's DDL
+-- with a quoted name, and a migrated table that no longer matches the
+-- baseline textually would fail the structure test for a cosmetic reason.
+DROP INDEX idx_trash_items_entity;
+DROP INDEX idx_trash_items_deleted;
+
+ALTER TABLE trash_items RENAME TO trash_items_v9;
+
+CREATE TABLE trash_items (
+  id             INTEGER PRIMARY KEY,
+  entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry', 'shopping_list', 'shopping_item')),
+  entity_id      INTEGER NOT NULL CHECK (entity_id > 0),
+  snapshot       TEXT NOT NULL CHECK (json_valid(snapshot)),
+  deleted_at     TEXT NOT NULL,
+  created_at     TEXT NOT NULL
+);
+
+INSERT INTO trash_items (id, entity_type, entity_id, snapshot, deleted_at, created_at)
+  SELECT id, entity_type, entity_id, snapshot, deleted_at, created_at FROM trash_items_v9;
+
+DROP TABLE trash_items_v9;
+
+CREATE INDEX idx_trash_items_entity ON trash_items(entity_type, entity_id);
+CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);
+"#;
+
 pub const BASELINE_SQL: &str = r#"
 -- ============================================================
 -- Notes & collections
@@ -825,7 +867,7 @@ CREATE TABLE vault_items (
 -- ============================================================
 CREATE TABLE trash_items (
   id             INTEGER PRIMARY KEY,
-  entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry')),
+  entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry', 'shopping_list', 'shopping_item')),
   entity_id      INTEGER NOT NULL CHECK (entity_id > 0),
   snapshot       TEXT NOT NULL CHECK (json_valid(snapshot)),
   deleted_at     TEXT NOT NULL,
