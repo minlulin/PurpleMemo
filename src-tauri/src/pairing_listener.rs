@@ -1035,6 +1035,12 @@ fn serve(listener: TcpListener, gate: Arc<Gate>, shared: Arc<Shared>) {
 
 /// Serve one connection: install the deadlines, answer, close.
 fn handle(mut stream: TcpStream, gate: &Gate) {
+    // `accept` hands over a socket that inherits the listener's non-blocking
+    // mode, and a read timeout is ignored on one: the first read would answer
+    // `WouldBlock` microseconds after the connection arrived, before a phone's
+    // request was on the wire, and be refused as "did not arrive in time" (N5).
+    // Clearing it here is what makes CONNECTION_TIMEOUT mean what it says.
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
     let (status, body) = answer(&mut stream, gate);
