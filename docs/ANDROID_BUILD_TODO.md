@@ -618,6 +618,52 @@ longer holds the phase open.
   re-tests cleanly, including the desktop-reset → re-pair path). The desktop
   only served throughout; nothing on it changed. **What remains in this item
   is only the §9.1 upload recorded above.**
+  **UPLOAD (§9.1) — BUILT 2026-11-12 (implemented by Muus on MinLulin's
+  direct order; the device proof is his).** The third route,
+  `POST /pair/upload`, follows the approved `/pair/snapshot` pattern — the
+  same `admit` path with its own kind allowlist (`upload` / `upload-commit` /
+  `upload-status`), the pre-admit revoked check covering it too — and is
+  specified in spec §9.6. The listener only **stages**: batches land in
+  order (≤200 ops, ≤64 batches, the total declared by batch 0), an identical
+  re-send of a staged batch is acknowledged again, anything else out of
+  order is `upload-busy`, and the staging dies with the window. The phone's
+  client is Rust (`pairing_client.rs`: `send_upload_batch` /
+  `send_upload_commit` / `poll_upload_status`, the reply counter restarted
+  per upload as a pull restarts it); the status reply is **sealed**, because
+  the phone acts on it. Five commands carry it (`pairing_upload_batch`,
+  `_commit`, `_status` phone-side; `pairing_upload_take`, `_outcome`
+  panel-side), pinned in `pairing-ipc.test.ts`. The desktop apply is the
+  panel's settle tick (`applyStagedUpload` in `pairingPanel.ts`): take once →
+  validate **every** op first (`readUploadOps`, §3.4 + no local row id) → ops
+  whose uid the desktop already holds are §7.2 no-ops (counted, never
+  rewritten) → the rest insert in ONE `driver.batch` via `uploadStatements`
+  (parents-first, plain `INSERT` + plain stamp insert — **no natural-key
+  fold**, deliberately: adoption already folded phone-side, so a collision
+  is a same-window race and aborts the apply, reported to the phone with the
+  database's own reason) → the verdict is recorded for the status polls
+  either way. The phone's flow (`pushUpload` + `readLocalRows` in
+  `mobilePairing.ts`) reads its own rows as wire documents (the TS mirror of
+  `pairing_snapshot.rs`: FK → parent uid via `LOCAL_FOREIGN_KEYS`, unstamped
+  → counter 0 / own device id / `unstamped`), plans against the snapshot the
+  same card session just pulled (`planBootstrap` — folded seeds classify as
+  already known and are never offered), batches at 200 ops /
+  `MAX_PAIRING_SNAPSHOT_BYTES`, commits, and polls the sealed verdict
+  (~1 s × 30) — `uploaded` is believed only from that verdict; a `failed`
+  verdict and a verdict that never arrives are both reported, never
+  believed. An empty plan sends nothing and says so. UI: the card gains the
+  upload block under the pull (EN + MY), the panel gains a *Phone upload*
+  fact line, and `pullMissing` no longer says the direction is unbuilt.
+  Tests: 5 Rust (staging discipline, take-once, the verdict flow, a revoked
+  peer refused, the full client flow against a real listener) + TS store
+  (plain insert + stamp, parents-first, the collision aborts whole), panel
+  (fresh vs known, validation-before-write, rollback reaches the phone, the
+  settle tick), phone (the local read's spelling, the validator, the plan's
+  exclusion, the verdict cases) and the IPC pins. **With this, the
+  *Pairing & bootstrap* item is complete in code.** The remaining proof is
+  the owner's device test — create a record on the phone, pair/pull, upload,
+  see it on the desktop — run with his clean reset re-test, which also
+  covers the desktop-reset → generation bump → needs-re-pair → re-pair →
+  §9.4 re-adoption path that has never run on hardware.
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync

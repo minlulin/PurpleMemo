@@ -599,6 +599,56 @@ plus `habit_logs` toggles, where the loser is simply not applied and leaves no
 copy (a check-in is not content worth archiving). Append-only and create-only
 records cannot conflict: the phone never changes an existing row there.
 
+#### §9.6 The upload transport (built 2026-11-12)
+
+§9.1's direction runs on a third route, `POST /pair/upload`, following the
+§8.5 snapshot pattern: the same `admit` path (§7.1 order, the route's own
+kind allowlist), the same envelope, and a revoked peer refused before
+admission. Three kinds:
+
+- `upload` — one batch of row operations, at most 200 ops per batch and 64
+  batches per upload, each op carrying its `table`, `uid`, §4.2 stamp and
+  fields. The desktop **stages** the batch and applies nothing. Batches land
+  in order; re-sending an already-staged batch with identical ops is
+  acknowledged again (the lost-ack case), while different ops at a staged
+  index, a skipped index, or a batch after the commit is refused
+  `upload-busy`. The batch total is declared by batch 0 and may not change.
+- `upload-commit` — every batch was sent. A commit before the last batch is
+  `malformed`; a second commit is `replayed`.
+- `upload-status` — the verdict, and the one reply the phone acts on, so it
+  is **sealed** (unlike §8.5's plain `applied`/`adopted` receipts):
+  `pending`, or `uploaded` with the inserted and already-known counts, or
+  `failed` with the apply's own reason.
+
+The apply is the desktop panel's, not the listener's — the same split as the
+pin. When the panel's settle tick first sees the committed staging, it takes
+the ops exactly once and decides:
+
+1. **Every op is validated first** (§3.4: allowlisted table, canonical uid,
+   complete stamp, fields a record, no local row id). One invalid op fails
+   the whole upload before anything is written.
+2. **Ops the desktop already holds are §7.2 no-ops** — counted as already
+   known, never rewritten, whatever stamp they carry. Stage 1's op-apply
+   inherits §4 merges for genuinely diverged rows; adoption has none,
+   because §9.2's plan only offers uids the snapshot did not contain.
+3. **The rest insert plainly, in one transaction**, parents first, foreign
+   keys resolved by uid, each row's stamp recorded with it. There is **no
+   natural-key fold** here — adoption already folded every same-name pair
+   onto the desktop's uids on the phone's side at snapshot time (§8.4), so a
+   natural-key collision means a same-name record was created on the desktop
+   after the snapshot was read; the insert refuses, the transaction rolls
+   back, and the failure is reported to the phone with the database's own
+   reason. The upload is retried against a fresh snapshot, never silently
+   merged.
+
+The staging lives and dies with the pairing window: closing the panel
+discards an unapplied upload whole, and nothing on the desktop changes
+before the commit. The phone writes nothing locally and marks nothing, so
+§9.4's retry is the same plan recomputed against a fresh snapshot. An
+upload whose plan is empty — the desktop already holds every record —
+sends nothing and is reported as such, grounded in the snapshot the same
+pairing just took.
+
 ---
 
 ## 10. Restore, reset and the data generation
