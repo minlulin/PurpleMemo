@@ -595,6 +595,29 @@ longer holds the phase open.
   instead of *"not a Purple Memo pairing code"* (`isBareCode` in
   `mobilePairing.ts`, EN + MY copy). The Q.3 two-device run itself still needs a
   network path the phone can reach.
+  **SESSION 4 RETRY — THE TWO-DEVICE RUN IS DONE (2026-11-12, the owner's own
+  manual test: Redmi `4c61bf7a` ↔ the desktop, WARP paused for the test, the
+  agent on code + build duty only).** The desktop ran a fresh build at schema
+  v9, and a rebuilt aarch64 debug APK carried the camera/offer fixes. With WARP
+  paused the offer carried the real LAN address (`192.168.100.232`, port per
+  window) and the phone reached it — the 2026-11-11 block was WARP, not AP
+  isolation. **Pairing completed end to end on real hardware:** the phone's
+  camera scanned the desktop's QR (the first real-camera pairing proof), the
+  fingerprints were compared, Trust was pressed on the panel, and both sides
+  pinned. Three defects the run exposed were fixed and verified, gate green
+  each time: accepted sockets inherited the listener's non-blocking mode on
+  Windows, so no code entry could be admitted over WiFi (`830a46d`); the panel
+  closed the listener the moment a code was redeemed, leaving Trust and the
+  pull with no port (`e2cae28`); and the snapshot apply upserted on uid alone,
+  so the baseline seeds — the same names under different random uids on each
+  install — collided on `UNIQUE (wallets.name)` and rolled the whole adoption
+  back (`3bc4596`, the natural-key fold, spec §8.4). After that fix the phone's
+  *Copy records from the desktop* completed: the desktop's records arrived on
+  the phone as they are, on the owner's own confirmation (both sides held his
+  test data and the adopted counts were not captured; he resets both and
+  re-tests cleanly, including the desktop-reset → re-pair path). The desktop
+  only served throughout; nothing on it changed. **What remains in this item
+  is only the §9.1 upload recorded above.**
 - [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
