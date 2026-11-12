@@ -583,9 +583,15 @@ test("a code locked out on the wire closes the socket and never renders as live"
   assert.equal(panelView(settled).phase, "locked");
 });
 
-test("a redeemed code is spent on screen before the timer runs out", async () => {
+test("a redeemed code is spent on screen while the window keeps serving", async () => {
   const driver = createMockDriver();
-  const redeemed = listener({ offerRedeemed: true });
+  const redeemed = listener({
+    offerRedeemed: true,
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
   const transport: PairingTransport = {
     pairingLocal: async () => LOCAL,
     pairingOpen: async () => redeemed,
@@ -605,10 +611,46 @@ test("a redeemed code is spent on screen before the timer runs out", async () =>
   assert.equal(view.payload, null, "and the spent QR with them");
   assert.match(view.reason ?? "", /already used/);
 
+  // §8.4: the phone can only dial this window's port, so the window outlives
+  // the redemption — closing it here is what made every pull unreachable.
   const settled = await settlePairingPanel(transport, state);
-  assert.equal(driver.callsTo("pairingClose").length, 1);
-  assert.equal(settled.listener.running, false);
+  assert.equal(driver.callsTo("pairingClose").length, 0);
+  assert.equal(settled.listener.running, true);
+  assert.equal(settled.listener.endpoint, "192.168.1.5:8788");
   assert.equal(panelView(settled).phase, "used");
+
+  // …and Trust is reachable while it serves: the staged phone is still there.
+  const pending = pendingConfirmation(settled);
+  assert.ok(pending !== null, "the staged phone is offered for Trust");
+  assert.equal(pending.helloReceived, true);
+
+  // The code's own lifetime still ends the window.
+  const expired = await settlePairingPanel(
+    transport,
+    settled,
+    state.offer.expiresAt,
+  );
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+  assert.equal(expired.listener.running, false);
+});
+
+test("a redeemed code that staged no phone closes the window", async () => {
+  const driver = createMockDriver();
+  const redeemed = listener({ offerRedeemed: true });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => redeemed,
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: async () => redeemed,
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+  };
+
+  await settlePairingPanel(transport, {
+    ...panelState("pair-1"),
+    listener: redeemed,
+  });
+  assert.equal(driver.callsTo("pairingClose").length, 1);
 });
 
 test("a listener that stopped while the code is live is closed, never expired", () => {

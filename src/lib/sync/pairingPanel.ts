@@ -357,7 +357,18 @@ export async function settlePairingPanel(
   // happens to run out — and the panel must learn it on the same tick (N3).
   const session = projectSession(state.session, current, now);
   const next = { ...state, session, listener: current };
-  if (pairingState(session, now) !== "active" && current.running) {
+  const phase = pairingState(session, now);
+  // §8.4: the phone can only dial the endpoint this window bound, and the
+  // sealed hello, the person's Trust and the snapshot pull all need that same
+  // port. A redeemed code therefore keeps the window open while a phone is
+  // staged behind it — the code is spent, the channel is not. Its own lifetime
+  // still ends it: an expired window closes even mid-pull, a locked one closes,
+  // and so does a used one that staged nothing.
+  const servingThePhone =
+    phase === "used" &&
+    current.peerDeviceId !== null &&
+    now < session.offer.expiresAt;
+  if (phase !== "active" && !servingThePhone && current.running) {
     return { ...next, listener: await transport.pairingClose() };
   }
   return next;
