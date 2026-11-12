@@ -23,10 +23,52 @@ export const TRASH_RETENTION_DAYS = 30;
 export const TRASH_MAX_ITEMS = 1_000;
 export const TRASH_SNAPSHOT_VERSION = 1;
 
+/**
+ * §13.2's conflict marker: the `snapshot.conflict.kind` a conflict copy carries
+ * and an ordinary Trash item does not.
+ *
+ * It is what the restore path branches on. An ordinary Trash item comes back as
+ * the same record under the same uid; a conflict copy comes back as a NEW
+ * record under a NEW uid, because the losing value never resurrects the uid the
+ * winner now owns.
+ */
+export const TRASH_CONFLICT_KIND = "conflict_loser";
+
+/** Every type the `trash_items.entity_type` CHECK names (schema v10). */
+const TRASH_ENTITY_TYPES: readonly TrashEntityType[] = [
+  "note",
+  "task",
+  "contact",
+  "memory",
+  "journal_entry",
+  "shopping_list",
+  "shopping_item",
+];
+
 interface InboxReference {
   id: number;
   converted_type: string;
   converted_id: number;
+}
+
+/**
+ * The §13.2 marker a conflict copy carries inside its snapshot.
+ *
+ * `won` is the winning record's field values, stored so the Trash page can show
+ * the copy beside what actually won — the user's decision to keep the copy is
+ * informed, not blind. Nothing here is a live link: the copy is device-local
+ * and never syncs (§2.2, §13.2).
+ */
+export interface TrashConflictCopy {
+  kind: "conflict_loser";
+  /** §13.2's sentence, shown verbatim beside the copy. */
+  label: string;
+  /** The sync table the losing value came from. */
+  table: string;
+  /** The uid the loser held. A restore never reuses it. */
+  uid: string;
+  /** The winning record's field values. */
+  won: Row;
 }
 
 interface TrashSnapshot {
@@ -38,10 +80,17 @@ interface TrashSnapshot {
   photoRefs: PhotoRefRow[];
   links: LinkRow[];
   inboxRefs: InboxReference[];
+  /** Set only on a conflict copy; absent on every ordinary Trash item. */
+  conflict?: TrashConflictCopy;
 }
 
 export interface TrashListItem extends TrashItemRow {
   title: string;
+  /**
+   * §13.2: for a conflict copy, its label and the winning value's title; null
+   * for an ordinary Trash item.
+   */
+  conflict: { label: string; won: string } | null;
 }
 
 const TABLES: Record<TrashEntityType, string> = {
@@ -50,6 +99,8 @@ const TABLES: Record<TrashEntityType, string> = {
   contact: "contacts",
   memory: "memories",
   journal_entry: "journal_entries",
+  shopping_list: "shopping_lists",
+  shopping_item: "shopping_items",
 };
 
 const COLUMNS: Record<TrashEntityType, string[]> = {
@@ -82,6 +133,11 @@ const COLUMNS: Record<TrashEntityType, string[]> = {
   contact: ["id", "name", "address", "birthday", "notes", "created_at"],
   memory: ["id", "title", "memory_date", "note", "created_at"],
   journal_entry: ["id", "entry_date", "content", "created_at", "updated_at"],
+  // §13.2's two: a conflict copy stores the row whole, uid included, so the
+  // ordinary restore path could rebuild it — the copy's own restore mints a
+  // new uid on purpose (see `restoreUnlocked`).
+  shopping_list: ["id", "uid", "name", "created_at"],
+  shopping_item: ["id", "uid", "list_id", "text", "done", "sort_order"],
 };
 
 const CONTACT_CHANNEL_COLUMNS = [
@@ -124,6 +180,16 @@ export const TRASH_CHILD_COLUMNS = {
   photo_refs: PHOTO_REF_COLUMNS,
   links: LINK_COLUMNS,
 } as const;
+
+/**
+ * A Trash row that is not a §13.2 conflict copy — the only kind that owns an
+ * entity id in the ordinary sense.
+ *
+ * A conflict copy is stamped with the id of the row it lost to, and that row is
+ * still live. Every query that asks "is this id claimed by Trash?" has to skip
+ * those copies, or a live row would read as trashed.
+ */
+const NOT_A_CONFLICT_COPY = "json_extract(snapshot, '$.conflict') IS NULL";
 
 function jsonObjectSql(alias: string, columns: string[]): string {
   return `json_object(${columns.map((column) => `'${column}', ${alias}.${column}`).join(", ")})`;
@@ -234,15 +300,49 @@ function asSnapshot(raw: string): TrashSnapshot {
       throw new Error("This Trash item is incomplete and cannot be restored.");
     }
   }
+  const conflict = (value as { conflict?: unknown }).conflict;
+  if (conflict !== undefined && !isConflictCopy(conflict)) {
+    throw new Error(
+      "This Trash item has a corrupt conflict marker and cannot be restored.",
+    );
+  }
   return snapshot;
 }
 
-function snapshotTitle(type: TrashEntityType, snapshot: TrashSnapshot): string {
-  const entity = snapshot.entity;
-  if (type === "journal_entry")
+/** The §13.2 marker's shape, checked once so both read paths agree. */
+function isConflictCopy(value: unknown): value is TrashConflictCopy {
+  if (typeof value !== "object" || value === null) return false;
+  const copy = value as Record<string, unknown>;
+  return (
+    copy.kind === TRASH_CONFLICT_KIND &&
+    typeof copy.label === "string" &&
+    typeof copy.table === "string" &&
+    typeof copy.uid === "string" &&
+    typeof copy.won === "object" &&
+    copy.won !== null &&
+    !Array.isArray(copy.won)
+  );
+}
+
+/**
+ * The one text a row shows for an entity of this type: a title, a contact's or
+ * list's name, an item's text, or a journal entry's date.
+ */
+function entityLabel(type: TrashEntityType, entity: Row): string {
+  if (type === "journal_entry") {
     return `Journal entry · ${String(entity.entry_date ?? "unknown date")}`;
-  const name = type === "contact" ? entity.name : entity.title;
+  }
+  const name =
+    type === "contact" || type === "shopping_list"
+      ? entity.name
+      : type === "shopping_item"
+        ? entity.text
+        : entity.title;
   return typeof name === "string" && name.trim() ? name : `Untitled ${type}`;
+}
+
+function snapshotTitle(type: TrashEntityType, snapshot: TrashSnapshot): string {
+  return entityLabel(type, snapshot.entity);
 }
 
 function linkType(type: TrashEntityType): type is "note" | "task" | "contact" {
@@ -259,13 +359,7 @@ export function validateTrashPayload(
   rows: unknown[],
   context: TrashPayloadContext = {},
 ): void {
-  const allowed = new Set<TrashEntityType>([
-    "note",
-    "task",
-    "contact",
-    "memory",
-    "journal_entry",
-  ]);
+  const allowed = new Set<TrashEntityType>(TRASH_ENTITY_TYPES);
   const trashEntities = new Set<string>();
   for (const candidate of rows) {
     if (
@@ -516,10 +610,21 @@ export function createTrashRepo(driver: DataDriver) {
       "SELECT * FROM trash_items ORDER BY deleted_at DESC, id DESC",
     );
     validateTrashPayload(rows);
-    return rows.map((row) => ({
-      ...row,
-      title: snapshotTitle(row.entity_type, asSnapshot(row.snapshot)),
-    }));
+    return rows.map((row) => {
+      const snapshot = asSnapshot(row.snapshot);
+      return {
+        ...row,
+        title: snapshotTitle(row.entity_type, snapshot),
+        // §13.2: the copy is shown with its label and the value that won, so
+        // the user compares them instead of guessing which one is live.
+        conflict: snapshot.conflict
+          ? {
+              label: snapshot.conflict.label,
+              won: entityLabel(row.entity_type, snapshot.conflict.won),
+            }
+          : null,
+      };
+    });
   }
 
   async function restoreUnlocked(trashId: number): Promise<void> {
@@ -530,6 +635,9 @@ export function createTrashRepo(driver: DataDriver) {
     if (!item) throw new Error("That Trash item no longer exists.");
     validateTrashPayload([item]);
     const snapshot = asSnapshot(item.snapshot);
+    // §13.2: a conflict copy is restored differently from an ordinary Trash
+    // item, and the marker is the only thing that says which one this is.
+    const conflict = snapshot.conflict !== undefined;
     const type = item.entity_type;
     const columns = COLUMNS[type];
     const sourceId = item.entity_id;
@@ -541,7 +649,14 @@ export function createTrashRepo(driver: DataDriver) {
     if (rootId === undefined)
       throw new Error("Could not allocate a restore ID.");
     const restored: Row = { ...snapshot.entity, id: rootId };
-    if (columns.includes("uid") && restored.uid === undefined) {
+    if (conflict) {
+      // §13.2: restoring a conflict copy creates a NEW record with a NEW uid.
+      // The loser's snapshot still names the uid the winner now owns, so
+      // reusing it would collide with the winner and resurrect a value the
+      // merge already decided against. From here on it is an ordinary record
+      // that syncs as new.
+      restored.uid = newUid();
+    } else if (columns.includes("uid") && restored.uid === undefined) {
       restored.uid = newUid();
     }
     if (type === "note" && restored.collection_id !== null) {
@@ -636,7 +751,9 @@ export function createTrashRepo(driver: DataDriver) {
       }
     }
 
-    if (sourceId !== rootId) {
+    // A conflict copy carries no Inbox references (its snapshot is built with
+    // empty child arrays), and nothing it holds may be re-pointed.
+    if (!conflict && sourceId !== rootId) {
       for (const ref of snapshot.inboxRefs) {
         statements.push({
           sql: "UPDATE inbox_items SET converted_id = ? WHERE id = ? AND converted_type = ? AND converted_id = ?",
@@ -676,7 +793,7 @@ export function createTrashRepo(driver: DataDriver) {
       // id was reused and the live row is an unrelated item that must not
       // receive this relationship.
       const [other] = await driver.query<{ id: number }>(
-        `SELECT id FROM ${otherTable} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM trash_items WHERE entity_type = ? AND entity_id = ?)`,
+        `SELECT id FROM ${otherTable} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM trash_items WHERE entity_type = ? AND entity_id = ? AND ${NOT_A_CONFLICT_COPY})`,
         [otherId, otherType, otherId],
       );
       if (other) {
@@ -697,7 +814,7 @@ export function createTrashRepo(driver: DataDriver) {
       }
 
       const [otherTrash] = await driver.query<TrashItemRow>(
-        "SELECT * FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ? ORDER BY id DESC LIMIT 1",
+        `SELECT * FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ? AND ${NOT_A_CONFLICT_COPY} ORDER BY id DESC LIMIT 1`,
         [otherType, otherId, trashId],
       );
       if (otherTrash) {
@@ -748,9 +865,14 @@ export function createTrashRepo(driver: DataDriver) {
     // snapshots (higher trash id) describe whatever reused the number and are
     // left alone. Rewrite the old pairings to the restored id, or the later
     // restore of that endpoint would attach the relationship to the reuse.
-    if (rootId !== sourceId) {
+    // M1's remapping is about the entity that MOVED: it rewrites older
+    // snapshots that still pair the old id with the restored one. A conflict
+    // copy never moved — `sourceId` still belongs to the winner, which was not
+    // restored — so rewriting those pairings would point them at a new record
+    // the relationship never described.
+    if (!conflict && rootId !== sourceId) {
       const otherClaims = await driver.query<{ id: number }>(
-        "SELECT id FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ?",
+        `SELECT id FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ? AND ${NOT_A_CONFLICT_COPY}`,
         [type, sourceId, trashId],
       );
       if (!otherClaims.length) {

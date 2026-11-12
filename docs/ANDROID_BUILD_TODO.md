@@ -664,8 +664,37 @@ longer holds the phase open.
   see it on the desktop — run with his clean reset re-test, which also
   covers the desktop-reset → generation bump → needs-re-pair → re-pair →
   §9.4 re-adoption path that has never run on hardware.
-- [ ] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
+- [x] Trash extended for conflict losers of mutable entities (Notes / Tasks / Shopping;
   no trash complexity for append-only Budget or read-only Vault)
+  **BUILT 2026-11-12 (schema v10).** `trash_items.entity_type` now names
+  `shopping_list` and `shopping_item` beside the five earlier types, and
+  `TrashEntityType`, the Trash snapshot column lists and the Trash page carry
+  them — ordinary Shopping deletes still do **not** go to Trash, because no
+  Shopping screen calls the trash repo (deliberately out of scope). Schema v10
+  is the table rebuild that widens the CHECK: a populated v9 fixture proves
+  every row survives byte for byte, both indexes come back, the two shopping
+  types insert afterwards and an unknown type is still refused. The backup
+  payload shape does not change, so there is no format bump, and a v9-era Trash
+  row restores into a v10 database and round-trips through a v10 export. The
+  copy seam is `conflictCopyStatements(losers, heldRows)` in `sync/store.ts`:
+  it turns the §13.2 losers `conflictLosers()` already identifies plus the
+  losing rows as this device holds them into `trash_items` INSERTs the caller
+  **prepends** to the winning apply's one `driver.batch` (§5.5 — the copy
+  commits in the same transaction, on the device that held the losing value).
+  Each copy stores the ordinary snapshot shape plus a `conflict` marker (kind
+  `conflict_loser`, the §13.2 label, the losing uid, the winning fields).
+  Restoring one follows §13.2 and not the ordinary contract: it creates a
+  **new record with a new uid**, never revives the loser's uid and never
+  touches the winner; the copy then leaves the Trash and syncs as a new record.
+  The Trash page shows the label and the winning value beside the copy (EN +
+  MY), on the losing device only, and retention is untouched (30 days / 1,000
+  items, one path). Habit check-ins, Budget's append-only rows, Vault and
+  reminder definitions never archive. **Stage 1's apply engine is the caller
+  that wires this seam into live sync** — nothing in `pullSnapshot` or the
+  pairing panel calls it yet, by scope. Tests: 6 new TS (same-batch
+  composition, a failed batch leaving neither, a non-archiving table producing
+  no statements, restore-as-new, the unchanged note/task round-trip, and a
+  shopping copy surviving a restart) plus the schema-v10 Rust set.
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)

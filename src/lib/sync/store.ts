@@ -16,6 +16,15 @@
  * truth.
  */
 import type { BatchStatement, DataDriver } from "../../data/driver.ts";
+import { todayLocal } from "../dates.ts";
+import {
+  TRASH_CONFLICT_KIND,
+  TRASH_SNAPSHOT_COLUMNS,
+  TRASH_SNAPSHOT_VERSION,
+  type TrashConflictCopy,
+  type TrashEntityType,
+} from "../trash.ts";
+import { CONFLICT_COPY_LABEL, type ConflictLoser } from "./bootstrap.ts";
 import {
   isSyncTable,
   type OpKind,
@@ -814,6 +823,119 @@ export function uploadStatements(
   );
   const statements: BatchStatement[] = [];
   for (const op of sorted) statements.push(...uploadRowStatements(op, now));
+  return statements;
+}
+
+// ---------------------------------------------------------------------------
+// §13.2 — the losing side of a conflict, archived on the device that held it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The §13.2 sync tables whose losers archive, and the Trash type each lands
+ * under.
+ *
+ * Deliberately not every synced table: habit check-ins are not content (§9.5),
+ * Budget's append-only rows have no losing edit to keep, Vault is read-only
+ * desktop-to-mobile, and an overwritten reminder definition is not content
+ * either (§13.2). A table absent from this map produces no statements — the
+ * loser is simply decided and dropped.
+ */
+export const CONFLICT_TRASH_TYPES: Partial<Record<SyncTable, TrashEntityType>> =
+  {
+    notes: "note",
+    tasks: "task",
+    shopping_lists: "shopping_list",
+    shopping_items: "shopping_item",
+  };
+
+/** The key a loser's locally held row is looked up by, §1.1's `(table, uid)`. */
+export function conflictRowKey(table: SyncTable, uid: string): string {
+  return `${table}\u0000${uid}`;
+}
+
+/**
+ * One losing record as this device holds it: the local id and the full field
+ * set, read by the caller BEFORE the winning apply overwrites the row.
+ */
+export interface HeldConflictRow {
+  table: SyncTable;
+  uid: string;
+  row: Record<string, unknown>;
+}
+
+/**
+ * §13.2's conflict copies, as statements to PREPEND to the winning apply's
+ * `driver.batch`.
+ *
+ * Same transaction, copy first: §5.5 says the copy lands on the device that
+ * held the losing value, in the same commit as the winning apply. Either both
+ * are written or neither is — a batch that fails after the copy has been
+ * prepared leaves no Trash row behind, because nothing here runs outside the
+ * caller's transaction.
+ *
+ * Each statement is one `trash_items` INSERT whose snapshot is the ordinary
+ * snapshot shape (empty child arrays — a conflict loser's children are not
+ * archived) plus the §13.2 marker: the label, the losing uid, and the winning
+ * field values, so the Trash page can show the copy beside what won. `won` is
+ * carried verbatim from `conflictLosers()`; the UI derives the comparable text
+ * from it.
+ *
+ * A loser whose table is not in `CONFLICT_TRASH_TYPES` produces nothing. A
+ * loser whose locally held row was not supplied is a caller bug — the copy
+ * cannot be built from the loser alone — so it throws instead of archiving a
+ * half-record.
+ */
+export function conflictCopyStatements(
+  losers: readonly ConflictLoser[],
+  held: readonly HeldConflictRow[],
+  today: string = todayLocal(),
+): BatchStatement[] {
+  const byKey = new Map(
+    held.map((entry) => [conflictRowKey(entry.table, entry.uid), entry]),
+  );
+  const statements: BatchStatement[] = [];
+  for (const loser of losers) {
+    const type = CONFLICT_TRASH_TYPES[loser.table];
+    if (type === undefined) continue;
+    const entry = byKey.get(conflictRowKey(loser.table, loser.uid));
+    if (entry === undefined) {
+      throw new Error(
+        `a ${loser.table} conflict copy needs the losing row as this device holds it; ${loser.uid} was not supplied (§13.2).`,
+      );
+    }
+    const id = entry.row.id;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+      throw new Error(
+        `the losing ${loser.table} row ${loser.uid} has no local id, so it cannot be archived (§13.2).`,
+      );
+    }
+    const entity: Record<string, unknown> = {};
+    for (const column of TRASH_SNAPSHOT_COLUMNS[type]) {
+      entity[column] = entry.row[column] ?? null;
+    }
+    const conflict: TrashConflictCopy = {
+      kind: TRASH_CONFLICT_KIND,
+      label: loser.label || CONFLICT_COPY_LABEL,
+      table: loser.table,
+      uid: loser.uid,
+      won: loser.won,
+    };
+    const snapshot = {
+      version: TRASH_SNAPSHOT_VERSION,
+      snapshotId: crypto.randomUUID(),
+      entity,
+      channels: [],
+      tags: [],
+      photoRefs: [],
+      links: [],
+      inboxRefs: [],
+      conflict,
+    };
+    statements.push({
+      sql: "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at) VALUES (?, ?, ?, ?, ?)",
+      params: [type, id, JSON.stringify(snapshot), today, today],
+    });
+  }
   return statements;
 }
 

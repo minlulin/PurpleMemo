@@ -550,6 +550,9 @@ export const en = {
   "trash.type.contact": "Contact",
   "trash.type.memory": "Memory",
   "trash.type.journalEntry": "Journal entry",
+  "trash.type.shoppingList": "Shopping list",
+  "trash.type.shoppingItem": "Shopping item",
+  "trash.conflictWon": "Winner: {value}",
 
   "notes.untitled": "Untitled",
   "notes.titleAria": "Note title",
@@ -1485,6 +1488,9 @@ export const my: Record<MessageKey, string> = {
   "trash.type.contact": "ဆက်သွယ်ရန်",
   "trash.type.memory": "အမှတ်တရ",
   "trash.type.journalEntry": "ဒိုင်ယာရီထည့်သွင်းမှု",
+  "trash.type.shoppingList": "စျေးဝယ်စာရင်း",
+  "trash.type.shoppingItem": "စျေးဝယ်ပစ္စည်း",
+  "trash.conflictWon": "အနိုင်ရသူ — {value}",
 
   "notes.untitled": "ခေါင်းစဉ်မဲ့",
   "notes.titleAria": "မှတ်စု ခေါင်းစဉ်",

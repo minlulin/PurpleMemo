@@ -348,13 +348,21 @@ export interface SettingRow {
   value: string;
 }
 
-/** Entity types Trash can hold — the `trash_items.entity_type` CHECK list. */
+/**
+ * Entity types Trash can hold — the `trash_items.entity_type` CHECK list.
+ *
+ * The two shopping types are schema v10's addition (§13.2): a conflict loser
+ * from a mutable Shopping record archives like a note's or a task's. Ordinary
+ * shopping deletes still do not go to Trash — no Shopping screen calls them.
+ */
 export type TrashEntityType =
   | "note"
   | "task"
   | "contact"
   | "memory"
-  | "journal_entry";
+  | "journal_entry"
+  | "shopping_list"
+  | "shopping_item";
 
 /** One `trash_items` row. `snapshot` is JSON text. */
 export interface TrashItemRow {

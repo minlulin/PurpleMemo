@@ -1042,6 +1042,8 @@ test("every trash snapshot column list matches the baseline DDL (SCHEMA-01)", ()
       contact: "contacts",
       memory: "memories",
       journal_entry: "journal_entries",
+      shopping_list: "shopping_lists",
+      shopping_item: "shopping_items",
     }[type];
     assert.ok(table, `unmapped trash entity type ${type}`);
     assert.deepEqual(
