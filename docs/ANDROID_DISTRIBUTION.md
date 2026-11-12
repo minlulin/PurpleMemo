@@ -162,7 +162,7 @@ does not roll the data back.
   phone's Settings page says sync is off and offers no updater control.
 - **Split APKs / app bundles** — a single universal APK per ABI, one file to
   hand over.
-- **Older Android than 8.0 (API 26)** — `minSdk` is still Tauri's default 24;
-  raising it to 26 is **decided (2026-11-10, Muus's call on MinLulin's
-  delegation — decision 11 already said API 26)**; the gradle change lands in
-  the next build session (see `docs/ANDROID_TOOLCHAIN.md`, known gaps).
+- **Older Android than 8.0 (API 26)** — not supported. `minSdk` is **26**
+  (`src-tauri/gen/android/app/build.gradle.kts`), so a device running Android
+  7.x or older refuses the APK at install time (decision 11; the pin landed in
+  the Phase C build session, 2026-11-12).

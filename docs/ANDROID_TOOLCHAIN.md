@@ -270,7 +270,7 @@ containing `;` when they are passed inline — use `--package_file=` instead.
 
 ## Known gaps (from the Session 2 device run)
 
-1. **`minSdk` is still Tauri's default 24.** Decision 11 in
-   `docs/ANDROID_DESIGN.md` pins the support envelope at **min API 26**
-   (Android 8.0) with arm64-v8a only. Left as generated so far — the debug
-   build runs on the Redmi either way.
+1. **`minSdk` — closed in the Phase C build session (2026-11-12).** It was
+   Tauri's default 24; decision 11 in `docs/ANDROID_DESIGN.md` pins the support
+   envelope at **min API 26** (Android 8.0) with arm64-v8a only. The pin in
+   `app/build.gradle.kts` is now 26, and an aarch64 debug APK built with it.
