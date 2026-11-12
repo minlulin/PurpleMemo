@@ -737,9 +737,19 @@ test("a child row lands after its parent, resolved by uid in the same batch", ()
       collection_uid: pullUid(9),
     },
   };
-  // Given child-first, the statements must still be parents-first.
+  // Given child-first, the statements must still be parents-first: the parent's
+  // own writes (its fold statements, then its insert) come before the child's.
   const statements = snapshotStatements([child, parent]);
-  assert.match(statements[0]?.sql ?? "", /INSERT INTO "collections"/);
+  const parentInsert = statements.findIndex((statement) =>
+    statement.sql.includes('INSERT INTO "collections"'),
+  );
+  const childInsert = statements.findIndex((statement) =>
+    statement.sql.includes('INSERT INTO "notes"'),
+  );
+  assert.ok(
+    parentInsert >= 0 && childInsert > parentInsert,
+    "the parent is written before the child",
+  );
   const noteStatement = statements.find((statement) =>
     statement.sql.includes('INSERT INTO "notes"'),
   );

@@ -94,6 +94,32 @@ CREATE TABLE shopping_items (
   text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE wallets (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE income_categories (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE expense_categories (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE income_entries (
+  id INTEGER PRIMARY KEY, uid TEXT, amount_cents INTEGER NOT NULL,
+  category_id INTEGER NOT NULL REFERENCES income_categories(id),
+  wallet_id INTEGER NOT NULL REFERENCES wallets(id),
+  entry_date TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE expense_entries (
+  id INTEGER PRIMARY KEY, uid TEXT, amount_cents INTEGER NOT NULL,
+  category_id INTEGER NOT NULL REFERENCES expense_categories(id),
+  wallet_id INTEGER NOT NULL REFERENCES wallets(id),
+  entry_date TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
 `;
 
 interface Store {
@@ -882,4 +908,253 @@ test("a tombstone for a uid this phone never held is recorded and reveals no row
   );
   assert.equal(count(db, "SELECT count(*) AS n FROM tasks"), 0);
   assert.equal(count(db, "SELECT count(*) AS n FROM sync_tombstones"), 1);
+});
+
+// ---------------------------------------------------------------------------
+// §8.4 — the fold: a natural key that already exists locally under another uid.
+// ---------------------------------------------------------------------------
+
+/**
+ * The baseline's seed records, by name (`schema.rs`, the seed block). Every
+ * fresh install mints these under uids of its own, so two devices hold the same
+ * `Cash` wallet as two records — the shape that failed on the Redmi with
+ * `UNIQUE constraint failed: wallets.name`.
+ */
+const SEED_WALLETS = ["Cash", "Kpay", "Wave Money", "CB Pay", "Banking"];
+const SEED_EXPENSE_CATEGORIES = [
+  "Food",
+  "Transport",
+  "Rent",
+  "Health",
+  "Education",
+  "Bills",
+  "Other",
+];
+const SEED_INCOME_CATEGORIES = ["Business", "Salary", "Gift", "Other"];
+
+/**
+ * A canonical uid in one namespace, so a local and an incoming uid never
+ * collide by accident: `1…`/`2…`/`3…` are this phone's, `a…`/`b…`/`c…` the
+ * desktop's.
+ */
+function seedUid(namespace: string, index: number): string {
+  return `${namespace}0000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+}
+
+/** A fresh install's own seeds: the desktop's names, this device's uids. */
+function seedLocalBaseline(db: DatabaseSync): void {
+  const insert = (table: string, names: string[], namespace: string): void => {
+    const statement = db.prepare(
+      `INSERT INTO "${table}" (uid, name, created_at) VALUES (?, ?, '2026-11-01')`,
+    );
+    names.forEach((name, index) => {
+      statement.run(seedUid(namespace, index + 1), name);
+    });
+  };
+  insert("wallets", SEED_WALLETS, "1");
+  insert("expense_categories", SEED_EXPENSE_CATEGORIES, "2");
+  insert("income_categories", SEED_INCOME_CATEGORIES, "3");
+}
+
+/** The desktop's copy of those same seeds, under its own uids. */
+function seedSnapshotOps(): SnapshotOp[] {
+  const ops: SnapshotOp[] = [];
+  const add = (
+    table: SnapshotOp["table"],
+    names: string[],
+    namespace: string,
+    counter: number,
+  ): void => {
+    names.forEach((name, index) => {
+      ops.push(
+        snapshotOp(table, seedUid(namespace, index + 1), counter + index, {
+          name,
+          created_at: "2026-11-12",
+        }),
+      );
+    });
+  };
+  add("wallets", SEED_WALLETS, "a", 100);
+  add("expense_categories", SEED_EXPENSE_CATEGORIES, "b", 200);
+  add("income_categories", SEED_INCOME_CATEGORIES, "c", 300);
+  return ops;
+}
+
+function uidOf(
+  db: DatabaseSync,
+  table: string,
+  name: string,
+): string | undefined {
+  const row = db
+    .prepare(`SELECT uid FROM "${table}" WHERE name = ?`)
+    .get(name) as { uid: string | null } | undefined;
+  return row?.uid ?? undefined;
+}
+
+test("the desktop's seed names fold onto the rows this phone already minted", async () => {
+  const { db, driver } = openStore();
+  seedLocalBaseline(db);
+
+  // The real run's failure, exactly: the same five wallets, different uids.
+  await driver.batch(snapshotStatements(seedSnapshotOps()));
+
+  assert.equal(count(db, "SELECT count(*) AS n FROM wallets"), 5);
+  assert.equal(count(db, "SELECT count(*) AS n FROM expense_categories"), 7);
+  assert.equal(count(db, "SELECT count(*) AS n FROM income_categories"), 4);
+  assert.equal(
+    uidOf(db, "wallets", "Cash"),
+    seedUid("a", 1),
+    "the surviving row carries the incoming uid",
+  );
+  assert.equal(uidOf(db, "expense_categories", "Food"), seedUid("b", 1));
+  assert.equal(uidOf(db, "income_categories", "Salary"), seedUid("c", 2));
+});
+
+test("a local entry stays attached to the seed the fold re-keyed", async () => {
+  const { db, driver } = openStore();
+  seedLocalBaseline(db);
+  const local = db
+    .prepare(
+      `SELECT w.id AS wallet_id, c.id AS category_id
+         FROM wallets w, expense_categories c
+        WHERE w.name = 'Cash' AND c.name = 'Food'`,
+    )
+    .get() as { wallet_id: number; category_id: number };
+  db.prepare(
+    `INSERT INTO expense_entries (uid, amount_cents, category_id, wallet_id, entry_date, created_at)
+     VALUES ('9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f', 500, ?, ?, '2026-11-11', '2026-11-11')`,
+  ).run(local.category_id, local.wallet_id);
+
+  await driver.batch(snapshotStatements(seedSnapshotOps()));
+
+  const after = db
+    .prepare(
+      `SELECT e.wallet_id, e.category_id, w.uid AS wallet_uid, c.uid AS category_uid
+         FROM expense_entries e
+         JOIN wallets w ON w.id = e.wallet_id
+         JOIN expense_categories c ON c.id = e.category_id`,
+    )
+    .get() as {
+    wallet_id: number;
+    category_id: number;
+    wallet_uid: string;
+    category_uid: string;
+  };
+  assert.equal(after.wallet_id, local.wallet_id, "the local id is untouched");
+  assert.equal(after.category_id, local.category_id);
+  assert.equal(after.wallet_uid, seedUid("a", 1));
+  assert.equal(after.category_uid, seedUid("b", 1));
+});
+
+test("the fold takes the displaced stamp with it, and the incoming stamp wins", async () => {
+  const { db, driver } = openStore();
+  seedLocalBaseline(db);
+  const displaced = seedUid("1", 1);
+  db.prepare(
+    `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+     VALUES ('wallets', ?, 4, ?, 'op-local', '{}', '2026-11-01')`,
+  ).run(displaced, UID_PEER_B);
+
+  await driver.batch(snapshotStatements(seedSnapshotOps()));
+
+  assert.equal(
+    count(
+      db,
+      "SELECT count(*) AS n FROM sync_row_stamps WHERE entity_uid = ?",
+      [displaced],
+    ),
+    0,
+    "no stamp is left under a uid no row carries",
+  );
+  const stamp = db
+    .prepare(
+      "SELECT counter, device_id, op_id FROM sync_row_stamps WHERE entity_table = 'wallets' AND entity_uid = ?",
+    )
+    .get(seedUid("a", 1)) as {
+    counter: number;
+    device_id: string;
+    op_id: string;
+  };
+  assert.deepEqual(
+    { ...stamp },
+    { counter: 100, device_id: UID_PEER_A, op_id: "op-desktop" },
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_row_stamps"),
+    16,
+    "one stamp per folded seed, and no orphan",
+  );
+});
+
+test("a folded snapshot applied twice changes nothing", async () => {
+  const { db, driver } = openStore();
+  seedLocalBaseline(db);
+  const ops = seedSnapshotOps();
+  await driver.batch(snapshotStatements(ops));
+  const before = db
+    .prepare("SELECT id, uid FROM wallets WHERE name = 'Cash'")
+    .get() as { id: number; uid: string };
+  await driver.batch(snapshotStatements(ops));
+  const after = db
+    .prepare("SELECT id, uid FROM wallets WHERE name = 'Cash'")
+    .get() as { id: number; uid: string };
+
+  assert.deepEqual(
+    { ...after },
+    { ...before },
+    "nothing moved on the second apply",
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM wallets"), 5);
+  assert.equal(count(db, "SELECT count(*) AS n FROM sync_row_stamps"), 16);
+});
+
+test("a name this phone never held still lands as a new record", async () => {
+  const { db, driver } = openStore();
+  seedLocalBaseline(db);
+
+  await driver.batch(
+    snapshotStatements([
+      ...seedSnapshotOps(),
+      snapshotOp("wallets", seedUid("d", 1), 400, {
+        name: "Momo",
+        created_at: "2026-11-12",
+      }),
+    ]),
+  );
+
+  assert.equal(count(db, "SELECT count(*) AS n FROM wallets"), 6);
+  assert.equal(uidOf(db, "wallets", "Momo"), seedUid("d", 1));
+  assert.equal(
+    uidOf(db, "wallets", "Cash"),
+    seedUid("a", 1),
+    "and the fold still happened beside it",
+  );
+});
+
+test("a tombstone still wins over a row the fold re-keyed", async () => {
+  const { db, driver } = openStore();
+  seedLocalBaseline(db);
+  await driver.batch(snapshotStatements(seedSnapshotOps()));
+
+  // The desktop deleted the wallet it folded in: the delete names the incoming
+  // uid and outranks the stamp this same pull recorded (counter 102).
+  await driver.batch(
+    snapshotStatements(
+      [],
+      [
+        {
+          table: "wallets",
+          uid: seedUid("a", 3),
+          stamp: { counter: 999, deviceId: UID_PEER_A, opId: "op-delete" },
+        },
+      ],
+    ),
+  );
+
+  assert.equal(
+    uidOf(db, "wallets", "Wave Money"),
+    undefined,
+    "the folded row is deleted, not merely recorded",
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM wallets"), 4);
 });

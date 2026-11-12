@@ -486,6 +486,18 @@ baseline** for every record the snapshot carried (§8.5), and `cursor_in`
 advances only through §6.4's operation path. If the snapshot is interrupted,
 nothing is applied and it is re-taken — the phone never holds half a snapshot.
 
+**A natural key folds, it never collides.** Four synced tables declare `name`
+unique — `collections`, `wallets`, `income_categories`,
+`expense_categories` — and the baseline seeds three of them on every fresh
+install under *random* uids, so the same seed is two records, one per device.
+When an adopted row's natural key matches a local row that carries a different
+uid, the row **folds** onto it: the local row keeps its `id` (its children stay
+attached), its `uid` is re-keyed to the incoming one, and the incoming fields
+and stamp then land through the ordinary upsert. A row whose name is unknown
+locally, or whose uid is already present, is written exactly as before. This is
+the rule the Stage 1 op-apply inherits; deterministic seed uids were rejected,
+because they cannot repair a database that already exists.
+
 #### §8.5 The snapshot transport (`/pair/snapshot`)
 
 Phase C Session 3. All four messages are sealed envelopes (§11.6.1) POSTed to

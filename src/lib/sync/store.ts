@@ -522,6 +522,23 @@ const FOREIGN_KEYS: Partial<Record<SyncTable, Record<string, SyncTable>>> = {
   habit_logs: { habit_uid: "habits" },
 };
 
+/**
+ * The synced tables whose `name` is the record's identity within a device.
+ *
+ * The schema says so itself: each of these declares `name TEXT NOT NULL
+ * UNIQUE`, so two rows with the same name cannot coexist here — while the
+ * baseline seeds every one of them on a fresh install under *random* uids
+ * (§2.1's seed block). Two installs therefore hold the same `Cash` wallet as
+ * two different records, and an incoming snapshot row whose name already
+ * exists locally is that same record created twice, not a second one (§8.4).
+ */
+const NATURAL_KEYS: Partial<Record<SyncTable, string>> = {
+  collections: "name",
+  wallets: "name",
+  income_categories: "name",
+  expense_categories: "name",
+};
+
 /** The one §4.2 stamp a snapshot row (or tombstone) carries. */
 export interface SnapshotStamp {
   counter: number;
@@ -553,6 +570,45 @@ function assertIdentifier(name: string, owner: string): void {
       `${JSON.stringify(name)} is not a name ${owner} may receive (§8.4).`,
     );
   }
+}
+
+/**
+ * §8.4's fold: the local row that already holds this natural key becomes the
+ * incoming record.
+ *
+ * The two statements are a pair and always run before the row write:
+ *
+ * 1. the displaced row's stamp is removed, because the row write that follows
+ *    records the record's stamp under its *new* uid — leaving the old one would
+ *    orphan a stamp under a uid no row carries;
+ * 2. the row is re-keyed in place. Its local `id` is untouched, so every child
+ *    written against it (entries pointing at this wallet or category, notes
+ *    pointing at this collection) stays attached, and the incoming fields then
+ *    land through the ordinary upsert exactly as if the uid had matched.
+ *
+ * Both statements are guarded by `uid != ?`, so they match nothing in the two
+ * ordinary cases — the incoming uid already exists here (a re-adoption), or no
+ * local row carries the name (a genuinely new record) — and in those cases the
+ * apply is byte-for-byte the pre-fold behaviour.
+ */
+function snapshotFoldStatements(op: SnapshotOp): BatchStatement[] {
+  const key = NATURAL_KEYS[op.table];
+  if (key === undefined) return [];
+  const value = op.fields[key];
+  // No usable natural key in the incoming fields: nothing to fold.
+  if (typeof value !== "string") return [];
+  return [
+    {
+      sql: `DELETE FROM sync_row_stamps
+            WHERE entity_table = ?
+              AND entity_uid IN (SELECT uid FROM "${op.table}" WHERE "${key}" = ? AND uid != ?)`,
+      params: [op.table, value, op.uid],
+    },
+    {
+      sql: `UPDATE "${op.table}" SET uid = ? WHERE "${key}" = ? AND uid != ?`,
+      params: [op.uid, value, op.uid],
+    },
+  ];
 }
 
 /**
@@ -626,7 +682,10 @@ export function snapshotRowStatements(
   const updates = columns
     .filter((column) => column !== "uid")
     .map((column) => `"${column}" = excluded."${column}"`);
-  return [
+  // §8.4's fold comes first: a seed this device minted under its own uid has to
+  // become the incoming record before the upsert can find it by uid.
+  const statements = snapshotFoldStatements(op);
+  statements.push(
     {
       sql: `INSERT INTO "${op.table}" (${columns
         .map((column) => `"${column}"`)
@@ -653,7 +712,8 @@ export function snapshotRowStatements(
         nowIso(now),
       ],
     },
-  ];
+  );
+  return statements;
 }
 
 /**
