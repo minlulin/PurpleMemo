@@ -24,6 +24,7 @@ import {
   type PairingSession,
   parseOffer,
 } from "../lib/sync/pairing.ts";
+import type { SnapshotOp } from "../lib/sync/store.ts";
 import { useT } from "./useTranslation.ts";
 
 type Scanning = "idle" | "scanning" | "unavailable";
@@ -52,8 +53,21 @@ export function MobilePairingCard() {
   const [pulled, setPulled] = useState<{
     rows: number;
     tombstones: number;
+    stagedOps: SnapshotOp[];
   } | null>(null);
   const [pullError, setPullError] = useState<string | null>(null);
+  // §9.1's upload, offered only after a pull in this same session: the plan
+  // is computed against the snapshot that pull just took.
+  const [uploadProgress, setUploadProgress] = useState<{
+    batch: number;
+    total: number;
+  } | null>(null);
+  const [uploaded, setUploaded] = useState<{
+    offered: number;
+    inserted: number;
+    alreadyKnown: number;
+  } | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -218,6 +232,8 @@ export function MobilePairingCard() {
     if (paired === null || offer === null || progress !== null) return;
     setPullError(null);
     setPulled(null);
+    setUploaded(null);
+    setUploadError(null);
     setProgress({ batch: 0, total: 0 });
     try {
       const outcome = await mobilePairingRepo.pullSnapshot(
@@ -226,7 +242,11 @@ export function MobilePairingCard() {
         (next) => setProgress(next),
       );
       if (outcome.applied) {
-        setPulled({ rows: outcome.rows, tombstones: outcome.tombstones });
+        setPulled({
+          rows: outcome.rows,
+          tombstones: outcome.tombstones,
+          stagedOps: outcome.stagedOps,
+        });
       } else {
         setPullError(
           outcome.refusal === null
@@ -236,6 +256,48 @@ export function MobilePairingCard() {
       }
     } finally {
       setProgress(null);
+    }
+  };
+
+  /**
+   * Send this phone's own records (§9.1). The desktop stages them unapplied
+   * and its panel applies them in one transaction; this card believes the
+   * upload only when the desktop's sealed verdict says so — never because
+   * the batches were sent.
+   */
+  const sendToDesktop = async () => {
+    if (
+      paired === null ||
+      offer === null ||
+      pulled === null ||
+      uploadProgress !== null
+    ) {
+      return;
+    }
+    setUploadError(null);
+    setUploaded(null);
+    setUploadProgress({ batch: 0, total: 0 });
+    try {
+      const outcome = await mobilePairingRepo.pushUpload(
+        { endpoint: offer.endpoint, desktopDeviceId: paired.desktopDeviceId },
+        pulled.stagedOps,
+        (next) => setUploadProgress(next),
+      );
+      if (outcome.uploaded) {
+        setUploaded({
+          offered: outcome.offered,
+          inserted: outcome.inserted,
+          alreadyKnown: outcome.alreadyKnown,
+        });
+      } else {
+        setUploadError(
+          outcome.refusal === null
+            ? t("mobile.settings.uploadFailed")
+            : `${t("mobile.settings.uploadFailed")} ${outcome.refusal.message}`,
+        );
+      }
+    } finally {
+      setUploadProgress(null);
     }
   };
 
@@ -367,6 +429,42 @@ export function MobilePairingCard() {
             <p className="mobile-error" role="alert">
               {pullError}
             </p>
+          ) : null}
+          {pulled !== null ? (
+            <>
+              <h3 className="mobile-section-heading">
+                {t("mobile.settings.uploadHeading")}
+              </h3>
+              <p className="mobile-note">{t("mobile.settings.uploadBody")}</p>
+              <button
+                type="button"
+                className="btn"
+                disabled={uploadProgress !== null || progress !== null}
+                onClick={() => void sendToDesktop()}
+              >
+                {uploadProgress === null
+                  ? t("mobile.settings.uploadStart")
+                  : t("mobile.settings.uploadProgress", {
+                      batch: uploadProgress.batch,
+                      total: uploadProgress.total,
+                    })}
+              </button>
+              {uploaded !== null ? (
+                <p className="alert alert-note" role="status">
+                  {uploaded.offered === 0
+                    ? t("mobile.settings.uploadNothing")
+                    : t("mobile.settings.uploadDone", {
+                        inserted: uploaded.inserted,
+                        alreadyKnown: uploaded.alreadyKnown,
+                      })}
+                </p>
+              ) : null}
+              {uploadError !== null ? (
+                <p className="mobile-error" role="alert">
+                  {uploadError}
+                </p>
+              ) : null}
+            </>
           ) : null}
         </section>
       )}

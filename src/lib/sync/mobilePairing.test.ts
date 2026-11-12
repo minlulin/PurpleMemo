@@ -13,7 +13,7 @@ import type {
   PhonePairResult,
   SnapshotBatchResult,
 } from "../../data/driver.ts";
-import { resumeAdoption } from "./bootstrap.ts";
+import { resumeAdoption, type SyncedRow } from "./bootstrap.ts";
 import { generateKeyPair, open, seal } from "./envelope.ts";
 import {
   confirmTypedCode,
@@ -24,11 +24,15 @@ import {
   type PairingPhoneTransport,
   pairWithDesktop,
   pullSnapshot,
+  pushUpload,
+  readLocalRows,
   readSnapshotBatch,
+  readUploadOps,
   SNAPSHOT_PULL_MISSING,
   type SnapshotPullTransport,
   scannedSession,
   snapshotSummary,
+  type UploadTransport,
 } from "./mobilePairing.ts";
 import {
   createPairingSession,
@@ -806,7 +810,11 @@ test("the summary names the pull and what is still missing", () => {
   assert.match(summary[1] ?? "", /1 deletion\(s\)/);
   assert.match(summary[2] ?? "", /Nothing was deleted/);
   assert.equal(summary[3], SNAPSHOT_PULL_MISSING);
-  assert.match(SNAPSHOT_PULL_MISSING, /not sent to the desktop yet/);
+  assert.match(
+    SNAPSHOT_PULL_MISSING,
+    /upload below sends them/,
+    "§9.1: the pull still says the phone's own records are a separate press",
+  );
 });
 
 test("a committed snapshot whose adoption reply fails is still reported as applied", async () => {
@@ -820,4 +828,252 @@ test("a committed snapshot whose adoption reply fails is still reported as appli
   assert.equal(outcome.rows, 1);
   assert.equal(outcome.refusal?.code, "replayed");
   assert.ok(outcome.summary.length > 0);
+});
+
+// ---------------------------------------------------------------------------
+// §9.1's upload: the local read, the wire order, and the sealed verdict.
+// ---------------------------------------------------------------------------
+
+function localRow(
+  index: number,
+  extras: Record<string, unknown> = {},
+): SyncedRow {
+  return {
+    table: "notes",
+    uid: pullUid(index),
+    stamp: { counter: index + 1, deviceId: PHONE_ID, opId: `local-${index}` },
+    fields: {
+      title: `phone note ${index}`,
+      content: "",
+      created_at: "2026-01-02T00:00:00.000Z",
+      updated_at: "2026-01-02T00:00:00.000Z",
+      ...extras,
+    },
+  };
+}
+
+test("the local read spells rows as wire documents", async () => {
+  const collectionUid = pullUid(90);
+  const noteUid = pullUid(91);
+  const reader = {
+    async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+      if (sql.includes("FROM sync_state")) {
+        return [{ device_id: PHONE_ID }] as T[];
+      }
+      if (sql.includes("FROM sync_row_stamps")) {
+        return (
+          params[0] === "notes"
+            ? [
+                {
+                  entity_uid: noteUid,
+                  counter: 7,
+                  device_id: PHONE_ID,
+                  op_id: "op-note",
+                },
+              ]
+            : []
+        ) as T[];
+      }
+      if (sql.includes('FROM "collections"')) {
+        return [
+          { id: 7, uid: collectionUid, name: "Ideas", created_at: "t" },
+        ] as T[];
+      }
+      if (sql.includes('FROM "wallets"')) {
+        return [
+          { id: 3, uid: pullUid(92), name: "Cash", created_at: "t" },
+        ] as T[];
+      }
+      if (sql.includes('FROM "notes"')) {
+        return [
+          {
+            id: 11,
+            uid: noteUid,
+            title: "Stamped",
+            content: "",
+            collection_id: 7,
+            created_at: "t",
+            updated_at: "t",
+          },
+          {
+            id: 12,
+            uid: pullUid(93),
+            title: "Unstamped",
+            content: "",
+            collection_id: null,
+            created_at: "t",
+            updated_at: "t",
+          },
+        ] as T[];
+      }
+      return [] as T[];
+    },
+  };
+  const rows = await readLocalRows(reader);
+  const stamped = rows.find((row) => row.uid === noteUid);
+  assert.ok(stamped);
+  assert.equal(
+    stamped.fields.collection_uid,
+    collectionUid,
+    "a foreign key travels as the parent's uid, never the local rowid",
+  );
+  assert.equal("id" in stamped.fields, false);
+  assert.equal("collection_id" in stamped.fields, false);
+  assert.deepEqual(stamped.stamp, {
+    counter: 7,
+    deviceId: PHONE_ID,
+    opId: "op-note",
+  });
+  const unstamped = rows.find((row) => row.uid === pullUid(93));
+  assert.deepEqual(
+    unstamped?.stamp,
+    { counter: 0, deviceId: PHONE_ID, opId: "unstamped" },
+    "no stamp row reads as pre-history, as the desktop's reader spells it",
+  );
+  assert.equal(unstamped?.fields.collection_uid, null);
+});
+
+test("the desktop's staged upload is validated before it is applied", () => {
+  const good = readUploadOps([snapshotRow(1), snapshotRow(2)]);
+  assert.equal(good.ok, true);
+  if (good.ok) assert.equal(good.ops.length, 2);
+
+  const notRows = readUploadOps("nope");
+  assert.equal(notRows.ok, false);
+  const unknownTable = readUploadOps([{ ...snapshotRow(1), table: "gallery" }]);
+  assert.equal(unknownTable.ok, false);
+  if (!unknownTable.ok) {
+    assert.match(unknownTable.reason, /not on the sync allowlist/);
+  }
+  const idInFields = readUploadOps([
+    {
+      ...snapshotRow(1),
+      fields: { ...(snapshotRow(1).fields as object), id: 4 },
+    },
+  ]);
+  assert.equal(idInFields.ok, false);
+  const badUid = readUploadOps([{ ...snapshotRow(1), uid: "NOT-A-UUID" }]);
+  assert.equal(badUid.ok, false);
+});
+
+function fakeUpload(config: {
+  local: SyncedRow[];
+  verdicts?: Array<{
+    state: "pending" | "uploaded" | "failed";
+    inserted?: number;
+    alreadyKnown?: number;
+    message?: string | null;
+  }>;
+  failBatch?: string;
+}): { transport: UploadTransport; calls: string[] } {
+  const calls: string[] = [];
+  const verdicts = [...(config.verdicts ?? [])];
+  return {
+    calls,
+    transport: {
+      async localRows() {
+        calls.push("localRows");
+        return config.local;
+      },
+      async uploadBatch(_input, batch, total) {
+        calls.push(`batch:${batch}/${total}`);
+        if (config.failBatch !== undefined) throw new Error(config.failBatch);
+      },
+      async uploadCommit() {
+        calls.push("commit");
+      },
+      async uploadStatus() {
+        calls.push("status");
+        const verdict = verdicts.shift() ?? {
+          state: "uploaded" as const,
+          inserted: 0,
+          alreadyKnown: 0,
+          message: null,
+        };
+        return {
+          state: verdict.state,
+          inserted: verdict.inserted ?? 0,
+          alreadyKnown: verdict.alreadyKnown ?? 0,
+          message: verdict.message ?? null,
+        };
+      },
+    },
+  };
+}
+
+test("the upload offers only what the desktop lacks, then believes the verdict", async () => {
+  const desktopRows = [snapshotRow(1)] as unknown as SyncedRow[];
+  const { transport, calls } = fakeUpload({
+    local: [localRow(1), localRow(2), localRow(3)],
+    verdicts: [
+      { state: "pending" },
+      { state: "uploaded", inserted: 2, alreadyKnown: 0 },
+    ],
+  });
+  const outcome = await pushUpload(transport, PULL_INPUT, desktopRows, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.uploaded, true);
+  assert.equal(outcome.offered, 2, "the desktop's own row is never offered");
+  assert.equal(outcome.inserted, 2);
+  assert.deepEqual(calls, [
+    "localRows",
+    "batch:0/1",
+    "commit",
+    "status",
+    "status",
+  ]);
+  assert.match(outcome.summary[0] ?? "", /2 record\(s\) were added/);
+});
+
+test("an upload with nothing to offer never touches the wire", async () => {
+  const desktopRows = [snapshotRow(1)] as unknown as SyncedRow[];
+  const { transport, calls } = fakeUpload({ local: [localRow(1)] });
+  const outcome = await pushUpload(transport, PULL_INPUT, desktopRows);
+  assert.equal(outcome.uploaded, true);
+  assert.equal(outcome.offered, 0);
+  assert.deepEqual(calls, ["localRows"]);
+});
+
+test("a failed verdict and a missing verdict are both reported, never believed", async () => {
+  const desktopRows: SyncedRow[] = [];
+  const failedCase = fakeUpload({
+    local: [localRow(5)],
+    verdicts: [
+      { state: "failed", message: "UNIQUE constraint failed: wallets.name" },
+    ],
+  });
+  const failedOutcome = await pushUpload(
+    failedCase.transport,
+    PULL_INPUT,
+    desktopRows,
+    { sleep: async () => undefined },
+  );
+  assert.equal(failedOutcome.uploaded, false);
+  assert.equal(failedOutcome.refusal?.code, "upload-failed");
+  assert.match(failedOutcome.refusal?.message ?? "", /wallets\.name/);
+
+  const silentCase = fakeUpload({
+    local: [localRow(6)],
+    verdicts: Array.from({ length: 40 }, () => ({ state: "pending" as const })),
+  });
+  const silentOutcome = await pushUpload(
+    silentCase.transport,
+    PULL_INPUT,
+    desktopRows,
+    { sleep: async () => undefined },
+  );
+  assert.equal(silentOutcome.uploaded, false);
+  assert.equal(silentOutcome.refusal?.code, "upload-unconfirmed");
+});
+
+test("a refused batch stops the upload before the commit", async () => {
+  const { transport, calls } = fakeUpload({
+    local: [localRow(7)],
+    failBatch: "upload-busy: an upload is already staged on the desktop.",
+  });
+  const outcome = await pushUpload(transport, PULL_INPUT, []);
+  assert.equal(outcome.uploaded, false);
+  assert.equal(outcome.refusal?.code, "upload-busy");
+  assert.deepEqual(calls, ["localRows", "batch:0/1"]);
 });

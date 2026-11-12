@@ -31,7 +31,10 @@ import type {
   PairingListenerInfo,
   PairingLocalInfo,
   PairingOpenInput,
+  UploadOutcomeInput,
+  UploadTakeResult,
 } from "../../data/driver.ts";
+import { readUploadOps } from "./mobilePairing.ts";
 import {
   createPairingSession,
   encodeOffer,
@@ -45,7 +48,13 @@ import {
   pinStatements,
   rePairStatements,
 } from "./pairing.ts";
-import { type PeerRow, readPeers } from "./store.ts";
+import type { SyncTable } from "./protocol.ts";
+import {
+  assertSyncTable,
+  type PeerRow,
+  readPeers,
+  uploadStatements,
+} from "./store.ts";
 
 /** The driver surface the panel uses — one method per real IPC command. */
 export interface PairingTransport {
@@ -55,6 +64,16 @@ export interface PairingTransport {
   pairingStatus(): Promise<PairingListenerInfo>;
   batch(statements: BatchStatement[]): Promise<void>;
   peers(): Promise<PeerRow[]>;
+  /** Take the staged §9.1 upload for the apply; `null` when none is ready. */
+  pairingUploadTake(): Promise<UploadTakeResult | null>;
+  /** Report the apply's verdict, for the listener to seal to the phone. */
+  pairingUploadOutcome(input: UploadOutcomeInput): Promise<void>;
+  /**
+   * Of `uids` in `table`, the ones this device already holds — the §9.1
+   * classification the apply counts by. The table is an allowlisted name
+   * from a validated op, never free text.
+   */
+  existingUids(table: SyncTable, uids: readonly string[]): Promise<string[]>;
 }
 
 export interface PairingPanelState {
@@ -181,6 +200,15 @@ export function remainingSeconds(
   return Math.max(0, Math.ceil((state.offer.expiresAt - now) / 1000));
 }
 
+/** What the panel may say about the §9.1 upload in this window. */
+export interface PanelUploadView {
+  state: string;
+  ops: number;
+  inserted: number | null;
+  alreadyKnown: number | null;
+  note: string | null;
+}
+
 export interface PairingPanelView {
   phase: PanelPhase;
   /** `null` once the code is no longer live — no expired code is ever shown. */
@@ -196,6 +224,8 @@ export interface PairingPanelView {
   listenerRunning: boolean;
   /** True when no code is live: the panel offers a fresh one instead (N3). */
   freshCode: boolean;
+  /** The upload's state, once the phone sends one (§9.1). */
+  upload: PanelUploadView | null;
 }
 
 /** What the panel may draw, for one instant. */
@@ -216,6 +246,16 @@ export function panelView(
     peerFingerprint: state.listener.peerFingerprint,
     listenerRunning: state.listener.running,
     freshCode: !live,
+    upload:
+      state.listener.uploadState === null
+        ? null
+        : {
+            state: state.listener.uploadState,
+            ops: state.listener.uploadOps,
+            inserted: state.listener.uploadInserted,
+            alreadyKnown: state.listener.uploadAlreadyKnown,
+            note: state.listener.uploadNote,
+          },
   };
 }
 
@@ -346,12 +386,115 @@ export function projectSession(
   };
 }
 
+function uploadErrorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** What one staged-upload apply did — a value, so the order can be tested. */
+export interface UploadApplyOutcome {
+  /** Records taken from the staging (0 when nothing was staged). */
+  staged: number;
+  /** Of them, inserted as new records. */
+  inserted: number;
+  /** Of them, already held here — §7.2 no-ops, counted, never rewritten. */
+  alreadyKnown: number;
+  /** The failure's reason, when the apply did not commit. */
+  error: string | null;
+}
+
+/**
+ * Apply the phone's staged upload (§9.1) — this panel's one writing duty
+ * besides the pin.
+ *
+ * The order is the clause:
+ *
+ * 1. the staging is TAKEN first, so no second tick can start a second apply
+ *    of the same records;
+ * 2. every op is validated (§3.4) before a statement exists — a bad payload
+ *    applies nothing and is reported by name;
+ * 3. the ops whose uid this device already holds are classified
+ *    `alreadyKnown` and never rewritten (§7.2: a repeated upload is a no-op,
+ *    not an overwrite — the desktop's own row keeps its value and stamp);
+ * 4. the rest are written in ONE `batch` — one transaction, parents first —
+ *    with the stamps the phone sent;
+ * 5. the outcome is reported either way, because the phone's verdict is this
+ *    report: counts on success, the failure's own words on failure. An
+ *    apply that threw is never reported as one that succeeded.
+ *
+ * The existence check and the insert are two steps, so a record the person
+ * creates on this desktop in between can turn the insert into a refusal —
+ * which rolls the whole upload back and is reported, never silently merged.
+ * Returns `null` when nothing was staged.
+ */
+export async function applyStagedUpload(
+  transport: PairingTransport,
+): Promise<UploadApplyOutcome | null> {
+  const taken = await transport.pairingUploadTake();
+  if (taken === null) return null;
+  try {
+    const read = readUploadOps(taken.ops);
+    if (!read.ok) throw new Error(read.reason);
+    const byTable = new Map<SyncTable, string[]>();
+    for (const op of read.ops) {
+      const uids = byTable.get(op.table) ?? [];
+      uids.push(op.uid);
+      byTable.set(op.table, uids);
+    }
+    const known = new Set<string>();
+    for (const [table, uids] of byTable) {
+      const existing = await transport.existingUids(table, uids);
+      for (const uid of existing) known.add(`${table}\u0000${uid}`);
+    }
+    const fresh = read.ops.filter(
+      (op) => !known.has(`${op.table}\u0000${op.uid}`),
+    );
+    if (fresh.length > 0) {
+      await transport.batch(uploadStatements(fresh));
+    }
+    const outcome: UploadApplyOutcome = {
+      staged: read.ops.length,
+      inserted: fresh.length,
+      alreadyKnown: read.ops.length - fresh.length,
+      error: null,
+    };
+    await transport.pairingUploadOutcome({
+      inserted: outcome.inserted,
+      alreadyKnown: outcome.alreadyKnown,
+      error: null,
+    });
+    return outcome;
+  } catch (error) {
+    const message = uploadErrorText(error);
+    await transport
+      .pairingUploadOutcome({
+        inserted: null,
+        alreadyKnown: null,
+        error: message,
+      })
+      .catch(() => undefined);
+    return {
+      staged: taken.ops.length,
+      inserted: 0,
+      alreadyKnown: 0,
+      error: message,
+    };
+  }
+}
+
 export async function settlePairingPanel(
   transport: PairingTransport,
   state: PairingPanelState,
   now: number = Date.now(),
 ): Promise<PairingPanelState> {
-  const current = await transport.pairingStatus();
+  let current = await transport.pairingStatus();
+  // §9.1: a committed upload is this panel's to apply, and the phone polls
+  // for the verdict — so the apply runs on the tick that first sees the
+  // staging complete, and the state this settle returns is read again after
+  // it, carrying the terminal upload state the person should see.
+  if (current.uploadState === "staged") {
+    await applyStagedUpload(transport).catch(() => undefined);
+    current = await transport.pairingStatus().catch(() => current);
+  }
   // The listener's code state comes first: a lockout on the wire or a phone's
   // redemption must close the socket on this tick, not when the 120 s timer
   // happens to run out — and the panel must learn it on the same tick (N3).
@@ -447,12 +590,31 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     pairingStatus: () => driver.pairingStatus(),
     batch: (statements) => driver.batch(statements),
     peers: () => readPeers(driver),
+    pairingUploadTake: () => driver.pairingUploadTake(),
+    pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
+    existingUids: async (table, uids) => {
+      // The table is an allowlisted name from a validated op (§3.4 ran
+      // first); the uids are bound parameters, chunked under SQLite's limit.
+      assertSyncTable(table);
+      const found: string[] = [];
+      for (let at = 0; at < uids.length; at += 500) {
+        const chunk = uids.slice(at, at + 500);
+        const placeholders = chunk.map(() => "?").join(", ");
+        const rows = await driver.query<{ uid: string }>(
+          `SELECT uid FROM "${table}" WHERE uid IN (${placeholders})`,
+          [...chunk],
+        );
+        for (const row of rows) found.push(row.uid);
+      }
+      return found;
+    },
   };
   return {
     open: (now?: number) => openPairingPanel(transport, now),
     close: () => closePairingPanel(transport),
     settle: (state: PairingPanelState, now?: number) =>
       settlePairingPanel(transport, state, now),
+    applyUpload: () => applyStagedUpload(transport),
     pin: (state: PairingPanelState) => pinAdmittedPeer(transport, state),
     local: () => driver.pairingLocal(),
     status: () => driver.pairingStatus(),

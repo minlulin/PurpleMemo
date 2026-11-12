@@ -362,6 +362,24 @@ export function PairingPanel() {
                   </dd>
                 </div>
               ) : null}
+              {/* §9.1: the phone's upload is staged by the listener and
+                  applied by this panel — its state is the person's receipt. */}
+              {view.upload !== null ? (
+                <div>
+                  <dt>Phone upload</dt>
+                  <dd>
+                    {view.upload.state === "receiving"
+                      ? `Receiving… (${view.upload.ops} record(s) so far)`
+                      : view.upload.state === "staged"
+                        ? `${view.upload.ops} record(s) received — applying…`
+                        : view.upload.state === "applying"
+                          ? "Applying…"
+                          : view.upload.state === "applied"
+                            ? `${view.upload.inserted ?? 0} added, ${view.upload.alreadyKnown ?? 0} already here`
+                            : `Failed — ${view.upload.note ?? "the apply did not commit"}`}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           </div>
 

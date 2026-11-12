@@ -102,7 +102,7 @@ function nowIso(now: Date): string {
  * §2.2 keeps credentials and the inbox out of sync entirely, and an op that
  * reaches the transport for an excluded table is a leak, not a bug report.
  */
-function assertSyncTable(table: string): asserts table is SyncTable {
+export function assertSyncTable(table: string): asserts table is SyncTable {
   if (!isSyncTable(table)) {
     throw new Error(
       `${table} is not on the sync allowlist (§2.2); it must never enter the outbox or a tombstone`,
@@ -523,6 +523,26 @@ const FOREIGN_KEYS: Partial<Record<SyncTable, Record<string, SyncTable>>> = {
 };
 
 /**
+ * The same foreign keys named by their LOCAL columns (`collection_id`, not
+ * `collection_uid`) — what a reader of this device's own rows needs to turn
+ * them into wire documents (§9.1's upload). Kept beside `FOREIGN_KEYS` so the
+ * two maps are visibly one fact spelled two ways.
+ */
+export const LOCAL_FOREIGN_KEYS: Partial<
+  Record<SyncTable, Record<string, SyncTable>>
+> = {
+  notes: { collection_id: "collections" },
+  income_entries: { category_id: "income_categories", wallet_id: "wallets" },
+  expense_entries: {
+    category_id: "expense_categories",
+    wallet_id: "wallets",
+  },
+  jobs: { shop_id: "shops" },
+  shopping_items: { list_id: "shopping_lists" },
+  habit_logs: { habit_id: "habits" },
+};
+
+/**
  * The synced tables whose `name` is the record's identity within a device.
  *
  * The schema says so itself: each of these declares `name TEXT NOT NULL
@@ -612,7 +632,8 @@ function snapshotFoldStatements(op: SnapshotOp): BatchStatement[] {
 }
 
 /**
- * §8.4's row write: the record and its stamp, as two statements.
+ * One row's columns, values and params, shared by every apply that writes a
+ * synced record (§8.4, §9.1).
  *
  * A foreign key is resolved by subselect — `(SELECT id FROM "collections"
  * WHERE uid = ?)` — never by a read before the transaction. That is what makes
@@ -623,21 +644,16 @@ function snapshotFoldStatements(op: SnapshotOp): BatchStatement[] {
  * (`income_entries`, `expense_entries`, `shopping_items`, `habit_logs`) then
  * refuse, and the whole batch adopts nothing; the nullable two
  * (`notes.collection_id`, `jobs.shop_id`) would land that record unlinked.
- * That is unreachable from a well-formed snapshot — the reader walks all 17
+ * That is unreachable from a well-formed payload — the reader walks all 17
  * tables in one transaction, parents first — and a row with no parent at all
  * arrives as an explicit `null` `_uid`, which is written as a literal NULL
  * rather than a subselect, so the two cases cannot be confused.
- *
- * The stamp is written too (§4.2): the row's value came from that write, and
- * a merge that read it as pre-history would let any edit win over it.
- * `field_stamps` stays empty because the snapshot carries a row stamp; claiming
- * per-field stamps here would claim more than the desktop sent.
  */
-export function snapshotRowStatements(
-  op: SnapshotOp,
-  now: Date = new Date(),
-): BatchStatement[] {
-  assertSyncTable(op.table);
+function snapshotColumns(op: SnapshotOp): {
+  columns: string[];
+  values: string[];
+  params: unknown[];
+} {
   const foreignKeys = FOREIGN_KEYS[op.table] ?? {};
   const columns: string[] = ["uid"];
   const values: string[] = ["?"];
@@ -654,7 +670,7 @@ export function snapshotRowStatements(
       assertIdentifier(parent, op.table);
       columns.push(`${key.slice(0, -"_uid".length)}_id`);
       if (value === null || value === undefined) {
-        // An unlinked row: the desktop's own `NULL` foreign key. Spelled as
+        // An unlinked row: the sender's own `NULL` foreign key. Spelled as
         // NULL rather than a subselect, so it cannot be confused with a parent
         // this batch merely failed to find.
         values.push("NULL");
@@ -679,6 +695,23 @@ export function snapshotRowStatements(
       `the snapshot sent ${op.table} ${op.uid} with no fields (§8.4).`,
     );
   }
+  return { columns, values, params };
+}
+
+/**
+ * §8.4's row write: the record and its stamp, as two statements.
+ *
+ * The stamp is written too (§4.2): the row's value came from that write, and
+ * a merge that read it as pre-history would let any edit win over it.
+ * `field_stamps` stays empty because the snapshot carries a row stamp; claiming
+ * per-field stamps here would claim more than the desktop sent.
+ */
+export function snapshotRowStatements(
+  op: SnapshotOp,
+  now: Date = new Date(),
+): BatchStatement[] {
+  assertSyncTable(op.table);
+  const { columns, values, params } = snapshotColumns(op);
   const updates = columns
     .filter((column) => column !== "uid")
     .map((column) => `"${column}" = excluded."${column}"`);
@@ -713,6 +746,74 @@ export function snapshotRowStatements(
       ],
     },
   );
+  return statements;
+}
+
+/**
+ * §9.1's row write, the upload direction: a plain insert, never an upsert.
+ *
+ * The caller has already established that this device does not hold the uid
+ * (that classification IS the upload plan), so the row lands as the new
+ * record §9.2 promises, with the stamp the phone sent — the merge baseline
+ * for everything Stage 1 later compares against it. There is deliberately
+ * no §8.4 fold here: a natural-key collision on this side means a genuinely
+ * distinct record was created under the same name on both devices while
+ * unpaired, and silently overwriting either side's fields is not §9.1's to
+ * decide — the insert refuses on the unique name, the whole apply rolls
+ * back, and the failure is reported by name instead (§7.7).
+ */
+export function uploadRowStatements(
+  op: SnapshotOp,
+  now: Date = new Date(),
+): BatchStatement[] {
+  assertSyncTable(op.table);
+  const { columns, values, params } = snapshotColumns(op);
+  return [
+    {
+      sql: `INSERT INTO "${op.table}" (${columns
+        .map((column) => `"${column}"`)
+        .join(", ")})
+            VALUES (${values.join(", ")})`,
+      params,
+    },
+    {
+      sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+            VALUES (?, ?, ?, ?, ?, '{}', ?)`,
+      params: [
+        op.table,
+        op.uid,
+        op.stamp.counter,
+        op.stamp.deviceId,
+        op.stamp.opId,
+        nowIso(now),
+      ],
+    },
+  ];
+}
+
+/**
+ * §9.1's apply, whole: every uploaded row as ONE statement list, parents
+ * first (the same `SYNC_TABLES` order the snapshot apply sorts by), for the
+ * caller's one transaction. An uploaded child whose parent is itself in the
+ * upload resolves by the same subselect; a parent this device already holds
+ * resolves the same way.
+ */
+export function uploadStatements(
+  ops: readonly SnapshotOp[],
+  now: Date = new Date(),
+): BatchStatement[] {
+  const order = new Map(
+    (Object.keys(SYNC_TABLES) as SyncTable[]).map((table, index) => [
+      table,
+      index,
+    ]),
+  );
+  const sorted = [...ops].sort(
+    (left, right) =>
+      (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
+  );
+  const statements: BatchStatement[] = [];
+  for (const op of sorted) statements.push(...uploadRowStatements(op, now));
   return statements;
 }
 

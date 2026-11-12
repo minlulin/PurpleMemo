@@ -157,6 +157,19 @@ export interface PairingListenerInfo {
   offerAttempts: number;
   /** §11.1: the single-use code has been redeemed, so it is spent (N3). */
   offerRedeemed: boolean;
+  /**
+   * §9.1: the staged upload's state in this window — `receiving`, `staged`,
+   * `applying`, `applied` or `failed`; `null` until the phone sends a batch.
+   */
+  uploadState: string | null;
+  /** Ops staged so far (or applied, once the state is terminal). */
+  uploadOps: number;
+  /** Of the staged ops, how many the apply inserted as new records. */
+  uploadInserted: number | null;
+  /** Of the staged ops, how many this device already held (§7.2 no-ops). */
+  uploadAlreadyKnown: number | null;
+  /** Why the apply failed, in the apply's own words. */
+  uploadNote: string | null;
   note: string | null;
 }
 
@@ -231,6 +244,38 @@ export interface SnapshotBatchResult {
   total: number;
   ops: unknown[];
   tombstones: unknown[];
+}
+
+/**
+ * The desktop's verdict on this phone's §9.1 upload, as its sealed reply
+ * reported it: `pending` until the desktop panel's apply decides, then
+ * `uploaded` with the counts, or `failed` with the apply's reason.
+ */
+export interface UploadStatusResult {
+  state: string;
+  inserted: number;
+  alreadyKnown: number;
+  message: string | null;
+}
+
+/**
+ * The staged upload the desktop panel applies (§9.1): the pairing it belongs
+ * to and every op the phone committed, as wire documents — unvalidated here,
+ * because validation is the apply's §3.4 step.
+ */
+export interface UploadTakeResult {
+  pairingId: string;
+  ops: unknown[];
+}
+
+/**
+ * What the panel's apply decided (§9.1): either the counts of a committed
+ * transaction (`error: null`), or the failure's reason (counts `null`).
+ */
+export interface UploadOutcomeInput {
+  inserted: number | null;
+  alreadyKnown: number | null;
+  error: string | null;
 }
 
 /**
@@ -506,6 +551,42 @@ export interface PairingDriver {
     rows: number,
     tombstones: number,
   ): Promise<void>;
+  /**
+   * Send one batch of this phone's own records to the pinned desktop (§9.1).
+   * The sealed exchange runs in Rust with the pin's key; the desktop only
+   * stages the batch — nothing is applied there until the commit and the
+   * panel's one transaction.
+   */
+  pairingUploadBatch(
+    input: SnapshotPullInput,
+    batch: number,
+    total: number,
+    ops: unknown[],
+  ): Promise<void>;
+  /**
+   * Tell the pinned desktop every upload batch was sent (§9.1). It refuses
+   * unless all of them are staged, so a resolved commit means the desktop
+   * holds the whole upload.
+   */
+  pairingUploadCommit(input: SnapshotPullInput): Promise<void>;
+  /**
+   * Ask for the desktop's verdict on this phone's upload (§9.1). The reply
+   * is sealed and its state is `pending` until the desktop panel's apply
+   * decides — this phone's records are only ever reported uploaded on the
+   * `uploaded` verdict.
+   */
+  pairingUploadStatus(input: SnapshotPullInput): Promise<UploadStatusResult>;
+  /**
+   * Take the staged §9.1 upload for the desktop panel's apply. `null` until
+   * a phone commits a complete upload in this window; taking is once, so
+   * the same staging can never be applied twice (§7.2).
+   */
+  pairingUploadTake(): Promise<UploadTakeResult | null>;
+  /**
+   * Report the panel's apply outcome (§9.1), so the listener can seal the
+   * verdict to the phone. The first outcome stands.
+   */
+  pairingUploadOutcome(input: UploadOutcomeInput): Promise<void>;
 }
 
 /** The one production driver: Tauri IPC commands. */
@@ -588,6 +669,14 @@ export function createTauriDriver(): DataDriver & PairingDriver {
       invoke("pairing_snapshot_applied", { input, batch }),
     pairingSnapshotAdopted: (input, rows, tombstones) =>
       invoke("pairing_snapshot_adopted", { input, rows, tombstones }),
+    // §9.1's upload — the same one-invoke-site discipline, in both directions.
+    pairingUploadBatch: (input, batch, total, ops) =>
+      invoke("pairing_upload_batch", { input, batch, total, ops }),
+    pairingUploadCommit: (input) => invoke("pairing_upload_commit", { input }),
+    pairingUploadStatus: (input) => invoke("pairing_upload_status", { input }),
+    pairingUploadTake: () => invoke("pairing_upload_take"),
+    pairingUploadOutcome: (input) =>
+      invoke("pairing_upload_outcome", { input }),
   };
 }
 

@@ -31,6 +31,7 @@ import {
   revokePeerStatements,
   type SnapshotOp,
   snapshotStatements,
+  uploadStatements,
 } from "./store.ts";
 
 const SCHEMA_RS = readFileSync(
@@ -1157,4 +1158,82 @@ test("a tombstone still wins over a row the fold re-keyed", async () => {
     "the folded row is deleted, not merely recorded",
   );
   assert.equal(count(db, "SELECT count(*) AS n FROM wallets"), 4);
+});
+
+// ---------------------------------------------------------------------------
+// §9.1's upload apply: plain inserts, no upsert, no fold.
+// ---------------------------------------------------------------------------
+
+test("an uploaded child lands linked to its uploaded parent, with its stamp", async () => {
+  const { db, driver } = openStore();
+  const statements = uploadStatements([
+    // Child FIRST, as the snapshot tests do: the parents-first sort and the
+    // uid subselect must carry it anyway.
+    snapshotOp("notes", UID_CHILD, 9, {
+      title: "Phone note",
+      content: "",
+      created_at: "2026-11-12",
+      updated_at: "2026-11-12",
+      collection_uid: UID_PARENT,
+    }),
+    snapshotOp("collections", UID_PARENT, 8, {
+      name: "Phone cash",
+      created_at: "2026-11-12",
+    }),
+  ]);
+  assert.ok(
+    statements.every((statement) => !/ON CONFLICT/i.test(statement.sql)),
+    "§9.1 inserts plainly — an upsert would silently rewrite a desktop row",
+  );
+  await driver.batch(statements);
+
+  const note = db
+    .prepare("SELECT collection_id FROM notes WHERE uid = ?")
+    .get(UID_CHILD) as { collection_id: number } | undefined;
+  const parent = db
+    .prepare("SELECT id FROM collections WHERE uid = ?")
+    .get(UID_PARENT) as { id: number } | undefined;
+  assert.ok(note && parent);
+  assert.equal(note.collection_id, parent.id);
+  const stamp = db
+    .prepare(
+      "SELECT counter, device_id, op_id FROM sync_row_stamps WHERE entity_table = 'notes' AND entity_uid = ?",
+    )
+    .get(UID_CHILD) as
+    | { counter: number; device_id: string; op_id: string }
+    | undefined;
+  assert.equal(stamp?.counter, 9);
+  assert.equal(stamp?.device_id, UID_PEER_A);
+  assert.equal(stamp?.op_id, "op-desktop");
+});
+
+test("an upload whose name collides with a desktop row aborts whole", async () => {
+  const { db, driver } = openStore();
+  db.prepare(
+    "INSERT INTO wallets (uid, name, created_at) VALUES (?, 'Cash', '2026-11-01')",
+  ).run(UID_PARENT);
+  // §9.1 has no natural-key fold (adoption already folded phone-side): the
+  // insert refuses, the batch rolls back, and the note travelling with the
+  // wallet is not left behind half-applied.
+  await assert.rejects(
+    driver.batch(
+      uploadStatements([
+        snapshotOp("wallets", UID_CHILD, 3, {
+          name: "Cash",
+          created_at: "2026-11-12",
+        }),
+        snapshotOp("notes", UID_CHILD, 4, {
+          title: "Travelling note",
+          content: "",
+          created_at: "2026-11-12",
+          updated_at: "2026-11-12",
+        }),
+      ]),
+    ),
+    /UNIQUE constraint failed: wallets\.name/,
+  );
+  const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
+    n: number;
+  };
+  assert.equal(landed.n, 0, "nothing from the refused upload may remain");
 });

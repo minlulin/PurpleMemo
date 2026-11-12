@@ -306,13 +306,24 @@ export const en = {
   "mobile.settings.pullBody":
     "This copies the desktop's records to this phone in one step: either the whole snapshot arrives or none of it does. Nothing is deleted on either device.",
   "mobile.settings.pullMissing":
-    "Records you created on this phone stay here, and they are not sent to the desktop yet — that direction is not built.",
+    "Records you created on this phone are not sent by this step. The upload below sends them, and nothing leaves this phone until you press it.",
   "mobile.settings.pullStart": "Copy records from the desktop",
   "mobile.settings.pullProgress": "Batch {batch} of {total}…",
   "mobile.settings.pullDone":
     "Copied: {rows} record(s) and {tombstones} deletion(s).",
   "mobile.settings.pullFailed":
     "Nothing was copied. The whole snapshot has to arrive before any of it is applied — try again.",
+  "mobile.settings.uploadHeading": "Send to the desktop",
+  "mobile.settings.uploadBody":
+    "Send the records you created on this phone to the desktop. Records it already has are left exactly as they are, and nothing is deleted on either device.",
+  "mobile.settings.uploadStart": "Send records to the desktop",
+  "mobile.settings.uploadProgress": "Batch {batch} of {total}…",
+  "mobile.settings.uploadDone":
+    "Sent: {inserted} new record(s) added, {alreadyKnown} already there.",
+  "mobile.settings.uploadNothing":
+    "Everything on this phone is already on the desktop — nothing to send.",
+  "mobile.settings.uploadFailed":
+    "Nothing was sent. Your records stay on this phone — try again.",
   "mobile.settings.permissionsHeading": "Permissions",
   "mobile.settings.notifications": "Notifications",
   "mobile.settings.notificationsOn":
@@ -1238,13 +1249,24 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pullBody":
     "ကွန်ပျူတာရှိ မှတ်တမ်းများကို ဤဖုန်းသို့ တစ်ဆင့်တည်းဖြင့် ကူးယူပါသည်။ အစုအစည်းတစ်ခုလုံး ရောက်လာမည်၊ သို့မဟုတ် တစ်ခုမျှ မရောက်ပါ။ မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",
   "mobile.settings.pullMissing":
-    "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများ ဤနေရာတွင် ကျန်ရှိမည်ဖြစ်ပြီး ကွန်ပျူတာသို့ မပို့ရသေးပါ — ထိုလမ်းကြောင်းကို မတည်ဆောက်ရသေးပါ။",
+    "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများကို ဤအဆင့်ဖြင့် မပို့ပါ။ အောက်ပါ တင်ပို့မှုက ၎င်းတို့ကို ပို့ပေးမည်ဖြစ်ပြီး သင် မနှိပ်မချင်း ဤဖုန်းမှ ဘာမျှ ထွက်သွားမည် မဟုတ်ပါ။",
   "mobile.settings.pullStart": "ကွန်ပျူတာမှ မှတ်တမ်းများ ကူးယူရန်",
   "mobile.settings.pullProgress": "အစုအစည်း {batch} / {total}…",
   "mobile.settings.pullDone":
     "ကူးယူပြီးပါပြီ — မှတ်တမ်း {rows} ခု၊ ဖျက်မှတ် {tombstones} ခု။",
   "mobile.settings.pullFailed":
     "ဘာမျှ မကူးယူရသေးပါ။ အစုအစည်းတစ်ခုလုံး ရောက်မှသာ သိမ်းဆည်းမည်ဖြစ်သည် — ထပ်ကြိုးစားပါ။",
+  "mobile.settings.uploadHeading": "ကွန်ပျူတာသို့ ပို့ရန်",
+  "mobile.settings.uploadBody":
+    "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများကို ကွန်ပျူတာသို့ ပို့ပါသည်။ ကွန်ပျူတာတွင် ရှိပြီးသား မှတ်တမ်းများကို ရှိသည့်အတိုင်း ထားမည်ဖြစ်ပြီး မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",
+  "mobile.settings.uploadStart": "မှတ်တမ်းများကို ကွန်ပျူတာသို့ ပို့ရန်",
+  "mobile.settings.uploadProgress": "အစုအစည်း {batch} / {total}…",
+  "mobile.settings.uploadDone":
+    "ပို့ပြီးပါပြီ — မှတ်တမ်းအသစ် {inserted} ခု ထည့်သွင်းပြီး၊ ရှိပြီးသား {alreadyKnown} ခုကို ရှိသည့်အတိုင်း ထားခဲ့ပါသည်။",
+  "mobile.settings.uploadNothing":
+    "ဤဖုန်းရှိ မှတ်တမ်းအားလုံး ကွန်ပျူတာတွင် ရှိပြီးသားဖြစ်ပါသည် — ပို့စရာ မရှိပါ။",
+  "mobile.settings.uploadFailed":
+    "ဘာမျှ မပို့ရသေးပါ။ သင့်မှတ်တမ်းများ ဤဖုန်းတွင် ကျန်ရှိပါသည် — ထပ်ကြိုးစားပါ။",
   "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
   "mobile.settings.notifications": "အသိပေးချက်များ",
   "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",

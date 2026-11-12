@@ -26,6 +26,9 @@ import type {
   ShareInfo,
   SnapshotBatchResult,
   SnapshotPullInput,
+  UploadOutcomeInput,
+  UploadStatusResult,
+  UploadTakeResult,
 } from "./driver.ts";
 
 /** `lifecycle.rs` IMPORT_BLOCKED — refused for anyone but the lease-holder. */
@@ -192,6 +195,11 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     peerHelloReceived: false,
     offerAttempts: 0,
     offerRedeemed: false,
+    uploadState: null,
+    uploadOps: 0,
+    uploadInserted: null,
+    uploadAlreadyKnown: null,
+    uploadNote: null,
     note: null,
   });
   /** The fixed `0x11…` vector's public key and the grouping both screens show. */
@@ -199,6 +207,56 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
   const PAIRING_FINGERPRINT = "7B4E 909B BE7F FE44 C465 A220";
   let pairing: PairingListenerInfo = stoppedPairing();
+
+  // §9.1's upload, mirrored at the depth a mock can honestly reach: batches
+  // stage in order, a commit completes the staging, the take is once, and
+  // the verdict is whatever outcome the panel reported — the apply itself is
+  // the real store's job, exactly as with the pull.
+  interface MockUpload {
+    batches: unknown[][];
+    total: number | null;
+    committed: boolean;
+    taken: boolean;
+    outcome:
+      | { inserted: number; alreadyKnown: number }
+      | { error: string }
+      | null;
+  }
+  const freshUpload = (): MockUpload => ({
+    batches: [],
+    total: null,
+    committed: false,
+    taken: false,
+    outcome: null,
+  });
+  let upload: MockUpload = freshUpload();
+  const projectUpload = (): void => {
+    const outcome = upload.outcome;
+    pairing = {
+      ...pairing,
+      uploadState:
+        outcome !== null
+          ? "error" in outcome
+            ? "failed"
+            : "applied"
+          : upload.committed
+            ? upload.taken
+              ? "applying"
+              : "staged"
+            : upload.batches.length > 0
+              ? "receiving"
+              : null,
+      uploadOps: upload.batches.reduce(
+        (count, batch) => count + batch.length,
+        0,
+      ),
+      uploadInserted:
+        outcome !== null && "inserted" in outcome ? outcome.inserted : null,
+      uploadAlreadyKnown:
+        outcome !== null && "inserted" in outcome ? outcome.alreadyKnown : null,
+      uploadNote: outcome !== null && "error" in outcome ? outcome.error : null,
+    };
+  };
 
   const record = (
     method: keyof DataDriver | keyof PairingDriver,
@@ -516,8 +574,14 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         peerHelloReceived: false,
         offerAttempts: 0,
         offerRedeemed: false,
+        uploadState: null,
+        uploadOps: 0,
+        uploadInserted: null,
+        uploadAlreadyKnown: null,
+        uploadNote: null,
         note: null,
       };
+      upload = freshUpload();
       return { ...pairing };
     },
     async pairingClose(): Promise<PairingListenerInfo> {
@@ -616,6 +680,115 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     ): Promise<void> {
       record("pairingSnapshotAdopted", [input, rows, tombstones]);
       requirePinned(input);
+    },
+    // §9.1's upload, at the same depth as the pull above: the pin is checked
+    // first, the staging discipline is the listener's, and no row is applied
+    // here — the panel's apply is the real store's job.
+    async pairingUploadBatch(
+      input: SnapshotPullInput,
+      batch: number,
+      total: number,
+      ops: unknown[],
+    ): Promise<void> {
+      record("pairingUploadBatch", [input, batch, total, ops]);
+      requirePinned(input);
+      if (upload.committed) {
+        throw new Error(
+          "upload-busy: this window's upload was already committed; a new upload opens a new window (§9.4).",
+        );
+      }
+      if (upload.total === null) upload.total = total;
+      if (upload.total !== total) {
+        throw new Error(
+          `malformed: this upload declared ${upload.total} batch(es) with its first batch, not ${total}.`,
+        );
+      }
+      if (batch < upload.batches.length) {
+        if (JSON.stringify(upload.batches[batch]) === JSON.stringify(ops)) {
+          return;
+        }
+        throw new Error(
+          "upload-busy: a different batch already holds this index; one upload streams per window (§9.1).",
+        );
+      }
+      if (batch > upload.batches.length) {
+        throw new Error(
+          "upload-busy: upload batches land in order; an earlier batch has not arrived (§9.1).",
+        );
+      }
+      upload.batches.push(ops);
+      projectUpload();
+    },
+    async pairingUploadCommit(input: SnapshotPullInput): Promise<void> {
+      record("pairingUploadCommit", [input]);
+      requirePinned(input);
+      if (upload.committed) {
+        throw new Error(
+          "replayed: this upload was already committed in this window (§7.2).",
+        );
+      }
+      if (upload.total === null || upload.batches.length !== upload.total) {
+        throw new Error(
+          "malformed: a commit names the whole upload, and not every batch was staged (§9.1).",
+        );
+      }
+      upload.committed = true;
+      projectUpload();
+    },
+    async pairingUploadStatus(
+      input: SnapshotPullInput,
+    ): Promise<UploadStatusResult> {
+      record("pairingUploadStatus", [input]);
+      requirePinned(input);
+      const outcome = upload.outcome;
+      if (outcome === null) {
+        return {
+          state: "pending",
+          inserted: 0,
+          alreadyKnown: 0,
+          message: null,
+        };
+      }
+      if ("error" in outcome) {
+        return {
+          state: "failed",
+          inserted: 0,
+          alreadyKnown: 0,
+          message: outcome.error,
+        };
+      }
+      return {
+        state: "uploaded",
+        inserted: outcome.inserted,
+        alreadyKnown: outcome.alreadyKnown,
+        message: null,
+      };
+    },
+    async pairingUploadTake(): Promise<UploadTakeResult | null> {
+      record("pairingUploadTake", []);
+      if (!upload.committed || upload.taken || upload.outcome !== null) {
+        return null;
+      }
+      upload.taken = true;
+      projectUpload();
+      return { pairingId: "pair-1", ops: upload.batches.flat() };
+    },
+    async pairingUploadOutcome(input: UploadOutcomeInput): Promise<void> {
+      record("pairingUploadOutcome", [input]);
+      const counts =
+        input.inserted !== null && input.alreadyKnown !== null
+          ? { inserted: input.inserted, alreadyKnown: input.alreadyKnown }
+          : null;
+      const failure = input.error !== null ? { error: input.error } : null;
+      if ((counts === null) === (failure === null)) {
+        throw new Error(
+          "an upload outcome is either its counts or its failure, never both or neither.",
+        );
+      }
+      if (upload.taken && upload.outcome === null) {
+        upload.outcome = counts ?? failure;
+        projectUpload();
+      }
     },
     async sharePublish(snapshotJson: string): Promise<ShareInfo> {
       record("sharePublish", [snapshotJson]);

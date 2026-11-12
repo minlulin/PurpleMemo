@@ -24,12 +24,17 @@ import type {
   PairingDriver,
   PairingPhoneInput,
   PhonePairResult,
+  Queryable,
   SnapshotBatchResult,
   SnapshotPullInput,
+  UploadStatusResult,
 } from "../../data/driver.ts";
 import {
   type AdoptionCheckpoint,
+  batchSnapshot,
   MAX_PAIRING_SNAPSHOT_BYTES,
+  planBootstrap,
+  type SyncedRow,
 } from "./bootstrap.ts";
 import {
   type CodeVerdict,
@@ -39,10 +44,16 @@ import {
   type PairingSession,
   redeemCode,
 } from "./pairing.ts";
-import { isSyncTable, MAX_BATCH_OPS } from "./protocol.ts";
+import {
+  isSyncTable,
+  MAX_BATCH_OPS,
+  SYNC_TABLES,
+  type SyncTable,
+} from "./protocol.ts";
 import { type QrPixels, scanOffer } from "./qr.ts";
 import {
   applyStatements,
+  LOCAL_FOREIGN_KEYS,
   type PeerRow,
   readPeers,
   type SnapshotOp,
@@ -289,9 +300,9 @@ export async function pairWithDesktop(
 export const SNAPSHOT_PULL_DISCLOSURE =
   "This copies the desktop's records to this phone in one step: either the whole snapshot arrives or none of it does. Nothing is deleted on either device.";
 
-/** §9.1's other half, which is not built yet — never left unsaid. */
+/** §9.1's other half is a separate press — never left unsaid. */
 export const SNAPSHOT_PULL_MISSING =
-  "Records you created on this phone stay here, and they are not sent to the desktop yet — that direction is not built.";
+  "Records you created on this phone are not sent by this step. The upload below sends them, and nothing leaves this phone until you press it.";
 
 /** The pull's narrow surface: three sealed messages and one transaction. */
 export interface SnapshotPullTransport {
@@ -470,6 +481,40 @@ export function readSnapshotBatch(
   };
 }
 
+/**
+ * Narrow the staged §9.1 upload documents to the ops the desktop's apply may
+ * write — the same §3.4 validation a snapshot batch gets, because the apply
+ * is the same trust boundary from the other direction: an op that names a
+ * table outside the 17, a malformed uid or an incomplete stamp is refused
+ * here, before a single statement is built, so the apply's one transaction
+ * is never even attempted on an unvalidated payload.
+ */
+export function readUploadOps(
+  raw: unknown,
+): { ok: true; ops: SnapshotOp[] } | { ok: false; reason: string } {
+  if (!Array.isArray(raw)) {
+    return { ok: false, reason: "the staged upload is not a record list." };
+  }
+  const ops: SnapshotOp[] = [];
+  for (const entry of raw) {
+    const read = readRow(entry, false);
+    if (!read.ok) return { ok: false, reason: read.reason };
+    if ("op" in read) {
+      // The statement builder refuses a local rowid too, but the upload's
+      // validation is this function: the whole upload is judged here, before
+      // anything is written, so the refusal names the op, not the batch.
+      if (Object.hasOwn(read.op.fields, "id")) {
+        return {
+          ok: false,
+          reason: `an uploaded ${read.op.table} row carries a local row id.`,
+        };
+      }
+      ops.push(read.op);
+    }
+  }
+  return { ok: true, ops };
+}
+
 /** One batch's progress, for the card's "batch 2 of 4". */
 export interface PullProgress {
   batch: number;
@@ -484,6 +529,8 @@ export interface SnapshotPullOutcome {
   batches: number;
   rows: number;
   tombstones: number;
+  /** The staged rows themselves — §9.1's plan is computed against them. */
+  stagedOps: SnapshotOp[];
   /** §8.4: a pull that stopped applies nothing, so this records 0 or all. */
   checkpoint: AdoptionCheckpoint | null;
   refusal: SnapshotRefusal | null;
@@ -532,6 +579,7 @@ export async function pullSnapshot(
     batches: 0,
     rows: 0,
     tombstones: 0,
+    stagedOps: [] as SnapshotOp[],
     checkpoint:
       total > 0
         ? {
@@ -611,6 +659,7 @@ export async function pullSnapshot(
       batches: total,
       rows,
       tombstones,
+      stagedOps: staged,
       checkpoint,
       refusal: splitRefusal(errorText(error)),
       summary: snapshotSummary(rows, tombstones),
@@ -621,10 +670,283 @@ export async function pullSnapshot(
     batches: total,
     rows,
     tombstones,
+    stagedOps: staged,
     checkpoint,
     refusal: null,
     summary: snapshotSummary(rows, tombstones),
   };
+}
+
+/** The upload's narrow surface: three sealed messages and one local read. */
+export interface UploadTransport {
+  /** One sealed `upload` batch; the desktop stages it and applies nothing. */
+  uploadBatch(
+    input: SnapshotPullInput,
+    batch: number,
+    total: number,
+    ops: SyncedRow[],
+  ): Promise<void>;
+  /** One sealed `upload-commit`: every batch was sent. */
+  uploadCommit(input: SnapshotPullInput): Promise<void>;
+  /** One sealed `upload-status`: the desktop panel's verdict. */
+  uploadStatus(input: SnapshotPullInput): Promise<UploadStatusResult>;
+  /** This phone's synced rows, read after the snapshot applied (§9.1). */
+  localRows(): Promise<SyncedRow[]>;
+}
+
+/** A query surface narrowed to what a read needs — the data driver's. */
+export interface LocalRowReader {
+  query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
+}
+
+type RawRow = Record<string, unknown>;
+
+/**
+ * This device's synced rows as wire documents (§9.1) — the local mirror of
+ * the desktop's snapshot reader, spelled in TypeScript because the phone's
+ * rows are read here, not served.
+ *
+ * The same rules as `pairing_snapshot.rs`, so both directions carry one
+ * shape: all 17 tables in `SYNC_TABLES` order, only rows that hold a uid, a
+ * foreign key travels as its parent's uid (never the local rowid), and a row
+ * with no stamp row reads as pre-history — counter 0, this device's id, the
+ * op id `unstamped` — exactly what the desktop's reader emits for its own
+ * unstamped rows.
+ */
+export async function readLocalRows(
+  reader: LocalRowReader,
+): Promise<SyncedRow[]> {
+  const own = await reader.query<{ device_id: string }>(
+    "SELECT device_id FROM sync_state WHERE id = 1",
+  );
+  const ownDeviceId = own[0]?.device_id ?? "";
+  const tables = Object.keys(SYNC_TABLES) as SyncTable[];
+  const rawByTable = new Map<SyncTable, RawRow[]>();
+  const uidById = new Map<SyncTable, Map<number, string>>();
+  for (const table of tables) {
+    const rows = await reader.query<RawRow>(
+      `SELECT * FROM "${table}" WHERE uid IS NOT NULL ORDER BY uid`,
+    );
+    rawByTable.set(table, rows);
+    const byId = new Map<number, string>();
+    for (const row of rows) {
+      if (typeof row.id === "number" && typeof row.uid === "string") {
+        byId.set(row.id, row.uid);
+      }
+    }
+    uidById.set(table, byId);
+  }
+  const out: SyncedRow[] = [];
+  for (const table of tables) {
+    const stamps = await reader.query<{
+      entity_uid: string;
+      counter: number;
+      device_id: string;
+      op_id: string;
+    }>(
+      "SELECT entity_uid, counter, device_id, op_id FROM sync_row_stamps WHERE entity_table = ?",
+      [table],
+    );
+    const stampByUid = new Map(
+      stamps.map((stamp) => [stamp.entity_uid, stamp]),
+    );
+    const foreignKeys = LOCAL_FOREIGN_KEYS[table] ?? {};
+    for (const row of rawByTable.get(table) ?? []) {
+      const uid = row.uid as string;
+      const fields: Record<string, unknown> = {};
+      for (const [column, value] of Object.entries(row)) {
+        if (column === "id" || column === "uid") continue;
+        const parent = foreignKeys[column];
+        if (parent !== undefined) {
+          // `collection_id` travels as `collection_uid`: the parent's
+          // cross-device identity, not this device's rowid. A parent this
+          // device does not hold resolves to null, spelled as the sender's
+          // own NULL — the apply's NOT NULL constraints then decide.
+          const wire = `${column.slice(0, -"_id".length)}_uid`;
+          fields[wire] =
+            value === null
+              ? null
+              : typeof value === "number"
+                ? (uidById.get(parent)?.get(value) ?? null)
+                : null;
+          continue;
+        }
+        fields[column] = value;
+      }
+      const stamp = stampByUid.get(uid);
+      out.push({
+        table,
+        uid,
+        stamp:
+          stamp === undefined
+            ? { counter: 0, deviceId: ownDeviceId, opId: "unstamped" }
+            : {
+                counter: stamp.counter,
+                deviceId: stamp.device_id,
+                opId: stamp.op_id,
+              },
+        fields,
+      });
+    }
+  }
+  return out;
+}
+
+/** What one upload did — a value, so the order can be tested. */
+export interface UploadOutcome {
+  /** True only on the desktop's sealed `uploaded` verdict. */
+  uploaded: boolean;
+  /** Phone records the plan offered (the upload set's size). */
+  offered: number;
+  /** Of them, inserted as new records on the desktop. */
+  inserted: number;
+  /** Of them, the desktop already held (§7.2 no-ops). */
+  alreadyKnown: number;
+  refusal: SnapshotRefusal | null;
+  /** The §9.3 sentences, empty when nothing was uploaded. */
+  summary: string[];
+}
+
+/** The §9.3 summary for an upload. */
+export function uploadSummary(
+  inserted: number,
+  alreadyKnown: number,
+): string[] {
+  return [
+    `${inserted} record(s) were added to the desktop.`,
+    ...(alreadyKnown > 0
+      ? [
+          `${alreadyKnown} record(s) were already on the desktop and were left as they are.`,
+        ]
+      : []),
+    "Nothing was deleted on either device.",
+  ];
+}
+
+/** How long the phone waits for the panel's apply before it stops asking. */
+const UPLOAD_STATUS_ATTEMPTS = 30;
+const UPLOAD_STATUS_WAIT_MS = 1_000;
+
+/**
+ * Send this phone's own records to the desktop (§9.1) — the pull's mirror.
+ *
+ * The order is the clause:
+ *
+ * 1. the plan is computed against the snapshot this pairing just took, from
+ *    the phone's post-adoption rows — so the seeds the adoption folded onto
+ *    the desktop's uids classify as already known and are never offered, and
+ *    only records whose uid the desktop does not hold are (§9.2);
+ * 2. batches are sent in order and staged on the desktop, unapplied;
+ * 3. the commit names the whole upload;
+ * 4. the verdict is polled until the desktop panel's one applying
+ *    transaction decides — `uploaded` is believed only from that sealed
+ *    reply, never from the batches having been sent.
+ *
+ * Nothing on this phone is written by an upload, and nothing is marked:
+ * §9.4's retry is the same plan recomputed against a fresh snapshot, and a
+ * record the desktop already holds is a §7.2 no-op there. A refusal at any
+ * step returns `uploaded: false` with the desktop's words; a verdict that
+ * never arrives is reported as unconfirmed, not as success.
+ */
+export async function pushUpload(
+  transport: UploadTransport,
+  input: SnapshotPullInput,
+  desktopRows: readonly SyncedRow[],
+  options: {
+    sleep?: (ms: number) => Promise<void>;
+    onProgress?: (progress: PullProgress) => void;
+  } = {},
+): Promise<UploadOutcome> {
+  const failed = (refusal: SnapshotRefusal, offered = 0): UploadOutcome => ({
+    uploaded: false,
+    offered,
+    inserted: 0,
+    alreadyKnown: 0,
+    refusal,
+    summary: [],
+  });
+  let local: SyncedRow[];
+  try {
+    local = await transport.localRows();
+  } catch (error) {
+    return failed(splitRefusal(errorText(error)));
+  }
+  const plan = planBootstrap(desktopRows, local);
+  const offered = plan.upload.length;
+  if (offered === 0) {
+    // Grounded in the snapshot this pairing just took: the desktop already
+    // holds every record here, so there is nothing to send and no wire step
+    // to fake.
+    return {
+      uploaded: true,
+      offered: 0,
+      inserted: 0,
+      alreadyKnown: 0,
+      refusal: null,
+      summary: uploadSummary(0, 0),
+    };
+  }
+  const batches = batchSnapshot(plan.upload, {
+    maxOps: MAX_BATCH_OPS,
+    maxBytes: MAX_PAIRING_SNAPSHOT_BYTES,
+  });
+  for (let batch = 0; batch < batches.length; batch += 1) {
+    try {
+      await transport.uploadBatch(
+        input,
+        batch,
+        batches.length,
+        batches[batch] ?? [],
+      );
+    } catch (error) {
+      return failed(splitRefusal(errorText(error)), offered);
+    }
+    options.onProgress?.({ batch: batch + 1, total: batches.length });
+  }
+  try {
+    await transport.uploadCommit(input);
+  } catch (error) {
+    return failed(splitRefusal(errorText(error)), offered);
+  }
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; attempt < UPLOAD_STATUS_ATTEMPTS; attempt += 1) {
+    let status: UploadStatusResult;
+    try {
+      status = await transport.uploadStatus(input);
+    } catch (error) {
+      return failed(splitRefusal(errorText(error)), offered);
+    }
+    if (status.state === "uploaded") {
+      return {
+        uploaded: true,
+        offered,
+        inserted: status.inserted,
+        alreadyKnown: status.alreadyKnown,
+        refusal: null,
+        summary: uploadSummary(status.inserted, status.alreadyKnown),
+      };
+    }
+    if (status.state === "failed") {
+      return failed(
+        {
+          code: "upload-failed",
+          message: status.message ?? "the desktop could not apply the upload.",
+        },
+        offered,
+      );
+    }
+    await sleep(UPLOAD_STATUS_WAIT_MS);
+  }
+  return failed(
+    {
+      code: "upload-unconfirmed",
+      message:
+        "the desktop did not confirm the upload in time — your records stay on this phone, and sending again is safe.",
+    },
+    offered,
+  );
 }
 
 /** Bind the phone's pairing to the one production driver (`data/app.ts`). */
@@ -653,5 +975,24 @@ export function createMobilePairingRepo(driver: DataDriver & PairingDriver) {
       onProgress?: (progress: PullProgress) => void,
     ): Promise<SnapshotPullOutcome> =>
       pullSnapshot(transport, input, { pairingId, onProgress }),
+    pushUpload: (
+      input: SnapshotPullInput,
+      desktopRows: readonly SyncedRow[],
+      onProgress?: (progress: PullProgress) => void,
+    ): Promise<UploadOutcome> =>
+      pushUpload(
+        {
+          uploadBatch: (uploadInput, batch, total, ops) =>
+            driver.pairingUploadBatch(uploadInput, batch, total, ops),
+          uploadCommit: (uploadInput) =>
+            driver.pairingUploadCommit(uploadInput),
+          uploadStatus: (uploadInput) =>
+            driver.pairingUploadStatus(uploadInput),
+          localRows: () => readLocalRows(driver),
+        },
+        input,
+        desktopRows,
+        { onProgress },
+      ),
   };
 }

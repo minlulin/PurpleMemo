@@ -16,6 +16,8 @@ import type {
   PairingListenerInfo,
   PairingLocalInfo,
   PairingOpenInput,
+  UploadOutcomeInput,
+  UploadTakeResult,
 } from "../../data/driver.ts";
 import { createMockDriver } from "../../data/mock-driver.ts";
 import {
@@ -27,6 +29,7 @@ import {
   pinStatements,
 } from "./pairing.ts";
 import {
+  applyStagedUpload,
   closePairingPanel,
   identityRecovery,
   openPairingPanel,
@@ -38,7 +41,7 @@ import {
   pinAdmittedPeer,
   settlePairingPanel,
 } from "./pairingPanel.ts";
-import { readPeers } from "./store.ts";
+import { readPeers, type SnapshotOp } from "./store.ts";
 
 const SCHEMA_RS = readFileSync(
   new URL("../../../src-tauri/src/schema.rs", import.meta.url),
@@ -57,12 +60,41 @@ function syncDdl(): string {
 
 const DDL = syncDdl();
 
+/** The v9 row-stamp DDL, sliced from the shipped baseline like store.test.ts. */
+function rowStampDdl(): string {
+  const match =
+    /-- v9: the stamp of the value[\s\S]*?CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps\(entity_uid\);/.exec(
+      SCHEMA_RS,
+    );
+  if (match?.[0] === undefined) {
+    throw new Error("sync_row_stamps DDL not found in schema.rs");
+  }
+  return match[0];
+}
+
 /** Only the pre-v8 table the migration's ALTER touches. */
 const REMINDERS = `
 CREATE TABLE reminders (
   id INTEGER PRIMARY KEY, uid TEXT, title TEXT NOT NULL, remind_at TEXT NOT NULL,
   repeat TEXT NOT NULL DEFAULT 'none', note TEXT NOT NULL DEFAULT '',
   fired INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);`;
+
+/** The app tables the §9.1 apply writes (the columns its statements touch). */
+const UPLOAD_FIXTURE = `
+CREATE TABLE collections (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+);
+CREATE TABLE notes (
+  id INTEGER PRIMARY KEY, uid TEXT, title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '',
+  collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
+  pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE wallets (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
 );`;
 
 const DESKTOP_DEVICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -98,6 +130,11 @@ function listener(
     peerHelloReceived: false,
     offerAttempts: 0,
     offerRedeemed: false,
+    uploadState: null,
+    uploadOps: 0,
+    uploadInserted: null,
+    uploadAlreadyKnown: null,
+    uploadNote: null,
     note: null,
     ...over,
   };
@@ -114,6 +151,22 @@ function transportFor(
     pairingStatus: () => driver.pairingStatus(),
     batch: (statements) => driver.batch(statements),
     peers: async () => peers,
+    pairingUploadTake: () => driver.pairingUploadTake(),
+    pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
+    // The mock driver holds no rows; the apply's own tests bring a real DB.
+    existingUids: async () => [],
+  };
+}
+
+/** The §9.1 transport surface with nothing staged, for tests that never upload. */
+function noUpload(): Pick<
+  PairingTransport,
+  "pairingUploadTake" | "pairingUploadOutcome" | "existingUids"
+> {
+  return {
+    pairingUploadTake: async () => null,
+    pairingUploadOutcome: async () => undefined,
+    existingUids: async () => [],
   };
 }
 
@@ -177,6 +230,15 @@ function openDb(): { db: DatabaseSync; driver: DataDriver } {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(REMINDERS);
   db.exec(DDL);
+  // The §9.1 apply's ground: the app tables it inserts into, the v9 stamp
+  // table, and the uid indexes the real schema carries.
+  db.exec(UPLOAD_FIXTURE);
+  db.exec(rowStampDdl());
+  for (const table of ["collections", "notes", "wallets"]) {
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_uid ON ${table}(uid)`,
+    );
+  }
   const run = (sql: string, params: unknown[] = []): void => {
     db.prepare(sql).run(...(params as never[]));
   };
@@ -241,6 +303,7 @@ test("the code's peer becomes one sync_peers row, and a re-pair resets cursors",
     pairingStatus: async () => admitted,
     batch: (statements) => driver.batch(statements),
     peers: () => readPeers(driver),
+    ...noUpload(),
   };
 
   const write = await pinAdmittedPeer(transport, panelState("pair-1"));
@@ -297,6 +360,7 @@ test("nothing is pinned until the listener reports an admitted peer", async () =
     pairingStatus: async () => listener(),
     batch: (statements) => driver.batch(statements),
     peers: () => readPeers(driver),
+    ...noUpload(),
   };
   assert.equal(await pinAdmittedPeer(quiet, panelState("pair-1")), null);
   const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
@@ -324,6 +388,7 @@ test("the poll tick never pins a staged candidate", async () => {
       await driver.batch(statements);
     },
     peers: () => readPeers(driver),
+    ...noUpload(),
   };
 
   const now = Date.now();
@@ -360,6 +425,7 @@ test("Trust pins the staged peer once; Reject closes without pinning", async () 
       await driver.batch(statements);
     },
     peers: () => readPeers(driver),
+    ...noUpload(),
   };
   const state: PairingPanelState = {
     ...panelState("pair-1"),
@@ -397,6 +463,7 @@ test("Trust is withheld until a sealed hello proves key possession", async () =>
     pairingStatus: async () => staged,
     batch: (statements) => driver.batch(statements),
     peers: () => readPeers(driver),
+    ...noUpload(),
   };
   const state: PairingPanelState = {
     ...panelState("pair-1"),
@@ -564,6 +631,7 @@ test("a code locked out on the wire closes the socket and never renders as live"
     pairingStatus: async () => locked,
     batch: (statements) => driver.batch(statements),
     peers: async () => [],
+    ...noUpload(),
   };
   const state: PairingPanelState = {
     ...panelState("pair-1"),
@@ -599,6 +667,7 @@ test("a redeemed code is spent on screen while the window keeps serving", async 
     pairingStatus: async () => redeemed,
     batch: (statements) => driver.batch(statements),
     peers: async () => [],
+    ...noUpload(),
   };
   const state: PairingPanelState = {
     ...panelState("pair-1"),
@@ -644,6 +713,7 @@ test("a redeemed code that staged no phone closes the window", async () => {
     pairingStatus: async () => redeemed,
     batch: (statements) => driver.batch(statements),
     peers: async () => [],
+    ...noUpload(),
   };
 
   await settlePairingPanel(transport, {
@@ -693,6 +763,7 @@ test("no QR is drawn when the listener has no LAN address", async () => {
     pairingStatus: () => driver.pairingStatus(),
     batch: (statements) => driver.batch(statements),
     peers: async () => [],
+    ...noUpload(),
   };
   await assert.rejects(() => openPairingPanel(transport), /network address/);
   assert.equal(closed, 1, "the addressless window is closed, not left serving");
@@ -730,4 +801,218 @@ test("the lock teardown closes the pairing port through the retried stop", () =>
     /stopSharing: \(\) =>\s*Promise\.all\(\[shareRepo\.stopForLock\(\), pairingRepo\.close\(\)\]\)/,
     "a failed pairing close is retried and reported, not swallowed",
   );
+});
+
+// ---------------------------------------------------------------------------
+// §9.1's desktop apply: staged by the listener, decided here, in one batch.
+// ---------------------------------------------------------------------------
+
+const KNOWN_NOTE = "33333333-3333-4333-8333-333333333333";
+const PHONE_COLLECTION = "44444444-4444-4444-8444-444444444444";
+const PHONE_WALLET = "55555555-5555-4555-8555-555555555555";
+const PHONE_NOTE = "66666666-6666-4666-8666-666666666666";
+const PHONE_WALLET_2 = "77777777-7777-4777-8777-777777777777";
+
+function uploadOp(
+  table: SnapshotOp["table"],
+  uid: string,
+  counter: number,
+  fields: Record<string, unknown>,
+): SnapshotOp {
+  return {
+    table,
+    uid,
+    stamp: { counter, deviceId: PHONE_DEVICE, opId: "op-phone" },
+    fields,
+  };
+}
+
+function uploadTransport(
+  driver: DataDriver,
+  staged: UploadTakeResult | null,
+): { transport: PairingTransport; outcomes: UploadOutcomeInput[] } {
+  const outcomes: UploadOutcomeInput[] = [];
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => listener(),
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => listener(),
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    pairingUploadTake: async () => staged,
+    pairingUploadOutcome: async (input) => {
+      outcomes.push(input);
+    },
+    existingUids: async (table, uids) => {
+      if (uids.length === 0) return [];
+      const marks = uids.map(() => "?").join(", ");
+      const rows = await driver.query<{ uid: string }>(
+        `SELECT uid FROM "${table}" WHERE uid IN (${marks})`,
+        [...uids],
+      );
+      return rows.map((row) => row.uid);
+    },
+  };
+  return { transport, outcomes };
+}
+
+test("a staged upload lands fresh rows and leaves known rows untouched", async () => {
+  const { db, driver } = openDb();
+  db.prepare(
+    "INSERT INTO notes (uid, title, content, created_at, updated_at) VALUES (?, 'Desktop version', '', 't', 't')",
+  ).run(KNOWN_NOTE);
+  db.prepare(
+    "INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at) VALUES ('notes', ?, 5, ?, 'op-desktop', '{}', 't')",
+  ).run(KNOWN_NOTE, DESKTOP_DEVICE);
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      // The phone's copy of a row the desktop already holds — even with a
+      // newer stamp, §7.2 makes it a no-op in v1, never a rewrite.
+      uploadOp("notes", KNOWN_NOTE, 9, {
+        title: "Phone rewrite",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+      }),
+      uploadOp("collections", PHONE_COLLECTION, 2, {
+        name: "Phone ideas",
+        created_at: "t",
+      }),
+      uploadOp("notes", PHONE_NOTE, 3, {
+        title: "Phone note",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+        collection_uid: PHONE_COLLECTION,
+      }),
+      uploadOp("wallets", PHONE_WALLET, 1, {
+        name: "Phone cash",
+        created_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  const applied = await applyStagedUpload(transport);
+  assert.deepEqual(applied, {
+    staged: 4,
+    inserted: 3,
+    alreadyKnown: 1,
+    error: null,
+  });
+  assert.deepEqual(outcomes, [{ inserted: 3, alreadyKnown: 1, error: null }]);
+
+  const known = db
+    .prepare("SELECT title FROM notes WHERE uid = ?")
+    .get(KNOWN_NOTE) as { title: string };
+  assert.equal(known.title, "Desktop version");
+  const knownStamp = db
+    .prepare(
+      "SELECT counter FROM sync_row_stamps WHERE entity_table = 'notes' AND entity_uid = ?",
+    )
+    .get(KNOWN_NOTE) as { counter: number };
+  assert.equal(knownStamp.counter, 5, "a known row's stamp is not rewritten");
+  const fresh = db
+    .prepare("SELECT collection_id FROM notes WHERE uid = ?")
+    .get(PHONE_NOTE) as { collection_id: number };
+  const parent = db
+    .prepare("SELECT id FROM collections WHERE uid = ?")
+    .get(PHONE_COLLECTION) as { id: number };
+  assert.equal(fresh.collection_id, parent.id);
+});
+
+test("an upload that fails validation writes nothing and says why", async () => {
+  const { db, driver } = openDb();
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      uploadOp("notes", PHONE_NOTE, 1, {
+        title: "Valid note",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+      }),
+      uploadOp("gallery" as SnapshotOp["table"], PHONE_WALLET, 1, {
+        name: "Not synced",
+        created_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  const applied = await applyStagedUpload(transport);
+  assert.equal(applied?.inserted, 0);
+  assert.match(applied?.error ?? "", /not on the sync allowlist/);
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0]?.inserted, null);
+  assert.match(outcomes[0]?.error ?? "", /not on the sync allowlist/);
+  const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
+    n: number;
+  };
+  assert.equal(landed.n, 0, "validation precedes every write");
+});
+
+test("a database refusal rolls the upload back and reaches the phone", async () => {
+  const { db, driver } = openDb();
+  db.prepare(
+    "INSERT INTO wallets (uid, name, created_at) VALUES (?, 'Cash', 't')",
+  ).run(PHONE_WALLET);
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      uploadOp("wallets", PHONE_WALLET_2, 1, {
+        name: "Cash",
+        created_at: "t",
+      }),
+      uploadOp("notes", PHONE_NOTE, 1, {
+        title: "Travelling note",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  const applied = await applyStagedUpload(transport);
+  assert.match(applied?.error ?? "", /UNIQUE constraint failed: wallets\.name/);
+  assert.match(outcomes[0]?.error ?? "", /wallets\.name/);
+  const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
+    n: number;
+  };
+  assert.equal(landed.n, 0, "the refused upload leaves nothing behind");
+});
+
+test("the settle tick applies a staged upload and the view reports it", async () => {
+  const { db, driver } = openDb();
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      uploadOp("wallets", PHONE_WALLET, 1, {
+        name: "Settled cash",
+        created_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  let statusCalls = 0;
+  transport.pairingStatus = async () => {
+    statusCalls += 1;
+    return statusCalls === 1
+      ? listener({ uploadState: "staged", uploadOps: 1 })
+      : listener({
+          uploadState: "applied",
+          uploadOps: 1,
+          uploadInserted: 1,
+          uploadAlreadyKnown: 0,
+        });
+  };
+  const now = Date.now();
+  const state = await openPairingPanel(transport, now);
+  const settled = await settlePairingPanel(transport, state, now);
+  assert.equal(settled.listener.uploadState, "applied");
+  assert.deepEqual(outcomes, [{ inserted: 1, alreadyKnown: 0, error: null }]);
+  const landed = db
+    .prepare("SELECT name FROM wallets WHERE uid = ?")
+    .get(PHONE_WALLET) as { name: string } | undefined;
+  assert.equal(landed?.name, "Settled cash");
+  assert.equal(panelView(settled, now).upload?.inserted, 1);
 });

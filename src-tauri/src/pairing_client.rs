@@ -454,17 +454,168 @@ pub fn acknowledge_snapshot(
     Ok(())
 }
 
+/// §9.1's route, beside the snapshot's.
+const UPLOAD_PATH: &str = "/pair/upload";
+
+/// Send one batch of this phone's own records (§9.1). Batch 0 begins an
+/// upload: it retires the pairing's reply counters, exactly as a pull does —
+/// a window's `send_counter` begins again at 1, so the counters a previous
+/// window left behind would refuse this window's first sealed verdict. The
+/// retirement is safe for the same reason the pull's is: every reply this
+/// transfer acts on is checked by kind or reason before it is believed, so a
+/// replayed pull reply cannot pass as an upload verdict.
+pub fn send_upload_batch(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    batch: u64,
+    total: u64,
+    ops: &[JsonValue],
+) -> Result<(), PairingClientError> {
+    if batch == 0 {
+        counters.restart(pull.pairing_id);
+    }
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        UPLOAD_PATH,
+        "upload",
+        &json!({
+            "kind": "upload",
+            "batch": batch,
+            "total": total,
+            "ops": ops,
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("reason").and_then(JsonValue::as_str) != Some("staged") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply does not stage the batch.",
+        ));
+    }
+    if reply.get("batch").and_then(JsonValue::as_u64) != Some(batch) {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop staged a different batch than the one sent.",
+        ));
+    }
+    Ok(())
+}
+
+/// Tell the desktop every batch was sent (§9.1). The desktop refuses this
+/// unless all of them are staged, so a resolved commit means the whole
+/// upload is on the desktop — staged, not yet applied.
+pub fn send_upload_commit(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+) -> Result<(), PairingClientError> {
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        UPLOAD_PATH,
+        "upload",
+        &json!({
+            "kind": "upload-commit",
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("reason").and_then(JsonValue::as_str) != Some("upload-committed") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply does not commit the upload.",
+        ));
+    }
+    Ok(())
+}
+
+/// Ask what the desktop's apply decided (§9.1). The reply is sealed — the one
+/// upload answer this phone acts on — so its kind and pairing are checked the
+/// way a snapshot batch's are, and the process-wide counter guards its replay.
+pub fn poll_upload_status(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+) -> Result<JsonValue, PairingClientError> {
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        UPLOAD_PATH,
+        "upload",
+        &json!({
+            "kind": "upload-status",
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("kind").and_then(JsonValue::as_str) != Some("upload-status") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply is not an upload verdict.",
+        ));
+    }
+    if reply.get("pairingId").and_then(JsonValue::as_str) != Some(pull.pairing_id) {
+        return Err(PairingClientError::local(
+            "pairing-mismatch",
+            "that verdict belongs to a different pairing.",
+        ));
+    }
+    Ok(reply)
+}
+
 /// Seal one message, post it, and open whatever the desktop sealed back.
 ///
 /// A `snapshot-request` is answered with a sealed batch; `applied` and `adopted`
 /// are answered with an ordinary accepted reply, which carries no counter to
 /// guard because nothing in it is acted on — a forged `ok` only makes the phone
 /// send the next message, which the desktop then refuses on its own terms.
+///
+/// `path` and `label` are the route's own: the §9.1 upload rides the same
+/// exchange on its own route, and its `upload-status` reply IS acted on — it is
+/// sealed, and `poll_upload_status` checks its kind before believing it.
 fn exchange(
     pull: &SnapshotPull<'_>,
     facts: &PhoneFacts<'_>,
     identity: &PairingIdentity,
     counters: &ReplyCounter,
+    message: &JsonValue,
+) -> Result<JsonValue, PairingClientError> {
+    exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        SNAPSHOT_PATH,
+        "snapshot",
+        message,
+    )
+}
+
+fn exchange_on(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    path: &str,
+    label: &str,
     message: &JsonValue,
 ) -> Result<JsonValue, PairingClientError> {
     let counter = next_hello_counter();
@@ -474,7 +625,7 @@ fn exchange(
         peer_public: &desktop_key,
         from: facts.device_id,
         to: pull.desktop_device_id,
-        message_id: &format!("snapshot:{counter}"),
+        message_id: &format!("{label}:{counter}"),
         counter,
         message,
         pairing_id: Some(pull.pairing_id),
@@ -483,7 +634,7 @@ fn exchange(
     })
     .map_err(|message| PairingClientError::local("sealed", message))?;
 
-    let reply = post(pull.endpoint, SNAPSHOT_PATH, &frame(&wire)?)?;
+    let reply = post(pull.endpoint, path, &frame(&wire)?)?;
     // `applied` and `adopted` are answered with an ordinary accepted reply, not
     // a sealed one: nothing in it is acted on, so there is no counter to guard.
     let Some(reply_wire) = reply.get("envelope").and_then(JsonValue::as_str) else {
@@ -1156,5 +1307,77 @@ mod tests {
             "a new window restarts its counter"
         );
         assert!(counters.accept(PAIRING_ID, 1));
+    }
+
+    // -----------------------------------------------------------------------
+    // The §9.1 upload, over a real window and real crypto.
+    // -----------------------------------------------------------------------
+
+    fn upload_op(uid: &str) -> JsonValue {
+        json!({
+            "table": "notes",
+            "uid": uid,
+            "stamp": { "counter": 3, "deviceId": PHONE_ID, "opId": "op-1" },
+            "fields": { "text": "a note the phone made offline" },
+        })
+    }
+
+    #[test]
+    fn an_upload_walks_its_batches_and_reads_the_verdict() {
+        let (state, port) = serving(0);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+        let ops = [
+            upload_op("11111111-1111-4111-8111-111111111111"),
+            upload_op("22222222-2222-4222-8222-222222222222"),
+        ];
+
+        send_upload_batch(&pull, &facts(), &identity, &counters, 0, 2, &ops[..1])
+            .expect("batch 0 stages");
+        send_upload_batch(&pull, &facts(), &identity, &counters, 1, 2, &ops[1..])
+            .expect("batch 1 stages");
+        send_upload_commit(&pull, &facts(), &identity, &counters).expect("the commit lands");
+
+        // The verdict is pending until the panel's apply reports.
+        let verdict =
+            poll_upload_status(&pull, &facts(), &identity, &counters).expect("a sealed verdict");
+        assert_eq!(verdict["state"], json!("pending"));
+
+        let (pairing_id, staged) = state.take_upload().expect("the panel takes it");
+        assert_eq!(pairing_id, PAIRING_ID);
+        assert_eq!(staged.len(), 2);
+        state.set_upload_outcome(crate::pairing_listener::UploadOutcome::Applied {
+            inserted: 2,
+            already_known: 0,
+        });
+
+        let verdict =
+            poll_upload_status(&pull, &facts(), &identity, &counters).expect("a sealed verdict");
+        assert_eq!(verdict["state"], json!("uploaded"));
+        assert_eq!(verdict["inserted"], json!(2));
+        assert_eq!(verdict["alreadyKnown"], json!(0));
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn an_upload_before_pairing_is_refused_in_the_desktops_words() {
+        let (state, port) = started(1, true);
+        let endpoint = format!("127.0.0.1:{port}");
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+        let error = send_upload_batch(
+            &pull,
+            &facts(),
+            &phone_identity(),
+            &counters,
+            0,
+            1,
+            &[upload_op("11111111-1111-4111-8111-111111111111")],
+        )
+        .expect_err("no pin, no upload");
+        assert_eq!(error.code, "unpaired");
+        state.stop().expect("stop");
     }
 }

@@ -150,3 +150,45 @@ test("the pairing commands are registered and the window binds the LAN", () => {
   assert.match(commands, /fn local_sync_facts\(/);
   assert.match(commands, /SELECT device_id, data_generation FROM sync_state/);
 });
+
+/**
+ * §9.1's upload is the same contract: one invoke site per message, each
+ * registered in Rust, the wire path named only by the Rust client, and the
+ * desktop's take/outcome pair carrying no key material — the staged ops were
+ * already opened by the listener.
+ */
+test("the upload is five invoke sites and each is registered", () => {
+  assert.match(
+    driver,
+    /pairingUploadBatch: \(input, batch, total, ops\) =>\s*invoke\("pairing_upload_batch", \{ input, batch, total, ops \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingUploadCommit: \(input\) => invoke\("pairing_upload_commit", \{ input \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingUploadStatus: \(input\) => invoke\("pairing_upload_status", \{ input \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingUploadTake: \(\) => invoke\("pairing_upload_take"\)/,
+  );
+  assert.match(
+    driver,
+    /pairingUploadOutcome: \(input\) =>\s*invoke\("pairing_upload_outcome", \{ input \}\)/,
+  );
+  for (const name of [
+    "pairing_upload_batch",
+    "pairing_upload_commit",
+    "pairing_upload_status",
+    "pairing_upload_take",
+    "pairing_upload_outcome",
+  ]) {
+    assert.ok(lib.includes(`commands::${name}`), `${name} must be registered`);
+  }
+  assert.ok(
+    !driver.includes("/pair/upload"),
+    "the webview must not name the upload path; the client is in Rust",
+  );
+});

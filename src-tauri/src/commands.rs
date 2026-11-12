@@ -1307,6 +1307,200 @@ pub fn pairing_snapshot_adopted(
     .map_err(|error| error.to_string())
 }
 
+/// Send one batch of this phone's own records to the pinned desktop (§9.1).
+///
+/// The sealed exchange runs in Rust for the same reason the pull's does
+/// (§11.2): the webview hands over rows, never ciphertext and never the
+/// secret. The desktop only stages the batch — its panel applies the whole
+/// upload in one transaction after the commit.
+#[tauri::command]
+pub fn pairing_upload_batch(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    batch: u64,
+    total: u64,
+    ops: Vec<serde_json::Value>,
+) -> CmdResult<()> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &pin.pairing_id,
+        desktop_public_key: &pin.public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: pin.generation,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    crate::pairing_client::send_upload_batch(
+        &pull,
+        &facts,
+        &identity,
+        crate::pairing_client::process_counters(),
+        batch,
+        total,
+        &ops,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Tell the pinned desktop every upload batch was sent (§9.1). It refuses
+/// unless all of them are staged, so a resolved commit means the desktop
+/// holds the whole upload — staged for its panel's one applying transaction.
+#[tauri::command]
+pub fn pairing_upload_commit(app: tauri::AppHandle, input: SnapshotPullInput) -> CmdResult<()> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &pin.pairing_id,
+        desktop_public_key: &pin.public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: pin.generation,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    crate::pairing_client::send_upload_commit(
+        &pull,
+        &facts,
+        &identity,
+        crate::pairing_client::process_counters(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// The desktop's verdict on this phone's upload (§9.1), as the sealed reply
+/// reported it: `pending` until its panel's apply decides, then `uploaded`
+/// with the counts, or `failed` with the apply's reason.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadStatusResult {
+    pub state: String,
+    pub inserted: u64,
+    pub already_known: u64,
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+pub fn pairing_upload_status(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+) -> CmdResult<UploadStatusResult> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &pin.pairing_id,
+        desktop_public_key: &pin.public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: pin.generation,
+    };
+    let facts = crate::pairing_client::PhoneFacts {
+        device_id: &device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version,
+    };
+    let reply = crate::pairing_client::poll_upload_status(
+        &pull,
+        &facts,
+        &identity,
+        crate::pairing_client::process_counters(),
+    )
+    .map_err(|error| error.to_string())?;
+    let number = |key: &str| reply.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
+    Ok(UploadStatusResult {
+        state: reply
+            .get("state")
+            .and_then(|value| value.as_str())
+            .unwrap_or("pending")
+            .to_string(),
+        inserted: number("inserted"),
+        already_known: number("alreadyKnown"),
+        message: reply
+            .get("message")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    })
+}
+
+/// The staged upload the desktop panel applies (§9.1): the pairing it belongs
+/// to and every op the phone committed, as wire documents. `None` until a
+/// phone commits a complete upload in this window.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadTakeResult {
+    pub pairing_id: String,
+    pub ops: Vec<serde_json::Value>,
+}
+
+/// Take the staged §9.1 upload for the panel's apply. Taking is once: a
+/// second call returns `None`, so the same staging can never be applied
+/// twice by two ticks racing (§7.2). Nothing is written here — the apply is
+/// the caller's one `sync_peers`-style transaction over the app database.
+#[tauri::command]
+pub fn pairing_upload_take(
+    state: State<'_, PairingListenerState>,
+) -> CmdResult<Option<UploadTakeResult>> {
+    Ok(state
+        .take_upload()
+        .map(|(pairing_id, ops)| UploadTakeResult { pairing_id, ops }))
+}
+
+/// What the panel's apply decided (§9.1): either the counts of a committed
+/// transaction, or the failure's reason. Exactly one of the two shapes —
+/// `inserted`/`alreadyKnown` together, or `error` alone.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadOutcomeInput {
+    pub inserted: Option<u64>,
+    pub already_known: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Report the panel's apply outcome, so the listener can seal the verdict to
+/// the phone. The first outcome stands; reporting twice changes nothing.
+#[tauri::command]
+pub fn pairing_upload_outcome(
+    state: State<'_, PairingListenerState>,
+    input: UploadOutcomeInput,
+) -> CmdResult<()> {
+    let outcome = match (input.inserted, input.already_known, input.error) {
+        (Some(inserted), Some(already_known), None) => {
+            crate::pairing_listener::UploadOutcome::Applied {
+                inserted,
+                already_known,
+            }
+        }
+        (None, None, Some(message)) => crate::pairing_listener::UploadOutcome::Failed { message },
+        _ => {
+            return Err(
+                "an upload outcome is either its counts or its failure, never both or neither."
+                    .to_string(),
+            )
+        }
+    };
+    state.set_upload_outcome(outcome);
+    Ok(())
+}
+
 /// Mint a fresh pairing identity after an explicit confirmation (§11.4, N2).
 ///
 /// Deletes only `Slot::PairingIdentity`: local notes, tasks and the database key
