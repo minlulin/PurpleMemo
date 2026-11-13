@@ -647,6 +647,16 @@ async function composeOp(
     if (tombstone !== undefined && outranks(tombstone, stamp)) {
       return EMPTY_OUTCOME;
     }
+    // Resurrection needs the whole record, and only a create op carries it. A
+    // field-level edit that outranks a tombstone cannot rebuild the row it
+    // edits here: inserting the fields it names would either break the table's
+    // constraints (wedging every later batch on the same op) or converge the
+    // two devices on a half-row. So an edit for a record this device does not
+    // hold writes nothing — which is why the Trash restore records a
+    // create-kind op under the same uid (§5.3).
+    if (op.op !== "create") {
+      return EMPTY_OUTCOME;
+    }
     const inserted = insertStatements(
       op,
       parsePayload(op),

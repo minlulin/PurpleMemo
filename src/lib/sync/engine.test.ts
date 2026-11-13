@@ -15,8 +15,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHabitsRepo } from "../habits.ts";
 import { createNotesRepo } from "../notes.ts";
-
-import { TRASH_CONFLICT_KIND } from "../trash.ts";
+import { createTasksRepo } from "../tasks.ts";
+import { createTrashRepo, TRASH_CONFLICT_KIND } from "../trash.ts";
 import { applyOps, type PeerOp } from "./engine.ts";
 import type { Origin, VersionStamp } from "./protocol.ts";
 import {
@@ -569,3 +569,141 @@ test("a conflict whose batch fails midway leaves neither the winner nor the copy
 });
 
 // ---------------------------------------------------------------------------
+// Task 3 — the local writers Session 1 parked.
+// ---------------------------------------------------------------------------
+
+test("a settle records exactly the fields it changed", async () => {
+  const store = openSyncStore(DEVICE_A);
+  const tasks = createTasksRepo(store.driver);
+  const id = await tasks.createReminder({
+    title: "Stand up",
+    remindAt: "2026-11-20T09:00",
+  });
+
+  await tasks.settleReminders([{ id, nextRemindAt: null }]);
+  let ops = (await opsOf(store)).filter(
+    (op) => op.entity_table === "reminders",
+  );
+  assert.deepEqual(
+    JSON.parse(ops.at(-1)?.payload ?? "{}"),
+    { fired: 1 },
+    "a one-shot settle changes only the fired flag",
+  );
+
+  await tasks.settleReminders([{ id, nextRemindAt: "2026-11-21T09:00" }]);
+  ops = (await opsOf(store)).filter((op) => op.entity_table === "reminders");
+  assert.deepEqual(
+    JSON.parse(ops.at(-1)?.payload ?? "{}"),
+    { remind_at: "2026-11-21T09:00", fired: 0 },
+    "a re-arm carries the new time and the cleared flag",
+  );
+
+  await tasks.markReminderFired(id);
+  ops = (await opsOf(store)).filter((op) => op.entity_table === "reminders");
+  assert.deepEqual(JSON.parse(ops.at(-1)?.payload ?? "{}"), { fired: 1 });
+
+  await tasks.rescheduleReminder(id, "2026-11-22T09:00");
+  ops = (await opsOf(store)).filter((op) => op.entity_table === "reminders");
+  assert.deepEqual(JSON.parse(ops.at(-1)?.payload ?? "{}"), {
+    remind_at: "2026-11-22T09:00",
+    fired: 0,
+  });
+});
+
+test("a record, delete and restore round trip reaches the other device", async () => {
+  const pair = await openPair();
+  const notes = createNotesRepo(pair.a.driver);
+  const id = await notes.createNote({ title: "Keep me", content: "body" });
+  const [before] = await notesIn(pair.a, undefined);
+  assert.ok(before?.uid);
+  await notes.deleteNote(id);
+  const [item] = await pair.a.driver.query<{ id: number }>(
+    "SELECT id FROM trash_items",
+  );
+  assert.ok(item);
+  await createTrashRepo(pair.a.driver).restore(item.id);
+
+  const restored = await notesIn(pair.a);
+  assert.equal(restored.length, 1, "A holds the restored row");
+  assert.equal(restored[0]?.uid, before.uid, "under the SAME uid");
+
+  const ops = await opsOf(pair.a);
+  assert.deepEqual(
+    ops.map((op) => op.op),
+    ["create", "delete", "create"],
+    "the restore records a create-kind op of its own",
+  );
+
+  await applyFrom(pair.b, pair.a, { ops });
+  const onB = await notesIn(pair.b, before.uid);
+  assert.equal(
+    onB.length,
+    1,
+    "§5.3: the restore op outranks the tombstone, so B resurrects the row",
+  );
+  assert.equal(onB[0]?.title, "Keep me");
+});
+
+test("an edit that outranks a remote delete does not resurrect a half-row", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowA] = await notesIn(pair.a, uid);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowA && rowB);
+
+  // B deletes at counter 2. A, never having seen the delete, edits at 2 and
+  // again at 3 — so its newest write outranks the tombstone B holds.
+  await createNotesRepo(pair.b.driver).deleteNote(rowB.id);
+  const notesA = createNotesRepo(pair.a.driver);
+  await notesA.updateNote(rowA.id, { title: "edited" });
+  await notesA.updateNote(rowA.id, { content: "edited too" });
+
+  await applyFrom(pair.b, pair.a, { ops: (await opsOf(pair.a)).slice(1) });
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM notes"),
+    0,
+    "§5.3: a field-level edit cannot rebuild the row it edits, so the record stays dead",
+  );
+  assert.ok(
+    (await readTombstones(pair.b.driver)).some((row) => row.entity_uid === uid),
+    "and the tombstone still decides the next comparison",
+  );
+});
+
+test("a conflict copy's restore mints a new uid and records that uid", async () => {
+  const pair = await openPair();
+  const uid = await losingNoteConflict(pair);
+  await applyFrom(pair.b, pair.a, { ops: (await opsOf(pair.a)).slice(2) });
+
+  const [copy] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM trash_items",
+  );
+  assert.ok(copy);
+  await createTrashRepo(pair.b.driver).restore(copy.id);
+
+  const restored = await pair.b.driver.query<NoteRow>(
+    "SELECT * FROM notes WHERE uid <> ?",
+    [uid],
+  );
+  const newRow = restored[0];
+  assert.ok(newRow?.uid, "the copy came back as a new record");
+  assert.notEqual(
+    newRow.uid,
+    uid,
+    "§13.2: a conflict copy never resurrects the loser's uid",
+  );
+
+  const ops = (await opsOf(pair.b)).filter((op) => op.entity_table === "notes");
+  const recorded = ops.at(-1);
+  assert.equal(recorded?.op, "create");
+  assert.equal(
+    recorded?.entity_uid,
+    newRow.uid,
+    "the op records the NEW uid, which is what the peer will see",
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "the copy left the Trash",
+  );
+});

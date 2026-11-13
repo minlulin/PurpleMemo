@@ -711,19 +711,38 @@ longer holds the phase open.
   (`setPinned`, `setArchived`) record as updates of the one column they flip,
   and `deleteCollection` records the notes it unlinks as their own update ops.
   A mutation on any OTHER synced table records nothing and spends no Lamport
-  step — Budget's entry create is pinned as that boundary (§12.1). **Still
-  open, so the item stays unchecked:** the apply engine (Session 2, which is
-  also the caller `conflictCopyStatements` is waiting for), the transport, the
-  §13.1 delivery filter on both sides, and the harness's 6 skipped invariants
-  (Session 4). Reminder *settle* writes deliberately record nothing yet —
-  `settleReminders` (fired = 1, or re-arm `remind_at` + fired = 0),
-  `markReminderFired` (fired = 1) and `rescheduleReminder` (`remind_at` +
-  fired = 0) — because whether a settle is a syncable definition change or
-  device-local delivery state is Session 2's decision. Tests: 9 new TS
+  step — Budget's entry create is pinned as that boundary (§12.1).
+  **Apply half BUILT 2026-11-13 (Stage 1, Session 2).** `src/lib/sync/engine.ts`
+  composes a peer's ops into one `BatchStatement[]`; the caller owns the
+  transaction, so the batch commits or does not, and the cursor advance is its
+  last statement (§6.4). Validation runs before a single row is written and
+  refuses the WHOLE batch, not the offending op (§7.7): an unknown table, a
+  table Stage 1 does not move, an unknown kind, a payload that is not an
+  object, a foreign key named by a local `*_id` instead of a `*_uid`, or an op
+  claiming a device other than the peer whose batch it arrived in. Applying
+  merges field by field under each field's own stamp (§4.3), comparing with
+  `compareStamps` and nothing else, and composes against an in-batch overlay so
+  a batch naming one record twice applies in the order given (§7.6). A create
+  the tombstone outranks stays dead and a delete the row outranks does not
+  remove it (§5.3). The losing value of a remote conflict is archived on the
+  losing device, in the winning apply's own transaction (§13.2) — check-ins and
+  reminder definitions excepted. **Two decisions were taken here, not to be re-opened:**
+  a reminder *settle is a definition write*, so `settleReminders`,
+  `markReminderFired` and `rescheduleReminder` record the fields they change in
+  the same batch (a re-arm carries `remind_at` + fired = 0); and an ordinary
+  Trash restore records a **create-kind resurrection op under the same uid**,
+  while a conflict copy's restore keeps minting a new uid (§13.2) and a purge
+  records nothing. That is also why resurrection is a create and not an edit: a
+  field-level update cannot rebuild a row this device no longer holds, so it
+  writes nothing rather than invent a half-row. **Still open, so the item stays
+  unchecked:** the transport, the §13.1 delivery filter on both sides, and the
+  harness's 6 skipped invariants (Session 4). Tests: 9 new TS
   (create/update/delete per table with the op read back from real SQLite, the
   list and habit cascade shapes, the check-in/un-check pair, the Budget
   boundary, and repository-level atomicity where a refused op rolls the whole
-  batch back).
+  batch back) plus 14 engine tests over two real SQLite stores (Session 2: the
+  §4/§5/§7 merge cases, the three §13.2 ones, the settle payloads, and the
+  record→delete→restore round trip).
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
 - [ ] Backup payload rules: device-local state excluded; restore bumps

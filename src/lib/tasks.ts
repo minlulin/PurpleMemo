@@ -391,15 +391,45 @@ export function createTasksRepo(
     },
 
     async markReminderFired(id: number): Promise<void> {
-      await driver.execute("UPDATE reminders SET fired = 1 WHERE id = ?", [id]);
+      const uid = await readRowUid(driver, "reminders", id);
+      await driver.batch([
+        { sql: "UPDATE reminders SET fired = 1 WHERE id = ?", params: [id] },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "reminders" as const,
+                  uid,
+                  kind: "update",
+                  fields: { fired: 1 },
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     /** Re-arm a repeating reminder without a delete/insert gap. */
     async rescheduleReminder(id: number, remindAt: string): Promise<void> {
-      await driver.execute(
-        "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
-        [remindAt, id],
-      );
+      const uid = await readRowUid(driver, "reminders", id);
+      await driver.batch([
+        {
+          sql: "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
+          params: [remindAt, id],
+        },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "reminders" as const,
+                  uid,
+                  kind: "update",
+                  fields: { remind_at: remindAt, fired: 0 },
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     /**
@@ -414,7 +444,34 @@ export function createTasksRepo(
     async settleReminders(outcomes: ReminderOutcome[]): Promise<void> {
       const statements = reminderSettleStatements(outcomes);
       if (statements.length === 0) return;
-      await driver.batch(statements);
+      // A settle is a definition write (§13.1 Option A, decision of Session 2):
+      // the peer's copy must converge on the new `remind_at`/`fired`, and the
+      // settling device is the one that armed the reminder, so no competing
+      // writer exists for these transitions. The uids are read once for the
+      // whole tick rather than one query per row.
+      const rows = await driver.query<{ id: number; uid: string | null }>(
+        `SELECT id, uid FROM reminders WHERE id IN (${outcomes.map(() => "?").join(", ")})`,
+        outcomes.map((outcome) => outcome.id),
+      );
+      const uidById = new Map(rows.map((row) => [row.id, row.uid]));
+      const settled = outcomes.flatMap((outcome) => {
+        const uid = uidById.get(outcome.id);
+        if (!uid) return [];
+        return [
+          {
+            table: "reminders" as const,
+            uid,
+            kind: "update" as const,
+            // Exactly the settle's own changes: the fired flag, and the time
+            // when it re-arms.
+            fields:
+              outcome.nextRemindAt === null
+                ? { fired: 1 }
+                : { remind_at: outcome.nextRemindAt, fired: 0 },
+          },
+        ];
+      });
+      await driver.batch([...statements, ...outboxStatements(settled)]);
     },
 
     async deleteReminder(id: number): Promise<void> {

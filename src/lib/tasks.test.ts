@@ -232,13 +232,13 @@ test("rescheduleReminder updates in place so repeating reminders cannot be lost"
   const driver = createMockDriver();
   const tasks = createTasksRepo(driver);
   await tasks.rescheduleReminder(7, "2026-10-13T09:00");
-  const call = driver.lastCall();
-  assert.ok(call);
-  assert.equal(call.method, "execute");
-  assert.deepEqual(call.args, [
-    "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
-    ["2026-10-13T09:00", 7],
-  ]);
+  const [rearm] = batchStatements(driver);
+  assert.ok(rearm);
+  assert.match(
+    String(rearm.sql),
+    /UPDATE reminders SET remind_at = \?, fired = 0/,
+  );
+  assert.deepEqual(rearm.params, ["2026-10-13T09:00", 7]);
 });
 
 // -- The shared complete path, and the missed-reminder list ------------

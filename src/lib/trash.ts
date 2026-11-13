@@ -6,6 +6,8 @@ import {
   LINKABLE_TYPES,
 } from "./entityLinks.ts";
 import { createKeyedMutex } from "./mutex.ts";
+import { isSyncTable, type SyncTable } from "./sync/protocol.ts";
+import { LOCAL_FOREIGN_KEYS, outboxStatements } from "./sync/store.ts";
 import type {
   LinkRow,
   PhotoRefRow,
@@ -638,6 +640,46 @@ export function createTrashRepo(driver: DataDriver) {
     });
   }
 
+  /**
+   * §6.2's payload for a restored row: its columns, with every foreign key
+   * named by uid instead of by this device's row number (§3.4, §8.4).
+   *
+   * A Trash type that is not a sync table (a contact, a memory, a journal
+   * entry) produces nothing: those tables never leave this device (§2.2).
+   */
+  async function restoreOpStatements(
+    type: TrashEntityType,
+    restored: Row,
+  ): Promise<BatchStatement[]> {
+    const table = TABLES[type];
+    if (!isSyncTable(table)) return [];
+    const uid = restored.uid;
+    if (typeof uid !== "string" || uid.length === 0) return [];
+    const foreignKeys = LOCAL_FOREIGN_KEYS[table as SyncTable] ?? {};
+    const fields: Record<string, unknown> = {};
+    for (const column of COLUMNS[type]) {
+      if (column === "id" || column === "uid") continue;
+      const parent = foreignKeys[column];
+      const value = restored[column];
+      if (parent !== undefined) {
+        fields[`${column.slice(0, -"_id".length)}_uid`] =
+          value === null || value === undefined
+            ? null
+            : ((
+                await driver.query<{ uid: string | null }>(
+                  `SELECT uid FROM "${parent}" WHERE id = ?`,
+                  [value],
+                )
+              )[0]?.uid ?? null);
+        continue;
+      }
+      fields[column] = value ?? null;
+    }
+    return outboxStatements([
+      { table: table as SyncTable, uid, kind: "create", fields },
+    ]);
+  }
+
   async function restoreUnlocked(trashId: number): Promise<void> {
     const [item] = await driver.query<TrashItemRow>(
       "SELECT * FROM trash_items WHERE id = ?",
@@ -922,6 +964,14 @@ export function createTrashRepo(driver: DataDriver) {
         }
       }
     }
+
+    // §5.3/§6.1: a restore is a resurrection, and it records as one — a
+    // create-kind op under the SAME uid whose fresh stamp outranks the
+    // tombstone the delete left, so a peer that applied the delete brings the
+    // record back instead of keeping it dead. A conflict copy came back under
+    // a NEW uid above, so it records that new record's create (§13.2).
+    // Purge records nothing: the delete was recorded when the row was trashed.
+    statements.push(...(await restoreOpStatements(type, restored)));
 
     statements.push({
       sql: "DELETE FROM trash_items WHERE id = ?",
