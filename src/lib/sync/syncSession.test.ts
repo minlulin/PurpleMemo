@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createBudgetRepo } from "../budget.ts";
+import { createBusinessRepo } from "../business.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
 import { ackStatements, readOutbox, readState } from "./store.ts";
@@ -257,6 +258,48 @@ test("a phone's expense entry syncs and its Vault-shaped op stays home", async (
     "and it resolved the parent it already held, not a second one",
   );
 
+  assert.deepEqual(
+    (await readOutbox(phone.driver)).map((row) => row.entity_table),
+    ["vault_items"],
+    "the Vault op is still pending for Stage 3",
+  );
+});
+
+test("a phone's job crosses while a Vault-shaped op stays home", async () => {
+  const { phone, desktop } = await pair();
+  await createBusinessRepo(phone.driver).createJob({
+    title: "Phone job",
+    totalCents: 20_000,
+    jobDate: "2026-11-13",
+  });
+
+  // A Stage 3 op, written the way its future writer will: §6.1's shape.
+  const state = await readState(phone.driver);
+  const vaultSeq = state.lastSeq + 1;
+  await phone.driver.execute(
+    `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+     VALUES (?, ?, 'op-vault', 'vault_items', '88888888-8888-4888-8888-888888888888', 'create', 0, ?, '{}', '{"title": "ciphertext"}', '2026-11-13T00:00:00.000Z')`,
+    [PHONE, vaultSeq, state.lamport],
+  );
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.confirmed, true);
+  assert.equal(outcome.pushed, 1, "the job travels; the Vault op does not");
+  assert.deepEqual(
+    wire.pushed.map((op) => op.entity_table),
+    ["jobs"],
+  );
+
+  const jobs = await desktop.driver.query<{
+    title: string;
+    total_cents: number;
+  }>("SELECT * FROM jobs");
+  assert.equal(jobs.length, 1, "the desktop holds the phone's job");
+  assert.equal(jobs[0]?.title, "Phone job");
+  assert.equal(jobs[0]?.total_cents, 20_000);
   assert.deepEqual(
     (await readOutbox(phone.driver)).map((row) => row.entity_table),
     ["vault_items"],

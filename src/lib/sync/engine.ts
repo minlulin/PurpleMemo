@@ -44,14 +44,13 @@ import {
 } from "./store.ts";
 
 /**
- * The tables sync moves through Stage 2 (§12.1, §12.2): Stage 1's eight plus
- * Budget's five.
+ * The tables sync moves through Stage 2 (§12.1, §12.2): Stage 1's eight, plus
+ * Budget's five and Business/Loans' three — sixteen of the seventeen.
  *
  * This is the ONE place the set lives — the engine's stage gate below and the
  * session's sender filter both read it, so a table can never travel without
- * being applicable. Anything else, including a table a later stage moves
- * (Business, Loans, Vault), is refused rather than applied: an op for it
- * arriving today is a protocol bug, not a head start.
+ * being applicable. `vault_items` alone stays out: Vault is Stage 3, and an op
+ * for it arriving today is a protocol bug, not a head start.
  */
 export const UNLOCKED_TABLES = [
   "collections",
@@ -67,6 +66,9 @@ export const UNLOCKED_TABLES = [
   "expense_categories",
   "income_entries",
   "expense_entries",
+  "shops",
+  "jobs",
+  "loans",
 ] as const satisfies readonly SyncTable[];
 
 const OP_KINDS: readonly OpKind[] = ["create", "update", "toggle", "delete"];

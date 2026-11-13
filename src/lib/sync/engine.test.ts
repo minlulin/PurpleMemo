@@ -14,7 +14,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createBudgetRepo } from "../budget.ts";
+import { createBusinessRepo } from "../business.ts";
 import { createHabitsRepo } from "../habits.ts";
+import { createLoansRepo } from "../loans.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
 import { createTrashRepo, TRASH_CONFLICT_KIND } from "../trash.ts";
@@ -652,6 +654,213 @@ test("a desktop category whose name the phone already holds is a no-op, not a fa
     (await readState(pair.b.driver)).lamport,
     1,
     "but the batch still moved its clock, as a delivered batch does (§4.2)",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 Session 2 — Business/Loans: desktop-owned shops, create-only jobs
+// and loans (§12.2).
+// ---------------------------------------------------------------------------
+
+test("a phone's job arrives on the desktop with its shop resolved by uid", async () => {
+  const pair = await openPair();
+  const shopId = await createBusinessRepo(pair.a.driver).createShop({
+    name: "Alpha",
+  });
+  // A shop is desktop-owned, so it reaches the phone before a job can name it.
+  await applyFrom(pair.b, pair.a);
+  const [phoneShop] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM shops WHERE name = 'Alpha'",
+  );
+  assert.ok(phoneShop);
+
+  const jobId = await createBusinessRepo(pair.b.driver).createJob({
+    title: "Fix roof",
+    shopId: phoneShop.id,
+    totalCents: 50_000,
+    jobDate: "2026-11-13",
+  });
+  assert.equal(jobId > 0, true);
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const jobs = await pair.a.driver.query<{
+    uid: string | null;
+    title: string;
+    shop_id: number | null;
+    total_cents: number;
+    paid_cents: number;
+    status: string;
+  }>("SELECT * FROM jobs");
+  const job = jobs[0];
+  assert.ok(job, "the job landed on the desktop");
+  assert.equal(jobs.length, 1);
+  assert.equal(job.title, "Fix roof");
+  assert.equal(
+    job.shop_id,
+    shopId,
+    "the shop uid resolved to the desktop's own shop row",
+  );
+  assert.equal(job.total_cents, 50_000);
+  assert.equal(job.paid_cents, 0);
+  assert.equal(job.status, "open");
+  assert.deepEqual(
+    await stampOf(pair.a, "jobs", job.uid ?? ""),
+    await stampOf(pair.b, "jobs", job.uid ?? ""),
+  );
+});
+
+test("a desktop job payment reaches the phone, paid amount and income included", async () => {
+  const pair = await openPair();
+  const budgetA = createBudgetRepo(pair.a.driver);
+  await budgetA.createIncomeCategory("Business");
+  const walletId = await budgetA.createWallet("Cash");
+  const businessA = createBusinessRepo(pair.a.driver);
+  const jobId = await businessA.createJob({
+    title: "Fix roof",
+    totalCents: 100_000,
+    jobDate: "2026-11-13",
+  });
+  await applyFrom(pair.b, pair.a);
+  const delivered = (await opsOf(pair.a)).length;
+
+  await businessA.recordJobPayment({
+    jobId,
+    amountCents: 40_000,
+    walletId,
+    date: "2026-11-13",
+  });
+  await applyFrom(pair.b, pair.a, {
+    ops: (await opsOf(pair.a)).slice(delivered),
+  });
+
+  const [onPhone] = await pair.b.driver.query<{
+    paid_cents: number;
+    status: string;
+  }>("SELECT * FROM jobs");
+  assert.ok(onPhone);
+  assert.equal(onPhone.paid_cents, 40_000, "the payment merged into the copy");
+  assert.equal(onPhone.status, "open", "a partial payment keeps the job open");
+
+  const entries = await pair.b.driver.query<{
+    amount_cents: number;
+    category_id: number;
+    wallet_id: number;
+    note: string;
+  }>("SELECT * FROM income_entries");
+  const entry = entries[0];
+  assert.ok(entry, "the receipt travelled with the payment (§6.1)");
+  assert.equal(entry.amount_cents, 40_000);
+  assert.equal(entry.note, "Job: Fix roof");
+  const [phoneWallet] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Cash'",
+  );
+  const [phoneCategory] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM income_categories WHERE name = 'Business'",
+  );
+  assert.equal(entry.wallet_id, phoneWallet?.id);
+  assert.equal(entry.category_id, phoneCategory?.id);
+});
+
+test("a mobile-origin job edit is refused and writes nothing", async () => {
+  const pair = await openPair();
+  const jobId = await createBusinessRepo(pair.a.driver).createJob({
+    title: "Fix roof",
+    totalCents: 10_000,
+    jobDate: "2026-11-13",
+  });
+  const [job] = await pair.a.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM jobs WHERE id = ?",
+    [jobId],
+  );
+  assert.ok(job?.uid);
+
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    3,
+    "jobs",
+    job.uid,
+    "update",
+    { paid_cents: 1_000 },
+    10,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [edit],
+      }),
+    /never updates or deletes jobs/,
+  );
+  const [held] = await pair.a.driver.query<{ paid_cents: number }>(
+    "SELECT paid_cents FROM jobs",
+  );
+  assert.equal(held?.paid_cents, 0, "§2.3: payment fields are desktop-only");
+});
+
+test("a phone's loan arrives on the desktop", async () => {
+  const pair = await openPair();
+  const loanId = await createLoansRepo(pair.b.driver).createLoan({
+    counterparty: "Daw Mya",
+    direction: "borrowed",
+    amountCents: 30_000,
+    dueDate: "2026-12-01",
+  });
+  assert.equal(loanId > 0, true);
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const loans = await pair.a.driver.query<{
+    uid: string | null;
+    counterparty: string;
+    direction: string;
+    amount_cents: number;
+    repaid_cents: number;
+    due_date: string | null;
+  }>("SELECT * FROM loans");
+  const loan = loans[0];
+  assert.ok(loan, "the loan landed on the desktop");
+  assert.equal(loans.length, 1);
+  assert.equal(loan.counterparty, "Daw Mya");
+  assert.equal(loan.direction, "borrowed");
+  assert.equal(loan.amount_cents, 30_000);
+  assert.equal(loan.repaid_cents, 0);
+  assert.equal(loan.due_date, "2026-12-01");
+});
+
+test("a desktop shop reaches the phone while a mobile-origin shop op is refused", async () => {
+  const pair = await openPair();
+  await createBusinessRepo(pair.a.driver).createShop({ name: "Alpha" });
+  await applyFrom(pair.b, pair.a);
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM shops WHERE name = 'Alpha'"),
+    1,
+    "the desktop-owned shop flowed down",
+  );
+
+  const phoneId = await deviceOf(pair.b);
+  const create = syntheticOp(
+    phoneId,
+    2,
+    "shops",
+    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "create",
+    { name: "Phone shop", created_at: "2026-11-13" },
+    5,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [create],
+      }),
+    /desktop-owned/,
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM shops"),
+    1,
+    "only the desktop's own shop exists there",
   );
 });
 
