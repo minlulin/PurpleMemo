@@ -629,7 +629,9 @@ export async function pullSnapshot(
     statements = applyStatements(
       input.desktopDeviceId,
       0,
-      snapshotStatements(staged, deleted),
+      // §13.1: the desktop is the sender, so a reminder crossing this border
+      // without a creator is stamped as the desktop's.
+      snapshotStatements(staged, deleted, new Date(), input.desktopDeviceId),
     );
   } catch (error) {
     return stalled(splitRefusal(errorText(error)), total);

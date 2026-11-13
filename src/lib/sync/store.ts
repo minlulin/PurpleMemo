@@ -813,6 +813,28 @@ function snapshotColumns(op: SnapshotOp): {
 }
 
 /**
+ * §13.1's border stamp for the two row-carrying borders that are not the
+ * engine: a reminder whose payload carries no creator is stamped with the
+ * SENDER's device id — the row came from that device, so that device is where
+ * it was created (or, for a legacy row, the best evidence there is).
+ *
+ * A payload that already names a creator keeps it: a real creator id is never
+ * overwritten by a passing border.
+ */
+function withSenderCreator(
+  op: SnapshotOp,
+  senderDeviceId?: string,
+): SnapshotOp {
+  if (op.table !== "reminders") return op;
+  if (op.fields.created_by_device_id != null) return op;
+  if (senderDeviceId === undefined || senderDeviceId.length === 0) return op;
+  return {
+    ...op,
+    fields: { ...op.fields, created_by_device_id: senderDeviceId },
+  };
+}
+
+/**
  * §8.4's row write: the record and its stamp, as two statements.
  *
  * The stamp is written too (§4.2): the row's value came from that write, and
@@ -823,9 +845,12 @@ function snapshotColumns(op: SnapshotOp): {
 export function snapshotRowStatements(
   op: SnapshotOp,
   now: Date = new Date(),
+  senderDeviceId?: string,
 ): BatchStatement[] {
   assertSyncTable(op.table);
-  const { columns, values, params } = snapshotColumns(op);
+  const { columns, values, params } = snapshotColumns(
+    withSenderCreator(op, senderDeviceId),
+  );
   const updates = columns
     .filter((column) => column !== "uid")
     .map((column) => `"${column}" = excluded."${column}"`);
@@ -879,9 +904,12 @@ export function snapshotRowStatements(
 export function uploadRowStatements(
   op: SnapshotOp,
   now: Date = new Date(),
+  senderDeviceId?: string,
 ): BatchStatement[] {
   assertSyncTable(op.table);
-  const { columns, values, params } = snapshotColumns(op);
+  const { columns, values, params } = snapshotColumns(
+    withSenderCreator(op, senderDeviceId),
+  );
   return [
     {
       sql: `INSERT INTO "${op.table}" (${columns
@@ -915,6 +943,7 @@ export function uploadRowStatements(
 export function uploadStatements(
   ops: readonly SnapshotOp[],
   now: Date = new Date(),
+  senderDeviceId?: string,
 ): BatchStatement[] {
   const order = new Map(
     (Object.keys(SYNC_TABLES) as SyncTable[]).map((table, index) => [
@@ -927,7 +956,8 @@ export function uploadStatements(
       (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
   );
   const statements: BatchStatement[] = [];
-  for (const op of sorted) statements.push(...uploadRowStatements(op, now));
+  for (const op of sorted)
+    statements.push(...uploadRowStatements(op, now, senderDeviceId));
   return statements;
 }
 
@@ -1062,6 +1092,7 @@ export function snapshotStatements(
   ops: readonly SnapshotOp[],
   tombstones: readonly SnapshotTombstoneOp[] = [],
   now: Date = new Date(),
+  senderDeviceId?: string,
 ): BatchStatement[] {
   // `SYNC_TABLES` is declared in `UID_TABLES`'s order — parents before children
   // — and `store.test.ts` pins the two against each other, so this sort cannot
@@ -1077,7 +1108,8 @@ export function snapshotStatements(
       (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
   );
   const statements: BatchStatement[] = [];
-  for (const op of sorted) statements.push(...snapshotRowStatements(op, now));
+  for (const op of sorted)
+    statements.push(...snapshotRowStatements(op, now, senderDeviceId));
   for (const tombstone of tombstones) {
     assertSyncTable(tombstone.table);
     const outranks = tombstoneOutranksRow(

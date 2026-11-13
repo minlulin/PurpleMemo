@@ -161,6 +161,19 @@ CREATE TABLE trash_items (
   deleted_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+-- The real schema gives every synced table a UNIQUE uid (schema.rs's per-table
+-- indexes); a snapshot's upsert targets exactly that constraint.
+CREATE UNIQUE INDEX idx_collections_uid ON collections(uid);
+CREATE UNIQUE INDEX idx_notes_uid ON notes(uid);
+CREATE UNIQUE INDEX idx_tasks_uid ON tasks(uid);
+CREATE UNIQUE INDEX idx_reminders_uid ON reminders(uid);
+CREATE UNIQUE INDEX idx_shopping_lists_uid ON shopping_lists(uid);
+CREATE UNIQUE INDEX idx_shopping_items_uid ON shopping_items(uid);
+CREATE UNIQUE INDEX idx_habits_uid ON habits(uid);
+CREATE UNIQUE INDEX idx_habit_logs_uid ON habit_logs(uid);
+CREATE UNIQUE INDEX idx_wallets_uid ON wallets(uid);
+CREATE UNIQUE INDEX idx_expense_categories_uid ON expense_categories(uid);
+CREATE UNIQUE INDEX idx_expense_entries_uid ON expense_entries(uid);
 `;
 
 /** The v8 sync-storage DDL, exactly as the migration carries it. */

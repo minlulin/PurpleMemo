@@ -261,6 +261,12 @@ export interface ReminderRow extends SyncedRow {
   note: string;
   fired: number; // 0 | 1
   created_at: string;
+  /**
+   * §13.1 Option A: the device that created the reminder, and so the only one
+   * that arms it, notifies it and settles it. NULL is a legacy-local row from
+   * before the column existed, which reads as this device's.
+   */
+  created_by_device_id?: string | null;
 }
 
 export type ContactChannelKind = "phone" | "email" | "other";

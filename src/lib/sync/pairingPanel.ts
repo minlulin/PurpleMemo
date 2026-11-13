@@ -476,6 +476,7 @@ export interface UploadApplyOutcome {
  */
 export async function applyStagedUpload(
   transport: PairingTransport,
+  senderDeviceId?: string,
 ): Promise<UploadApplyOutcome | null> {
   const taken = await transport.pairingUploadTake();
   if (taken === null) return null;
@@ -497,7 +498,11 @@ export async function applyStagedUpload(
       (op) => !known.has(`${op.table}\u0000${op.uid}`),
     );
     if (fresh.length > 0) {
-      await transport.batch(uploadStatements(fresh));
+      // §13.1: the phone is the sender, so an uploaded reminder with no
+      // creator lands stamped as the phone's.
+      await transport.batch(
+        uploadStatements(fresh, new Date(), senderDeviceId),
+      );
     }
     const outcome: UploadApplyOutcome = {
       staged: read.ops.length,
@@ -589,7 +594,9 @@ export async function settlePairingPanel(
   // staging complete, and the state this settle returns is read again after
   // it, carrying the terminal upload state the person should see.
   if (current.uploadState === "staged") {
-    await applyStagedUpload(transport).catch(() => undefined);
+    await applyStagedUpload(transport, current.peerDeviceId ?? undefined).catch(
+      () => undefined,
+    );
     current = await transport.pairingStatus().catch(() => current);
   }
   // §6: a committed push is this panel's to apply too, and the phone polls for
@@ -754,7 +761,11 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     close: () => closePairingPanel(transport),
     settle: (state: PairingPanelState, now?: number) =>
       settlePairingPanel(transport, state, now),
-    applyUpload: () => applyStagedUpload(transport),
+    applyUpload: async () =>
+      applyStagedUpload(
+        transport,
+        (await transport.pairingStatus()).peerDeviceId ?? undefined,
+      ),
     pin: (state: PairingPanelState) => pinAdmittedPeer(transport, state),
     local: () => driver.pairingLocal(),
     status: () => driver.pairingStatus(),

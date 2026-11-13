@@ -25,6 +25,7 @@ import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
 import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
+import { readOwnDeviceId } from "../lib/sync/reminderDelivery.ts";
 import { createSyncRepo } from "../lib/sync/syncSession.ts";
 import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
@@ -120,6 +121,14 @@ export const pairingRepo = createPairingRepo(driver);
 /** The phone's side of pairing: redeem, wire, then pin (§11.6.1, Session 7 T2). */
 export const mobilePairingRepo = createMobilePairingRepo(driver);
 export const syncRepo = createSyncRepo(driver);
+
+/**
+ * This device's own id from `sync_state` — what §13.1's delivery rule compares
+ * a reminder's creator against. Bound here so no component holds the driver.
+ */
+export function localDeviceId(): Promise<string> {
+  return readOwnDeviceId(driver);
+}
 
 export function searchWorkspace(input: string, options?: SearchOptions) {
   return globalSearch(driver, input, options);

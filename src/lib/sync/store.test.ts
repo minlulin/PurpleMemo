@@ -579,7 +579,7 @@ test("nothing outside the 17-table allowlist can enter the outbox or a tombstone
   );
 });
 
-test("field stamps travel with the operation, and the reminders marker stays unread", async () => {
+test("field stamps travel with the operation, and the reminders marker is stamped at the border", async () => {
   const { db, driver } = openStore();
   const stamp = { counter: 4, deviceId: UID_PEER_A, opId: "op-1" };
   await driver.batch(
@@ -605,7 +605,9 @@ test("field stamps travel with the operation, and the reminders marker stays unr
     "the op carries this device's Lamport stamp, while field stamps keep the counters they arrived with",
   );
 
-  // §13.1 is open: the column exists, is nullable, and nothing writes it yet.
+  // §13.1 is decided (Option A) and wired at this border: a reminder row that
+  // arrives with no creator is stamped with the SENDER's id, so a NULL on the
+  // receiving side can only be a row this device wrote before the column.
   db.prepare(
     "INSERT INTO reminders (uid, title, remind_at, created_at) VALUES ('55555555-5555-4555-8555-555555555555', 'R', '2026-11-08T09:00', '2026-11-08')",
   ).run();
@@ -615,14 +617,47 @@ test("field stamps travel with the operation, and the reminders marker stays unr
       "SELECT count(*) AS n FROM reminders WHERE created_by_device_id IS NULL",
     ),
     1,
+    "a local row with no creator still reads NULL — and so reads as local",
   );
-  const storeSource = readFileSync(
-    new URL("./store.ts", import.meta.url),
-    "utf8",
+  assert.equal(
+    count(
+      db,
+      "SELECT count(*) AS n FROM reminders WHERE created_by_device_id IS NOT NULL",
+    ),
+    0,
   );
-  assert.ok(
-    !storeSource.includes("created_by_device_id"),
-    "the §13.1 marker must stay unwired until that decision is made",
+  // ...while one that ARRIVES with no creator is stamped by the border.
+  await driver.batch(
+    snapshotStatements(
+      [
+        {
+          table: "reminders",
+          uid: "66666666-6666-4666-8666-666666666666",
+          stamp: { counter: 2, deviceId: UID_PEER_A, opId: "op-2" },
+          fields: {
+            title: "Adopted",
+            remind_at: "2026-11-08T09:00",
+            repeat: "none",
+            note: "",
+            fired: 0,
+            created_at: "2026-11-08",
+            created_by_device_id: null,
+          },
+        },
+      ],
+      [],
+      new Date(),
+      UID_PEER_A,
+    ),
+  );
+  assert.equal(
+    count(
+      db,
+      "SELECT count(*) AS n FROM reminders WHERE uid = ? AND created_by_device_id = ?",
+      ["66666666-6666-4666-8666-666666666666", UID_PEER_A],
+    ),
+    1,
+    "the sender is the creator of a row it sent with none (§13.1)",
   );
 });
 

@@ -23,6 +23,7 @@ import {
   businessRepo,
   habitsRepo,
   loansRepo,
+  localDeviceId,
   notesRepo,
   readMobileDiagnostics,
   searchMobileWorkspace,
@@ -59,6 +60,7 @@ import {
 import { formatMMK, parseMMK } from "../lib/money.ts";
 import { SEARCH_DEBOUNCE_MS } from "../lib/searchContract.ts";
 import { SETTING_KEYS } from "../lib/settings.ts";
+import { remindableHere } from "../lib/sync/reminderDelivery.ts";
 import type {
   LoanDirection,
   ShoppingItemRow,
@@ -294,7 +296,11 @@ export function RemindersPanel() {
         // Hand the OS the new alarm now. A reconcile failure keeps the row —
         // the next app tick arms it — so it must not fail the save.
         try {
-          const rows = await tasksRepo.listReminders(false);
+          // §13.1: the alarm is armed only for reminders this device created.
+          const rows = remindableHere(
+            await tasksRepo.listReminders(false),
+            await localDeviceId(),
+          );
           const preview = await settingsRepo
             .getNotificationPreview()
             .catch(() => false);

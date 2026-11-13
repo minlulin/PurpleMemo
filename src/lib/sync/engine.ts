@@ -346,6 +346,9 @@ function insertStatements(
   const stamps: Record<string, VersionStamp> = {};
   const row: Record<string, unknown> = { uid: op.entity_uid };
   for (const [field, value] of Object.entries(fields)) {
+    // §13.1: a reminder's creator is the operation's author, never a payload
+    // claim — the column is stamped below, from `op.device_id` alone.
+    if (table === "reminders" && field === "created_by_device_id") continue;
     const destination = destinationOf(table, field, op);
     const resolved = resolveValue(value, destination.parent);
     columns.push(destination.column);
@@ -360,6 +363,17 @@ function insertStatements(
     // pending row never earns a copy anyway, so it has none here.
     row[destination.column] =
       destination.parent === undefined ? (value ?? null) : null;
+  }
+  if (table === "reminders") {
+    // §13.1's border stamp: a create op's author IS the reminder's creator, so
+    // the receiving device can never hold a synced reminder with no creator.
+    // A create op's payload carries no such field, and nothing rewrites this
+    // column afterwards — the delivery filter depends on both halves.
+    columns.push("created_by_device_id");
+    values.push("?");
+    params.push(op.device_id);
+    row.created_by_device_id = op.device_id;
+    stamps.created_by_device_id = fieldStamps.created_by_device_id ?? stamp;
   }
   return {
     effects: [

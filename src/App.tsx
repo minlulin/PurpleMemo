@@ -50,6 +50,7 @@ import { ToastProvider, useToast } from "./components/Toast.tsx";
 import { usePlural, useT } from "./components/useTranslation.ts";
 import {
   inboxRepo,
+  localDeviceId,
   pairingRepo,
   settingsRepo,
   shareRepo,
@@ -89,6 +90,7 @@ import {
   type ReminderMessages,
 } from "./lib/session.ts";
 import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
+import { remindableHere } from "./lib/sync/reminderDelivery.ts";
 import type { LinkableEntity } from "./lib/types.ts";
 
 // Every page (including Dashboard, which sits behind the lock screen inside
@@ -234,7 +236,12 @@ function useReminderPoll(
             }
             return;
           }
-          const rows = await tasksRepo.listReminders(false);
+          // §13.1: only the reminders this device created are armed, notified
+          // and settled here; a peer's reminder converges from its creator.
+          const rows = remindableHere(
+            await tasksRepo.listReminders(false),
+            await localDeviceId(),
+          );
           if (cancelled) return;
           const preview = await settingsRepo
             .getNotificationPreview()
@@ -272,7 +279,10 @@ function useReminderPoll(
             // an inexact alarm for): reconcile once more with the fresh
             // rows, so that state is armed — or cancelled — now, not at
             // the next app open.
-            const fresh = await tasksRepo.listReminders(false);
+            const fresh = remindableHere(
+              await tasksRepo.listReminders(false),
+              await localDeviceId(),
+            );
             if (!cancelled) {
               await syncAndroidReminders(
                 fresh,
@@ -298,7 +308,14 @@ function useReminderPoll(
     const tick = createReminderTicker({
       messages,
       now: () => localISODateTime(new Date()),
-      due: (now) => tasksRepo.dueReminders(now),
+      // §13.1: the same rule the Android pass applies, from the same
+      // function — a reminder another device created is never due here, so it
+      // is never notified and never settled here either.
+      due: async (now) =>
+        remindableHere(
+          await tasksRepo.dueReminders(now),
+          await localDeviceId(),
+        ),
       settle: (outcomes) => tasksRepo.settleReminders(outcomes),
       requestPermission: ensureNotifyPermission,
       notify: ({ title, body }) => sendNotification({ title, body }),
