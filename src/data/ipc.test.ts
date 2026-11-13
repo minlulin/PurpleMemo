@@ -53,13 +53,15 @@ test("every command the driver invokes is registered in Rust", () => {
   // the snapshot pull's three (`pairing_snapshot_request`/`_applied`/
   // `_adopted`, §8.4), plus the upload's five (`pairing_upload_batch`/
   // `_commit`/`_status` phone-side, `pairing_upload_take`/`_outcome`
-  // panel-side, §9.6) — 40.
+  // panel-side, §9.6), plus the §6 exchange's seven (`pairing_sync_push`,
+  // `_commit`/`_pull`/`_applied`/`_status` phone-side, `pairing_sync_take`/
+  // `_outcome` panel-side) — 47.
   // Bump deliberately, with the change that adds the command —
   // the count is what catches a command dropped from BOTH sides at once.
   assert.equal(
     commands.length,
-    40,
-    `expected the full 40-command surface, got ${commands.length}`,
+    47,
+    `expected the full 47-command surface, got ${commands.length}`,
   );
   for (const command of commands) {
     assert.ok(

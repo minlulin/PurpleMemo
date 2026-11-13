@@ -979,6 +979,45 @@ pub fn pairing_open(
     });
     // §11.5: the window is on the LAN only while pairing is on screen; the
     // panel closes it on expiry, on close, on lock and on app background.
+    // §6: this window's own operations, read in Rust for the snapshot's reason
+    // — the read is the app's connection, taken under the one lock every other
+    // reader takes, and the listener holds it for the window's life.
+    let sync_reader = app.clone();
+    let sync_source: crate::pairing_listener::SyncSource = std::sync::Arc::new(move |after_seq| {
+        let db_state = sync_reader
+            .try_state::<AppState>()
+            .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        let conn = lock_conn(&db_state)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT device_id, seq, op_id, entity_table, entity_uid, op, \
+                 base_counter, counter, field_stamps, payload FROM sync_outbox \
+                 WHERE seq > ? ORDER BY seq",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([after_seq as i64], |row| {
+                Ok(serde_json::json!({
+                    "device_id": row.get::<_, String>(0)?,
+                    "seq": row.get::<_, i64>(1)? as u64,
+                    "op_id": row.get::<_, String>(2)?,
+                    "entity_table": row.get::<_, String>(3)?,
+                    "entity_uid": row.get::<_, String>(4)?,
+                    "op": row.get::<_, String>(5)?,
+                    "base_counter": row.get::<_, i64>(6)? as u64,
+                    "counter": row.get::<_, i64>(7)? as u64,
+                    "field_stamps": row.get::<_, String>(8)?,
+                    "payload": row.get::<_, String>(9)?,
+                }))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut ops = Vec::new();
+        for row in rows {
+            ops.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(ops)
+    });
+    listener.set_sync_source(sync_source);
     listener.start("0.0.0.0", window, identity, Some(snapshot))
 }
 
@@ -1526,6 +1565,294 @@ pub fn pairing_upload_outcome(
         }
     };
     state.set_upload_outcome(outcome);
+    Ok(())
+}
+
+/// The phone's facts for one §6 exchange, read once: its own id and schema from
+/// the database, and the pin's key, pairing id and data line — never from the
+/// webview, which supplies an address only.
+struct SyncPhoneFacts {
+    device_id: String,
+    pairing_id: String,
+    desktop_public_key: String,
+    generation: u64,
+    schema_version: u64,
+}
+
+fn sync_phone_facts(
+    app: &tauri::AppHandle,
+    input: &SnapshotPullInput,
+) -> CmdResult<SyncPhoneFacts> {
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+    Ok(SyncPhoneFacts {
+        device_id,
+        pairing_id: pin.pairing_id,
+        desktop_public_key: pin.public_key,
+        generation: pin.generation,
+        schema_version,
+    })
+}
+
+/// Send one batch of this phone's operations to the pinned desktop (§6.2). The
+/// sealed exchange runs in Rust because the phone's key does (§11.2).
+#[tauri::command]
+pub fn pairing_sync_push(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    batch: u64,
+    total: u64,
+    ops: Vec<serde_json::Value>,
+) -> CmdResult<()> {
+    let facts = sync_phone_facts(&app, &input)?;
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &facts.pairing_id,
+        desktop_public_key: &facts.desktop_public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: facts.generation,
+    };
+    let phone = crate::pairing_client::PhoneFacts {
+        device_id: &facts.device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version: facts.schema_version,
+    };
+    crate::pairing_client::send_sync_push(
+        &pull,
+        &phone,
+        &identity,
+        crate::pairing_client::process_counters(),
+        batch,
+        total,
+        &ops,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Tell the pinned desktop every pushed batch was sent (§6.2).
+#[tauri::command]
+pub fn pairing_sync_commit(app: tauri::AppHandle, input: SnapshotPullInput) -> CmdResult<()> {
+    let facts = sync_phone_facts(&app, &input)?;
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &facts.pairing_id,
+        desktop_public_key: &facts.desktop_public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: facts.generation,
+    };
+    let phone = crate::pairing_client::PhoneFacts {
+        device_id: &facts.device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version: facts.schema_version,
+    };
+    crate::pairing_client::send_sync_commit(
+        &pull,
+        &phone,
+        &identity,
+        crate::pairing_client::process_counters(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// One batch of the pinned desktop's own operations after `afterSeq` (§6.3).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncBatchResult {
+    pub pairing_id: String,
+    pub batch: u64,
+    pub total: u64,
+    pub ops: Vec<serde_json::Value>,
+}
+
+#[tauri::command]
+pub fn pairing_sync_pull(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    batch: u64,
+    after_seq: u64,
+) -> CmdResult<SyncBatchResult> {
+    let facts = sync_phone_facts(&app, &input)?;
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &facts.pairing_id,
+        desktop_public_key: &facts.desktop_public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: facts.generation,
+    };
+    let phone = crate::pairing_client::PhoneFacts {
+        device_id: &facts.device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version: facts.schema_version,
+    };
+    let reply = crate::pairing_client::pull_sync_ops(
+        &pull,
+        &phone,
+        &identity,
+        crate::pairing_client::process_counters(),
+        batch,
+        after_seq,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(SyncBatchResult {
+        pairing_id: facts.pairing_id,
+        batch,
+        total: reply
+            .get("total")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1),
+        ops: reply
+            .get("ops")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default(),
+    })
+}
+
+/// Report that this phone applied the desktop's operations through `throughSeq`
+/// (§6.5).
+#[tauri::command]
+pub fn pairing_sync_applied(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+    through_seq: u64,
+) -> CmdResult<()> {
+    let facts = sync_phone_facts(&app, &input)?;
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &facts.pairing_id,
+        desktop_public_key: &facts.desktop_public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: facts.generation,
+    };
+    let phone = crate::pairing_client::PhoneFacts {
+        device_id: &facts.device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version: facts.schema_version,
+    };
+    crate::pairing_client::send_sync_applied(
+        &pull,
+        &phone,
+        &identity,
+        crate::pairing_client::process_counters(),
+        through_seq,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// The desktop's verdict on this phone's push, as its sealed reply reported it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusResult {
+    pub state: String,
+    pub through_seq: u64,
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+pub fn pairing_sync_status(
+    app: tauri::AppHandle,
+    input: SnapshotPullInput,
+) -> CmdResult<SyncStatusResult> {
+    let facts = sync_phone_facts(&app, &input)?;
+    let db_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+    let identity = load_pairing_identity(&db_state)?;
+    let pull = crate::pairing_client::SnapshotPull {
+        endpoint: &input.endpoint,
+        pairing_id: &facts.pairing_id,
+        desktop_public_key: &facts.desktop_public_key,
+        desktop_device_id: &input.desktop_device_id,
+        generation: facts.generation,
+    };
+    let phone = crate::pairing_client::PhoneFacts {
+        device_id: &facts.device_id,
+        protocol_version: PROTOCOL_VERSION,
+        schema_version: facts.schema_version,
+    };
+    let reply = crate::pairing_client::poll_sync_status(
+        &pull,
+        &phone,
+        &identity,
+        crate::pairing_client::process_counters(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(SyncStatusResult {
+        state: reply
+            .get("state")
+            .and_then(|value| value.as_str())
+            .unwrap_or("pending")
+            .to_string(),
+        through_seq: reply
+            .get("throughSeq")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        message: reply
+            .get("message")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    })
+}
+
+/// The staged §6 push the desktop panel applies: the operations as wire
+/// documents. `None` until a phone commits a complete push in this window.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTakeResult {
+    pub ops: Vec<serde_json::Value>,
+}
+
+#[tauri::command]
+pub fn pairing_sync_take(
+    state: State<'_, PairingListenerState>,
+) -> CmdResult<Option<SyncTakeResult>> {
+    refuse_mobile_role()?;
+    Ok(state.take_sync_push().map(|ops| SyncTakeResult { ops }))
+}
+
+/// What the panel's engine decided about a staged push: the highest seq it
+/// applied, or the refusal's own words. Exactly one of the two.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncOutcomeInput {
+    pub applied_through: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub fn pairing_sync_outcome(
+    state: State<'_, PairingListenerState>,
+    input: SyncOutcomeInput,
+) -> CmdResult<()> {
+    refuse_mobile_role()?;
+    let outcome = match (input.applied_through, input.error) {
+        (Some(through_seq), None) => crate::pairing_listener::SyncOutcome::Applied { through_seq },
+        (None, Some(message)) => crate::pairing_listener::SyncOutcome::Failed { message },
+        _ => return Err(
+            "a sync outcome is either its applied position or its failure, never both or neither."
+                .to_string(),
+        ),
+    };
+    state.set_sync_outcome(outcome);
     Ok(())
 }
 

@@ -170,6 +170,17 @@ export interface PairingListenerInfo {
   uploadAlreadyKnown: number | null;
   /** Why the apply failed, in the apply's own words. */
   uploadNote: string | null;
+  /**
+   * §6: the staged push's state in this window — `receiving`, `staged`,
+   * `applying`, `applied` or `failed`; `null` until the phone pushes an op.
+   */
+  syncState: string | null;
+  /** Ops the phone pushed: staged so far, or applied once terminal. */
+  syncOps: number;
+  /** `sync-applied`: the highest own seq the phone says it applied (§6.5). */
+  syncApplied: number | null;
+  /** Why the sync apply failed, in the apply's own words. */
+  syncNote: string | null;
   note: string | null;
 }
 
@@ -275,6 +286,43 @@ export interface UploadTakeResult {
 export interface UploadOutcomeInput {
   inserted: number | null;
   alreadyKnown: number | null;
+  error: string | null;
+}
+
+/**
+ * One batch of the desktop's own operations after `afterSeq` (§6.3), opened by
+ * Rust and **not yet validated**: `ops` are the sender's outbox documents,
+ * which the engine validates before it writes anything (§7.7).
+ */
+export interface SyncBatchResult {
+  pairingId: string;
+  batch: number;
+  total: number;
+  ops: unknown[];
+}
+
+/**
+ * The desktop's verdict on this phone's push (§6, §7): `pending` until its
+ * engine decides, then `applied` with the highest seq it applied, or `failed`
+ * with the engine's own reason.
+ */
+export interface SyncStatusResult {
+  state: string;
+  throughSeq: number;
+  message: string | null;
+}
+
+/** The staged push the desktop panel applies: the operations as documents. */
+export interface SyncTakeResult {
+  ops: unknown[];
+}
+
+/**
+ * What the panel's engine decided about a staged push: the highest seq it
+ * applied, or the refusal's own words — exactly one of the two.
+ */
+export interface SyncOutcomeInput {
+  appliedThrough: number | null;
   error: string | null;
 }
 
@@ -587,6 +635,40 @@ export interface PairingDriver {
    * verdict to the phone. The first outcome stands.
    */
   pairingUploadOutcome(input: UploadOutcomeInput): Promise<void>;
+  /**
+   * Send one batch of this phone's operations to the pinned desktop (§6.2).
+   * The desktop stages them; nothing is applied until it commits and its
+   * panel's engine runs.
+   */
+  pairingSyncPush(
+    input: SnapshotPullInput,
+    batch: number,
+    total: number,
+    ops: unknown[],
+  ): Promise<void>;
+  /** Tell the pinned desktop every pushed batch was sent (§6.2). */
+  pairingSyncCommit(input: SnapshotPullInput): Promise<void>;
+  /**
+   * One batch of the pinned desktop's own operations after `afterSeq` (§6.3).
+   * The reply is sealed; a forged batch cannot pass as a fresh one.
+   */
+  pairingSyncPull(
+    input: SnapshotPullInput,
+    batch: number,
+    afterSeq: number,
+  ): Promise<SyncBatchResult>;
+  /** Report that this phone applied the desktop's ops through `throughSeq`
+   * (§6.5). */
+  pairingSyncApplied(
+    input: SnapshotPullInput,
+    throughSeq: number,
+  ): Promise<void>;
+  /** Ask for the desktop's verdict on this phone's push (§6). */
+  pairingSyncStatus(input: SnapshotPullInput): Promise<SyncStatusResult>;
+  /** Take the staged push for the desktop panel's apply — once (§7.2). */
+  pairingSyncTake(): Promise<SyncTakeResult | null>;
+  /** Report the panel's engine outcome, so the listener can seal the verdict. */
+  pairingSyncOutcome(input: SyncOutcomeInput): Promise<void>;
 }
 
 /** The one production driver: Tauri IPC commands. */
@@ -677,6 +759,17 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     pairingUploadTake: () => invoke("pairing_upload_take"),
     pairingUploadOutcome: (input) =>
       invoke("pairing_upload_outcome", { input }),
+    // §6's exchange — the same one-invoke-site discipline, both directions.
+    pairingSyncPush: (input, batch, total, ops) =>
+      invoke("pairing_sync_push", { input, batch, total, ops }),
+    pairingSyncCommit: (input) => invoke("pairing_sync_commit", { input }),
+    pairingSyncPull: (input, batch, afterSeq) =>
+      invoke("pairing_sync_pull", { input, batch, afterSeq }),
+    pairingSyncApplied: (input, throughSeq) =>
+      invoke("pairing_sync_applied", { input, throughSeq }),
+    pairingSyncStatus: (input) => invoke("pairing_sync_status", { input }),
+    pairingSyncTake: () => invoke("pairing_sync_take"),
+    pairingSyncOutcome: (input) => invoke("pairing_sync_outcome", { input }),
   };
 }
 

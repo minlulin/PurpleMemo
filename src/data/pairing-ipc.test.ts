@@ -192,3 +192,61 @@ test("the upload is five invoke sites and each is registered", () => {
     "the webview must not name the upload path; the client is in Rust",
   );
 });
+
+/**
+ * §6's ongoing exchange is the same contract a third time: one invoke site per
+ * message, each registered in Rust, the route named only by the Rust client,
+ * and the pinned peer read there — the caller supplies an address, never a key.
+ */
+test("the sync exchange is seven invoke sites and each is registered", () => {
+  assert.match(
+    driver,
+    /pairingSyncPush: \(input, batch, total, ops\) =>\s*invoke\("pairing_sync_push", \{ input, batch, total, ops \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSyncCommit: \(input\) => invoke\("pairing_sync_commit", \{ input \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSyncPull: \(input, batch, afterSeq\) =>\s*invoke\("pairing_sync_pull", \{ input, batch, afterSeq \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSyncApplied: \(input, throughSeq\) =>\s*invoke\("pairing_sync_applied", \{ input, throughSeq \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSyncStatus: \(input\) => invoke\("pairing_sync_status", \{ input \}\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSyncTake: \(\) => invoke\("pairing_sync_take"\)/,
+  );
+  assert.match(
+    driver,
+    /pairingSyncOutcome: \(input\) => invoke\("pairing_sync_outcome", \{ input \}\)/,
+  );
+  for (const name of [
+    "pairing_sync_push",
+    "pairing_sync_commit",
+    "pairing_sync_pull",
+    "pairing_sync_applied",
+    "pairing_sync_status",
+    "pairing_sync_take",
+    "pairing_sync_outcome",
+  ]) {
+    assert.ok(lib.includes(`commands::${name}`), `${name} must be registered`);
+  }
+  assert.ok(
+    !driver.includes("/pair/sync"),
+    "the webview must not name the sync path; the client is in Rust",
+  );
+  // The phone's facts — its id, schema, and the pin's key and data line — are
+  // read in Rust, exactly as the pull's are (§11.2).
+  assert.match(commands, /fn sync_phone_facts\(/);
+  assert.match(
+    commands,
+    /fn pinned_pull\(db_state: &AppState, device_id: &str\)/,
+  );
+});

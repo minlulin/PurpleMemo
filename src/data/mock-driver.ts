@@ -26,6 +26,10 @@ import type {
   ShareInfo,
   SnapshotBatchResult,
   SnapshotPullInput,
+  SyncBatchResult,
+  SyncOutcomeInput,
+  SyncStatusResult,
+  SyncTakeResult,
   UploadOutcomeInput,
   UploadStatusResult,
   UploadTakeResult,
@@ -200,6 +204,10 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     uploadInserted: null,
     uploadAlreadyKnown: null,
     uploadNote: null,
+    syncState: null,
+    syncOps: 0,
+    syncApplied: null,
+    syncNote: null,
     note: null,
   });
   /** The fixed `0x11…` vector's public key and the grouping both screens show. */
@@ -230,6 +238,52 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     outcome: null,
   });
   let upload: MockUpload = freshUpload();
+
+  // §6's exchange at the same depth: a push stages in order and completes on a
+  // commit, the take is once, the verdict is whatever the panel's engine
+  // reported, and the pull serves the scripted rows (none by default).
+  interface MockSync {
+    push: unknown[][];
+    total: number | null;
+    committed: boolean;
+    taken: boolean;
+    outcome: { throughSeq: number } | { error: string } | null;
+    appliedThrough: number | null;
+    pull: unknown[];
+    pulledFrom: number | null;
+  }
+  const freshSync = (): MockSync => ({
+    push: [],
+    total: null,
+    committed: false,
+    taken: false,
+    outcome: null,
+    appliedThrough: null,
+    pull: [],
+    pulledFrom: null,
+  });
+  let sync: MockSync = freshSync();
+  const projectSync = (): void => {
+    const outcome = sync.outcome;
+    pairing = {
+      ...pairing,
+      syncState:
+        outcome !== null
+          ? "error" in outcome
+            ? "failed"
+            : "applied"
+          : sync.committed
+            ? sync.taken
+              ? "applying"
+              : "staged"
+            : sync.push.length > 0
+              ? "receiving"
+              : null,
+      syncOps: sync.push.reduce((count, batch) => count + batch.length, 0),
+      syncApplied: sync.appliedThrough,
+      syncNote: outcome !== null && "error" in outcome ? outcome.error : null,
+    };
+  };
   const projectUpload = (): void => {
     const outcome = upload.outcome;
     pairing = {
@@ -579,9 +633,14 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         uploadInserted: null,
         uploadAlreadyKnown: null,
         uploadNote: null,
+        syncState: null,
+        syncOps: 0,
+        syncApplied: null,
+        syncNote: null,
         note: null,
       };
       upload = freshUpload();
+      sync = freshSync();
       return { ...pairing };
     },
     async pairingClose(): Promise<PairingListenerInfo> {
@@ -788,6 +847,132 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       if (upload.taken && upload.outcome === null) {
         upload.outcome = counts ?? failure;
         projectUpload();
+      }
+    },
+    async pairingSyncPush(
+      input: SnapshotPullInput,
+      batch: number,
+      total: number,
+      ops: unknown[],
+    ): Promise<void> {
+      record("pairingSyncPush", [input, batch, total, ops]);
+      requirePinned(input);
+      if (sync.committed) {
+        throw new Error(
+          "sync-busy: this window's push was already committed; a new push opens a new window.",
+        );
+      }
+      if (sync.total === null) sync.total = total;
+      else if (sync.total !== total) {
+        throw new Error(
+          `this push declared ${sync.total} batch(es) with its first batch, not ${total}.`,
+        );
+      }
+      if (batch < sync.push.length) {
+        const staged = sync.push[batch] ?? [];
+        if (JSON.stringify(staged) !== JSON.stringify(ops)) {
+          throw new Error(
+            "sync-busy: a different batch already holds this index; one push streams per window.",
+          );
+        }
+        return;
+      }
+      if (batch > sync.push.length) {
+        throw new Error(
+          "sync-busy: sync batches land in order; an earlier batch has not arrived.",
+        );
+      }
+      sync.push.push(ops);
+      projectSync();
+    },
+    async pairingSyncCommit(input: SnapshotPullInput): Promise<void> {
+      record("pairingSyncCommit", [input]);
+      requirePinned(input);
+      if (sync.committed) {
+        throw new Error("replayed: this push was already committed (§7.2).");
+      }
+      if (sync.total === null) {
+        throw new Error(
+          "no sync batch has arrived in this window, so there is nothing to commit.",
+        );
+      }
+      if (sync.push.length !== sync.total) {
+        throw new Error(
+          `${sync.push.length} of ${sync.total} batch(es) were staged; a commit names the whole push.`,
+        );
+      }
+      sync.committed = true;
+      projectSync();
+    },
+    async pairingSyncPull(
+      input: SnapshotPullInput,
+      batch: number,
+      afterSeq: number,
+    ): Promise<SyncBatchResult> {
+      record("pairingSyncPull", [input, batch, afterSeq]);
+      requirePinned(input);
+      if (sync.pulledFrom === null) {
+        sync.pulledFrom = afterSeq;
+        sync.pull = [];
+      } else if (sync.pulledFrom !== afterSeq) {
+        throw new Error(
+          "sync-mismatch: this window already served a pull from another position; a new one opens a new window.",
+        );
+      }
+      if (batch !== 0) {
+        throw new Error(
+          `this pull has 1 batch(es); there is no batch ${batch}.`,
+        );
+      }
+      return { pairingId: "pair-1", batch: 0, total: 1, ops: sync.pull };
+    },
+    async pairingSyncApplied(
+      input: SnapshotPullInput,
+      throughSeq: number,
+    ): Promise<void> {
+      record("pairingSyncApplied", [input, throughSeq]);
+      requirePinned(input);
+      sync.appliedThrough =
+        sync.appliedThrough === null
+          ? throughSeq
+          : Math.max(sync.appliedThrough, throughSeq);
+      projectSync();
+    },
+    async pairingSyncStatus(
+      input: SnapshotPullInput,
+    ): Promise<SyncStatusResult> {
+      record("pairingSyncStatus", [input]);
+      requirePinned(input);
+      const outcome = sync.outcome;
+      if (outcome === null) {
+        return { state: "pending", throughSeq: 0, message: null };
+      }
+      return "error" in outcome
+        ? { state: "failed", throughSeq: 0, message: outcome.error }
+        : { state: "applied", throughSeq: outcome.throughSeq, message: null };
+    },
+    async pairingSyncTake(): Promise<SyncTakeResult | null> {
+      record("pairingSyncTake", []);
+      if (!sync.committed || sync.taken || sync.outcome !== null) return null;
+      sync.taken = true;
+      projectSync();
+      return { ops: sync.push.flat() };
+    },
+    async pairingSyncOutcome(input: SyncOutcomeInput): Promise<void> {
+      record("pairingSyncOutcome", [input]);
+      const applied =
+        input.appliedThrough !== null
+          ? { throughSeq: input.appliedThrough }
+          : null;
+      const failure = input.error !== null ? { error: input.error } : null;
+      if ((applied === null) === (failure === null)) {
+        throw new Error(
+          "a sync outcome is either its applied position or its failure, never both or neither.",
+        );
+      }
+      if (sync.taken && sync.outcome === null) {
+        sync.outcome = applied ?? failure;
+        projectSync();
       }
     },
     async sharePublish(snapshotJson: string): Promise<ShareInfo> {

@@ -135,6 +135,10 @@ function listener(
     uploadInserted: null,
     uploadAlreadyKnown: null,
     uploadNote: null,
+    syncState: null,
+    syncOps: 0,
+    syncApplied: null,
+    syncNote: null,
     note: null,
     ...over,
   };

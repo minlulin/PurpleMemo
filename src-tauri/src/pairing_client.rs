@@ -581,6 +581,206 @@ pub fn poll_upload_status(
     Ok(reply)
 }
 
+/// §6's route, beside the upload's: one exchange, both directions.
+const SYNC_PATH: &str = "/pair/sync";
+
+/// Send one batch of this phone's operations (§6.2). Batch 0 retires the
+/// pairing's reply counters for the pull's reason: a window's `send_counter`
+/// begins again at 1, so the counters a previous window left behind would
+/// refuse this window's first sealed `sync-ops` reply.
+pub fn send_sync_push(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    batch: u64,
+    total: u64,
+    ops: &[JsonValue],
+) -> Result<(), PairingClientError> {
+    if batch == 0 {
+        counters.restart(pull.pairing_id);
+    }
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        SYNC_PATH,
+        "sync",
+        &json!({
+            "kind": "sync-push",
+            "batch": batch,
+            "total": total,
+            "ops": ops,
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("reason").and_then(JsonValue::as_str) != Some("staged") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply does not stage the batch.",
+        ));
+    }
+    if reply.get("batch").and_then(JsonValue::as_u64) != Some(batch) {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop staged a different batch than the one sent.",
+        ));
+    }
+    Ok(())
+}
+
+/// Tell the desktop every pushed batch was sent (§6.2). Resolving means the
+/// whole push is staged — not applied.
+pub fn send_sync_commit(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+) -> Result<(), PairingClientError> {
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        SYNC_PATH,
+        "sync",
+        &json!({
+            "kind": "sync-commit",
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("reason").and_then(JsonValue::as_str) != Some("sync-committed") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply does not commit the push.",
+        ));
+    }
+    Ok(())
+}
+
+/// Ask for one batch of the desktop's own operations after `afterSeq` (§6.3).
+/// The reply is sealed and carries a process-wide counter, so a replayed
+/// `sync-ops` cannot pass as a fresh batch.
+pub fn pull_sync_ops(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    batch: u64,
+    after_seq: u64,
+) -> Result<JsonValue, PairingClientError> {
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        SYNC_PATH,
+        "sync",
+        &json!({
+            "kind": "sync-pull",
+            "batch": batch,
+            "afterSeq": after_seq,
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("kind").and_then(JsonValue::as_str) != Some("sync-ops") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply is not a batch of operations.",
+        ));
+    }
+    if reply.get("pairingId").and_then(JsonValue::as_str) != Some(pull.pairing_id) {
+        return Err(PairingClientError::local(
+            "pairing-mismatch",
+            "that batch belongs to a different pairing.",
+        ));
+    }
+    Ok(reply)
+}
+
+/// Report that this phone applied the desktop's operations through `throughSeq`
+/// (§6.5). The ack is plain: nothing in it is acted on — a forged one only
+/// makes the desktop record an ack the phone then sends again.
+pub fn send_sync_applied(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+    through_seq: u64,
+) -> Result<(), PairingClientError> {
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        SYNC_PATH,
+        "sync",
+        &json!({
+            "kind": "sync-applied",
+            "throughSeq": through_seq,
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("reason").and_then(JsonValue::as_str) != Some("sync-applied") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply does not record the acknowledgement.",
+        ));
+    }
+    Ok(())
+}
+
+/// Ask what the desktop's engine decided about this phone's push (§6). Sealed,
+/// like the upload's verdict, and checked by kind and pairing before belief.
+pub fn poll_sync_status(
+    pull: &SnapshotPull<'_>,
+    facts: &PhoneFacts<'_>,
+    identity: &PairingIdentity,
+    counters: &ReplyCounter,
+) -> Result<JsonValue, PairingClientError> {
+    let reply = exchange_on(
+        pull,
+        facts,
+        identity,
+        counters,
+        SYNC_PATH,
+        "sync",
+        &json!({
+            "kind": "sync-status",
+            "pairingId": pull.pairing_id,
+            "protocolVersion": facts.protocol_version,
+            "schemaVersion": facts.schema_version,
+            "generation": pull.generation,
+        }),
+    )?;
+    if reply.get("kind").and_then(JsonValue::as_str) != Some("sync-status") {
+        return Err(PairingClientError::local(
+            "malformed",
+            "the desktop's reply is not a sync verdict.",
+        ));
+    }
+    if reply.get("pairingId").and_then(JsonValue::as_str) != Some(pull.pairing_id) {
+        return Err(PairingClientError::local(
+            "pairing-mismatch",
+            "that verdict belongs to a different pairing.",
+        ));
+    }
+    Ok(reply)
+}
+
 /// Seal one message, post it, and open whatever the desktop sealed back.
 ///
 /// A `snapshot-request` is answered with a sealed batch; `applied` and `adopted`
@@ -1358,6 +1558,105 @@ mod tests {
         assert_eq!(verdict["state"], json!("uploaded"));
         assert_eq!(verdict["inserted"], json!(2));
         assert_eq!(verdict["alreadyKnown"], json!(0));
+        state.stop().expect("stop");
+    }
+
+    // -----------------------------------------------------------------------
+    // §6's exchange, over the same real window.
+    // -----------------------------------------------------------------------
+
+    /// A desktop window that also serves `ops` of its own operation stream.
+    fn serving_with_sync(ops: Vec<JsonValue>) -> (PairingListenerState, u16) {
+        let state = PairingListenerState::default();
+        let window = PairingWindow {
+            local_device_id: DESKTOP_ID.to_string(),
+            local_generation: 1,
+            local_protocol_version: 1,
+            local_schema_version: 8,
+            pairing_id: PAIRING_ID.to_string(),
+            offer: Some(PairingOffer {
+                code: CODE.to_string(),
+                expires_at: expires_at(),
+            }),
+            peer: None,
+            last_counter: 0,
+        };
+        let source: crate::pairing_listener::SyncSource = std::sync::Arc::new(move |after_seq| {
+            Ok(ops
+                .iter()
+                .filter(|op| op.get("seq").and_then(JsonValue::as_u64).unwrap_or(0) > after_seq)
+                .cloned()
+                .collect())
+        });
+        state.set_sync_source(source);
+        let info = state
+            .start(
+                "127.0.0.1",
+                window,
+                PairingIdentity::from_secret(DESKTOP_SECRET),
+                None,
+            )
+            .expect("start the pairing listener");
+        (state, info.port.expect("a bound port"))
+    }
+
+    fn sync_op(seq: u64) -> JsonValue {
+        json!({
+            "device_id": PHONE_ID,
+            "seq": seq,
+            "op_id": format!("op-{seq}"),
+            "entity_table": "notes",
+            "entity_uid": format!("11111111-1111-4111-8111-{seq:012}"),
+            "op": "create",
+            "base_counter": 0,
+            "counter": seq,
+            "field_stamps": "{}",
+            "payload": "{}",
+        })
+    }
+
+    #[test]
+    fn a_sync_exchange_pushes_pulls_and_reads_its_verdict() {
+        let (state, port) = serving_with_sync(vec![sync_op(3), sync_op(4)]);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+
+        send_sync_push(&pull, &facts(), &identity, &counters, 0, 1, &[sync_op(1)])
+            .expect("batch 0 stages");
+        send_sync_commit(&pull, &facts(), &identity, &counters).expect("the commit lands");
+
+        // The verdict is pending until the panel's engine reports, and the
+        // panel takes the push once.
+        let verdict =
+            poll_sync_status(&pull, &facts(), &identity, &counters).expect("a sealed verdict");
+        assert_eq!(verdict["state"], json!("pending"));
+        let staged = state.take_sync_push().expect("the panel takes the push");
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0]["seq"], json!(1));
+        state.set_sync_outcome(crate::pairing_listener::SyncOutcome::Applied { through_seq: 1 });
+        let verdict =
+            poll_sync_status(&pull, &facts(), &identity, &counters).expect("a sealed verdict");
+        assert_eq!(verdict["state"], json!("applied"));
+        assert_eq!(verdict["throughSeq"], json!(1));
+
+        // The pull serves only what the phone says it does not have, sealed.
+        let batch =
+            pull_sync_ops(&pull, &facts(), &identity, &counters, 0, 3).expect("a sealed batch");
+        assert_eq!(batch["kind"], json!("sync-ops"));
+        let ops = batch["ops"].as_array().expect("ops");
+        assert_eq!(
+            ops.len(),
+            1,
+            "everything through seq 3 is already on the phone"
+        );
+        assert_eq!(ops[0]["seq"], json!(4));
+
+        send_sync_applied(&pull, &facts(), &identity, &counters, 4).expect("recorded");
+        let info = state.status().expect("status");
+        assert_eq!(info.sync_applied, Some(4));
+        assert_eq!(info.sync_state.as_deref(), Some("applied"));
         state.stop().expect("stop");
     }
 

@@ -134,6 +134,22 @@ const UPLOAD_PATH: &str = "/pair/upload";
 /// stages an upload.
 const UPLOAD_ACCEPTED_KINDS: [&str; 3] = ["upload", "upload-commit", "upload-status"];
 
+/// The §6 ongoing exchange: `sync-push` / `sync-commit` / `sync-pull` /
+/// `sync-applied` / `sync-status`. A fourth route with its own kind set, for
+/// the same reason each of the others has one (§2.3).
+const SYNC_PATH: &str = "/pair/sync";
+
+/// The kinds `/pair/sync` speaks. The push half and the pull half share the
+/// route because they are one exchange — but the kind set is still the route's
+/// own: a snapshot message posted here is refused by name.
+const SYNC_ACCEPTED_KINDS: [&str; 5] = [
+    "sync-push",
+    "sync-commit",
+    "sync-pull",
+    "sync-applied",
+    "sync-status",
+];
+
 /// §8.3's per-batch op bound, shared with the snapshot: one upload batch is
 /// one bounded frame, never a data dump.
 const MAX_UPLOAD_BATCH_OPS: usize = 200;
@@ -310,6 +326,17 @@ pub struct PairingListenerInfo {
     pub upload_already_known: Option<u64>,
     /// Why the apply failed, in the apply's own words.
     pub upload_note: Option<String>,
+    /// §6: the staged push's state in this window — `receiving`, `staged`,
+    /// `applying`, `applied` or `failed`; `None` until the phone pushes an op.
+    /// The panel acts on `staged` (it takes and applies the ops).
+    pub sync_state: Option<String>,
+    /// Ops the phone pushed: staged so far, or applied once terminal.
+    pub sync_ops: u64,
+    /// `sync-applied`: the highest own seq the phone says it applied. The panel
+    /// records it with `ackStatements`, which advances `cursor_out` (§6.5).
+    pub sync_applied: Option<u64>,
+    /// Why the sync apply failed, in the apply's own words.
+    pub sync_note: Option<String>,
     pub note: Option<String>,
 }
 
@@ -332,6 +359,10 @@ impl PairingListenerInfo {
             upload_inserted: None,
             upload_already_known: None,
             upload_note: None,
+            sync_state: None,
+            sync_ops: 0,
+            sync_applied: None,
+            sync_note: None,
             note,
         }
     }
@@ -396,6 +427,12 @@ struct Gate {
     /// The staged §9.1 upload: batches the phone sent, held until the panel
     /// applies them. Born empty in every window; nothing here outlives it.
     upload: Mutex<UploadState>,
+    /// The §6 exchange: the phone's ops staged for the panel, this device's
+    /// own ops held for its pull, and the positions each side reported.
+    sync: Mutex<SyncState>,
+    /// Where the pull's ops come from. `None` is a window that stages a push
+    /// but serves none of its own — every `sync-pull` is then `not-allowed`.
+    sync_source: Option<SyncSource>,
 }
 
 /// The one consistent §8.4 read this window holds, and the pull's progress
@@ -473,6 +510,86 @@ impl UploadState {
     }
 }
 
+/// Where this device's own §6 ops come from: `sync_outbox` rows with
+/// `seq > afterSeq`, as the wire document each one is (`readOutbox`'s shape).
+/// Read in Rust for the snapshot's reason — the store's read is the app's own
+/// connection — and read **once** per window, then served from memory.
+pub type SyncSource = Arc<dyn Fn(u64) -> Result<Vec<JsonValue>, String> + Send + Sync>;
+
+/// What the panel's apply decided about a staged push (§7). The phone acts on
+/// this and nothing else: `throughSeq` is the highest seq the desktop's engine
+/// actually applied, which is what its outbox may record as delivered.
+#[derive(Debug, Clone)]
+pub enum SyncOutcome {
+    Applied { through_seq: u64 },
+    Failed { message: String },
+}
+
+/// The §6 pull this window holds: the one read of this device's outbox, taken
+/// when the first `sync-pull` arrives and kept for the window's life (the
+/// snapshot rule — a new window re-reads, §11.4).
+#[derive(Default)]
+struct SyncPullStream {
+    /// The `afterSeq` the held read was taken for. A later request naming a
+    /// different one would be a different read, which one window does not do.
+    after_seq: Option<u64>,
+    batches: Vec<Vec<JsonValue>>,
+    /// Batches that already left the desktop: asking for one again re-serves
+    /// it, because a lost reply must not cost the phone the whole pull.
+    served: HashSet<usize>,
+}
+
+/// One window's §6 exchange: the phone's ops staged for the panel's apply, the
+/// device's own ops held for the phone's pull, and the two positions each side
+/// reports. Born empty; nothing here outlives the port.
+#[derive(Default)]
+struct SyncState {
+    /// The push: batches staged in order, then committed, then taken once.
+    push_total: Option<usize>,
+    push_batches: Vec<Vec<JsonValue>>,
+    push_committed: bool,
+    push_taken: bool,
+    push_outcome: Option<SyncOutcome>,
+    /// The pull: the one read, and the progress through it.
+    pull: Option<SyncPullStream>,
+    /// `sync-applied`: the highest seq the phone says it applied of ours. The
+    /// panel reads it to record the acknowledgement (§6.5).
+    applied_through: Option<u64>,
+}
+
+impl SyncState {
+    /// Every staged push op, in batch order.
+    fn push_ops(&self) -> Vec<JsonValue> {
+        self.push_batches.iter().flatten().cloned().collect()
+    }
+
+    fn push_count(&self) -> usize {
+        self.push_batches.iter().map(Vec::len).sum()
+    }
+
+    /// The one word `PairingListenerInfo` and the sealed status share.
+    fn state_name(&self) -> Option<&'static str> {
+        match &self.push_outcome {
+            Some(SyncOutcome::Applied { .. }) => Some("applied"),
+            Some(SyncOutcome::Failed { .. }) => Some("failed"),
+            None if self.push_committed && self.push_taken => Some("applying"),
+            None if self.push_committed => Some("staged"),
+            None if !self.push_batches.is_empty() => Some("receiving"),
+            None => None,
+        }
+    }
+
+    /// The highest seq this push carried — the `throughSeq` an applied verdict
+    /// reports and the phone's `sync-applied` answers with.
+    fn highest_pushed_seq(&self) -> u64 {
+        self.push_ops()
+            .iter()
+            .filter_map(|op| op.get("seq").and_then(JsonValue::as_u64))
+            .max()
+            .unwrap_or(0)
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     stop: AtomicBool,
@@ -524,6 +641,16 @@ impl Running {
         let upload_state = upload.state_name().map(str::to_string);
         let upload_ops = upload.op_count() as u64;
         drop(upload);
+        // …and the §6 exchange's, for the same reason.
+        let sync = self.gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+        let sync_state = sync.state_name().map(str::to_string);
+        let sync_ops = sync.push_count() as u64;
+        let sync_applied = sync.applied_through;
+        let sync_note = match &sync.push_outcome {
+            Some(SyncOutcome::Failed { message }) => Some(message.clone()),
+            _ => None,
+        };
+        drop(sync);
         PairingListenerInfo {
             running: true,
             port: Some(self.port),
@@ -544,6 +671,10 @@ impl Running {
             upload_inserted,
             upload_already_known,
             upload_note,
+            sync_state,
+            sync_ops,
+            sync_applied,
+            sync_note,
             note,
         }
     }
@@ -563,6 +694,11 @@ pub struct PairingListenerState {
     /// The SAME barrier the share server and the DB commands consult (E2). A
     /// private barrier would be two states pretending to be one.
     lifecycle: Arc<Lifecycle>,
+    /// The §6 pull's reader, installed by `pairing_open` before the window
+    /// binds and taken by `start` into the gate. A slot rather than a
+    /// `start` parameter so the twenty windows that serve no ops stay as they
+    /// are: an absent source is a window that stages a push and serves none.
+    sync_source: Mutex<Option<SyncSource>>,
 }
 
 impl PairingListenerState {
@@ -571,6 +707,16 @@ impl PairingListenerState {
         Self {
             lifecycle,
             ..Self::default()
+        }
+    }
+
+    /// Install the §6 pull's reader for the window about to open. Called before
+    /// `start`, which takes it: a source set while a window is running is
+    /// dropped by the next `start` rather than swapped under a live gate, so
+    /// the window that serves a pull is fixed for its whole life.
+    pub fn set_sync_source(&self, source: SyncSource) {
+        if let Ok(mut slot) = self.sync_source.lock() {
+            *slot = Some(source);
         }
     }
 
@@ -644,6 +790,14 @@ impl PairingListenerState {
             }
             None => None,
         };
+        // The §6 reader belongs to the window, so it is taken here rather than
+        // read live: a source installed for a later window must not be picked
+        // up by this one, and one this window consumed is gone.
+        let sync_source = self
+            .sync_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         let local_secret = *identity.secret();
         let public_key = identity.public_key_hex();
         let fingerprint = identity.fingerprint();
@@ -712,6 +866,8 @@ impl PairingListenerState {
             snapshot: Mutex::new(SnapshotStream::default()),
             snapshot_source: snapshot,
             upload: Mutex::new(UploadState::default()),
+            sync: Mutex::new(SyncState::default()),
+            sync_source,
         });
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
@@ -817,6 +973,36 @@ impl PairingListenerState {
     /// Record what the panel's apply did, so `upload-status` can seal the
     /// verdict to the phone. Ignored unless the upload was taken and no
     /// outcome stands yet: the first verdict is the only one (§7.2).
+    /// Take the staged §6 push for the panel's apply — the upload's rule:
+    /// `None` unless the phone committed a complete push and nobody took it,
+    /// and taking is once, so one staging can never be applied twice.
+    pub fn take_sync_push(&self) -> Option<Vec<JsonValue>> {
+        let guard = self.lock().ok()?;
+        let running = guard.as_ref()?;
+        if running.finished() {
+            return None;
+        }
+        let mut sync = running.gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+        if !sync.push_committed || sync.push_taken || sync.push_outcome.is_some() {
+            return None;
+        }
+        sync.push_taken = true;
+        Some(sync.push_ops())
+    }
+
+    /// Record what the panel's apply did, so `sync-status` can seal the verdict.
+    /// The first verdict stands (§7.2).
+    pub fn set_sync_outcome(&self, outcome: SyncOutcome) {
+        let Ok(guard) = self.lock() else { return };
+        let Some(running) = guard.as_ref() else {
+            return;
+        };
+        let mut sync = running.gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+        if sync.push_taken && sync.push_outcome.is_none() {
+            sync.push_outcome = Some(outcome);
+        }
+    }
+
     pub fn set_upload_outcome(&self, outcome: UploadOutcome) {
         let Ok(guard) = self.lock() else { return };
         let Some(running) = guard.as_ref() else {
@@ -1080,13 +1266,14 @@ fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
     let hello = path == HELLO_PATH;
     let snapshot = path == SNAPSHOT_PATH;
     let upload = path == UPLOAD_PATH;
-    if !hello && !snapshot && !upload && path != REQUEST_PATH {
+    let sync = path == SYNC_PATH;
+    if !hello && !snapshot && !upload && !sync && path != REQUEST_PATH {
         return (
             404,
             Some(json!({
                 "ok": false,
                 "reason": "not-found",
-                "message": "the pairing listener serves POST /pair/hello, POST /pair/request, POST /pair/snapshot and POST /pair/upload.",
+                "message": "the pairing listener serves POST /pair/hello, POST /pair/request, POST /pair/snapshot, POST /pair/upload and POST /pair/sync.",
             })),
         );
     }
@@ -1109,7 +1296,7 @@ fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
     // pin, and a revocation must never be a lockout from re-pairing. On the
     // snapshot route it also means the reader is never called, so not one batch
     // byte leaves the desktop.
-    if (hello || snapshot || upload) && active_pin(gate).is_some_and(|pin| pin.revoked) {
+    if (hello || snapshot || upload || sync) && active_pin(gate).is_some_and(|pin| pin.revoked) {
         let refusal = RefusalReply::refused(
             "revoked",
             "this device was revoked on the desktop; re-pair it before anything syncs (§11.3).",
@@ -1125,6 +1312,9 @@ fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
     } else if upload {
         admit(gate, &body, &UPLOAD_ACCEPTED_KINDS)
             .and_then(|(pin, opened)| upload_answer(gate, &pin, &opened))
+    } else if sync {
+        admit(gate, &body, &SYNC_ACCEPTED_KINDS)
+            .and_then(|(pin, opened)| sync_answer(gate, &pin, &opened))
     } else {
         rendezvous(gate, &body)
     };
@@ -2026,6 +2216,328 @@ fn upload_status_reply(gate: &Gate, pin: &Pin) -> Result<JsonValue, RefusalReply
     Ok(json!({
         "ok": true,
         "reason": "upload-status",
+        "envelope": wire,
+    }))
+}
+
+/// The §6 exchange, after admission. The route carries both directions on
+/// purpose: a sync is one exchange, and the phone drives every step of it.
+fn sync_answer(gate: &Gate, pin: &Pin, opened: &Opened) -> Result<JsonValue, RefusalReply> {
+    let kind = opened
+        .message
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    match kind {
+        "sync-push" => stage_sync_push(gate, &opened.message),
+        "sync-commit" => commit_sync_push(gate),
+        "sync-pull" => serve_sync_ops(gate, pin, &opened.message),
+        "sync-applied" => record_sync_applied(gate, &opened.message),
+        "sync-status" => sync_status_reply(gate, pin),
+        // `admit` filtered the kind against `SYNC_ACCEPTED_KINDS`; a refusal is
+        // still the right answer if that ever drifts.
+        other => Err(RefusalReply::refused(
+            "not-allowed",
+            format!("{other:?} is not a sync message (§6)."),
+        )),
+    }
+}
+
+/// Stage one batch of the phone's ops (§6.2, §7.6). The upload's rule, because
+/// it is the same fact: staging is not applying, so a batch whose reply was
+/// lost may be sent again unchanged and is acknowledged again. A different
+/// batch under a staged index, or an index out of order, is refused by name:
+/// one push streams per window.
+fn stage_sync_push(gate: &Gate, message: &JsonValue) -> Result<JsonValue, RefusalReply> {
+    let number = |key: &str| message.get(key).and_then(JsonValue::as_u64);
+    let batch = number("batch")
+        .ok_or_else(|| RefusalReply::malformed("a sync batch names its index (§6.2)."))?
+        as usize;
+    let total = number("total")
+        .ok_or_else(|| RefusalReply::malformed("a sync batch names its batch count (§6.2)."))?
+        as usize;
+    if total == 0 || total > MAX_UPLOAD_BATCHES {
+        return Err(RefusalReply::malformed(format!(
+            "a push is 1..={MAX_UPLOAD_BATCHES} batches; this one declares {total}."
+        )));
+    }
+    if batch >= total {
+        return Err(RefusalReply::malformed(format!(
+            "this push has {total} batch(es); there is no batch {batch}."
+        )));
+    }
+    let Some(ops) = message.get("ops").and_then(JsonValue::as_array) else {
+        return Err(RefusalReply::malformed(
+            "a sync batch carries its operations as an ops array (§6.2).",
+        ));
+    };
+    if ops.len() > MAX_UPLOAD_BATCH_OPS {
+        return Err(RefusalReply::malformed(format!(
+            "one sync batch is at most {MAX_UPLOAD_BATCH_OPS} operations (§8.3); this one carries {}.",
+            ops.len()
+        )));
+    }
+    // Structural only: an operation is a document naming its record and its
+    // place in the sender's sequence. Whether it may be applied — the table,
+    // the kind, the payload's fields — is the engine's §7.7 decision, which
+    // runs before a single statement exists. Staging an op the engine would
+    // refuse is harmless precisely because it can never be applied unvalidated.
+    for op in ops {
+        let names_its_place = op.get("entity_table").and_then(JsonValue::as_str).is_some()
+            && op.get("entity_uid").and_then(JsonValue::as_str).is_some()
+            && op.get("seq").and_then(JsonValue::as_u64).is_some();
+        if !names_its_place {
+            return Err(RefusalReply::malformed(
+                "every pushed operation names its table, its record and its seq (§6.2).",
+            ));
+        }
+    }
+
+    let mut sync = gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+    if sync.push_committed {
+        return Err(RefusalReply::refused(
+            "sync-busy",
+            "this window's push was already committed; a new push opens a new window.",
+        ));
+    }
+    match sync.push_total {
+        None => sync.push_total = Some(total),
+        Some(declared) if declared != total => {
+            return Err(RefusalReply::malformed(format!(
+                "this push declared {declared} batch(es) with its first batch, not {total}."
+            )));
+        }
+        Some(_) => {}
+    }
+    if batch < sync.push_batches.len() {
+        if sync.push_batches[batch] == *ops {
+            return Ok(json!({
+                "ok": true,
+                "reason": "staged",
+                "batch": batch,
+                "total": total,
+                "ops": sync.push_count(),
+            }));
+        }
+        return Err(RefusalReply::refused(
+            "sync-busy",
+            "a different batch already holds this index; one push streams per window.",
+        ));
+    }
+    if batch > sync.push_batches.len() {
+        return Err(RefusalReply::refused(
+            "sync-busy",
+            "sync batches land in order; an earlier batch has not arrived.",
+        ));
+    }
+    sync.push_batches.push(ops.clone());
+    Ok(json!({
+        "ok": true,
+        "reason": "staged",
+        "batch": batch,
+        "total": total,
+        "ops": sync.push_count(),
+    }))
+}
+
+/// Every batch is staged: the panel may take the push. A second commit is a
+/// `replayed` refusal (§7.2) and one before the last batch is `malformed`.
+fn commit_sync_push(gate: &Gate) -> Result<JsonValue, RefusalReply> {
+    let mut sync = gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+    if sync.push_committed {
+        return Err(RefusalReply::refused(
+            "replayed",
+            "this push was already committed in this window (§7.2).",
+        ));
+    }
+    let Some(total) = sync.push_total else {
+        return Err(RefusalReply::malformed(
+            "no sync batch has arrived in this window, so there is nothing to commit.",
+        ));
+    };
+    if sync.push_batches.len() != total {
+        return Err(RefusalReply::malformed(format!(
+            "{} of {total} batch(es) were staged; a commit names the whole push.",
+            sync.push_batches.len()
+        )));
+    }
+    sync.push_committed = true;
+    Ok(json!({
+        "ok": true,
+        "reason": "sync-committed",
+        "total": total,
+        "ops": sync.push_count(),
+        "highestSeq": sync.highest_pushed_seq(),
+    }))
+}
+
+/// Serve one batch of this window's own ops (§6.3).
+///
+/// The read happens on the FIRST pull and is held for the window, exactly as
+/// the snapshot's is: a phone that asks twice for one batch gets the same rows,
+/// and a phone that asks from a different position is asking for a second read
+/// this window does not do.
+fn serve_sync_ops(gate: &Gate, pin: &Pin, message: &JsonValue) -> Result<JsonValue, RefusalReply> {
+    let number = |key: &str| message.get(key).and_then(JsonValue::as_u64);
+    let batch = number("batch")
+        .ok_or_else(|| RefusalReply::malformed("a sync-pull names its batch."))?
+        as usize;
+    let after_seq = number("afterSeq").ok_or_else(|| {
+        RefusalReply::malformed(
+            "a sync-pull says which of this device's operations it already has.",
+        )
+    })?;
+    let mut sync = gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+    if sync.pull.is_none() {
+        let Some(source) = gate.sync_source.as_ref() else {
+            return Err(RefusalReply::refused(
+                "not-allowed",
+                "this window serves no sync operations of its own.",
+            ));
+        };
+        let rows = source(after_seq).map_err(|message| RefusalReply {
+            code: "internal",
+            message,
+            status: 500,
+            attempts_left: None,
+        })?;
+        // One batch even when it is empty: the end of a pull is a batch with
+        // nothing after it, never an error and never silence.
+        let mut batches: Vec<Vec<JsonValue>> = Vec::new();
+        let mut current: Vec<JsonValue> = Vec::new();
+        for row in rows {
+            current.push(row);
+            if current.len() == MAX_UPLOAD_BATCH_OPS {
+                batches.push(std::mem::take(&mut current));
+            }
+        }
+        if !current.is_empty() || batches.is_empty() {
+            batches.push(current);
+        }
+        sync.pull = Some(SyncPullStream {
+            after_seq: Some(after_seq),
+            batches,
+            served: HashSet::new(),
+        });
+    }
+    let Some(pull) = sync.pull.as_mut() else {
+        return Err(RefusalReply::malformed("the sync read is not held."));
+    };
+    if pull.after_seq != Some(after_seq) {
+        return Err(RefusalReply::refused(
+            "sync-mismatch",
+            "this window already served a pull from another position; a new one opens a new window.",
+        ));
+    }
+    let total = pull.batches.len();
+    if batch >= total {
+        return Err(RefusalReply::malformed(format!(
+            "this pull has {total} batch(es); there is no batch {batch}."
+        )));
+    }
+    let ops = pull.batches[batch].clone();
+    pull.served.insert(batch);
+    drop(sync);
+
+    let reply = json!({
+        "kind": "sync-ops",
+        "pairingId": gate.pairing_id,
+        "batch": batch,
+        "total": total,
+        "ops": ops,
+    });
+    let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let wire = envelope::seal(SealInput {
+        secret: &gate.local_secret,
+        peer_public: &pin.public_key,
+        from: &gate.local_device_id,
+        to: &pin.device_id,
+        message_id: &format!("sync-ops:{counter}"),
+        counter,
+        message: &reply,
+        pairing_id: Some(gate.pairing_id.as_str()),
+        nonce: None,
+        ephemeral_secret: None,
+    })
+    .map_err(|message| RefusalReply {
+        code: "internal",
+        message,
+        status: 500,
+        attempts_left: None,
+    })?;
+    Ok(json!({
+        "ok": true,
+        "reason": "sync-ops",
+        "envelope": wire,
+    }))
+}
+
+/// The phone applied this device's ops through `throughSeq`. Recorded for the
+/// panel, which turns it into a §6.5 acknowledgement on its next tick — the
+/// listener writes nothing itself.
+fn record_sync_applied(gate: &Gate, message: &JsonValue) -> Result<JsonValue, RefusalReply> {
+    let Some(through) = message.get("throughSeq").and_then(JsonValue::as_u64) else {
+        return Err(RefusalReply::malformed(
+            "sync-applied names the seq it applied through (§6.5).",
+        ));
+    };
+    let mut sync = gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+    sync.applied_through = Some(
+        sync.applied_through
+            .map_or(through, |held| held.max(through)),
+    );
+    Ok(json!({
+        "ok": true,
+        "reason": "sync-applied",
+        "throughSeq": through,
+    }))
+}
+
+/// What the panel's apply decided, sealed back — the one sync reply the phone
+/// acts on, so it is sealed and counter-guarded like a snapshot batch: a forged
+/// "applied" would let the phone prune ops the desktop never held (§6.5).
+fn sync_status_reply(gate: &Gate, pin: &Pin) -> Result<JsonValue, RefusalReply> {
+    let (state, through, message) = {
+        let sync = gate.sync.lock().unwrap_or_else(|e| e.into_inner());
+        match &sync.push_outcome {
+            Some(SyncOutcome::Applied { through_seq }) => ("applied", Some(*through_seq), None),
+            Some(SyncOutcome::Failed { message }) => ("failed", None, Some(message.clone())),
+            None => ("pending", None, None),
+        }
+    };
+    let mut reply = json!({
+        "kind": "sync-status",
+        "pairingId": gate.pairing_id,
+        "state": state,
+    });
+    if let Some(through) = through {
+        reply["throughSeq"] = json!(through);
+    }
+    if let Some(message) = message {
+        reply["message"] = json!(message);
+    }
+    let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let wire = envelope::seal(SealInput {
+        secret: &gate.local_secret,
+        peer_public: &pin.public_key,
+        from: &gate.local_device_id,
+        to: &pin.device_id,
+        message_id: &format!("sync-status:{counter}"),
+        counter,
+        message: &reply,
+        pairing_id: Some(gate.pairing_id.as_str()),
+        nonce: None,
+        ephemeral_secret: None,
+    })
+    .map_err(|message| RefusalReply {
+        code: "internal",
+        message,
+        status: 500,
+        attempts_left: None,
+    })?;
+    Ok(json!({
+        "ok": true,
+        "reason": "sync-status",
         "envelope": wire,
     }))
 }
@@ -3920,6 +4432,319 @@ mod tests {
             post_upload(port, &seal_upload(9, &json!({ "kind": "upload-commit" })));
         assert_eq!(status, 403, "{reply}");
         assert_eq!(refusal_reason(&reply), "replayed");
+        state.stop().expect("stop");
+    }
+
+    // -----------------------------------------------------------------------
+    // §6 — the ongoing exchange: pushed ops staged, pulled ops read once.
+    // -----------------------------------------------------------------------
+
+    /// One of this device's own operations, as `sync_outbox` hands it over.
+    fn sync_op(seq: u64) -> JsonValue {
+        json!({
+            "device_id": PHONE_ID,
+            "seq": seq,
+            "op_id": format!("op-{seq}"),
+            "entity_table": "notes",
+            "entity_uid": format!("11111111-1111-4111-8111-{seq:012}"),
+            "op": "create",
+            "base_counter": 0,
+            "counter": seq,
+            "field_stamps": "{}",
+            "payload": "{}",
+        })
+    }
+
+    fn seal_sync(counter: u64, message: &JsonValue) -> Vec<u8> {
+        let mut body = message.clone();
+        let object = body.as_object_mut().expect("a sync message is an object");
+        object.insert("pairingId".to_string(), json!("pair-1"));
+        object.insert("protocolVersion".to_string(), json!(1));
+        object.insert("schemaVersion".to_string(), json!(8));
+        object.insert("generation".to_string(), json!(1));
+        let wire = envelope::seal(SealInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            from: PHONE_ID,
+            to: DESKTOP_ID,
+            message_id: &format!("sync-{counter}"),
+            counter,
+            message: &body,
+            pairing_id: Some("pair-1"),
+            nonce: None,
+            ephemeral_secret: None,
+        })
+        .expect("seal the sync message");
+        encode_frame(&wire).expect("frame it")
+    }
+
+    fn post_sync(port: u16, body: &[u8]) -> (u16, String) {
+        let (status, raw) = request(port, "POST /pair/sync", body);
+        let text =
+            decode_frame(&raw).unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned());
+        (status, text)
+    }
+
+    /// A window that serves `rows` operations of its own, and counts the reads
+    /// so "once per window" is an assertion rather than a hope.
+    fn started_with_sync(revoked: bool, rows: u64) -> (PairingListenerState, u16, Arc<AtomicU64>) {
+        let reads = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&reads);
+        let source: SyncSource = Arc::new(move |after_seq| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok((1..=rows)
+                .filter(|seq| *seq > after_seq)
+                .map(sync_op)
+                .collect())
+        });
+        let state = PairingListenerState::default();
+        state.set_sync_source(source);
+        let info = state
+            .start("127.0.0.1", window(revoked), desktop_identity(), None)
+            .expect("start");
+        (state, info.port.expect("port"), reads)
+    }
+
+    #[test]
+    fn a_push_is_staged_for_the_panel_and_applies_nothing_itself() {
+        let (state, port, _) = started_with_sync(false, 0);
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-push", "batch": 0, "total": 1, "ops": [sync_op(1), sync_op(2)] }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let reply: JsonValue = serde_json::from_str(&reply).expect("reply json");
+        assert_eq!(reply["reason"], json!("staged"));
+        assert_eq!(reply["ops"], json!(2));
+
+        // Nothing is applied by staging: the panel has nothing to take until
+        // the phone commits, and no verdict exists before the panel decides.
+        let info = state.status().expect("status");
+        assert_eq!(info.sync_state.as_deref(), Some("receiving"));
+        assert_eq!(info.sync_ops, 2);
+        assert_eq!(info.sync_note, None);
+        assert!(
+            state.take_sync_push().is_none(),
+            "uncommitted: nothing to take"
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn push_batches_land_in_order_and_an_identical_resend_is_acked() {
+        let (state, port, _) = started_with_sync(false, 0);
+
+        // Batch 1 before batch 0 is a skipped index.
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-push", "batch": 1, "total": 2, "ops": [sync_op(2)] }),
+            ),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "sync-busy");
+
+        let (status, _) = post_sync(
+            port,
+            &seal_sync(
+                2,
+                &json!({ "kind": "sync-push", "batch": 0, "total": 2, "ops": [sync_op(1)] }),
+            ),
+        );
+        assert_eq!(status, 200);
+
+        // The same batch again (its reply was lost) is acknowledged, not
+        // refused: a staging is not an apply (§7.2).
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                3,
+                &json!({ "kind": "sync-push", "batch": 0, "total": 2, "ops": [sync_op(1)] }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&reply).expect("json")["ops"],
+            json!(1),
+            "the re-send staged nothing twice"
+        );
+
+        // A different batch under a staged index is a second push.
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                4,
+                &json!({ "kind": "sync-push", "batch": 0, "total": 2, "ops": [sync_op(9)] }),
+            ),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "sync-busy");
+
+        // A commit before the last batch is malformed.
+        let (status, reply) = post_sync(port, &seal_sync(5, &json!({ "kind": "sync-commit" })));
+        assert_eq!(status, 400, "{reply}");
+
+        let (status, _) = post_sync(
+            port,
+            &seal_sync(
+                6,
+                &json!({ "kind": "sync-push", "batch": 1, "total": 2, "ops": [sync_op(2)] }),
+            ),
+        );
+        assert_eq!(status, 200);
+        let (status, reply) = post_sync(port, &seal_sync(7, &json!({ "kind": "sync-commit" })));
+        assert_eq!(status, 200, "{reply}");
+        let reply: JsonValue = serde_json::from_str(&reply).expect("reply json");
+        assert_eq!(reply["reason"], json!("sync-committed"));
+        assert_eq!(reply["highestSeq"], json!(2));
+
+        // Committed once: the panel takes the whole staging once, in order.
+        let ops = state.take_sync_push().expect("the staged push");
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0]["seq"], json!(1));
+        assert_eq!(ops[1]["seq"], json!(2));
+        assert!(state.take_sync_push().is_none(), "taken once");
+
+        // And a second commit is a replay.
+        let (status, reply) = post_sync(port, &seal_sync(8, &json!({ "kind": "sync-commit" })));
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "replayed");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_pull_serves_only_rows_after_its_position_and_reads_once() {
+        let (state, port, reads) = started_with_sync(false, 5);
+
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-pull", "batch": 0, "afterSeq": 2 }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let (document, _) = opened_batch(&reply, 0);
+        assert_eq!(document["kind"], json!("sync-ops"));
+        assert_eq!(document["pairingId"], json!("pair-1"));
+        let ops = document["ops"].as_array().expect("ops");
+        assert_eq!(ops.len(), 3, "rows 3, 4 and 5 only");
+        assert_eq!(ops[0]["seq"], json!(3));
+        assert_eq!(ops[2]["seq"], json!(5));
+
+        // Asking for the same batch again re-serves the same read, for a reply
+        // that was lost; a batch that was never read is malformed, not empty.
+        let (status, again) = post_sync(
+            port,
+            &seal_sync(
+                2,
+                &json!({ "kind": "sync-pull", "batch": 0, "afterSeq": 2 }),
+            ),
+        );
+        assert_eq!(status, 200, "{again}");
+        let (document, _) = opened_batch(&again, 0);
+        assert_eq!(document["ops"], json!(ops));
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                3,
+                &json!({ "kind": "sync-pull", "batch": 1, "afterSeq": 2 }),
+            ),
+        );
+        assert_eq!(status, 400, "{reply}");
+
+        // A second read from another position is a second pull this window
+        // does not do.
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                4,
+                &json!({ "kind": "sync-pull", "batch": 0, "afterSeq": 0 }),
+            ),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "sync-mismatch");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "one read per window");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_revoked_peer_is_refused_on_the_sync_route_before_admit() {
+        let (state, port, reads) = started_with_sync(true, 5);
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-push", "batch": 0, "total": 1, "ops": [sync_op(1)] }),
+            ),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "revoked");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "not one op leaves the desktop for a revoked peer"
+        );
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn the_sync_verdict_opens_with_the_windows_keys_and_no_one_elses() {
+        let (state, port, _) = started_with_sync(false, 0);
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-push", "batch": 0, "total": 1, "ops": [sync_op(1)] }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(
+            post_sync(port, &seal_sync(2, &json!({ "kind": "sync-commit" }))).0,
+            200
+        );
+        state.take_sync_push().expect("taken");
+
+        // Pending until the panel's engine decides.
+        let (status, reply) = post_sync(port, &seal_sync(3, &json!({ "kind": "sync-status" })));
+        assert_eq!(status, 200, "{reply}");
+        let (document, desktop) = opened_batch(&reply, 0);
+        assert_eq!(document["kind"], json!("sync-status"));
+        assert_eq!(document["state"], json!("pending"));
+
+        state.set_sync_outcome(SyncOutcome::Applied { through_seq: 1 });
+        let (status, reply) = post_sync(port, &seal_sync(4, &json!({ "kind": "sync-status" })));
+        assert_eq!(status, 200, "{reply}");
+        let (document, _) = opened_batch(&reply, desktop);
+        assert_eq!(document["state"], json!("applied"));
+        assert_eq!(document["throughSeq"], json!(1));
+        assert_eq!(document["pairingId"], json!("pair-1"));
+
+        // The same message sealed by another key never reaches the route: the
+        // verdict is opened with the pinned peer's key or not at all (§11.2).
+        let forged = envelope::seal(SealInput {
+            secret: &OTHER_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            from: PHONE_ID,
+            to: DESKTOP_ID,
+            message_id: "sync-status-forged",
+            counter: 5,
+            message: &json!({ "kind": "sync-status", "pairingId": "pair-1", "protocolVersion": 1, "schemaVersion": 8, "generation": 1 }),
+            pairing_id: Some("pair-1"),
+            nonce: None,
+            ephemeral_secret: None,
+        })
+        .expect("seal the forged message");
+        let frame = encode_frame(&forged).expect("frame the forged message");
+        let (status, reply) = request(port, "POST /pair/sync", &frame);
+        let body =
+            decode_frame(&reply).unwrap_or_else(|_| String::from_utf8_lossy(&reply).into_owned());
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "unauthenticated");
         state.stop().expect("stop");
     }
 
