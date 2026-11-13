@@ -119,6 +119,53 @@ export function assertSyncTable(table: string): asserts table is SyncTable {
   }
 }
 
+/**
+ * §4.3's per-field stamps for a local write: every field the write touches is
+ * stamped with the op's own stamp, and every OTHER field keeps the stamp it
+ * already had.
+ *
+ * Merging rather than replacing is the whole point. A row stamp that dropped
+ * the fields it did not touch would make the next merge read those fields as
+ * "stamped by this device's latest write", so a peer's older edit of a
+ * different field would lose a comparison it should win — two devices editing
+ * two different fields would silently keep only one edit.
+ *
+ * Built in SQL because the stamp is the transaction's own counter
+ * (`sync_state.lamport`), which this module never reads into TypeScript: a
+ * value read before the batch would be exactly the stale counter the store's
+ * subselects exist to avoid.
+ */
+function perFieldStamps(
+  table: SyncTable,
+  uid: string,
+  opId: string,
+  fields: Record<string, unknown>,
+  provided?: Record<string, FieldStamp>,
+): { sql: string; params: unknown[] } {
+  // An explicit map (a caller merging on a peer's behalf) is patched over the
+  // held stamps exactly as a writer's own fields are: the fields it does not
+  // name keep the stamps they already had.
+  const patch = provided
+    ? { sql: "?", params: [JSON.stringify(provided)] }
+    : {
+        sql: `(SELECT json_group_object(
+                 touched.key,
+                 json_object(
+                   'counter', (SELECT lamport FROM sync_state WHERE id = 1),
+                   'deviceId', (SELECT device_id FROM sync_state WHERE id = 1),
+                   'opId', ?))
+               FROM json_each(?) AS touched)`,
+        params: [opId, JSON.stringify(fields)],
+      };
+  return {
+    sql: `json_patch(
+            COALESCE((SELECT held.field_stamps FROM sync_row_stamps held
+                       WHERE held.entity_table = ? AND held.entity_uid = ?), '{}'),
+            COALESCE(${patch.sql}, '{}'))`,
+    params: [table, uid, ...patch.params],
+  };
+}
+
 /** The one-row bump every enqueued mutation uses (§4.2, §1.3). */
 function bumpClock(now: string): BatchStatement {
   return {
@@ -195,24 +242,30 @@ export function outboxStatements(
             sql: "DELETE FROM sync_row_stamps WHERE entity_table = ? AND entity_uid = ?",
             params: [entry.table, entry.uid],
           }
-        : {
-            sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
-                  VALUES (?, ?, (SELECT lamport FROM sync_state WHERE id = 1),
-                          (SELECT device_id FROM sync_state WHERE id = 1), ?, ?, ?)
-                  ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
-                    counter = excluded.counter,
-                    device_id = excluded.device_id,
-                    op_id = excluded.op_id,
-                    field_stamps = excluded.field_stamps,
-                    updated_at = excluded.updated_at`,
-            params: [
+        : (() => {
+            // An explicit per-field map (a caller merging on a peer's behalf)
+            // is patched over the held one exactly as a writer's own fields
+            // are — the fields it does not name keep their stamps.
+            const stamps = perFieldStamps(
               entry.table,
               entry.uid,
               opId,
-              JSON.stringify(entry.fieldStamps ?? {}),
-              stamp,
-            ],
-          },
+              entry.fields ?? {},
+              entry.fieldStamps,
+            );
+            return {
+              sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+                    VALUES (?, ?, (SELECT lamport FROM sync_state WHERE id = 1),
+                            (SELECT device_id FROM sync_state WHERE id = 1), ?, ${stamps.sql}, ?)
+                    ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
+                      counter = excluded.counter,
+                      device_id = excluded.device_id,
+                      op_id = excluded.op_id,
+                      field_stamps = excluded.field_stamps,
+                      updated_at = excluded.updated_at`,
+              params: [entry.table, entry.uid, opId, ...stamps.params, stamp],
+            };
+          })(),
     );
     // §5.2: a deleted child gets its own tombstone even when the database's
     // FK cascade is what removed the row. The caller passes every cascaded
@@ -569,7 +622,9 @@ export async function readRowId(
  * `collection_uid` and this map is what turns it back into a local `id`. Only
  * the referenced tables appear here; every other table's keys are its own.
  */
-const FOREIGN_KEYS: Partial<Record<SyncTable, Record<string, SyncTable>>> = {
+export const FOREIGN_KEYS: Partial<
+  Record<SyncTable, Record<string, SyncTable>>
+> = {
   notes: { collection_uid: "collections" },
   income_entries: { category_uid: "income_categories", wallet_uid: "wallets" },
   expense_entries: {

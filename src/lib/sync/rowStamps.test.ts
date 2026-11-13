@@ -35,14 +35,25 @@ test("a mutation records the stamp a snapshot will carry, in the same batch", ()
     /\(SELECT lamport FROM sync_state WHERE id = 1\)/,
     "the counter comes from the transaction's own row, never a caller's claim",
   );
+  assert.match(
+    stamp.sql,
+    /json_patch\(\s*COALESCE\(\(SELECT held\.field_stamps/,
+    "the fields this write does not touch keep the stamps they already had",
+  );
+  // [table, uid, opId, held table, held uid, provided field stamps, updated_at]
   const params = stamp.params ?? [];
   assert.deepEqual(params.slice(0, 2), ["notes", "uid-1"]);
+  assert.deepEqual(
+    params.slice(3, 5),
+    ["notes", "uid-1"],
+    "the patch is merged over the stamps this row already holds (§4.3)",
+  );
   assert.equal(
-    params[3],
+    params[5],
     JSON.stringify(FIELD_STAMPS),
     "the per-field stamps of §4.3 travel with the row stamp",
   );
-  assert.equal(params[4], NOW.toISOString());
+  assert.equal(params[6], NOW.toISOString());
 });
 
 test("a delete drops the row's stamp; the tombstone carries the delete's stamp", () => {

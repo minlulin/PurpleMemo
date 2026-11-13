@@ -15,9 +15,9 @@
  * case at the end pins.
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { BatchStatement, DataDriver } from "../../data/driver.ts";
+import type { DataDriver } from "../../data/driver.ts";
 import { createBudgetRepo } from "../budget.ts";
 import { createHabitsRepo } from "../habits.ts";
 import { createNotesRepo } from "../notes.ts";
@@ -29,175 +29,11 @@ import {
   readTombstones,
   type SyncState,
 } from "./store.ts";
-import { applySyncStorage } from "./testSchema.ts";
+import { openSyncStore, type SyncFixture as Store } from "./testSchema.ts";
 
-/**
- * The Stage 1 tables, the two the Trash delete path reads, and Budget's two.
- *
- * `reminders.created_by_device_id` is declared here because `./testSchema.ts`
- * skips the v9 `ALTER TABLE` that adds it in the app — this fixture cares about
- * that column, so it states the column.
- */
-const FIXTURE = `
-CREATE TABLE collections (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE notes (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  title TEXT NOT NULL DEFAULT '',
-  content TEXT NOT NULL DEFAULT '',
-  tags TEXT NOT NULL DEFAULT '',
-  collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
-  pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
-  archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE tasks (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  title TEXT NOT NULL,
-  due_date TEXT,
-  done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
-  repeat TEXT NOT NULL DEFAULT 'none' CHECK (repeat IN ('none', 'daily', 'weekly', 'monthly')),
-  note TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
-);
-CREATE TABLE reminders (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  title TEXT NOT NULL,
-  remind_at TEXT NOT NULL,
-  repeat TEXT NOT NULL DEFAULT 'none' CHECK (repeat IN ('none', 'daily', 'weekly', 'monthly')),
-  note TEXT NOT NULL DEFAULT '',
-  fired INTEGER NOT NULL DEFAULT 0 CHECK (fired IN (0, 1)),
-  created_at TEXT NOT NULL,
-  created_by_device_id TEXT
-);
-CREATE TABLE shopping_lists (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE shopping_items (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  list_id INTEGER NOT NULL REFERENCES shopping_lists(id) ON DELETE CASCADE,
-  text TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
-  sort_order INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE habits (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE habit_logs (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
-  log_date TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 1 CHECK (done IN (0, 1)),
-  UNIQUE (habit_id, log_date)
-);
-CREATE TABLE wallets (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE expense_categories (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE expense_entries (
-  id INTEGER PRIMARY KEY,
-  uid TEXT,
-  amount_cents INTEGER NOT NULL,
-  category_id INTEGER NOT NULL REFERENCES expense_categories(id),
-  wallet_id INTEGER NOT NULL REFERENCES wallets(id),
-  entry_date TEXT NOT NULL,
-  note TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
-);
-CREATE TABLE links (
-  id INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL DEFAULT 'related',
-  type_a TEXT NOT NULL,
-  id_a INTEGER NOT NULL,
-  type_b TEXT NOT NULL,
-  id_b INTEGER NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE photo_refs (
-  id INTEGER PRIMARY KEY,
-  photo_id INTEGER NOT NULL,
-  entity_type TEXT NOT NULL,
-  entity_id INTEGER NOT NULL
-);
-CREATE TABLE inbox_items (
-  id INTEGER PRIMARY KEY,
-  converted_type TEXT,
-  converted_id INTEGER
-);
-CREATE TABLE trash_items (
-  id INTEGER PRIMARY KEY,
-  entity_type TEXT NOT NULL,
-  entity_id INTEGER NOT NULL CHECK (entity_id > 0),
-  snapshot TEXT NOT NULL CHECK (json_valid(snapshot)),
-  deleted_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-`;
-
-interface Store {
-  db: DatabaseSync;
-  driver: DataDriver;
-}
-
-function openStore(): Store {
-  const db = new DatabaseSync(":memory:");
-  // The FK cascade is half of what §5.2 is about (a child removed by the
-  // database still needs its own tombstone), so it is ON as in production.
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec(FIXTURE);
-  applySyncStorage(db);
-  const run = (sql: string, params: unknown[] = []): void => {
-    db.prepare(sql).run(...(params as never[]));
-  };
-  const driver = {
-    query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> =>
-      db.prepare(sql).all(...(params as never[])) as T[],
-    execute: async (sql: string, params: unknown[] = []) => {
-      const result = db.prepare(sql).run(...(params as never[]));
-      return {
-        rowsAffected: Number(result.changes),
-        lastInsertRowid: Number(result.lastInsertRowid),
-      };
-    },
-    async batch(statements: BatchStatement[]): Promise<void> {
-      db.exec("BEGIN");
-      try {
-        for (const statement of statements) {
-          run(statement.sql, statement.params ?? []);
-        }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-  } as unknown as DataDriver;
-  return { db, driver };
-}
+/** The Stage 1 fixture and the app's batch contract live in `./testSchema.ts`,
+ * so the engine's two-store tests exercise the same database this one does. */
+const openStore = (): Store => openSyncStore();
 
 function count(db: DatabaseSync, sql: string, params: unknown[] = []): number {
   const row = db.prepare(sql).get(...(params as never[])) as
@@ -413,7 +249,11 @@ test("a collection records its create and delete, and the notes it unlinked trav
   );
   assert.equal(unlink.entity_uid, noteUid);
   assert.equal(unlink.op, "update");
-  assert.deepEqual(unlink.payload, { collection_id: null });
+  assert.deepEqual(
+    unlink.payload,
+    { collection_uid: null },
+    "the op names the parent by uid, never by a local row number (§3.4)",
+  );
 
   const collectionDelete = (await opsFor(driver, "collections")).at(-1);
   assert.equal(collectionDelete?.op, "delete");
@@ -513,7 +353,11 @@ test("a shopping item records its own op, and a list delete tombstones every ite
   const milk = await shopping.addItem(listId, "milk");
   const milkOp = await assertRecorded(store, "shopping_items", milk, "create");
   assert.equal(milkOp.op.payload.text, "milk");
-  assert.equal(milkOp.op.payload.list_id, listId);
+  assert.equal(
+    milkOp.op.payload.list_uid,
+    listOp.uid,
+    "the item names its list by uid (§3.4), not by this device's row number",
+  );
 
   const bread = await shopping.addItem(listId, "bread");
   const breadUid = uidOf(db, "shopping_items", bread);

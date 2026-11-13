@@ -133,6 +133,8 @@ export function createHabitsRepo(driver: DataDriver) {
         return false;
       }
       const uid = newUid();
+      // The op names the habit by uid, never by this device's row number (§3.4).
+      const habitUid = await readRowUid(driver, "habits", habitId);
       await driver.batch([
         {
           sql: "INSERT INTO habit_logs (habit_id, log_date, done, uid) VALUES (?, ?, 1, ?)",
@@ -143,7 +145,11 @@ export function createHabitsRepo(driver: DataDriver) {
             table: "habit_logs",
             uid,
             kind: "create",
-            fields: { habit_id: habitId, log_date: logDate, done: 1 },
+            fields: {
+              habit_uid: habitUid ?? null,
+              log_date: logDate,
+              done: 1,
+            },
           },
         ]),
       ]);

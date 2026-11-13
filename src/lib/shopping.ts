@@ -135,6 +135,9 @@ export function createShoppingRepo(driver: DataDriver) {
       );
       const nextOrder = (maxRows[0]?.max_order ?? -1) + 1;
       const uid = newUid();
+      // The op names its parent by UID, never by this device's row number
+      // (§3.4): `list_id` would mean a different list on the peer.
+      const listUid = await readRowUid(driver, "shopping_lists", listId);
       await driver.batch([
         {
           sql: "INSERT INTO shopping_items (list_id, text, done, sort_order, uid) VALUES (?, ?, 0, ?, ?)",
@@ -144,10 +147,13 @@ export function createShoppingRepo(driver: DataDriver) {
           {
             table: "shopping_items",
             uid,
-            // The parent is named by its uid at the wire (§8.4's mapping) —
-            // this op carries the row's own `list_id`, as it stands here.
             kind: "create",
-            fields: { list_id: listId, text, done: 0, sort_order: nextOrder },
+            fields: {
+              list_uid: listUid ?? null,
+              text,
+              done: 0,
+              sort_order: nextOrder,
+            },
           },
         ]),
       ]);

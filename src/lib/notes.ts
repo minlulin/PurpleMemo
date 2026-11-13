@@ -292,7 +292,7 @@ export function createNotesRepo(
           table: "notes" as const,
           uid: note,
           kind: "update" as const,
-          fields: { collection_id: null },
+          fields: { collection_uid: null },
         }));
       // One batch, notes first: clearing membership via the FK's
       // ON DELETE SET NULL is an FK action, which does NOT fire the notes
@@ -354,6 +354,12 @@ export function createNotesRepo(
       const uid = newUid();
       const tags = (input.tags ?? []).join(",");
       const collectionId = input.collectionId ?? null;
+      // The op names the parent by UID: a local `collection_id` would mean a
+      // different collection on the peer (§3.4, §8.4).
+      const collectionUid =
+        collectionId === null
+          ? null
+          : ((await readRowUid(driver, "collections", collectionId)) ?? null);
       await driver.batch([
         {
           sql: `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at, uid)
@@ -377,7 +383,7 @@ export function createNotesRepo(
               title: input.title,
               content: input.content,
               tags,
-              collection_id: collectionId,
+              collection_uid: collectionUid,
               pinned: 0,
               archived: 0,
               created_at: today,
@@ -415,7 +421,12 @@ export function createNotesRepo(
       if (fields.collectionId !== undefined) {
         sets.push("collection_id = ?");
         params.push(fields.collectionId);
-        changed.collection_id = fields.collectionId;
+        // The payload names the parent by uid, like the create above.
+        changed.collection_uid =
+          fields.collectionId === null
+            ? null
+            : ((await readRowUid(driver, "collections", fields.collectionId)) ??
+              null);
       }
       if (sets.length === 0) return;
       const updated = todayLocal();
