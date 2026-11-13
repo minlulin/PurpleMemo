@@ -38,6 +38,7 @@ import {
   CONFLICT_TRASH_TYPES,
   conflictCopyStatements,
   FOREIGN_KEYS,
+  foldStatements,
   type HeldConflictRow,
   LOCAL_FOREIGN_KEYS,
   NATURAL_KEYS,
@@ -341,40 +342,56 @@ function validate(op: PeerOp, request: ApplyRequest): void {
 }
 
 /**
- * §7.2: does this device already hold the record this create describes?
+ * §7.2 / §8.4: what this device already holds for the create being applied.
  *
- * Two spellings of one identity. The uid IS the record (§1.1), so a row
- * wearing it is that record — the merge path answers it, and the guard makes
- * the no-op explicit before an INSERT could meet the unique uid index. A
- * natural-key table (`NATURAL_KEYS`) also identifies a record by its `name`,
- * and two devices can mint the same name under different uids: the baseline
- * seeds every wallet on a fresh install, and either device may create `Food`.
- * Inserting that would fail `UNIQUE (name)` and abort the batch (§7.4) on an
- * op that is merely redundant, so the create is skipped instead.
+ * Three answers, and they are three different cases — conflating the second
+ * with the first is what left a peer's uid unadopted:
+ *
+ * - `held`: a row wearing this uid IS this record, so the create is the same
+ *   write delivered twice — nothing to do (§7.2).
+ * - `fold`: the natural key (`NATURAL_KEYS`) is held under a DIFFERENT uid.
+ *   §8.4 says a natural key folds, it never collides: the baseline seeds every
+ *   wallet and category on each install under random uids, and either device
+ *   may create `Food`, so the local row and the incoming record are one record
+ *   spelled two ways. The local row is re-keyed onto the incoming uid and the
+ *   create then lands through §4's merge.
+ * - `new`: nothing here shares either spelling; the row is inserted.
  */
-async function identityAlreadyHeld(
+type Identity =
+  | { kind: "held" }
+  | { kind: "fold"; localUid: string }
+  | { kind: "new" };
+
+async function identityOf(
   driver: DataDriver,
   table: SyncTable,
   op: PeerOp,
   fields: Record<string, unknown>,
-): Promise<boolean> {
+): Promise<Identity> {
   const [byUid] = await driver.query<{ one: number }>(
     `SELECT 1 AS one FROM "${table}" WHERE uid = ?`,
     [op.entity_uid],
   );
-  if (byUid !== undefined) return true;
+  if (byUid !== undefined) return { kind: "held" };
 
   const key = NATURAL_KEYS[table];
-  if (key === undefined) return false;
+  if (key === undefined) return { kind: "new" };
   const value = fields[key];
   // A natural key is never null on these tables (`name TEXT NOT NULL UNIQUE`),
   // so a create that omitted one has nothing to collide with.
-  if (typeof value !== "string" && typeof value !== "number") return false;
+  if (typeof value !== "string" && typeof value !== "number") {
+    return { kind: "new" };
+  }
   const [byKey] = await driver.query<{ uid: string | null }>(
     `SELECT uid FROM "${table}" WHERE "${key}" = ? LIMIT 1`,
     [value],
   );
-  return byKey !== undefined;
+  if (byKey === undefined) return { kind: "new" };
+  // A row with no uid is pre-v7 drift; it cannot be re-keyed onto one.
+  if (typeof byKey.uid !== "string" || byKey.uid.length === 0) {
+    return { kind: "new" };
+  }
+  return { kind: "fold", localUid: byKey.uid };
 }
 
 /**
@@ -722,9 +739,50 @@ async function composeOp(
       return EMPTY_OUTCOME;
     }
     const fields = parsePayload(op);
-    // §7.2: a create for a record this device already holds writes nothing.
-    if (await identityAlreadyHeld(driver, table, op, fields)) {
-      return EMPTY_OUTCOME;
+    const identity = await identityOf(driver, table, op, fields);
+    // §7.2: a create for a record this device already holds BY UID writes
+    // nothing — that delivery is the same write arriving twice.
+    if (identity.kind === "held") return EMPTY_OUTCOME;
+    if (identity.kind === "fold") {
+      // §8.4: the row holding this name under another uid IS this record. Its
+      // `id` never changes, so every child already written against it stays
+      // attached — and a child op that names the incoming uid now resolves,
+      // because that uid is the row's from here on.
+      const held = await readHeld(driver, table, identity.localUid);
+      if (held !== undefined) {
+        const rekeyed: HeldRow = {
+          ...held,
+          row: { ...held.row, uid: op.entity_uid },
+        };
+        const merged = mergeOp(op, rekeyed, stamp, delivered, now);
+        const fold = foldStatements({ table, uid: op.entity_uid, fields });
+        const outcome: OpOutcome =
+          merged.effects.length > 0
+            ? { ...merged, effects: [...fold, ...merged.effects] }
+            : {
+                ...merged,
+                // Nothing of the create outranked what the row already holds,
+                // but the identity still folded: carry the row's own stamp
+                // across to its new key, so §4.2 still sees the write its
+                // values came from.
+                effects: [
+                  ...fold,
+                  ...(held.stamp
+                    ? [
+                        rowStampStatement(
+                          table,
+                          op.entity_uid,
+                          held.stamp,
+                          held.fieldStamps,
+                          now,
+                        ),
+                      ]
+                    : []),
+                ],
+              };
+        if (outcome.next === undefined) outcome.next = { held: rekeyed };
+        return outcome;
+      }
     }
     const inserted = insertStatements(op, fields, stamp, delivered, now);
     return {

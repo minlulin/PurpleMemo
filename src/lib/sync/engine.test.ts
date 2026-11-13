@@ -615,45 +615,115 @@ test("a mobile-origin entry edit is refused, and the same edit from the desktop 
   );
 });
 
-test("a desktop category whose name the phone already holds is a no-op, not a failed batch", async () => {
+test("a same-name create folds onto the phone's row, so the child naming it resolves", async () => {
   const pair = await openPair();
-  const phoneUid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-  await pair.b.driver.execute(
-    "INSERT INTO expense_categories (uid, name, created_at) VALUES (?, 'Food', '2026-11-01')",
-    [phoneUid],
+  const onPhone = createBudgetRepo(pair.b.driver);
+  await onPhone.createWallet("Cash");
+  const phoneCategoryId = await onPhone.createExpenseCategory("Food");
+  const [phoneCategory] = await pair.b.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM expense_categories WHERE id = ?",
+    [phoneCategoryId],
   );
-  const onA = createBudgetRepo(pair.a.driver);
-  await onA.createExpenseCategory("Food");
-  const [desktopRow] = await pair.a.driver.query<{ uid: string }>(
-    "SELECT uid FROM expense_categories",
-  );
-  assert.ok(desktopRow);
+  assert.ok(phoneCategory?.uid);
 
-  // The desktop's create collides on `UNIQUE (name)` but never on identity: it
-  // is a second record with the same name (§8.4's fold already answered this
-  // for a snapshot), so the apply is a no-op instead of a constraint failure
-  // that would wedge every later batch on the same op.
+  // The desktop minted its own Cash and Food, and an entry naming both.
+  const onDesktop = createBudgetRepo(pair.a.driver);
+  const desktopWalletId = await onDesktop.createWallet("Cash");
+  const desktopCategoryId = await onDesktop.createExpenseCategory("Food");
+  await onDesktop.createExpenseEntry({
+    amountCents: 1_250,
+    categoryId: desktopCategoryId,
+    walletId: desktopWalletId,
+    entryDate: "2026-11-13",
+    note: "lunch",
+  });
+  const [desktopCategory] = await pair.a.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM expense_categories WHERE id = ?",
+    [desktopCategoryId],
+  );
+  assert.ok(desktopCategory?.uid);
+  assert.notEqual(desktopCategory.uid, phoneCategory.uid);
+
   await applyFrom(pair.b, pair.a);
 
-  const rows = await pair.b.driver.query<{ uid: string; name: string }>(
-    "SELECT uid, name FROM expense_categories",
+  const categories = await pair.b.driver.query<{ id: number; uid: string }>(
+    "SELECT id, uid FROM expense_categories",
   );
-  assert.equal(rows.length, 1, "the phone keeps its one Food");
-  assert.equal(rows[0]?.uid, phoneUid, "and it is the phone's own record");
-  assert.notEqual(rows[0]?.uid, desktopRow.uid);
+  assert.equal(categories.length, 1, "one Food, not two (§8.4)");
+  assert.equal(
+    categories[0]?.uid,
+    desktopCategory.uid,
+    "the phone's row now wears the incoming identity",
+  );
+  assert.equal(
+    categories[0]?.id,
+    phoneCategoryId,
+    "and keeps its local id, so its children stay attached",
+  );
   assert.equal(
     await count(
       pair.b,
       "SELECT count(*) AS n FROM sync_row_stamps WHERE entity_uid = ?",
-      [desktopRow.uid],
+      [desktopCategory.uid],
     ),
-    0,
-    "a no-op writes no stamp for a record this device does not hold",
+    1,
+    "the record's stamp moved with it, so a later merge knows what it holds",
+  );
+
+  const entries = await pair.b.driver.query<{
+    category_id: number;
+    wallet_id: number;
+  }>("SELECT * FROM expense_entries");
+  assert.equal(
+    entries.length,
+    1,
+    "the entry named the folded parent, so it landed",
   );
   assert.equal(
-    (await readState(pair.b.driver)).lamport,
-    1,
-    "but the batch still moved its clock, as a delivered batch does (§4.2)",
+    entries[0]?.category_id,
+    phoneCategoryId,
+    "its category_uid resolved to the folded row",
+  );
+  const [wallet] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets",
+  );
+  assert.equal(entries[0]?.wallet_id, wallet?.id, "and so did its wallet_uid");
+});
+
+test("a fold re-keys the row but never overwrites a newer local value", async () => {
+  const pair = await openPair();
+  const phoneUid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  await pair.b.driver.execute(
+    "INSERT INTO expense_categories (uid, name, created_at) VALUES (?, 'Food', '2026-11-09')",
+    [phoneUid],
+  );
+  await pair.b.driver.execute(
+    `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+     VALUES ('expense_categories', ?, 9, 'phone-1', 'phone-1#9', '{}', '2026-11-09T00:00:00.000Z')`,
+    [phoneUid],
+  );
+  const onA = createBudgetRepo(pair.a.driver);
+  await onA.createExpenseCategory("Food");
+  await applyFrom(pair.b, pair.a);
+
+  const rows = await pair.b.driver.query<{
+    uid: string;
+    created_at: string;
+  }>("SELECT * FROM expense_categories");
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0]?.uid, phoneUid, "the identity folded");
+  assert.equal(
+    rows[0]?.created_at,
+    "2026-11-09",
+    "§4: a create does not outrank a newer local write — the value stands",
+  );
+  const [stamp] = await pair.b.driver.query<{ counter: number }>(
+    "SELECT counter FROM sync_row_stamps WHERE entity_table = 'expense_categories'",
+  );
+  assert.equal(
+    stamp?.counter,
+    9,
+    "and its stamp carried across to the new key (§4.2)",
   );
 });
 

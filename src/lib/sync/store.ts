@@ -710,6 +710,11 @@ function assertIdentifier(name: string, owner: string): void {
  * §8.4's fold: the local row that already holds this natural key becomes the
  * incoming record.
  *
+ * Shared by both borders that must obey the rule — the snapshot's row write
+ * (`snapshotRowStatements`) and the Stage 1 op apply, which §8.4 says inherits
+ * it (`composeOp`'s create branch). The caller passes the record it means to
+ * write: the local row whose name matches is re-keyed onto that uid first.
+ *
  * The two statements are a pair and always run before the row write:
  *
  * 1. the displaced row's stamp is removed, because the row write that follows
@@ -725,7 +730,9 @@ function assertIdentifier(name: string, owner: string): void {
  * local row carries the name (a genuinely new record) — and in those cases the
  * apply is byte-for-byte the pre-fold behaviour.
  */
-function snapshotFoldStatements(op: SnapshotOp): BatchStatement[] {
+export function foldStatements(
+  op: Pick<SnapshotOp, "table" | "uid" | "fields">,
+): BatchStatement[] {
   const key = NATURAL_KEYS[op.table];
   if (key === undefined) return [];
   const value = op.fields[key];
@@ -856,7 +863,7 @@ export function snapshotRowStatements(
     .map((column) => `"${column}" = excluded."${column}"`);
   // §8.4's fold comes first: a seed this device minted under its own uid has to
   // become the incoming record before the upsert can find it by uid.
-  const statements = snapshotFoldStatements(op);
+  const statements = foldStatements(op);
   statements.push(
     {
       sql: `INSERT INTO "${op.table}" (${columns

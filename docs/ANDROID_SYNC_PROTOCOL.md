@@ -495,8 +495,13 @@ uid, the row **folds** onto it: the local row keeps its `id` (its children stay
 attached), its `uid` is re-keyed to the incoming one, and the incoming fields
 and stamp then land through the ordinary upsert. A row whose name is unknown
 locally, or whose uid is already present, is written exactly as before. This is
-the rule the Stage 1 op-apply inherits; deterministic seed uids were rejected,
-because they cannot repair a database that already exists.
+the rule the Stage 1 op-apply inherits (`foldStatements`, shared by both
+borders): there the folded create lands through §4's field-by-field merge
+rather than this border's upsert, because an op is a versioned write and a
+create must not outrank a newer local value; a create that outranks nothing
+still carries the row's own stamp across to its new key (§4.2). Deterministic
+seed uids were rejected, because they cannot repair a database that already
+exists.
 
 #### §8.5 The snapshot transport (`/pair/snapshot`)
 

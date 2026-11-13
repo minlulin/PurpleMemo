@@ -808,11 +808,23 @@ longer holds the phase open.
   insert path (§7.2): a create whose uid — or, for a natural-key table
   (`NATURAL_KEYS`), whose `name` — is already held here writes nothing, so a
   same-name race can no longer abort a batch on a unique index.
-  **Known gap, recorded not solved:** that no-op drops the peer's uid and keeps
-  this device's row, so a later entry naming the un-adopted parent cannot
-  resolve its FK (`category_id NOT NULL`) and refuses the batch. §8.4's fold is
-  the mechanism that adopts the identity instead; this session's brief asked
-  for the no-op.
+  **That gap CLOSED 2026-11-13 (§8.4's fold in the op apply).** The first cut
+  answered a same-name create with the same no-op, which kept this device's uid
+  and dropped the peer's: a later entry naming the un-adopted parent could not
+  resolve its FK (`category_id NOT NULL`) and refused the whole batch.
+  `identityOf` now separates the three cases — held by uid → no-op; the
+  natural key held under ANOTHER uid → fold; neither → insert — and the fold is
+  the very pair the snapshot border already ran, extracted from
+  `snapshotFoldStatements` into an exported `foldStatements` in `store.ts` so
+  the two borders cannot drift: the displaced identity's stamp is dropped and
+  the row is re-keyed onto the incoming uid IN PLACE, so its local `id` — and
+  every child already written against it — survives, and a child op naming the
+  incoming uid now resolves. The create then lands through §4's merge rather
+  than a blind upsert (a create is not a licence to overwrite a newer local
+  value), and a create that outranks nothing still carries the row's own stamp
+  across to its new key (§4.2). The snapshot's own wording in
+  `docs/ANDROID_SYNC_PROTOCOL.md` §8.4 now says which border upserts and which
+  merges.
   **Business/Loans half BUILT 2026-11-13 (Stage 2, Session 2).** Recording
   reaches `shops`, `jobs` and `loans` on the same pattern, and a job's payload
   names its shop by uid (`shop_uid`), never a row number. Every mutator records,
@@ -869,8 +881,13 @@ longer holds the phase open.
   (a phone's job crosses while a Vault-shaped op stays home), and 1 Trash test
   (`lib/sync/conflictTrash.test.ts`: a restore from either origin records one
   `create` and restores the uid either way, with the refusal rule pinned on
-  `restoreOpAllowed` for the tables Trash cannot hold). Suite: 1122 TS, 308
-  Rust, 0 skipped.
+  `restoreOpAllowed` for the tables Trash cannot hold). The fold's closure adds
+  2 engine tests over two real SQLite stores: a desktop Food and its entry
+  folding onto the phone's Food (one row, the phone's `id` kept, the entry's
+  `category_uid` and `wallet_uid` both resolved) and a fold that keeps a newer
+  local value while moving the row's stamp to the new key. That case replaces
+  the old "same-name create is a no-op" test, which recorded the gap. Suite:
+  1123 TS, 308 Rust, 0 skipped.
   **STAGE 2 EXIT:** the three sessions are recorded above; every §2.1 table
   records, every §2.2 table does not, sixteen of the seventeen synced tables
   move through the one gate, and §2.3's authority is enforced by the protocol
