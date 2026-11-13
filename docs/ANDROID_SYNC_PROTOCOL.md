@@ -1018,7 +1018,7 @@ criterion is the harness, not a successful demo.
 
 #### §12.5 Reminders: see §13.1
 
-The one open decision this document carries into review.
+Decided (Option A) and built in Stage 1's Session 4 — see §13.1.
 
 ---
 
@@ -1038,7 +1038,22 @@ phone would arm them too and both devices would fire.
 | **A (recommended)** | Definitions are two-way. Both devices hold every reminder; a device arms and notifies **only** the reminders whose `created_by_device_id` is its own. | A `created_by_device_id` column on `reminders`; a delivery filter on both sides. Keeps decision 9 literally true and keeps `reminders` inside the 17-table core. |
 | B | Definitions stay desktop-owned (desktop→phone read-only). A phone-created reminder never syncs; it lives and notifies on the phone only. | The phone shows desktop reminders but must not arm them — the same column or an equivalent marker is still needed. A reminder set on the phone is invisible on the desktop, which the user may not expect. |
 
-**Decided: A (2026-11-10, MinLulin's call — "2 way လုပ်လို့ရရင် လုပ်မယ်").** Definitions are two-way: both devices hold every reminder, and a device arms and notifies only the reminders whose `created_by_device_id` is its own. The column already exists (`reminders.created_by_device_id`, added in Session 2, nullable, no behavior wired yet); the delivery filter on both sides is Stage 1 work, and the implementation confirms feasibility there. Stage 1 treats `reminders` as two-way per A.
+**Decided: A (2026-11-10, MinLulin's call — "2 way လုပ်လို့ရရင် လုပ်မယ်").** Definitions are two-way: both devices hold every reminder, and a device arms and notifies only the reminders whose `created_by_device_id` is its own.
+
+**Built 2026-11-13 (Stage 1, Session 4), so the tension is closed:**
+
+- The predicate lives once, in `src/lib/sync/reminderDelivery.ts`: own id, or
+  NULL. Both delivery surfaces call it — the desktop ticker's due-selection
+  and the Android pass's rows for arming, notifying and settling. A device
+  never settles a peer's reminder either: its `fired` state converges from the
+  creator's own settle ops (§6.1).
+- Three borders stamp a creator, so a synced reminder never lands without one:
+  the engine writes the create op's **author** (the payload's claim is
+  ignored), while the snapshot apply and the upload apply stamp the **sender**
+  when the payload carries none. A real creator id is never overwritten.
+- After that stamping a NULL can only be a row this device wrote before the
+  column existed, so NULL reads as "mine". Rows adopted before this session
+  shipped are pre-Stage-1 test data; a reset and re-pair is their migration.
 
 #### §13.2 Conflict losers go to per-device local trash *(confirmed)*
 

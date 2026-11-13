@@ -4,15 +4,14 @@
 //
 // 1. **Green — the harness's teeth.** Every injection must really fire, and
 //    every oracle must really refuse a wrong outcome. If these passed
-//    vacuously, the pending tests below would be judged by a harness that
-//    cannot tell a converged pair from a divergent one, which is worse than no
+//    vacuously, the invariants below would be judged by a harness that cannot
+//    tell a converged pair from a divergent one, which is worse than no
 //    harness at all.
-// 2. **Pending — Stage 1's obligations.** No sync engine exists yet, so the
-//    convergence, idempotency, interrupted-apply, tombstone, revocation and
-//    leak invariants are skipped with the reason and the clause they enforce.
-//    They are never marked passing on a stub: the peers in the simulator hold
-//    only what a test (or, later, the engine) put there, so an empty model
-//    reads as "no evidence", never as "synced".
+// 2. **Stage 1's obligations — now running.** The convergence, idempotency,
+//    interrupted-apply, tombstone, revocation and leak invariants were
+//    registered skipped while no engine existed. Each one now runs over the
+//    real stack (`testFerry.ts`: two SQLite stores, the repositories'
+//    recording, the engine, the session's cursors) and none is skipped.
 //
 // A third group keeps the documents honest: the spec's injection table, its
 // clause numbers and the open decisions it carries are checked against the
@@ -22,6 +21,10 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { first } from "../../test-utils.ts";
+import { createNotesRepo } from "../notes.ts";
+import { createShoppingRepo } from "../shopping.ts";
+import { createTasksRepo } from "../tasks.ts";
+import { applyOps } from "./engine.ts";
 import {
   checkConvergence,
   checkNoAcknowledgedLoss,
@@ -36,21 +39,33 @@ import {
   makeOp,
   now,
   recordKey,
-  restartPeer,
   revokePeer,
   type Simulator,
-  type SyncEngineUnderTest,
   seedRecord,
 } from "./harness.ts";
 import {
   compareStamps,
   handshake,
+  isSyncTable,
   OPEN_DECISIONS,
   PROTOCOL_VERSION,
   planAdoption,
   tombstoneGcEligible,
   writeAllowed,
 } from "./protocol.ts";
+import { readOutbox } from "./store.ts";
+import { runSync } from "./syncSession.ts";
+import {
+  countRows,
+  DESKTOP,
+  type Ferry,
+  ferry,
+  PHONE,
+  pairStores,
+  peerOf,
+  SYNC_INPUT,
+} from "./testFerry.ts";
+import type { SyncFixture } from "./testSchema.ts";
 
 const SPEC = readFileSync(
   new URL("../../../docs/ANDROID_SYNC_PROTOCOL.md", import.meta.url),
@@ -439,167 +454,299 @@ test("the phone cannot write what the allowlist does not grant it", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stage 1's obligations. Skipped, with the reason and the clause — never green
-// on a stub (§14.5).
+// Stage 1's obligations — the exit evidence (§14.5). Each invariant runs over
+// the REAL stack: two SQLite stores, the repositories' recording, the engine's
+// apply, and the session's cursor and acknowledgement bookkeeping, ferried in
+// process (`testFerry.ts`). Nothing here is judged by the harness's own
+// bookkeeping, and none of them is skipped.
 // ---------------------------------------------------------------------------
 
-const PENDING_REASON =
-  "pending Stage 1: no sync engine exists yet (Phase C Session 1 is spec + harness only)";
-
-/**
- * Stage 1 replaces this with the engine factory. Until then every invariant
- * test refuses to run, rather than passing on the harness's own bookkeeping.
- */
-function requireEngine(): SyncEngineUnderTest {
-  throw new Error(`${PENDING_REASON}.`);
-}
-
-interface PendingInvariant {
+interface Invariant {
   name: string;
   clauses: readonly string[];
-  body: () => void;
+  body: () => Promise<void>;
 }
 
-const PENDING_INVARIANTS: readonly PendingInvariant[] = [
+/** One session, run the way the app runs it. */
+function syncOnce(phone: SyncFixture, wire: Ferry) {
+  return runSync(phone.driver, wire.phone, SYNC_INPUT, {
+    sleep: async () => undefined,
+  });
+}
+
+/** Every row stamp this store holds, for an idempotency comparison. */
+function stamps(store: SyncFixture) {
+  return store.driver.query<{
+    entity_table: string;
+    entity_uid: string;
+    counter: number;
+    device_id: string;
+    op_id: string;
+  }>(
+    "SELECT entity_table, entity_uid, counter, device_id, op_id FROM sync_row_stamps ORDER BY entity_uid",
+  );
+}
+
+/** The values one column holds, in row order. */
+async function column(store: SyncFixture, sql: string): Promise<string[]> {
+  const rows = await store.driver.query<{ value: string }>(sql);
+  return rows.map((row) => row.value);
+}
+
+const STAGE_ONE_INVARIANTS: readonly Invariant[] = [
   {
     name: "two populated peers converge without losing acknowledged ops",
     clauses: ["§9.1", "§14.2", "§14.3"],
-    body: () => {
-      const engine = requireEngine();
-      const sim = createSimulator();
-      seedRecord(sim.desktop, {
-        table: "notes",
-        uid: "note-at-home",
-        fields: { title: "At home", body: "desktop body" },
-        counter: 3,
+    body: async () => {
+      const { phone, desktop } = await pairStores();
+      // One write on each side, made apart: the case a session exists for.
+      await createNotesRepo(phone.driver).createNote({
+        title: "Made on the phone",
+        content: "",
       });
-      seedRecord(sim.mobile, {
-        table: "tasks",
-        uid: "task-made-offline",
-        fields: { title: "Made offline", done: false },
-        counter: 2,
+      await createTasksRepo(desktop.driver).createTask({
+        title: "Made on the desktop",
       });
-      engine.apply("desktop", engine.push("mobile", 200));
-      engine.apply("mobile", engine.push("desktop", 200));
-      assert.deepEqual(checkConvergence(sim.desktop, sim.mobile), []);
-      assert.deepEqual(checkNoAcknowledgedLoss([sim.desktop, sim.mobile]), []);
+
+      const wire = ferry(phone, desktop);
+      const outcome = await syncOnce(phone, wire);
+      assert.equal(outcome.confirmed, true);
+      assert.equal(outcome.pushed, 1);
+      assert.equal(outcome.pulled, 1);
+
+      // §14.2: the same records, with the same values, on both devices.
+      for (const [name, store] of [
+        ["phone", phone],
+        ["desktop", desktop],
+      ] as const) {
+        assert.deepEqual(
+          await column(store, "SELECT title AS value FROM notes"),
+          ["Made on the phone"],
+          `${name} holds the phone's note`,
+        );
+        assert.deepEqual(
+          await column(store, "SELECT title AS value FROM tasks"),
+          ["Made on the desktop"],
+          `${name} holds the desktop's task`,
+        );
+      }
+
+      // §14.3: the phone's acknowledged write left the outbox only because
+      // the desktop's sealed verdict said applied — and what it carried is
+      // here on both devices.
+      assert.deepEqual(await readOutbox(phone.driver), []);
+      assert.equal((await peerOf(phone, DESKTOP)).cursor_out, 1);
+      assert.equal((await peerOf(desktop, PHONE)).cursor_in, 1);
     },
   },
   {
     name: "a retried batch is idempotent",
     clauses: ["§6.3", "§7.2"],
-    body: () => {
-      const engine = requireEngine();
-      const sim = createSimulator();
-      const batch = engine.push("mobile", 200);
-      engine.apply("desktop", batch);
-      const applied = sim.desktop.received.length;
-      engine.apply("desktop", batch);
-      assert.equal(
-        sim.desktop.received.length,
-        applied,
-        "the same op identity must not apply twice",
+    body: async () => {
+      const { phone, desktop } = await pairStores();
+      await createNotesRepo(phone.driver).createNote({
+        title: "Sent once",
+        content: "",
+      });
+      const wire = ferry(phone, desktop);
+      await syncOnce(phone, wire);
+      const before = await stamps(desktop);
+
+      // §6.3's lost acknowledgement: the very same batch arrives again — same
+      // device, same seq, same op id — and must be a no-op (§7.2).
+      await desktop.driver.batch(
+        await applyOps(desktop.driver, {
+          peerId: PHONE,
+          origin: "mobile",
+          ops: wire.pushed,
+        }),
       );
-      assert.equal(sim.desktop.records.size, 1);
-      assert.deepEqual(checkNoAcknowledgedLoss([sim.desktop, sim.mobile]), []);
+
+      assert.equal(
+        await countRows(desktop, "SELECT count(*) AS n FROM notes"),
+        1,
+        "one record, not two",
+      );
+      assert.deepEqual(await stamps(desktop), before, "and the same stamp");
+
+      // A second session sends nothing at all: nothing is past the cursor.
+      wire.newWindow();
+      const second = await syncOnce(phone, wire);
+      assert.equal(second.pushed, 0);
+      assert.equal(second.pulled, 0);
     },
   },
   {
     name: "an interrupted apply loses no acknowledged write and keeps the cursor honest",
     clauses: ["§6.4", "§7.4", "§7.5"],
-    body: () => {
-      const engine = requireEngine();
-      const sim = createSimulator();
-      const batch = engine.push("mobile", 200);
-      engine.apply("desktop", batch.slice(0, 2));
-      restartPeer(sim.desktop);
-      engine.apply("desktop", batch);
-      assert.deepEqual(checkNoAcknowledgedLoss([sim.desktop, sim.mobile]), []);
+    body: async () => {
+      const { phone, desktop } = await pairStores();
+      const tasks = createTasksRepo(desktop.driver);
+      await tasks.createTask({ title: "One" });
+      await tasks.createTask({ title: "Two" });
+
+      const wire = ferry(phone, desktop);
+      wire.splitPull = true;
+      wire.failPullAt = 1;
+      const interrupted = await syncOnce(phone, wire);
+      assert.equal(interrupted.confirmed, false);
       assert.equal(
-        sim.desktop.cursors.get(sim.mobile.deviceId),
-        batch.at(-1)?.seq,
-        "the cursor may not outrun the committed effects",
+        await countRows(phone, "SELECT count(*) AS n FROM tasks"),
+        1,
+        "batch 0 committed; the pull stopped there",
+      );
+      assert.equal(
+        (await peerOf(phone, DESKTOP)).cursor_in,
+        1,
+        "the cursor moved inside that apply, not in memory (§6.4)",
+      );
+
+      // The next window resumes from the cursor: batch 0 is not offered again.
+      wire.newWindow();
+      wire.splitPull = false;
+      const resumed = await syncOnce(phone, wire);
+      assert.equal(resumed.confirmed, true);
+      assert.deepEqual(
+        await column(phone, "SELECT title AS value FROM tasks ORDER BY id"),
+        ["One", "Two"],
+        "§14.3: both acknowledged writes arrived, each once",
+      );
+      const [highest] = await desktop.driver.query<{ seq: number | null }>(
+        "SELECT max(seq) AS seq FROM sync_outbox",
+      );
+      assert.equal(
+        (await peerOf(phone, DESKTOP)).cursor_in,
+        highest?.seq ?? 0,
+        "the cursor is exactly the last applied seq, never past it",
       );
     },
   },
   {
     name: "tombstones propagate, cascaded children included",
     clauses: ["§5.2", "§5.3"],
-    body: () => {
-      const engine = requireEngine();
-      const sim = createSimulator();
-      seedRecord(sim.desktop, {
-        table: "notes",
-        uid: "note-in-collection",
-        fields: { title: "Inside", collection: "collection-1" },
-        counter: 2,
-      });
-      makeOp(sim.desktop, {
-        table: "collections",
-        uid: "collection-1",
-        kind: "delete",
-      });
-      makeOp(sim.desktop, {
-        table: "notes",
-        uid: "note-in-collection",
-        kind: "delete",
-      });
-      engine.apply("mobile", engine.push("desktop", 200));
+    body: async () => {
+      const { phone, desktop } = await pairStores();
+      const shopping = createShoppingRepo(desktop.driver);
+      const list = await shopping.createList("Weekly shop");
+      await shopping.addItem(list, "Milk");
+
+      // The rows travel first, so the delete has something to cascade over on
+      // the other device.
+      const wire = ferry(phone, desktop);
+      await syncOnce(phone, wire);
+      assert.equal(
+        await countRows(phone, "SELECT count(*) AS n FROM shopping_items"),
+        1,
+      );
+
+      wire.newWindow();
+      await shopping.deleteList(list);
+      await syncOnce(phone, wire);
+
+      assert.equal(
+        await countRows(phone, "SELECT count(*) AS n FROM shopping_lists"),
+        0,
+      );
+      assert.equal(
+        await countRows(phone, "SELECT count(*) AS n FROM shopping_items"),
+        0,
+        "the cascade removes the child row too",
+      );
       assert.deepEqual(
-        checkTombstones(
-          [
-            { table: "collections", uid: "collection-1" },
-            { table: "notes", uid: "note-in-collection" },
-          ],
-          [sim.desktop, sim.mobile],
+        await column(
+          phone,
+          "SELECT entity_table AS value FROM sync_tombstones ORDER BY entity_table",
         ),
-        [],
+        ["shopping_items", "shopping_lists"],
+        "§5.2: the child's tombstone travels, not only the parent's",
       );
     },
   },
   {
     name: "a revoked peer is rejected before any effect",
     clauses: ["§11.3"],
-    body: () => {
-      const engine = requireEngine();
-      const sim = createSimulator();
-      revokePeer(sim.desktop, sim.mobile.deviceId);
-      const delivery = sim.send(
-        sim.mobile,
-        sim.desktop,
-        engine.push("mobile", 200),
+    body: async () => {
+      const { phone, desktop } = await pairStores();
+      // §11.3: the pin is revoked on this device, so the phone may not send.
+      await phone.driver.execute(
+        "UPDATE sync_peers SET revoked_at = ? WHERE device_id = ?",
+        ["2026-11-13T09:00:00.000Z", DESKTOP],
       );
-      assert.deepEqual(checkNothingFlowed(delivery), []);
+      await createNotesRepo(phone.driver).createNote({
+        title: "Written after a revoke",
+        content: "",
+      });
+
+      const wire = ferry(phone, desktop);
+      const refused = await syncOnce(phone, wire);
+      assert.equal(refused.state, "refused");
+      assert.equal(refused.refusal?.code, "unpaired");
+      assert.equal(wire.pushed.length, 0, "not one operation reached the wire");
+      assert.equal(
+        await countRows(desktop, "SELECT count(*) AS n FROM notes"),
+        0,
+      );
+      assert.equal(
+        await countRows(desktop, "SELECT count(*) AS n FROM sync_row_stamps"),
+        0,
+        "and nothing on the desktop changed at all",
+      );
+      assert.equal(
+        await countRows(phone, "SELECT count(*) AS n FROM sync_outbox"),
+        1,
+        "the write stays the phone's to retry after re-pairing",
+      );
     },
   },
   {
     name: "desktop-only rows never appear on the peer",
     clauses: ["§2.2"],
-    body: () => {
-      const engine = requireEngine();
-      const sim = createSimulator();
-      seedRecord(sim.desktop, {
-        table: "contacts",
-        uid: "contact-at-home",
-        fields: { name: "Private" },
+    body: async () => {
+      const { phone, desktop } = await pairStores();
+      // A row no stage ever moves — the Trash page's own record, written where
+      // the Trash page writes it — beside a real record that must travel.
+      await desktop.driver.execute(
+        `INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+         VALUES ('note', 1, '{}', '2026-11-13', '2026-11-13')`,
+      );
+      await createNotesRepo(desktop.driver).createNote({
+        title: "A real record",
+        content: "",
       });
-      seedRecord(sim.desktop, {
-        table: "payables",
-        uid: "payable-at-home",
-        fields: { amount_cents: 1000 },
-      });
-      engine.apply("mobile", engine.push("desktop", 200));
-      assert.deepEqual(checkNoForbiddenRows(sim.mobile), []);
+
+      const wire = ferry(phone, desktop);
+      await syncOnce(phone, wire);
+
+      assert.equal(
+        await countRows(phone, "SELECT count(*) AS n FROM trash_items"),
+        0,
+        "§2.2: an excluded table never crosses, not even as a stray row",
+      );
+      assert.equal(
+        await countRows(phone, "SELECT count(*) AS n FROM notes"),
+        1,
+        "while the record beside it did cross",
+      );
+      const onWire = new Set([
+        ...(await readOutbox(desktop.driver)).map((row) => row.entity_table),
+        ...wire.pushed.map((op) => op.entity_table),
+      ]);
+      for (const table of onWire) {
+        assert.ok(
+          isSyncTable(table),
+          `${table} crossed the allowlist boundary`,
+        );
+      }
     },
   },
 ];
 
-test("the pending invariants are the coverage the spec requires", () => {
+test("the invariants are the coverage the spec requires", () => {
   assert.ok(
-    PENDING_INVARIANTS.length >= 6,
+    STAGE_ONE_INVARIANTS.length >= 6,
     "the spec requires six invariants before Stage 1 can be judged",
   );
-  for (const invariant of PENDING_INVARIANTS) {
+  for (const invariant of STAGE_ONE_INVARIANTS) {
     assert.ok(
       invariant.clauses.length >= 1,
       `${invariant.name} must cite the clause it enforces`,
@@ -613,12 +760,6 @@ test("the pending invariants are the coverage the spec requires", () => {
   }
 });
 
-for (const invariant of PENDING_INVARIANTS) {
-  test(
-    invariant.name,
-    {
-      skip: `${PENDING_REASON}; it enforces ${invariant.clauses.join(", ")}`,
-    },
-    invariant.body,
-  );
+for (const invariant of STAGE_ONE_INVARIANTS) {
+  test(invariant.name, () => invariant.body());
 }

@@ -28,24 +28,6 @@ import {
   type VersionStamp,
 } from "./protocol.ts";
 
-/**
- * The seam Stage 1 plugs into (provisional).
- *
- * An engine owns the durable outbox and the apply path; the harness owns the
- * two replicas, the wire and the faults. Extending this interface later is a
- * harness change (allowed); changing what the oracles demand is a spec change
- * (§14.6).
- */
-export interface SyncEngineUnderTest {
-  /** Export what a peer's durable outbox still owes, in seq order (§6.2). */
-  push(peer: "desktop" | "mobile", limit: number): readonly SimOp[];
-  /** Apply one inbound batch: idempotent, atomic, resumable (§7). */
-  apply(
-    peer: "desktop" | "mobile",
-    batch: readonly SimOp[],
-  ): { acknowledgedThrough: number | null };
-}
-
 export interface SimOp {
   deviceId: string;
   seq: number;

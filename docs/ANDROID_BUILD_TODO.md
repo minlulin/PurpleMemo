@@ -695,7 +695,7 @@ longer holds the phase open.
   composition, a failed batch leaving neither, a non-archiving table producing
   no statements, restore-as-new, the unchanged note/task round-trip, and a
   shopping copy surviving a restart) plus the schema-v10 Rust set.
-- [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
+- [x] Stage 1: Notes / Tasks / Shopping / Habits sync — **DONE 2026-11-13 (Sessions 1-4; exit record at the end of this entry).**
   **Recording half BUILT 2026-11-13 (Stage 1, Session 1).** Every create,
   update and delete on the eight Stage 1 tables — `collections`, `notes`,
   `tasks`, `reminders` (§13.1 Option A: a create also stamps
@@ -751,9 +751,19 @@ longer holds the phase open.
   manual only: a **Sync now** action on the phone's pairing card, offered
   whenever a desktop pin exists (with this session's scanned address — the pin
   carries no endpoint, so a fresh scan is needed outside a pairing session),
-  plus a sync fact line in the desktop panel. **Still open, so the item stays
-  unchecked:** the §13.1 delivery filter on both sides, and the harness's 6
-  skipped invariants (Session 4, Stage 1's exit). Tests: 9 new TS
+  plus a sync fact line in the desktop panel.
+  **§13.1 delivery filter and the exit invariants BUILT 2026-11-13 (Stage 1,
+  Session 4).** One predicate, `remindableHere` (`lib/sync/reminderDelivery.ts`):
+  own id, or NULL. Both surfaces call it — the desktop ticker's due-selection
+  and the Android pass's rows for arming, notifying and settling, so a device
+  never arms or settles a peer's reminder. Three borders stamp a creator so a
+  synced reminder never lands without one: the engine writes the create op's
+  author (ignoring any payload claim), the snapshot and upload applies stamp
+  the sender when the payload carries none, and a real creator id is never
+  overwritten. Stage 1's six invariants in `lib/sync/harness.test.ts` now RUN
+  instead of skipping, over the real stack (two SQLite stores, the
+  repositories' recording, the engine, the session's cursors) through the
+  shared `lib/sync/testFerry.ts`. Tests: 9 new TS
   (create/update/delete per table with the op read back from real SQLite, the
   list and habit cascade shapes, the check-in/un-check pair, the Budget
   boundary, and repository-level atomicity where a refused op rolls the whole
@@ -764,7 +774,14 @@ longer holds the phase open.
   resumes, a Stage 2 op left home, and the applied verdict's ack), plus 6 Rust
   loopback tests (the route's five — staged-not-applied, ordered batches and an
   identical re-send, the pull's position and single read, the revoked refusal,
-  the sealed verdict's keys — and one client walk of push → pull → status).
+  the sealed verdict's keys — and one client walk of push → pull → status),
+  plus 5 §13.1 tests (a phone reminder inert on the desktop, a desktop
+  reminder unarmed and unsettled on the phone, a NULL creator still firing at
+  home, the engine's author stamp beating a payload's claim, and the snapshot
+  and upload borders stamping the sender), plus the 6 invariants now running
+  with 0 skipped. **STAGE 1 EXIT:** the four sessions are recorded above, the
+  filter rule is §13.1 Option A as built (spec §13.1 now records the build),
+  and the suite reports no skipped test.
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
 - [ ] Backup payload rules: device-local state excluded; restore bumps
