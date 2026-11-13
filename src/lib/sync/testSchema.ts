@@ -37,7 +37,8 @@ const SCHEMA_RS = readFileSync(
 export const FIXTURE_DEVICE_ID = "11111111-1111-4111-8111-111111111111";
 
 /**
- * The Stage 1 tables, the tables the Trash delete path reads, and Budget's two.
+ * The Stage 1 tables, the tables the Trash delete path reads, and Budget's five
+ * (§12.2: `wallets`, both category tables, both ledger tables).
  *
  * `reminders.created_by_device_id` is declared here because the v9 baseline
  * block's `ALTER TABLE` is skipped — this fixture cares about that column, so
@@ -123,6 +124,22 @@ CREATE TABLE expense_categories (
   name TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
+CREATE TABLE income_categories (
+  id INTEGER PRIMARY KEY,
+  uid TEXT,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE income_entries (
+  id INTEGER PRIMARY KEY,
+  uid TEXT,
+  amount_cents INTEGER NOT NULL,
+  category_id INTEGER NOT NULL REFERENCES income_categories(id),
+  wallet_id INTEGER NOT NULL REFERENCES wallets(id),
+  entry_date TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
 CREATE TABLE expense_entries (
   id INTEGER PRIMARY KEY,
   uid TEXT,
@@ -131,6 +148,25 @@ CREATE TABLE expense_entries (
   wallet_id INTEGER NOT NULL REFERENCES wallets(id),
   entry_date TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+-- Budget's two desktop-only tables (§2.2): declared so the recording boundary
+-- test can write them and prove they record nothing.
+CREATE TABLE expense_limits (
+  id INTEGER PRIMARY KEY,
+  category_id INTEGER NOT NULL UNIQUE REFERENCES expense_categories(id) ON DELETE CASCADE,
+  limit_cents INTEGER NOT NULL
+);
+CREATE TABLE recurring_payments (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  category_id INTEGER REFERENCES expense_categories(id),
+  wallet_id INTEGER REFERENCES wallets(id),
+  frequency TEXT NOT NULL,
+  next_due_date TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 CREATE TABLE links (
@@ -172,6 +208,8 @@ CREATE UNIQUE INDEX idx_shopping_items_uid ON shopping_items(uid);
 CREATE UNIQUE INDEX idx_habits_uid ON habits(uid);
 CREATE UNIQUE INDEX idx_habit_logs_uid ON habit_logs(uid);
 CREATE UNIQUE INDEX idx_wallets_uid ON wallets(uid);
+CREATE UNIQUE INDEX idx_income_categories_uid ON income_categories(uid);
+CREATE UNIQUE INDEX idx_income_entries_uid ON income_entries(uid);
 CREATE UNIQUE INDEX idx_expense_categories_uid ON expense_categories(uid);
 CREATE UNIQUE INDEX idx_expense_entries_uid ON expense_entries(uid);
 `;

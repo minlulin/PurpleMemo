@@ -7,6 +7,12 @@
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { advanceDate, monthRange, todayLocal, yearRange } from "./dates.ts";
 import { createKeyedMutex } from "./mutex.ts";
+import {
+  deleteStatements,
+  outboxStatements,
+  readRowId,
+  readRowUid,
+} from "./sync/store.ts";
 import type {
   ExpenseCategoryRow,
   ExpenseEntryRow,
@@ -86,6 +92,33 @@ export function ledgerInsertStatement(
       entry.createdAt ?? todayLocal(),
     ],
   };
+}
+
+/** The synced table a ledger kind writes. */
+function ledgerTable(kind: LedgerKind): "income_entries" | "expense_entries" {
+  return kind === "income" ? "income_entries" : "expense_entries";
+}
+
+/** The category table a ledger kind names. */
+function categoryTable(
+  kind: LedgerKind,
+): "income_categories" | "expense_categories" {
+  return kind === "income" ? "income_categories" : "expense_categories";
+}
+
+/**
+ * The uid of the parent a row names, for the op's payload (§3.4).
+ *
+ * A payload never carries a local `*_id`: that number means a different record
+ * on every device. A parent this device cannot name by uid records `null`
+ * rather than a row number the peer could not resolve.
+ */
+async function parentUid(
+  driver: DataDriver,
+  table: "wallets" | "income_categories" | "expense_categories",
+  id: number,
+): Promise<string | null> {
+  return (await readRowUid(driver, table, id)) ?? null;
 }
 
 /**
@@ -385,19 +418,144 @@ export interface RecurringInput {
 export function createBudgetRepo(driver: DataDriver) {
   const mutex = createKeyedMutex();
 
+  /**
+   * Write one ledger row and its op in one batch (§6.1).
+   *
+   * The uid is minted here, so the create names the record it will sync under
+   * before the row exists, and the parent keys travel by uid (§3.4) because the
+   * receiving device's `category_id`/`wallet_id` mean different numbers.
+   */
+  const insertEntry = async (
+    kind: LedgerKind,
+    input: EntryInput,
+  ): Promise<number> => {
+    const table = ledgerTable(kind);
+    const uid = newUid();
+    const created = todayLocal();
+    const stmt = ledgerInsertStatement(kind, {
+      ...input,
+      uid,
+      createdAt: created,
+    });
+    await driver.batch([
+      stmt,
+      ...outboxStatements([
+        {
+          table,
+          uid,
+          kind: "create",
+          fields: {
+            amount_cents: input.amountCents,
+            category_uid: await parentUid(
+              driver,
+              categoryTable(kind),
+              input.categoryId,
+            ),
+            wallet_uid: await parentUid(driver, "wallets", input.walletId),
+            entry_date: input.entryDate,
+            note: input.note ?? "",
+            created_at: created,
+          },
+        },
+      ]),
+    ]);
+    return readRowId(driver, table, uid);
+  };
+
+  /**
+   * Partial update for one ledger row, recording exactly the fields it writes:
+   * `undefined` leaves a column alone, and an explicit `null` clears a nullable
+   * one. The op names parents by uid, like the create above.
+   */
+  const updateEntry = async (
+    kind: LedgerKind,
+    id: number,
+    fields: Partial<EntryInput>,
+  ): Promise<void> => {
+    const table = ledgerTable(kind);
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const changed: Record<string, unknown> = {};
+    if (fields.amountCents !== undefined) {
+      sets.push("amount_cents = ?");
+      params.push(fields.amountCents);
+      changed.amount_cents = fields.amountCents;
+    }
+    if (fields.categoryId !== undefined) {
+      sets.push("category_id = ?");
+      params.push(fields.categoryId);
+      changed.category_uid = await parentUid(
+        driver,
+        categoryTable(kind),
+        fields.categoryId,
+      );
+    }
+    if (fields.walletId !== undefined) {
+      sets.push("wallet_id = ?");
+      params.push(fields.walletId);
+      changed.wallet_uid = await parentUid(driver, "wallets", fields.walletId);
+    }
+    if (fields.entryDate !== undefined) {
+      sets.push("entry_date = ?");
+      params.push(fields.entryDate);
+      changed.entry_date = fields.entryDate;
+    }
+    if (fields.note !== undefined) {
+      sets.push("note = ?");
+      params.push(fields.note);
+      changed.note = fields.note;
+    }
+    if (sets.length === 0) return;
+    params.push(id);
+    const uid = await readRowUid(driver, table, id);
+    await driver.batch([
+      { sql: `UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`, params },
+      ...outboxStatements(
+        uid ? [{ table, uid, kind: "update" as const, fields: changed }] : [],
+      ),
+    ]);
+  };
+
+  /** Delete one ledger row, and record the delete with it (§5.1, §6.1). */
+  const deleteEntry = async (kind: LedgerKind, id: number): Promise<void> => {
+    const table = ledgerTable(kind);
+    const uid = await readRowUid(driver, table, id);
+    await driver.batch([
+      { sql: `DELETE FROM ${table} WHERE id = ?`, params: [id] },
+      ...deleteStatements(uid ? [{ table, uid }] : []),
+    ]);
+  };
+
   return {
     // -- Wallets ------------------------------------------------------
     async listWallets(): Promise<WalletRow[]> {
       return driver.query<WalletRow>("SELECT * FROM wallets ORDER BY id");
     },
 
+    /**
+     * Create a wallet, recording the create in the same batch (§6.1). Wallets
+     * are desktop-owned (§2.3): the row flows down to the phone, which reads it
+     * and never writes it, so a wallet the phone could not hold by uid must
+     * still carry one here.
+     */
     async createWallet(name: string): Promise<number> {
-      const today = todayLocal();
-      const r = await driver.execute(
-        "INSERT INTO wallets (name, created_at) VALUES (?, ?)",
-        [name, today],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      await driver.batch([
+        {
+          sql: "INSERT INTO wallets (name, created_at, uid) VALUES (?, ?, ?)",
+          params: [name, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "wallets",
+            uid,
+            kind: "create",
+            fields: { name, created_at: created },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "wallets", uid);
     },
 
     /**
@@ -410,9 +568,23 @@ export function createBudgetRepo(driver: DataDriver) {
      * rewrites nothing: the label on every past entry follows the id.
      */
     async renameWallet(id: number, name: string): Promise<void> {
-      await driver.execute("UPDATE wallets SET name = ? WHERE id = ?", [
-        name,
-        id,
+      // A rename is a write like any other: the row changes, so its op records
+      // in the same batch (§6.1) and the peer's label follows the uid.
+      const uid = await readRowUid(driver, "wallets", id);
+      await driver.batch([
+        { sql: "UPDATE wallets SET name = ? WHERE id = ?", params: [name, id] },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "wallets" as const,
+                  uid,
+                  kind: "update",
+                  fields: { name },
+                },
+              ]
+            : [],
+        ),
       ]);
     },
 
@@ -441,12 +613,14 @@ export function createBudgetRepo(driver: DataDriver) {
           `This wallet has ${uses} entr${uses === 1 ? "y" : "ies"} recorded against it. Rename it instead, or delete those entries first.`,
         );
       }
+      const uid = await readRowUid(driver, "wallets", id);
       await driver.batch([
         {
           sql: "UPDATE recurring_payments SET wallet_id = NULL WHERE wallet_id = ?",
           params: [id],
         },
         { sql: "DELETE FROM wallets WHERE id = ?", params: [id] },
+        ...deleteStatements(uid ? [{ table: "wallets", uid }] : []),
       ]);
     },
 
@@ -501,11 +675,23 @@ export function createBudgetRepo(driver: DataDriver) {
     },
 
     async createIncomeCategory(name: string): Promise<number> {
-      const r = await driver.execute(
-        "INSERT INTO income_categories (name, created_at) VALUES (?, ?)",
-        [name, todayLocal()],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      await driver.batch([
+        {
+          sql: "INSERT INTO income_categories (name, created_at, uid) VALUES (?, ?, ?)",
+          params: [name, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "income_categories",
+            uid,
+            kind: "create",
+            fields: { name, created_at: created },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "income_categories", uid);
     },
 
     async listExpenseCategories(): Promise<ExpenseCategoryRow[]> {
@@ -515,27 +701,69 @@ export function createBudgetRepo(driver: DataDriver) {
     },
 
     async createExpenseCategory(name: string): Promise<number> {
-      const r = await driver.execute(
-        "INSERT INTO expense_categories (name, created_at) VALUES (?, ?)",
-        [name, todayLocal()],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      await driver.batch([
+        {
+          sql: "INSERT INTO expense_categories (name, created_at, uid) VALUES (?, ?, ?)",
+          params: [name, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "expense_categories",
+            uid,
+            kind: "create",
+            fields: { name, created_at: created },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "expense_categories", uid);
     },
 
     /** Rename an income category — entries follow the id, not the name. */
     async renameIncomeCategory(id: number, name: string): Promise<void> {
-      await driver.execute(
-        "UPDATE income_categories SET name = ? WHERE id = ?",
-        [name, id],
-      );
+      const uid = await readRowUid(driver, "income_categories", id);
+      await driver.batch([
+        {
+          sql: "UPDATE income_categories SET name = ? WHERE id = ?",
+          params: [name, id],
+        },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "income_categories" as const,
+                  uid,
+                  kind: "update",
+                  fields: { name },
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     /** Rename an expense category — entries follow the id, not the name. */
     async renameExpenseCategory(id: number, name: string): Promise<void> {
-      await driver.execute(
-        "UPDATE expense_categories SET name = ? WHERE id = ?",
-        [name, id],
-      );
+      const uid = await readRowUid(driver, "expense_categories", id);
+      await driver.batch([
+        {
+          sql: "UPDATE expense_categories SET name = ? WHERE id = ?",
+          params: [name, id],
+        },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "expense_categories" as const,
+                  uid,
+                  kind: "update",
+                  fields: { name },
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     /**
@@ -559,12 +787,14 @@ export function createBudgetRepo(driver: DataDriver) {
           `This category has ${uses} expense entr${uses === 1 ? "y" : "ies"} in it. Rename it instead, or delete those entries first.`,
         );
       }
+      const uid = await readRowUid(driver, "expense_categories", id);
       await driver.batch([
         {
           sql: "UPDATE recurring_payments SET category_id = NULL WHERE category_id = ?",
           params: [id],
         },
         { sql: "DELETE FROM expense_categories WHERE id = ?", params: [id] },
+        ...deleteStatements(uid ? [{ table: "expense_categories", uid }] : []),
       ]);
     },
 
@@ -580,7 +810,11 @@ export function createBudgetRepo(driver: DataDriver) {
           `This category has ${uses} income entr${uses === 1 ? "y" : "ies"} in it. Rename it instead, or delete those entries first.`,
         );
       }
-      await driver.execute("DELETE FROM income_categories WHERE id = ?", [id]);
+      const uid = await readRowUid(driver, "income_categories", id);
+      await driver.batch([
+        { sql: "DELETE FROM income_categories WHERE id = ?", params: [id] },
+        ...deleteStatements(uid ? [{ table: "income_categories", uid }] : []),
+      ]);
     },
 
     /**
@@ -597,54 +831,26 @@ export function createBudgetRepo(driver: DataDriver) {
     },
 
     // -- Income / expense entries --------------------------------------
+    /** Create an income ledger row, its op committing in the same batch. */
     async createIncomeEntry(input: EntryInput): Promise<number> {
-      const stmt = ledgerInsertStatement("income", input);
-      const r = await driver.execute(stmt.sql, stmt.params);
-      return r.lastInsertRowid;
+      return insertEntry("income", input);
     },
 
+    /** Create an expense ledger row, its op committing in the same batch. */
     async createExpenseEntry(input: EntryInput): Promise<number> {
-      const stmt = ledgerInsertStatement("expense", input);
-      const r = await driver.execute(stmt.sql, stmt.params);
-      return r.lastInsertRowid;
+      return insertEntry("expense", input);
     },
 
     /**
      * Partial update: only the provided fields are written (`undefined`
-     * leaves the column unchanged; explicit `null` clears a nullable one).
+     * leaves the column unchanged; explicit `null` clears a nullable one), and
+     * the op records exactly those fields (§6.1).
      */
     async updateIncomeEntry(
       id: number,
       fields: Partial<EntryInput>,
     ): Promise<void> {
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      if (fields.amountCents !== undefined) {
-        sets.push("amount_cents = ?");
-        params.push(fields.amountCents);
-      }
-      if (fields.categoryId !== undefined) {
-        sets.push("category_id = ?");
-        params.push(fields.categoryId);
-      }
-      if (fields.walletId !== undefined) {
-        sets.push("wallet_id = ?");
-        params.push(fields.walletId);
-      }
-      if (fields.entryDate !== undefined) {
-        sets.push("entry_date = ?");
-        params.push(fields.entryDate);
-      }
-      if (fields.note !== undefined) {
-        sets.push("note = ?");
-        params.push(fields.note);
-      }
-      if (sets.length === 0) return;
-      params.push(id);
-      await driver.execute(
-        `UPDATE income_entries SET ${sets.join(", ")} WHERE id = ?`,
-        params,
-      );
+      return updateEntry("income", id, fields);
     },
 
     /** Partial update: only the provided fields are written (see above). */
@@ -652,38 +858,11 @@ export function createBudgetRepo(driver: DataDriver) {
       id: number,
       fields: Partial<EntryInput>,
     ): Promise<void> {
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      if (fields.amountCents !== undefined) {
-        sets.push("amount_cents = ?");
-        params.push(fields.amountCents);
-      }
-      if (fields.categoryId !== undefined) {
-        sets.push("category_id = ?");
-        params.push(fields.categoryId);
-      }
-      if (fields.walletId !== undefined) {
-        sets.push("wallet_id = ?");
-        params.push(fields.walletId);
-      }
-      if (fields.entryDate !== undefined) {
-        sets.push("entry_date = ?");
-        params.push(fields.entryDate);
-      }
-      if (fields.note !== undefined) {
-        sets.push("note = ?");
-        params.push(fields.note);
-      }
-      if (sets.length === 0) return;
-      params.push(id);
-      await driver.execute(
-        `UPDATE expense_entries SET ${sets.join(", ")} WHERE id = ?`,
-        params,
-      );
+      return updateEntry("expense", id, fields);
     },
 
     async deleteIncomeEntry(id: number): Promise<void> {
-      await driver.execute("DELETE FROM income_entries WHERE id = ?", [id]);
+      return deleteEntry("income", id);
     },
 
     /**
@@ -715,28 +894,48 @@ export function createBudgetRepo(driver: DataDriver) {
       id: number,
       input: EntryInput,
     ): Promise<void> {
-      const fromTable =
-        from === "income" ? "income_entries" : "expense_entries";
-      const toTable = from === "income" ? "expense_entries" : "income_entries";
+      const toKind: LedgerKind = from === "income" ? "expense" : "income";
+      const fromTable = ledgerTable(from);
+      const toTable = ledgerTable(toKind);
+      // A conversion is one record dying and another being born, so it records
+      // exactly that: a delete op for the old uid, a create op for the new row's
+      // own uid. Anything less would leave the peer counting the old entry
+      // forever and never seeing the replacement.
+      const uid = await readRowUid(driver, fromTable, id);
+      const replacementUid = newUid();
+      const created = todayLocal();
       await driver.batch([
         { sql: `DELETE FROM ${fromTable} WHERE id = ?`, params: [id] },
-        {
-          sql: `INSERT INTO ${toTable} (amount_cents, category_id, wallet_id, entry_date, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)`,
-          params: [
-            input.amountCents,
-            input.categoryId,
-            input.walletId,
-            input.entryDate,
-            input.note ?? "",
-            todayLocal(),
-          ],
-        },
+        ledgerInsertStatement(toKind, {
+          ...input,
+          uid: replacementUid,
+          createdAt: created,
+        }),
+        ...deleteStatements(uid ? [{ table: fromTable, uid }] : []),
+        ...outboxStatements([
+          {
+            table: toTable,
+            uid: replacementUid,
+            kind: "create",
+            fields: {
+              amount_cents: input.amountCents,
+              category_uid: await parentUid(
+                driver,
+                categoryTable(toKind),
+                input.categoryId,
+              ),
+              wallet_uid: await parentUid(driver, "wallets", input.walletId),
+              entry_date: input.entryDate,
+              note: input.note ?? "",
+              created_at: created,
+            },
+          },
+        ]),
       ]);
     },
 
     async deleteExpenseEntry(id: number): Promise<void> {
-      await driver.execute("DELETE FROM expense_entries WHERE id = ?", [id]);
+      return deleteEntry("expense", id);
     },
 
     /**
@@ -1156,25 +1355,57 @@ export function createBudgetRepo(driver: DataDriver) {
         const categoryId = rule.category_id ?? fallback.categoryId;
         const walletId = rule.wallet_id ?? fallback.walletId;
         const created = todayLocal();
-        const statements = dates.map((due) => ({
-          ...ledgerInsertStatement("expense", {
-            amountCents: rule.amount_cents,
-            categoryId,
-            walletId,
-            entryDate: due,
-            note: rule.title,
-            createdAt: created,
-          }),
-        }));
+        // Each booked occurrence is a real expense entry in a synced table, so
+        // each one records its own create op (§6.1); the rule's own catch-up
+        // (`next_due_date`, a §2.2 desktop-only row) records nothing.
+        const bookedCategoryUid = await parentUid(
+          driver,
+          "expense_categories",
+          categoryId,
+        );
+        const bookedWalletUid = await parentUid(driver, "wallets", walletId);
+        const booked = dates.map((due) => {
+          const uid = newUid();
+          return {
+            uid,
+            due,
+            statement: ledgerInsertStatement("expense", {
+              amountCents: rule.amount_cents,
+              categoryId,
+              walletId,
+              entryDate: due,
+              note: rule.title,
+              createdAt: created,
+              uid,
+            }),
+          };
+        });
         const lastDue = dates[dates.length - 1];
         if (lastDue === undefined) {
           throw new Error("markRecurringPaid: due dates vanished mid-write");
         }
-        statements.push({
-          sql: "UPDATE recurring_payments SET next_due_date = ? WHERE id = ?",
-          params: [advanceDate(lastDue, rule.frequency), id],
-        });
-        await driver.batch(statements);
+        await driver.batch([
+          ...booked.map((entry) => entry.statement),
+          {
+            sql: "UPDATE recurring_payments SET next_due_date = ? WHERE id = ?",
+            params: [advanceDate(lastDue, rule.frequency), id],
+          },
+          ...outboxStatements(
+            booked.map((entry) => ({
+              table: "expense_entries" as const,
+              uid: entry.uid,
+              kind: "create" as const,
+              fields: {
+                amount_cents: rule.amount_cents,
+                category_uid: bookedCategoryUid,
+                wallet_uid: bookedWalletUid,
+                entry_date: entry.due,
+                note: rule.title,
+                created_at: created,
+              },
+            })),
+          ),
+        ]);
         return dates;
       });
     },

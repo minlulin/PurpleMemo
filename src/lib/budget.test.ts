@@ -87,30 +87,51 @@ test("listWalletBalances: a cap travels as one bound parameter", async () => {
 });
 
 test("createExpenseEntry stores integer cents", async () => {
-  const driver = createMockDriver();
+  // Two uid lookups (category, wallet) then the id read back after the batch.
+  const driver = createMockDriver({ results: [[], [], [{ id: 3 }]] });
   const budget = createBudgetRepo(driver);
-  await budget.createExpenseEntry({
+  const id = await budget.createExpenseEntry({
     amountCents: 1500,
     categoryId: 1,
     walletId: 2,
     entryDate: "2026-10-10",
     note: "lunch",
   });
-  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
-  assert.match(sql, /INSERT INTO expense_entries/);
-  assert.match(String(params[0]), /^[0-9a-f-]{36}$/, "uid is minted here");
-  assert.deepEqual(params.slice(1), [
+  assert.equal(id, 3);
+  assert.deepEqual(
+    driver.callsTo("execute"),
+    [],
+    "the row and its op share one batch (§6.1), so nothing writes outside it",
+  );
+  const batch = argsOf(driver, "batch")[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  const insert = at(batch, 0, "batch");
+  assert.match(insert.sql, /INSERT INTO expense_entries/);
+  assert.match(
+    String(insert.params[0]),
+    /^[0-9a-f-]{36}$/,
+    "uid is minted here",
+  );
+  assert.deepEqual(insert.params.slice(1), [
     1500,
     1,
     2,
     "2026-10-10",
     "lunch",
-    params[6],
+    insert.params[6],
   ]);
+  assert.equal(
+    batch.filter((statement) => /INSERT INTO sync_outbox/.test(statement.sql))
+      .length,
+    1,
+    "exactly one op records the create",
+  );
 });
 
 test("a cleared entry date saves and refreshes against the same local day", async () => {
-  const driver = createMockDriver();
+  const driver = createMockDriver({ results: [[], [], [{ id: 1 }]] });
   const budget = createBudgetRepo(driver);
   const entryDate = resolveEntryDate("", "2026-10-11");
 
@@ -122,9 +143,14 @@ test("a cleared entry date saves and refreshes against the same local day", asyn
   });
   await budget.listDayEntries(entryDate);
 
-  const [, insertParams] = argsOf(driver, "execute") as [string, unknown[]];
-  assert.equal(insertParams[4], "2026-10-11");
-  const dayQuery = driver.callsTo("query")[0];
+  const batch = argsOf(driver, "batch")[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  assert.equal(at(batch, 0, "batch").params[4], "2026-10-11");
+  const dayQuery = driver
+    .callsTo("query")
+    .find((call) => /UNION ALL/.test(String(call.args[0])));
   assert.ok(dayQuery);
   assert.deepEqual(dayQuery.args[1], ["2026-10-11", "2026-10-11"]);
 });
@@ -198,9 +224,22 @@ test("markRecurringPaid creates one expense per occurrence + advances due, batch
     sql: string;
     params: unknown[];
   }[];
-  assert.equal(batch.length, 3, "two inserts + one update");
-  const firstInsert = at(batch, 0, "batch");
-  const dueUpdate = at(batch, 2, "batch");
+  const booked = batch.filter((statement) =>
+    /INSERT INTO expense_entries/.test(statement.sql),
+  );
+  assert.equal(booked.length, 2, "one expense per occurrence");
+  const firstInsert = booked[0];
+  assert.ok(firstInsert);
+  const dueUpdate = batch.find((statement) =>
+    /UPDATE recurring_payments SET next_due_date/.test(statement.sql),
+  );
+  assert.ok(dueUpdate);
+  assert.equal(
+    batch.filter((statement) => /INSERT INTO sync_outbox/.test(statement.sql))
+      .length,
+    2,
+    "each booked entry records its own create op (§6.1)",
+  );
   assert.match(firstInsert.sql, /INSERT INTO expense_entries/);
   assert.match(String(firstInsert.params[0]), /^[0-9a-f-]{36}$/);
   assert.deepEqual(firstInsert.params.slice(1), [
@@ -445,11 +484,13 @@ test("updateIncomeEntry writes only the provided fields", async () => {
   const driver = createMockDriver();
   const budget = createBudgetRepo(driver);
   await budget.updateIncomeEntry(4, { note: "bonus" });
-  const call = driver.lastCall();
-  assert.ok(call);
-  const [sql, params] = call.args as [string, unknown[]];
-  assert.match(sql, /UPDATE income_entries SET note = \? WHERE id = \?/);
-  assert.deepEqual(params, ["bonus", 4]);
+  const batch = argsOf(driver, "batch")[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  const update = at(batch, 0, "batch");
+  assert.match(update.sql, /UPDATE income_entries SET note = \? WHERE id = \?/);
+  assert.deepEqual(update.params, ["bonus", 4]);
 });
 
 test("cleanName trims input and rejects empty/whitespace names", () => {
@@ -627,14 +668,26 @@ test("renameWallet / renameCategory: one UPDATE, id-scoped", async () => {
   const budget = createBudgetRepo(driver);
   await budget.renameWallet(2, "Cash");
   await budget.renameExpenseCategory(3, "Food");
-  const renames = driver.callsTo("execute");
-  assert.equal(renames[0]?.args[0], "UPDATE wallets SET name = ? WHERE id = ?");
-  assert.deepEqual(renames[0]?.args[1], ["Cash", 2]);
+  // One batch per rename: the UPDATE, and the op that carries it (§6.1).
+  const batches = driver.callsTo("batch");
+  const wallet = at(
+    at(batches, 0, "batch").args[0] as { sql: string; params: unknown[] }[],
+    0,
+    "batch",
+  );
+  assert.equal(wallet.sql, "UPDATE wallets SET name = ? WHERE id = ?");
+  assert.deepEqual(wallet.params, ["Cash", 2]);
+  const category = at(
+    at(batches, 1, "batch").args[0] as { sql: string; params: unknown[] }[],
+    0,
+    "batch",
+  );
   assert.equal(
-    renames[1]?.args[0],
+    category.sql,
     "UPDATE expense_categories SET name = ? WHERE id = ?",
   );
-  assert.deepEqual(renames[1]?.args[1], ["Food", 3]);
+  assert.deepEqual(category.params, ["Food", 3]);
+  assert.deepEqual(driver.callsTo("execute"), [], "no write outside the batch");
 });
 
 test("deleteWallet: refused while entries reference it, and says how many", async () => {
@@ -717,8 +770,16 @@ test("deleteIncomeCategory: same usage rule on the income side", async () => {
   );
   const unused = createMockDriver({ results: [[{ uses: 0 }]] });
   await createBudgetRepo(unused).deleteIncomeCategory(3);
-  const call = at(unused.callsTo("execute"), 0, "execute");
-  assert.equal(call.args[0], "DELETE FROM income_categories WHERE id = ?");
+  const batch = argsOf(unused, "batch")[0] as {
+    sql: string;
+    params: unknown[];
+  }[];
+  assert.equal(
+    at(batch, 0, "batch").sql,
+    "DELETE FROM income_categories WHERE id = ?",
+  );
+  assert.deepEqual(at(batch, 0, "batch").params, [3]);
+  assert.deepEqual(unused.callsTo("execute"), [], "no write outside the batch");
 });
 
 test("expenseCategoryUsage: reported so the UI can explain itself before a click", async () => {
@@ -824,14 +885,27 @@ test("convertEntry: the delete and the insert are ONE batch, in that order", asy
   );
   const batch = at(driver.callsTo("batch"), 0, "batch");
   const statements = batch.args[0] as { sql: string; params: unknown[] }[];
-  assert.equal(statements.length, 2);
+  assert.equal(
+    statements.filter((statement) =>
+      /INSERT INTO expense_entries/.test(statement.sql),
+    ).length,
+    1,
+    "one replacement row",
+  );
   assert.equal(statements[0]?.sql, "DELETE FROM income_entries WHERE id = ?");
   assert.deepEqual(statements[0]?.params, [7]);
+  const replacement = statements[1];
+  assert.ok(replacement);
   assert.match(
-    statements[1]?.sql ?? "",
-    /INSERT INTO expense_entries \(amount_cents, category_id, wallet_id, entry_date, note, created_at\)/,
+    replacement.sql,
+    /INSERT INTO expense_entries \(uid, amount_cents, category_id, wallet_id, entry_date, note, created_at\)/,
   );
-  assert.deepEqual(statements[1]?.params.slice(0, 5), [
+  assert.match(
+    String(replacement.params[0]),
+    /^[0-9a-f-]{36}$/,
+    "the replacement is a new record, with an identity of its own",
+  );
+  assert.deepEqual(replacement.params.slice(1, 6), [
     12_000,
     2,
     1,
@@ -840,7 +914,7 @@ test("convertEntry: the delete and the insert are ONE batch, in that order", asy
   ]);
   // The stamp is the replacement's own — a conversion is a new row, not the old
   // one relabelled — and it is a local `yyyy-mm-dd`, never a UTC ISO string.
-  const stamp = statements[1]?.params[5];
+  const stamp = replacement.params[6];
   assert.match(
     String(stamp),
     /^\d{4}-\d{2}-\d{2}$/,

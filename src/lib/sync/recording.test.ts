@@ -10,9 +10,10 @@
  * and the sync tables are sliced from that file rather than retyped
  * (`./testSchema.ts`).
  *
- * The eight Stage 1 tables are the whole of this session's scope
- * (`§12.1`); a write to any other table must record nothing, which the Budget
- * case at the end pins.
+ * Stage 1's eight tables and Stage 2's five Budget tables are the whole of
+ * what records; a write to a §2.2 table — `expense_limits`,
+ * `recurring_payments`, `payables` — records nothing, which the Budget
+ * boundary case at the end pins.
  */
 import assert from "node:assert/strict";
 import type { DatabaseSync } from "node:sqlite";
@@ -299,37 +300,159 @@ test("a reminder create carries this device's id, and its delete records", async
   assert.equal(created.op.payload.title, "Stand up");
 });
 
-test("a Budget entry records nothing: Stage 1's boundary is the eight tables", async () => {
+// ---------------------------------------------------------------------------
+// Task 3 (Stage 2) — Budget records on the five §2.1 tables, and only those.
+// ---------------------------------------------------------------------------
+
+test("a wallet and a category record their create, and a rename records an update", async () => {
   const store = openStore();
-  const { db, driver } = store;
-  db.exec(`
-    INSERT INTO wallets (name, created_at) VALUES ('Cash', '2026-11-01');
-    INSERT INTO expense_categories (name, created_at) VALUES ('Food', '2026-11-01');
-  `);
+  const { driver } = store;
   const budget = createBudgetRepo(driver);
 
-  const entryId = await budget.createExpenseEntry({
-    amountCents: 500,
-    categoryId: 1,
-    walletId: 1,
+  const walletId = await budget.createWallet("Cash");
+  const wallet = await assertRecorded(store, "wallets", walletId, "create");
+  assert.equal(wallet.op.payload.name, "Cash");
+  assert.match(
+    String(wallet.op.payload.created_at),
+    /^\d{4}-\d{2}-\d{2}$/,
+    "the create carries the row's own created_at",
+  );
+
+  const expenseCategoryId = await budget.createExpenseCategory("Food");
+  const expenseCategory = await assertRecorded(
+    store,
+    "expense_categories",
+    expenseCategoryId,
+    "create",
+  );
+  assert.equal(expenseCategory.op.payload.name, "Food");
+
+  const incomeCategoryId = await budget.createIncomeCategory("Salary");
+  const incomeCategory = await assertRecorded(
+    store,
+    "income_categories",
+    incomeCategoryId,
+    "create",
+  );
+  assert.equal(incomeCategory.op.payload.name, "Salary");
+
+  // An income entry is a row on a second ledger table, so it must name its own
+  // category table's row by uid — never the expense one (§3.4).
+  const entryId = await budget.createIncomeEntry({
+    amountCents: 5_000,
+    categoryId: incomeCategoryId,
+    walletId,
     entryDate: "2026-11-13",
   });
+  const entry = await assertRecorded(
+    store,
+    "income_entries",
+    entryId,
+    "create",
+  );
+  assert.equal(entry.op.payload.category_uid, incomeCategory.uid);
+  assert.equal(entry.op.payload.wallet_uid, wallet.uid);
+
+  await budget.renameWallet(walletId, "Pocket");
+  const renamed = (await opsFor(driver, "wallets")).at(-1);
+  assert.equal(renamed?.op, "update");
+  assert.deepEqual(renamed?.payload, { name: "Pocket" });
+});
+
+test("an expense entry records create, update and delete, parents named by uid", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const budget = createBudgetRepo(driver);
+  const walletId = await budget.createWallet("Cash");
+  const categoryId = await budget.createExpenseCategory("Food");
+  const walletUid = uidOf(db, "wallets", walletId);
+  const categoryUid = uidOf(db, "expense_categories", categoryId);
+  assert.ok(walletUid && categoryUid);
+
+  const entryId = await budget.createExpenseEntry({
+    amountCents: 1250,
+    categoryId,
+    walletId,
+    entryDate: "2026-11-13",
+    note: "lunch",
+  });
+  const created = await assertRecorded(
+    store,
+    "expense_entries",
+    entryId,
+    "create",
+  );
+  assert.equal(created.op.payload.amount_cents, 1250);
+  assert.equal(created.op.payload.entry_date, "2026-11-13");
+  assert.equal(created.op.payload.note, "lunch");
   assert.equal(
-    count(db, "SELECT count(*) AS n FROM expense_entries"),
+    created.op.payload.category_uid,
+    categoryUid,
+    "the category travels as a uid (§3.4), not as a local row number",
+  );
+  assert.equal(created.op.payload.wallet_uid, walletUid);
+  assert.equal(
+    (await opsFor(driver, "expense_entries")).length,
     1,
-    "the entry itself is written",
+    "exactly one op records the create",
   );
-  assert.equal(entryId > 0, true);
-  assert.equal(
-    count(db, "SELECT count(*) AS n FROM sync_outbox"),
-    0,
-    "a Stage 2 table must never record a Stage 1 op (§12.1)",
+
+  await budget.updateExpenseEntry(entryId, { amountCents: 1500 });
+  const updated = (await opsFor(driver, "expense_entries")).at(-1);
+  assert.equal(updated?.op, "update");
+  assert.deepEqual(
+    updated?.payload,
+    { amount_cents: 1500 },
+    "the update names exactly the field it wrote",
   );
-  assert.equal(count(db, "SELECT count(*) AS n FROM sync_row_stamps"), 0);
+
+  await budget.deleteExpenseEntry(entryId);
+  assert.equal(count(db, "SELECT count(*) AS n FROM expense_entries"), 0);
+  const deleted = (await opsFor(driver, "expense_entries")).at(-1);
+  assert.equal(deleted?.op, "delete");
+  assert.equal(deleted?.entity_uid, created.uid);
   assert.equal(
-    (await readState(driver)).lamport,
-    0,
-    "and it must not spend a Lamport step either",
+    (await readTombstones(driver)).filter(
+      (row) => row.entity_table === "expense_entries",
+    ).length,
+    1,
+    "the delete leaves a tombstone (§5.1)",
+  );
+});
+
+test("a recurring payment and an expense limit record nothing and spend no Lamport step", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const budget = createBudgetRepo(driver);
+  const categoryId = await budget.createExpenseCategory("Food");
+  const walletId = await budget.createWallet("Cash");
+  const before = await readState(driver);
+
+  await budget.createRecurring({
+    title: "Net",
+    amountCents: 9_000,
+    categoryId,
+    walletId,
+    frequency: "monthly",
+    nextDueDate: "2026-12-01",
+  });
+  await budget.setLimit(categoryId, 100_000);
+
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM recurring_payments"),
+    1,
+    "the rule itself is written",
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM expense_limits"), 1);
+  const after = await readState(driver);
+  assert.equal(after.lamport, before.lamport, "no op, so no Lamport step");
+  assert.equal(after.lastSeq, before.lastSeq, "and no sequence number either");
+  assert.deepEqual(
+    [
+      ...new Set((await readOutbox(driver)).map((row) => row.entity_table)),
+    ].sort(),
+    ["expense_categories", "wallets"],
+    "§2.2: the desktop-only Budget tables never record, even in budget.ts itself",
   );
 });
 
