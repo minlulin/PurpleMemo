@@ -15,6 +15,7 @@ import type {
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at, first } from "../test-utils.ts";
 import { createNotesRepo, EXCERPT_MAX_CHARS, noteExcerpt } from "./notes.ts";
+import { applySyncStorage } from "./sync/testSchema.ts";
 
 test("the repo forwards the collection filter to the FTS search (P2-13)", async () => {
   // The page cannot be unit-tested here, so the seam it relies on is pinned
@@ -298,6 +299,9 @@ function sqliteDriver(): DataDriver & { db: DatabaseSync } {
   // The production connection runs with this on (`db.rs`); the SET NULL path
   // being pinned here depends on it.
   db.exec("PRAGMA foreign_keys = ON");
+  // Every mutating repository method now commits its sync op in the same
+  // batch (§6.1), so the sync tables have to exist as they do in the app.
+  applySyncStorage(db);
   return {
     db,
     async query<T extends Queryable>(sql: string, params: unknown[] = []) {

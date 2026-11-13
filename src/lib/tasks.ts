@@ -11,6 +11,12 @@ import {
   isValidISODate,
   todayLocal,
 } from "./dates.ts";
+import {
+  deleteStatements,
+  outboxStatements,
+  readRowId,
+  readRowUid,
+} from "./sync/store.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { ReminderRow, TaskRow } from "./types.ts";
 import { newUid } from "./uid.ts";
@@ -181,19 +187,35 @@ export function createTasksRepo(
     },
 
     async createTask(input: TaskInput): Promise<number> {
-      const r = await driver.execute(
-        `INSERT INTO tasks (title, due_date, done, repeat, note, created_at, uid)
-         VALUES (?, ?, 0, ?, ?, ?, ?)`,
-        [
-          input.title,
-          input.dueDate ?? null,
-          input.repeat ?? "none",
-          input.note ?? "",
-          todayLocal(),
-          newUid(),
-        ],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      const dueDate = input.dueDate ?? null;
+      const repeat = input.repeat ?? "none";
+      const note = input.note ?? "";
+      // §6.1: the row and its op are one batch, so the id comes back by uid.
+      await driver.batch([
+        {
+          sql: `INSERT INTO tasks (title, due_date, done, repeat, note, created_at, uid)
+             VALUES (?, ?, 0, ?, ?, ?, ?)`,
+          params: [input.title, dueDate, repeat, note, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "tasks",
+            uid,
+            kind: "create",
+            fields: {
+              title: input.title,
+              due_date: dueDate,
+              done: 0,
+              repeat,
+              note,
+              created_at: created,
+            },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "tasks", uid);
     },
 
     /**
@@ -203,34 +225,64 @@ export function createTasksRepo(
     async updateTask(id: number, fields: Partial<TaskInput>): Promise<void> {
       const sets: string[] = [];
       const params: unknown[] = [];
+      const changed: Record<string, unknown> = {};
       if (fields.title !== undefined) {
         sets.push("title = ?");
         params.push(fields.title);
+        changed.title = fields.title;
       }
       if (fields.dueDate !== undefined) {
         sets.push("due_date = ?");
         params.push(fields.dueDate);
+        changed.due_date = fields.dueDate;
       }
       if (fields.repeat !== undefined) {
         sets.push("repeat = ?");
         params.push(fields.repeat);
+        changed.repeat = fields.repeat;
       }
       if (fields.note !== undefined) {
         sets.push("note = ?");
         params.push(fields.note);
+        changed.note = fields.note;
       }
       if (sets.length === 0) return;
       params.push(id);
-      await driver.execute(
-        `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`,
-        params,
-      );
+      const uid = await readRowUid(driver, "tasks", id);
+      await driver.batch([
+        { sql: `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, params },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "tasks" as const,
+                  uid,
+                  kind: "update",
+                  fields: changed,
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     async toggleTask(id: number, done: boolean): Promise<void> {
-      await driver.execute("UPDATE tasks SET done = ? WHERE id = ?", [
-        done ? 1 : 0,
-        id,
+      const value = done ? 1 : 0;
+      const uid = await readRowUid(driver, "tasks", id);
+      await driver.batch([
+        { sql: "UPDATE tasks SET done = ? WHERE id = ?", params: [value, id] },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "tasks" as const,
+                  uid,
+                  kind: "toggle",
+                  fields: { done: value },
+                },
+              ]
+            : [],
+        ),
       ]);
     },
 
@@ -258,7 +310,12 @@ export function createTasksRepo(
 
     /** Move the task and its relationships into Trash. */
     async deleteTask(id: number): Promise<void> {
-      await trash.trashEntity("task", id);
+      const uid = await readRowUid(driver, "tasks", id);
+      await trash.trashEntity(
+        "task",
+        id,
+        uid ? deleteStatements([{ table: "tasks", uid }]) : [],
+      );
     },
 
     /**
@@ -300,19 +357,37 @@ export function createTasksRepo(
     },
 
     async createReminder(input: ReminderInput): Promise<number> {
-      const r = await driver.execute(
-        `INSERT INTO reminders (title, remind_at, repeat, note, fired, created_at, uid)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
-        [
-          input.title,
-          input.remindAt,
-          input.repeat ?? "none",
-          input.note ?? "",
-          todayLocal(),
-          newUid(),
-        ],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      const repeat = input.repeat ?? "none";
+      const note = input.note ?? "";
+      await driver.batch([
+        {
+          // §13.1 Option A: the creating device is recorded on the definition,
+          // because it is the only device that will arm and notify it. The id
+          // is read from `sync_state` inside the transaction, like every other
+          // stamp this write carries. Nullable, and nothing reads it yet.
+          sql: `INSERT INTO reminders (title, remind_at, repeat, note, fired, created_at, uid, created_by_device_id)
+             VALUES (?, ?, ?, ?, 0, ?, ?, (SELECT device_id FROM sync_state WHERE id = 1))`,
+          params: [input.title, input.remindAt, repeat, note, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "reminders",
+            uid,
+            kind: "create",
+            fields: {
+              title: input.title,
+              remind_at: input.remindAt,
+              repeat,
+              note,
+              fired: 0,
+              created_at: created,
+            },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "reminders", uid);
     },
 
     async markReminderFired(id: number): Promise<void> {
@@ -343,7 +418,11 @@ export function createTasksRepo(
     },
 
     async deleteReminder(id: number): Promise<void> {
-      await driver.execute("DELETE FROM reminders WHERE id = ?", [id]);
+      const uid = await readRowUid(driver, "reminders", id);
+      await driver.batch([
+        { sql: "DELETE FROM reminders WHERE id = ?", params: [id] },
+        ...deleteStatements(uid ? [{ table: "reminders", uid }] : []),
+      ]);
     },
 
     /**

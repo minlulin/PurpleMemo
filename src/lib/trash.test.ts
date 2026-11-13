@@ -976,7 +976,7 @@ test("every trash mutator serializes on the one repo lock (J3)", () => {
   for (const [name, pattern] of [
     [
       "trashEntity",
-      /trashEntity: \(type: TrashEntityType, id: number\) =>\s*mutex\.withLock\("trash", \(\) => trashEntityUnlocked\(type, id\)\)/,
+      /trashEntity: \(\s*type: TrashEntityType,\s*id: number,\s*extraStatements: readonly BatchStatement\[\] = \[\],\s*\) =>\s*mutex\.withLock\(\s*"trash",\s*\(\) =>\s*trashEntityUnlocked\(type, id, extraStatements\),\s*\)/,
     ],
     [
       "restore",

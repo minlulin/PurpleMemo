@@ -12,6 +12,7 @@ import type {
   Queryable,
 } from "../data/driver.ts";
 import { createMockDriver } from "../data/mock-driver.ts";
+import { applySyncStorage } from "./sync/testSchema.ts";
 import {
   createTasksRepo,
   nextDueDate,
@@ -46,6 +47,9 @@ CREATE TABLE tasks (
 function sqliteDriver(): DataDriver & { db: DatabaseSync } {
   const db = new DatabaseSync(":memory:");
   db.exec(SQLITE_TASKS_FIXTURE);
+  // Every mutating repository method now commits its sync op in the same
+  // batch (§6.1), so the sync tables have to exist as they do in the app.
+  applySyncStorage(db);
   return {
     db,
     async query<T extends Queryable>(sql: string, params: unknown[] = []) {
@@ -114,26 +118,42 @@ function sqliteDriver(): DataDriver & { db: DatabaseSync } {
   };
 }
 
-test("updateTask writes only the provided fields (no NULL wipe)", async () => {
-  const driver = createMockDriver();
+/** The statements of the one batch a repository write committed (§6.1). */
+function batchStatements(driver: ReturnType<typeof createMockDriver>) {
+  const batches = driver.callsTo("batch");
+  const batch = batches.at(-1);
+  assert.ok(batch, "the write must commit as one batch");
+  return batch.args[0] as BatchStatement[];
+}
+
+/** The task uid the mock hands back for the pre-write row read. */
+const TASK_UID = "3f3f3f3f-3f3f-4f3f-8f3f-3f3f3f3f3f3f";
+
+test("updateTask writes only the provided fields (no NULL wipe), with its op", async () => {
+  const driver = createMockDriver({ results: [[{ uid: TASK_UID }]] });
   const tasks = createTasksRepo(driver);
   await tasks.updateTask(3, { title: "Call shop" });
-  const call = driver.lastCall();
-  assert.ok(call);
-  const [sql, params] = call.args as [string, unknown[]];
-  assert.match(sql, /UPDATE tasks SET title = \? WHERE id = \?/);
-  assert.deepEqual(params, ["Call shop", 3]);
+  const statements = batchStatements(driver);
+  const [update] = statements;
+  assert.ok(update);
+  assert.match(update.sql, /UPDATE tasks SET title = \? WHERE id = \?/);
+  assert.deepEqual(update.params, ["Call shop", 3]);
+  // §6.1: the op rides in the same batch, carrying only the field that moved.
+  const op = statements.find((s) => /INSERT INTO sync_outbox/.test(s.sql));
+  assert.ok(op, "the update must record its op (§6.1)");
+  assert.equal(op.params?.[1], "tasks");
+  assert.equal(op.params?.[2], TASK_UID);
+  assert.deepEqual(JSON.parse(String(op.params?.[6])), { title: "Call shop" });
 });
 
 test("updateTask with explicit null clears a nullable field", async () => {
-  const driver = createMockDriver();
+  const driver = createMockDriver({ results: [[{ uid: TASK_UID }]] });
   const tasks = createTasksRepo(driver);
   await tasks.updateTask(3, { dueDate: null });
-  const call = driver.lastCall();
-  assert.ok(call);
-  const [sql, params] = call.args as [string, unknown[]];
-  assert.match(sql, /UPDATE tasks SET due_date = \? WHERE id = \?/);
-  assert.deepEqual(params, [null, 3]);
+  const [update] = batchStatements(driver);
+  assert.ok(update);
+  assert.match(update.sql, /UPDATE tasks SET due_date = \? WHERE id = \?/);
+  assert.deepEqual(update.params, [null, 3]);
 });
 
 test("nextDueDate: repeat rolls the due date to the next future occurrence", () => {
@@ -241,23 +261,23 @@ test("completeTask rolls a repeating task forward instead of closing it", async 
     results: [[taskRow({ repeat: "daily", due_date: "2026-10-11" })]],
   });
   await createTasksRepo(driver).completeTask(3, "2026-10-11");
-  const writes = driver.callsTo("execute");
-  assert.equal(writes.length, 1, "exactly one write: the rolled due date");
-  assert.deepEqual(writes[0]?.args, [
-    "UPDATE tasks SET due_date = ? WHERE id = ?",
-    ["2026-10-12", 3],
-  ]);
+  const statements = batchStatements(driver);
+  assert.equal(statements.length, 1, "exactly one write: the rolled due date");
+  assert.deepEqual(statements[0]?.params, ["2026-10-12", 3]);
+  assert.match(String(statements[0]?.sql), /UPDATE tasks SET due_date = \?/);
+  assert.deepEqual(driver.callsTo("execute"), []);
 });
 
 test("completeTask marks a one-off done", async () => {
   const driver = createMockDriver({ results: [[taskRow()]] });
   await createTasksRepo(driver).completeTask(3, "2026-10-11");
-  const writes = driver.callsTo("execute");
-  assert.equal(writes.length, 1);
-  assert.deepEqual(writes[0]?.args, [
-    "UPDATE tasks SET done = ? WHERE id = ?",
-    [1, 3],
-  ]);
+  const statements = batchStatements(driver);
+  assert.equal(statements.length, 1);
+  assert.match(
+    String(statements[0]?.sql),
+    /UPDATE tasks SET done = \? WHERE id = \?/,
+  );
+  assert.deepEqual(statements[0]?.params, [1, 3]);
 });
 
 test("completeTask on a row that vanished writes nothing", async () => {
@@ -266,6 +286,7 @@ test("completeTask on a row that vanished writes nothing", async () => {
   const driver = createMockDriver({ results: [[]] });
   await createTasksRepo(driver).completeTask(99, "2026-10-11");
   assert.deepEqual(driver.callsTo("execute"), []);
+  assert.deepEqual(driver.callsTo("batch"), []);
 });
 
 test("firedReminders reads the fired one-shots, ordered by time", async () => {

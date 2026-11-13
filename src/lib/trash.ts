@@ -565,9 +565,19 @@ export function createTrashRepo(driver: DataDriver) {
     });
   }
 
+  /**
+   * Move a row into Trash.
+   *
+   * `extraStatements` are appended to the SAME batch, last: sync's delete op
+   * and its tombstone (§5.1) have to commit with the row's removal (§6.1), and
+   * a caller that wrote them in a second transaction would break that promise
+   * the moment a batch failed in between. The caller reads the uid first; the
+   * trash statements here address the row by its local id, as ever.
+   */
   async function trashEntityUnlocked(
     type: TrashEntityType,
     id: number,
+    extraStatements: readonly BatchStatement[] = [],
   ): Promise<void> {
     const table = TABLES[type];
     const snapshotId = crypto.randomUUID();
@@ -597,6 +607,7 @@ export function createTrashRepo(driver: DataDriver) {
       sql: `DELETE FROM ${table} WHERE id = ? AND ${snapshotGuard}`,
       params: [id, snapshotId],
     });
+    statements.push(...extraStatements);
     await driver.batch(statements);
     try {
       await purgeUnlocked();
@@ -1024,8 +1035,14 @@ export function createTrashRepo(driver: DataDriver) {
 
   // The exported surface takes the lock; see the mutex's comment above.
   return {
-    trashEntity: (type: TrashEntityType, id: number) =>
-      mutex.withLock("trash", () => trashEntityUnlocked(type, id)),
+    trashEntity: (
+      type: TrashEntityType,
+      id: number,
+      extraStatements: readonly BatchStatement[] = [],
+    ) =>
+      mutex.withLock("trash", () =>
+        trashEntityUnlocked(type, id, extraStatements),
+      ),
     list,
     restore: (trashId: number) =>
       mutex.withLock("trash", () => restoreUnlocked(trashId)),

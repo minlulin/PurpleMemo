@@ -507,6 +507,56 @@ export async function pendingCount(driver: DataDriver): Promise<number> {
   return row?.pending ?? 0;
 }
 
+/**
+ * The uid this device holds for a local row (§1.1's `(table, uid)`), or
+ * `undefined` when the row is gone.
+ *
+ * A repository composes an op from the row it is about to write, so it needs
+ * the uid before the batch: the mutation itself addresses the row by its local
+ * `id`, while the op and its tombstone address it by uid. Reading it first is
+ * what keeps "the mutation and its op travel in one batch" possible without
+ * the op guessing an identity (§6.1).
+ */
+export async function readRowUid(
+  driver: DataDriver,
+  table: SyncTable,
+  id: number,
+): Promise<string | undefined> {
+  assertSyncTable(table);
+  const [row] = await driver.query<{ uid: string | null }>(
+    `SELECT uid FROM "${table}" WHERE id = ?`,
+    [id],
+  );
+  const uid = row?.uid;
+  return typeof uid === "string" && uid.length > 0 ? uid : undefined;
+}
+
+/**
+ * The local `id` of the row just inserted under `uid`.
+ *
+ * A create commits through `driver.batch` (it has to: the op rides in the same
+ * transaction, §6.1) and a batch answers nothing, while the repositories return
+ * the new row's id to their callers. The uid is minted here and is UNIQUE, so
+ * reading it back after the commit names exactly the row the batch wrote.
+ */
+export async function readRowId(
+  driver: DataDriver,
+  table: SyncTable,
+  uid: string,
+): Promise<number> {
+  assertSyncTable(table);
+  const [row] = await driver.query<{ id: number }>(
+    `SELECT id FROM "${table}" WHERE uid = ?`,
+    [uid],
+  );
+  if (!row) {
+    throw new Error(
+      `the ${table} row committed under ${uid} is not there (§6.1) — the batch did not write it.`,
+    );
+  }
+  return row.id;
+}
+
 // ---------------------------------------------------------------------------
 // §8.4 — adopting the desktop's snapshot.
 // ---------------------------------------------------------------------------
