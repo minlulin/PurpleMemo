@@ -60,6 +60,8 @@ import {
 import {
   ANDROID_REMINDER_SYNC_MS,
   isAndroidPlatform,
+  missedOutcomes,
+  reminderSyncRows,
   syncAndroidReminders,
 } from "./lib/android-reminders.ts";
 import {
@@ -237,15 +239,47 @@ function useReminderPoll(
           const preview = await settingsRepo
             .getNotificationPreview()
             .catch(() => false);
-          const { outcomes } = await syncAndroidReminders(
+          const now = localISODateTime(new Date());
+          const { report, outcomes } = await syncAndroidReminders(
             rows,
             preview,
-            localISODateTime(new Date()),
+            now,
           );
           if (cancelled) return;
-          if (outcomes.length > 0) {
-            await tasksRepo.settleReminders(outcomes);
+          // Rows that came due while no alarm could fire (phone off, app
+          // force-stopped): the bridge skips past-due rows and reports
+          // nothing for them, so they settle here — notified late, as the
+          // desktop ticker does when it next runs, with the same preview
+          // rule the bridge rows follow — instead of pending forever.
+          const missed = missedOutcomes(rows, report.delivered ?? [], now);
+          if (missed.length > 0) {
+            const text = new Map(
+              reminderSyncRows(rows, preview).map((row) => [row.id, row]),
+            );
+            for (const outcome of missed) {
+              const row = text.get(outcome.id);
+              if (row) {
+                await sendNotification({ title: row.title, body: row.body });
+              }
+            }
+          }
+          const settled = [...outcomes, ...missed];
+          if (settled.length > 0) {
+            await tasksRepo.settleReminders(settled);
             if (!cancelled) onFired();
+            // Settling re-arms a repeating reminder to its next future
+            // occurrence (and closes missed rows the bridge may still hold
+            // an inexact alarm for): reconcile once more with the fresh
+            // rows, so that state is armed — or cancelled — now, not at
+            // the next app open.
+            const fresh = await tasksRepo.listReminders(false);
+            if (!cancelled) {
+              await syncAndroidReminders(
+                fresh,
+                preview,
+                localISODateTime(new Date()),
+              );
+            }
           }
         } catch {
           // Best-effort, like the desktop poll: the rows stay listed.

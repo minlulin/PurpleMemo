@@ -11,7 +11,10 @@
 // * it shapes the pending rows into the payload the bridge arms,
 // * it turns the ids the bridge reports as *delivered since the last sync* into
 //   the same settle outcomes the desktop ticker writes, so a reminder is never
-//   notified twice, and
+//   notified twice,
+// * it settles the rows whose due time passed without the alarm ever firing
+//   (phone off, app force-stopped) — the bridge skips those and reports
+//   nothing, so without this they would stay pending forever, and
 // * it keeps the platform check in one place.
 //
 // Everything here is best-effort by design: the rows are the truth, and a
@@ -98,10 +101,39 @@ export function deliveredOutcomes(
 }
 
 /**
+ * The settle outcomes for reminders whose due time passed while no alarm
+ * fired — the phone was off, or the app was force-stopped, when they came
+ * due. The bridge arms only future rows and reports only delivered ids, so
+ * these rows are invisible to it; left alone they would stay `fired = 0`
+ * forever, never notified and never closed. The caller notifies for them
+ * (late, as the desktop ticker does when it next runs) and settles them with
+ * the same outcome shape as a delivery: a one-shot closes, a repeating
+ * reminder rolls to its next future occurrence.
+ */
+export function missedOutcomes(
+  rows: ReminderRow[],
+  delivered: number[],
+  now: string,
+): ReminderOutcome[] {
+  const fired = new Set(delivered);
+  return rows
+    .filter(
+      (row) => row.fired === 0 && row.remind_at <= now && !fired.has(row.id),
+    )
+    .map((row) => ({
+      id: row.id,
+      nextRemindAt:
+        row.repeat === "none"
+          ? null
+          : nextReminderAt(row.remind_at, row.repeat, now),
+    }));
+}
+
+/**
  * Reconcile the phone's alarms with these rows and report what fired.
  *
- * The bridge skips rows whose due time is already past: the caller is running,
- * so those are settled by the same pass rather than notified twice.
+ * The bridge skips rows whose due time is already past: the caller settles
+ * those itself (see `missedOutcomes`) rather than the bridge notifying twice.
  */
 export async function syncAndroidReminders(
   rows: ReminderRow[],

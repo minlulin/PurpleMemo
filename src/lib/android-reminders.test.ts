@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   deliveredOutcomes,
   isAndroidPlatform,
+  missedOutcomes,
   reminderSyncRows,
 } from "./android-reminders.ts";
 import type { ReminderRow } from "./types.ts";
@@ -71,6 +72,38 @@ test("ids that did not fire, and rows another path settled, are untouched", () =
     [],
     "an acknowledged reminder must not be resurrected by a stale report",
   );
+});
+
+test("a reminder that came due while the phone was off settles as missed", () => {
+  // Due 14:05, never delivered, now 14:10: the bridge armed nothing and
+  // reported nothing — the missed path is the only thing that closes it.
+  assert.deepEqual(missedOutcomes([row({ id: 5 })], [], "2026-11-03T14:10"), [
+    { id: 5, nextRemindAt: null },
+  ]);
+});
+
+test("a missed repeating reminder rolls to its next future occurrence", () => {
+  assert.deepEqual(
+    missedOutcomes(
+      [row({ id: 6, repeat: "daily", remind_at: "2026-11-01T09:00" })],
+      [],
+      "2026-11-03T14:10",
+    ),
+    [{ id: 6, nextRemindAt: "2026-11-04T09:00" }],
+  );
+});
+
+test("delivered, future and already-settled rows are never missed", () => {
+  const now = "2026-11-03T14:10";
+  // Delivered ids settle through the delivered path, never both.
+  assert.deepEqual(missedOutcomes([row({ id: 7 })], [7], now), []);
+  // Not yet due.
+  assert.deepEqual(
+    missedOutcomes([row({ id: 8, remind_at: "2026-11-03T15:00" })], [], now),
+    [],
+  );
+  // Already settled by another path.
+  assert.deepEqual(missedOutcomes([row({ id: 9, fired: 1 })], [], now), []);
 });
 
 test("the platform check is false outside the Android webview", () => {
