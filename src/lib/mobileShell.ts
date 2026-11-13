@@ -288,3 +288,32 @@ export function shouldLockAfterBackground(hiddenMs: number): boolean {
   if (!Number.isFinite(hiddenMs) || hiddenMs < 0) return true;
   return hiddenMs >= BACKGROUND_LOCK_GRACE_MS;
 }
+
+/**
+ * How long the app was hidden, from a monotonic stamp (`performance.now()`)
+ * and a wall stamp (`Date.now()`) taken at hide and at show.
+ *
+ * Neither clock suffices alone on Android. The monotonic clock is the one
+ * that cannot be wound back to stretch an unlocked session — but it stops
+ * during deep sleep, so a phone left screen-off for an hour would measure
+ * as seconds away and never lock. The wall clock counts sleep, and its
+ * failure directions are asymmetric in the safe way: wound FORWARD it locks
+ * early (a nuisance), wound BACK it understates — which the monotonic half
+ * of the `max` then overrides. So the away time is whichever clock counted
+ * more; a clock that produced no finite delta counts as nothing, and if
+ * both failed the result is not finite and `shouldLockAfterBackground`
+ * fails closed.
+ */
+export function backgroundAwayMs(
+  monotonicStart: number,
+  monotonicEnd: number,
+  wallStart: number,
+  wallEnd: number,
+): number {
+  const monotonic = monotonicEnd - monotonicStart;
+  const wall = wallEnd - wallStart;
+  return Math.max(
+    Number.isFinite(monotonic) ? monotonic : Number.NEGATIVE_INFINITY,
+    Number.isFinite(wall) ? wall : Number.NEGATIVE_INFINITY,
+  );
+}

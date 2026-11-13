@@ -261,6 +261,19 @@ object ReminderBridge {
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
+            // Tapping the notification opens the app (before this, the tap
+            // only dismissed it — there was no content intent at all).
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    context,
+                    id.toInt(),
+                    Intent(context, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
             .build()
         try {
             manager.notify(id.toInt(), notification)
@@ -298,6 +311,29 @@ object ReminderBridge {
             rearmed += 1
         }
         Log.i(TAG, "re-armed $rearmed reminder(s) after boot")
+    }
+
+    /**
+     * Forget every armed reminder and every delivery record. Called from the
+     * Rust side when a factory reset has wiped the database: the alarms and
+     * these preferences live OUTSIDE the database, so without this an old
+     * reminder would still fire for a record that no longer exists — and,
+     * reminder row ids restarting at 1 after the wipe, a stale delivered id
+     * could settle a new reminder that never fired.
+     */
+    @JvmStatic
+    fun clearAll() {
+        val context = context() ?: return
+        val manager = context.getSystemService(AlarmManager::class.java)
+        val store = prefs(context)
+        val pending = readObject(store, KEY_PENDING)
+        val keys = pending.keys()
+        while (keys.hasNext()) {
+            val id = keys.next().toLongOrNull() ?: continue
+            cancel(context, manager, id)
+        }
+        store.edit().clear().apply()
+        Log.i(TAG, "reminder state cleared (reset)")
     }
 
     private fun takeDelivered(store: android.content.SharedPreferences): JSONArray {
@@ -404,27 +440,41 @@ object SensitiveClipboard {
     }
 
     /**
-     * Clear only if the clipboard still holds this exact value. A user who
-     * copied something else in the meantime must not lose that copy.
+     * Clear the clip unless a DIFFERENT value is positively read in its
+     * place — a user who copied something else in the meantime must not lose
+     * that copy.
+     *
+     * The subtle case is a read that yields nothing: an empty clip, or
+     * Android 10+ refusing the read because the app holds no focus. That
+     * refusal is exactly the copy-then-switch-away case this timer exists
+     * for, so "cannot be read" must not be treated as "replaced" — the
+     * sensitive value would stay on the clipboard indefinitely. Unverifiable
+     * therefore clears too. The accepted cost: a value copied in ANOTHER app
+     * while this one was unfocused is equally unreadable and is cleared with
+     * it; an erased clipboard is recoverable, a leaked password is not.
      */
     private fun clearIfUnchanged(manager: ClipboardManager, text: String) {
-        try {
+        val now = try {
             val current = manager.primaryClip
-            val now = if (current != null && current.itemCount > 0) {
+            if (current != null && current.itemCount > 0) {
                 current.getItemAt(0).text?.toString()
             } else {
                 null
             }
-            if (now == text) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    manager.clearPrimaryClip()
-                } else {
-                    manager.setPrimaryClip(ClipData.newPlainText("", ""))
-                }
-                Log.i(TAG, "sensitive clipboard cleared after $CLEAR_DELAY_MS ms")
+        } catch (e: Exception) {
+            null
+        }
+        if (now != null && now != text) {
+            Log.i(TAG, "sensitive clipboard left alone: it was replaced")
+            return
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                manager.clearPrimaryClip()
             } else {
-                Log.i(TAG, "sensitive clipboard left alone: it was replaced")
+                manager.setPrimaryClip(ClipData.newPlainText("", ""))
             }
+            Log.i(TAG, "sensitive clipboard cleared after $CLEAR_DELAY_MS ms")
         } catch (e: Exception) {
             Log.w(TAG, "could not clear the sensitive clipboard", e)
         }

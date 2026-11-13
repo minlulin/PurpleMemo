@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   BACKGROUND_LOCK_GRACE_MS,
+  backgroundAwayMs,
   FAB_ACTIONS,
   historyStateFor,
   isLanding,
@@ -147,4 +148,24 @@ test("the background grace is one minute and fails closed", () => {
   assert.equal(shouldLockAfterBackground(BACKGROUND_LOCK_GRACE_MS), true);
   assert.equal(shouldLockAfterBackground(Number.NaN), true);
   assert.equal(shouldLockAfterBackground(-1), true);
+});
+
+test("background away time counts deep sleep through the wall clock", () => {
+  // An hour screen-off: Android's monotonic clock excludes suspend and
+  // advances by seconds, while the wall clock counts the whole hour. The
+  // session must lock — measuring with the monotonic clock alone (the old
+  // behaviour) left it open.
+  const wall0 = 1_700_000_000_000;
+  const away = backgroundAwayMs(10_000, 40_000, wall0, wall0 + 3_600_000);
+  assert.equal(away, 3_600_000);
+  assert.equal(shouldLockAfterBackground(away), true);
+});
+
+test("background away time: a rolled-back wall clock cannot stretch the grace", () => {
+  // The wall clock jumps five minutes backwards while hidden; the monotonic
+  // delta (45 s, inside the grace) is the one that counts.
+  const wall0 = 1_700_000_000_000;
+  const away = backgroundAwayMs(0, 45_000, wall0, wall0 - 300_000);
+  assert.equal(away, 45_000);
+  assert.equal(shouldLockAfterBackground(away), false);
 });

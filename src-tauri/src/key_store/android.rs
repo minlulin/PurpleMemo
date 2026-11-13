@@ -21,9 +21,13 @@
 //!   [`KeyStoreError::Unavailable`]. The app fails closed with a clear message.
 //!   There is no software fallback and no "unprotected key" path anywhere in
 //!   this module.
-//! * The wrapping key is gone (or cannot unwrap the blob) → the DEK is
-//!   unrecoverable → [`KeyStoreError::Lost`], which `boot` turns into the
-//!   fail-closed wipe + re-pair path.
+//! * [`KeyStoreError::Lost`] is reserved for the failures that PROVE the
+//!   secret unrecoverable — the wrapping key's alias is gone, or the blob
+//!   fails GCM authentication under the key — plus a blob that is not a blob
+//!   at all. `boot` turns `Lost` into the fail-closed wipe + re-pair path, so
+//!   nothing else may map to it: a Keystore error of the moment (the daemon
+//!   busy, the key temporarily unusable) is `Failed`, fails closed, and the
+//!   data survives for the next attempt.
 //!
 //! JNI plumbing note: only **framework** classes (`java.security.KeyStore`,
 //! `javax.crypto.Cipher`, `android.security.keystore.*`) are touched, resolved
@@ -33,7 +37,7 @@
 
 use std::path::{Path, PathBuf};
 
-use jni::objects::{JByteArray, JObject, JObjectArray, JValue};
+use jni::objects::{JByteArray, JObject, JObjectArray, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
 use super::{KeyStoreError, Slot};
@@ -87,14 +91,12 @@ pub fn read(slot: Slot) -> Result<Option<String>, KeyStoreError> {
     })?;
     let key = match with_env(|env| unwrap_dek(env, slot, iv, ciphertext)) {
         Ok(key) => key,
-        // A store that cannot be reached at all is retryable and must never
-        // cost the user their data.
-        Err(KeyStoreError::Unavailable(message)) => {
-            return Err(KeyStoreError::Unavailable(message))
-        }
-        // Everything else here means the Keystore key is gone or refuses this
-        // blob: the wrapped secret can never be recovered.
-        Err(other) => return Err(lost(slot, &path, other.message())),
+        // The error class is `unwrap_dek`'s call, per the module's failure
+        // policy: `Lost` only where loss is proven, everything else passes
+        // through unchanged — a store that cannot be reached, or a Keystore
+        // error of the moment, is retryable and must never cost the user
+        // their data.
+        Err(error) => return Err(error),
     };
     if key.len() != KEY_LEN {
         return Err(lost(slot, &path, "the unwrapped key has the wrong length"));
@@ -350,6 +352,26 @@ fn jni_failure(env: &mut JNIEnv<'_>, what: &str) -> KeyStoreError {
     );
     log(ANDROID_LOG_ERROR, &message);
     KeyStoreError::Failed(message)
+}
+
+/// The class name of the Java exception pending on `env`, or `None` when
+/// there is none (or it cannot be read). The exception is ALWAYS cleared —
+/// callers classify it and then continue in their own words, and a leftover
+/// exception must never leak into the runtime (the rule `jni_failure` keeps).
+fn pending_exception_class(env: &mut JNIEnv<'_>) -> Option<String> {
+    if !matches!(env.exception_check(), Ok(true)) {
+        return None;
+    }
+    let throwable = env.exception_occurred().ok()?;
+    let _ = env.exception_clear();
+    let class = env.get_object_class(&throwable).ok()?;
+    let name = env
+        .call_method(&class, "getName", "()Ljava/lang/String;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let text: String = env.get_string(&JString::from(name)).ok()?.into();
+    Some(text)
 }
 
 fn with_env<T>(
@@ -854,13 +876,15 @@ fn unwrap_dek(
 ) -> Result<Vec<u8>, KeyStoreError> {
     const WHAT: &str = "to unwrap the key";
     let store = open_key_store(env)?;
-    // Checked explicitly: a missing alias must read as "the key is gone", not
+    // Checked explicitly: a missing alias is one of the two proofs of loss
+    // (see the module's failure policy), so it reads as `Lost` directly, not
     // as a generic cipher failure.
     if !has_alias(env, &store, slot.alias())? {
-        return Err(KeyStoreError::Failed(format!(
-            "the Keystore key {} that wrapped the {} is gone",
+        return Err(KeyStoreError::Lost(format!(
+            "the Keystore key {} that wrapped the {} is gone; {}",
             slot.alias(),
-            slot.label()
+            slot.label(),
+            slot.loss_consequence()
         )));
     }
     let key = secret_key(env, &store, slot)?;
@@ -885,23 +909,37 @@ fn unwrap_dek(
 
     let input = checked!(env, WHAT, env.byte_array_from_slice(ciphertext));
     let out = checked!(env, WHAT, env.new_byte_array(KEY_LEN as i32));
-    let written = checked!(
-        env,
-        WHAT,
-        env.call_method(
-            &cipher,
-            "doFinal",
-            "([BII[BI)I",
-            &[
-                JValue::Object(&input),
-                JValue::Int(0),
-                JValue::Int(ciphertext.len() as i32),
-                JValue::Object(&out),
-                JValue::Int(0),
-            ],
-        )
-    );
-    let written = checked!(env, WHAT, written.i());
+    // doFinal is where the second proof of loss lives, so it is not a plain
+    // `checked!`: an AEAD authentication failure means this blob was not
+    // wrapped by this key (or is corrupt) and no retry will ever open it —
+    // that is `Lost`. Any other failure here is a Keystore/provider problem
+    // of the moment and stays `Failed`: fail closed, keep the data.
+    let written = match env.call_method(
+        &cipher,
+        "doFinal",
+        "([BII[BI)I",
+        &[
+            JValue::Object(&input),
+            JValue::Int(0),
+            JValue::Int(ciphertext.len() as i32),
+            JValue::Object(&out),
+            JValue::Int(0),
+        ],
+    ) {
+        Ok(value) => checked!(env, WHAT, value.i()),
+        Err(_) => {
+            if pending_exception_class(env).as_deref() == Some("javax.crypto.AEADBadTagException") {
+                return Err(KeyStoreError::Lost(format!(
+                    "the Keystore key {} refuses the wrapped {} (its \
+                     authentication tag does not verify); {}",
+                    slot.alias(),
+                    slot.label(),
+                    slot.loss_consequence()
+                )));
+            }
+            return Err(jni_failure(env, WHAT));
+        }
+    };
     read_bytes(env, &out, written)
 }
 

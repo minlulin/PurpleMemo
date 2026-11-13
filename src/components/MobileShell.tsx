@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  backgroundAwayMs,
   FAB_ACTIONS,
   type FabActionId,
   historyStateFor,
@@ -125,15 +126,23 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
   // session is still open; at or past a minute the PIN screen returns. Caches are
   // dropped on the way out either way.
   useEffect(() => {
-    let hiddenAt: number | null = null;
+    // Both clocks are stamped: the monotonic one cannot be wound back, the
+    // wall one counts deep sleep, which the monotonic one misses entirely
+    // (see `backgroundAwayMs`).
+    let hiddenAt: { monotonic: number; wall: number } | null = null;
     const onVisibility = () => {
       if (document.hidden) {
-        hiddenAt = performance.now();
+        hiddenAt = { monotonic: performance.now(), wall: Date.now() };
         onBackground();
         return;
       }
       if (hiddenAt === null) return;
-      const away = performance.now() - hiddenAt;
+      const away = backgroundAwayMs(
+        hiddenAt.monotonic,
+        performance.now(),
+        hiddenAt.wall,
+        Date.now(),
+      );
       hiddenAt = null;
       if (shouldLockAfterBackground(away)) onLock();
     };

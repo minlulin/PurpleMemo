@@ -66,6 +66,22 @@ pub fn reminder_sync(rows: Vec<ReminderSyncRow>) -> Result<ReminderSyncReport, S
     }
 }
 
+/// After a factory reset, forget the phone's armed reminders and delivery
+/// records too: they live OUTSIDE the database the reset engine wipes
+/// (AlarmManager registrations and the bridge's SharedPreferences), so
+/// without this an old reminder still fires for a record that no longer
+/// exists — and, reminder row ids restarting at 1, a stale delivered id
+/// could settle a new reminder that never fired. Best-effort by design: the
+/// reset has already happened, so a bridge failure must never turn a
+/// completed reset into a failed one. Not a command; called from the two
+/// reset paths. A no-op off Android, where this state does not exist.
+pub fn clear_reminder_state_after_reset() {
+    #[cfg(target_os = "android")]
+    {
+        let _ = android::call_void(android::BRIDGE, "clearAll");
+    }
+}
+
 /// `"exact"`, `"inexact"`, or `"unknown"` — what the reminder UI must say.
 #[tauri::command]
 pub fn reminder_exact_state() -> Result<String, String> {

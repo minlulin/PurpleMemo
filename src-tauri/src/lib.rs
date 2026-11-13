@@ -402,6 +402,12 @@ fn handle_key_load_failure(
         data_dir,
         db::delete_db_key,
     );
+    if outcome.complete {
+        // The phone's armed reminders and delivery records live outside the
+        // database the engine just wiped; forget them too (Android only,
+        // best-effort — see reminders.rs).
+        reminders::clear_reminder_state_after_reset();
+    }
     let detail = if outcome.complete {
         "the phone's local copy has been wiped; pairing with the desktop app is required to \
          use Purple Memo on this device again"
