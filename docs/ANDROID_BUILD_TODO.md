@@ -696,6 +696,34 @@ longer holds the phase open.
   no statements, restore-as-new, the unchanged note/task round-trip, and a
   shopping copy surviving a restart) plus the schema-v10 Rust set.
 - [ ] Stage 1: Notes / Tasks / Shopping / Habits sync
+  **Recording half BUILT 2026-11-13 (Stage 1, Session 1).** Every create,
+  update and delete on the eight Stage 1 tables — `collections`, `notes`,
+  `tasks`, `reminders` (§13.1 Option A: a create also stamps
+  `created_by_device_id` from `sync_state`), `shopping_lists`,
+  `shopping_items`, `habits`, `habit_logs` — commits its outbox op, its
+  `sync_row_stamps` entry and (for a delete) its tombstone in the SAME
+  `driver.batch` as the row change (§6.1), so no acknowledged write can exist
+  without its sync record. Deletes that cascade locally emit a tombstone per
+  removed row (§5.2): a shopping-list delete tombstones every item it held, a
+  habit delete every check-in. The Trash delete path carries those statements
+  into its own batch (`trashEntity(type, id, extraStatements)`), so the row's
+  removal, its snapshot and its tombstone are one transaction. Two note flags
+  (`setPinned`, `setArchived`) record as updates of the one column they flip,
+  and `deleteCollection` records the notes it unlinks as their own update ops.
+  A mutation on any OTHER synced table records nothing and spends no Lamport
+  step — Budget's entry create is pinned as that boundary (§12.1). **Still
+  open, so the item stays unchecked:** the apply engine (Session 2, which is
+  also the caller `conflictCopyStatements` is waiting for), the transport, the
+  §13.1 delivery filter on both sides, and the harness's 6 skipped invariants
+  (Session 4). Reminder *settle* writes deliberately record nothing yet —
+  `settleReminders` (fired = 1, or re-arm `remind_at` + fired = 0),
+  `markReminderFired` (fired = 1) and `rescheduleReminder` (`remind_at` +
+  fired = 0) — because whether a settle is a syncable definition change or
+  device-local delivery state is Session 2's decision. Tests: 9 new TS
+  (create/update/delete per table with the op read back from real SQLite, the
+  list and habit cascade shapes, the check-in/un-check pair, the Budget
+  boundary, and repository-level atomicity where a refused op rolls the whole
+  batch back).
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
 - [ ] Backup payload rules: device-local state excluded; restore bumps

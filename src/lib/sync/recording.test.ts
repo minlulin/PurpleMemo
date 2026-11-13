@@ -19,7 +19,9 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { BatchStatement, DataDriver } from "../../data/driver.ts";
 import { createBudgetRepo } from "../budget.ts";
+import { createHabitsRepo } from "../habits.ts";
 import { createNotesRepo } from "../notes.ts";
+import { createShoppingRepo } from "../shopping.ts";
 import { createTasksRepo } from "../tasks.ts";
 import {
   readOutbox,
@@ -489,4 +491,170 @@ test("a Budget entry records nothing: Stage 1's boundary is the eight tables", a
     0,
     "and it must not spend a Lamport step either",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Task 2 — shopping's parent/child shapes and the habit toggle.
+// ---------------------------------------------------------------------------
+
+test("a shopping item records its own op, and a list delete tombstones every item it held", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const shopping = createShoppingRepo(driver);
+
+  const listId = await shopping.createList("Groceries");
+  const listOp = await assertRecorded(
+    store,
+    "shopping_lists",
+    listId,
+    "create",
+  );
+
+  const milk = await shopping.addItem(listId, "milk");
+  const milkOp = await assertRecorded(store, "shopping_items", milk, "create");
+  assert.equal(milkOp.op.payload.text, "milk");
+  assert.equal(milkOp.op.payload.list_id, listId);
+
+  const bread = await shopping.addItem(listId, "bread");
+  const breadUid = uidOf(db, "shopping_items", bread);
+  const milkUid = uidOf(db, "shopping_items", milk);
+  assert.ok(breadUid && milkUid);
+
+  await shopping.toggleItem(milk, true);
+  const toggled = (await opsFor(driver, "shopping_items")).at(-1);
+  assert.equal(toggled?.op, "toggle");
+  assert.deepEqual(toggled?.payload, { done: 1 });
+
+  await shopping.deleteList(listId);
+  assert.equal(count(db, "SELECT count(*) AS n FROM shopping_lists"), 0);
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM shopping_items"),
+    0,
+    "the FK cascade removed the items",
+  );
+  const tombstones = await readTombstones(driver);
+  assert.deepEqual(
+    tombstones.map((row) => row.entity_uid).sort(),
+    [listOp.uid, milkUid, breadUid].sort(),
+    "§5.2: the list AND every child it held are tombstoned — the cascade is not the record",
+  );
+  const deletes = (await readOutbox(driver)).filter(
+    (row) => row.op === "delete",
+  );
+  assert.equal(
+    deletes.length,
+    3,
+    "each tombstone travels as its own delete op",
+  );
+});
+
+test("a habit check-in and its un-check each record exactly one op", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const habits = createHabitsRepo(driver);
+
+  const habitId = await habits.createHabit("Run");
+  const habit = await assertRecorded(store, "habits", habitId, "create");
+  assert.equal(habit.op.payload.name, "Run");
+
+  assert.equal(await habits.toggleLog(habitId, "2026-11-13"), true);
+  assert.equal(count(db, "SELECT count(*) AS n FROM habit_logs"), 1);
+  const logUid = uidOf(db, "habit_logs", 1);
+  assert.ok(logUid);
+  let logs = await opsFor(driver, "habit_logs");
+  assert.equal(logs.length, 1, "a check-in is one create op");
+  assert.equal(logs[0]?.op, "create");
+  assert.equal(logs[0]?.entity_uid, logUid);
+
+  assert.equal(await habits.toggleLog(habitId, "2026-11-13"), false);
+  assert.equal(count(db, "SELECT count(*) AS n FROM habit_logs"), 0);
+  logs = await opsFor(driver, "habit_logs");
+  assert.equal(logs.length, 2, "and an un-check is one delete op");
+  assert.equal(logs[1]?.op, "delete");
+  assert.equal(logs[1]?.entity_uid, logUid);
+  assert.equal(
+    (await readTombstones(driver)).filter(
+      (row) => row.entity_table === "habit_logs",
+    ).length,
+    1,
+  );
+});
+
+test("deleting a habit tombstones the habit and every check-in it held", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const habits = createHabitsRepo(driver);
+
+  const habitId = await habits.createHabit("Read");
+  const habitOp = await assertRecorded(store, "habits", habitId, "create");
+  await habits.toggleLog(habitId, "2026-11-11");
+  await habits.toggleLog(habitId, "2026-11-12");
+  const logUids = (await readOutbox(driver))
+    .filter((row) => row.entity_table === "habit_logs")
+    .map((row) => row.entity_uid);
+  assert.equal(logUids.length, 2);
+
+  await habits.deleteHabit(habitId);
+  assert.equal(count(db, "SELECT count(*) AS n FROM habits"), 0);
+  assert.equal(count(db, "SELECT count(*) AS n FROM habit_logs"), 0);
+  const tombstoned = (await readTombstones(driver)).map(
+    (row) => row.entity_uid,
+  );
+  assert.deepEqual(
+    tombstoned.sort(),
+    [habitOp.uid, ...logUids].sort(),
+    "§5.2: the cascaded check-ins get their own tombstones",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Atomicity at the repository level.
+// ---------------------------------------------------------------------------
+
+test("a batch that fails midway leaves neither the mutation nor its op", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const notes = createNotesRepo(driver);
+  const tasks = createTasksRepo(driver);
+
+  // The mutation commits first in the batch and the op second, so an op that
+  // cannot be written is exactly the crash-between-the-two §6.1 forbids.
+  db.exec(
+    "CREATE TRIGGER refuse_outbox BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT, 'outbox refused'); END",
+  );
+
+  await assert.rejects(
+    notes.createNote({ title: "Never lands", content: "body" }),
+    /outbox refused/,
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM notes"),
+    0,
+    "the note must not survive its refused op",
+  );
+  assert.equal(
+    (await readState(driver)).lamport,
+    0,
+    "nor may the clock have advanced",
+  );
+
+  await assert.rejects(
+    tasks.createTask({ title: "Never lands" }),
+    /outbox refused/,
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM tasks"), 0);
+
+  // And the reverse direction: a refused delete leaves the row and no tombstone.
+  db.exec("DROP TRIGGER refuse_outbox");
+  const id = await notes.createNote({ title: "Stays", content: "" });
+  db.exec(
+    "CREATE TRIGGER refuse_outbox_delete BEFORE INSERT ON sync_outbox WHEN NEW.op = 'delete' BEGIN SELECT RAISE(ABORT, 'delete refused'); END",
+  );
+  await assert.rejects(notes.deleteNote(id), /delete refused/);
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM notes"),
+    1,
+    "a failed op rolled the trash batch back whole",
+  );
+  assert.equal(count(db, "SELECT count(*) AS n FROM sync_tombstones"), 0);
 });

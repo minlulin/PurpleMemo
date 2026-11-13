@@ -3,6 +3,12 @@
 
 import type { DataDriver } from "../data/driver.ts";
 import { addDays, todayLocal } from "./dates.ts";
+import {
+  deleteStatements,
+  outboxStatements,
+  readRowId,
+  readRowUid,
+} from "./sync/store.ts";
 import type { HabitLogRow, HabitRow } from "./types.ts";
 import { newUid } from "./uid.ts";
 
@@ -54,15 +60,47 @@ export function createHabitsRepo(driver: DataDriver) {
     },
 
     async createHabit(name: string): Promise<number> {
-      const r = await driver.execute(
-        "INSERT INTO habits (name, created_at, uid) VALUES (?, ?, ?)",
-        [name, todayLocal(), newUid()],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      await driver.batch([
+        {
+          sql: "INSERT INTO habits (name, created_at, uid) VALUES (?, ?, ?)",
+          params: [name, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "habits",
+            uid,
+            kind: "create",
+            fields: { name, created_at: created },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "habits", uid);
     },
 
     async deleteHabit(id: number): Promise<void> {
-      await driver.execute("DELETE FROM habits WHERE id = ?", [id]);
+      const uid = await readRowUid(driver, "habits", id);
+      // §5.2: `habit_logs` goes with the habit through the FK cascade, and the
+      // cascade is not the record — every check-in the habit held needs its own
+      // tombstone, or the peer keeps a log whose habit no longer exists.
+      const logs = (
+        await driver.query<{ uid: string | null }>(
+          "SELECT uid FROM habit_logs WHERE habit_id = ? ORDER BY id",
+          [id],
+        )
+      )
+        .map((row) => row.uid)
+        .filter((log: string | null): log is string =>
+          Boolean(log && log.length > 0),
+        );
+      await driver.batch([
+        { sql: "DELETE FROM habits WHERE id = ?", params: [id] },
+        ...deleteStatements([
+          ...(uid ? [{ table: "habits" as const, uid }] : []),
+          ...logs.map((log) => ({ table: "habit_logs" as const, uid: log })),
+        ]),
+      ]);
     },
 
     async getLog(
@@ -76,19 +114,39 @@ export function createHabitsRepo(driver: DataDriver) {
       return rows[0];
     },
 
-    /** Toggle a day's log; returns the new done state. */
+    /**
+     * Toggle a day's log; returns the new done state.
+     *
+     * A check-in IS a `habit_logs` row (§2.3), so it records like any other
+     * mutation: an insert is a `create`, an un-check is a `delete` with its
+     * tombstone (§5.1) — in the same batch, both times (§6.1).
+     */
     async toggleLog(habitId: number, logDate: string): Promise<boolean> {
       const existing = await this.getLog(habitId, logDate);
       if (existing) {
-        await driver.execute("DELETE FROM habit_logs WHERE id = ?", [
-          existing.id,
+        await driver.batch([
+          { sql: "DELETE FROM habit_logs WHERE id = ?", params: [existing.id] },
+          ...deleteStatements(
+            existing.uid ? [{ table: "habit_logs", uid: existing.uid }] : [],
+          ),
         ]);
         return false;
       }
-      await driver.execute(
-        "INSERT INTO habit_logs (habit_id, log_date, done, uid) VALUES (?, ?, 1, ?)",
-        [habitId, logDate, newUid()],
-      );
+      const uid = newUid();
+      await driver.batch([
+        {
+          sql: "INSERT INTO habit_logs (habit_id, log_date, done, uid) VALUES (?, ?, 1, ?)",
+          params: [habitId, logDate, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "habit_logs",
+            uid,
+            kind: "create",
+            fields: { habit_id: habitId, log_date: logDate, done: 1 },
+          },
+        ]),
+      ]);
       return true;
     },
 
