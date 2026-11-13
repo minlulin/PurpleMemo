@@ -160,13 +160,13 @@ test("an interrupted pull resumes from cursor_in and converges without duplicati
   assert.equal((await peer(phone, DESKTOP)).cursor_in, 2);
 });
 
-test("an operation for a Stage 2 table stays home", async () => {
+test("an operation for a Stage 3 table stays home", async () => {
   const { phone, desktop } = await pair();
-  // No desktop writer records for a Stage 2 table yet, so the row is written
-  // the way one would be: the shape §6.1 commits with its mutation.
+  // No writer records for a Stage 3 table yet, so the row is written the way
+  // one would be: the shape §6.1 commits with its mutation.
   await phone.driver.execute(
     `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
-     VALUES (?, 1, 'op-budget', 'expense_entries', '99999999-9999-4999-8999-999999999999', 'create', 0, 1, '{}', '{"amount_cents": 500}', '2026-11-13T00:00:00.000Z')`,
+     VALUES (?, 1, 'op-vault', 'vault_items', '99999999-9999-4999-8999-999999999999', 'create', 0, 1, '{}', '{"title": "ciphertext"}', '2026-11-13T00:00:00.000Z')`,
     [PHONE],
   );
   await phone.driver.execute(
@@ -178,8 +178,8 @@ test("an operation for a Stage 2 table stays home", async () => {
     sleep: async () => undefined,
   });
   assert.equal(outcome.confirmed, true);
-  assert.equal(outcome.pushed, 0, "nothing Stage 1 was pending");
-  assert.equal(wire.pushed.length, 0, "not one Stage 2 op reached the wire");
+  assert.equal(outcome.pushed, 0, "nothing Stage 1 or 2 move was pending");
+  assert.equal(wire.pushed.length, 0, "not one Stage 3 op reached the wire");
   assert.equal(
     await count(phone, "SELECT count(*) AS n FROM sync_outbox"),
     1,
@@ -189,7 +189,7 @@ test("an operation for a Stage 2 table stays home", async () => {
     await count(
       desktop,
       "SELECT count(*) AS n FROM sync_row_stamps WHERE entity_table = ?",
-      ["expense_entries"],
+      ["vault_items"],
     ),
     0,
   );

@@ -5,10 +5,10 @@
  * A session is a value with an order, not a promise in a comment:
  *
  * 1. this device's outbox rows past the desktop's acknowledgement are pushed,
- *    filtered to the eight Stage 1 tables (§12.1) — an operation for a table a
- *    later stage moves can exist here (a Trash restore records for any synced
- *    table) and it stays home, because the engine on the other side would only
- *    refuse it;
+ *    filtered to the tables Stages 1–2 move (§12.1, §12.2) — an operation for
+ *    a table a later stage moves can exist here (a Trash restore records for
+ *    any synced table) and it stays home, because the engine on the other side
+ *    would only refuse it;
  * 2. the desktop's operations are pulled from this device's `cursor_in`, one
  *    wire batch at a time, and applied with `applyOps` in ONE batch per wire
  *    batch — foreign keys resolve inside the apply, so the sender's seq order
@@ -29,7 +29,7 @@ import type {
   SyncStatusResult,
 } from "../../data/driver.ts";
 import { MAX_PAIRING_SNAPSHOT_BYTES } from "./bootstrap.ts";
-import { applyOps, type PeerOp, STAGE_ONE_TABLES } from "./engine.ts";
+import { applyOps, type PeerOp, UNLOCKED_TABLES } from "./engine.ts";
 import { MAX_BATCH_OPS } from "./protocol.ts";
 import { ackStatements, readOutbox, readPeers } from "./store.ts";
 
@@ -276,11 +276,13 @@ export async function runSync(
   }
   const pairingId = peer.pairing_id ?? "";
 
-  // 1. Push. Only the eight Stage 1 tables travel (§12.1, decision 3): an op
-  // for a later stage can exist here and stays in the outbox for later.
-  const stageOne = new Set<string>(STAGE_ONE_TABLES);
+  // 1. Push. Only the tables Stages 1–2 move travel (§12.1, §12.2, decision
+  // 3): an op for a later stage can exist here (a Trash restore records for
+  // any synced table) and stays in the outbox for later, because the engine on
+  // the other side would only refuse it.
+  const movable = new Set<string>(UNLOCKED_TABLES);
   const pending = (await readOutbox(driver)).filter(
-    (row) => row.seq > peer.cursor_out && stageOne.has(row.entity_table),
+    (row) => row.seq > peer.cursor_out && movable.has(row.entity_table),
   );
   const pushing = pending.map(wireOp);
   if (pushing.length > 0) {

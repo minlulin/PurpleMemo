@@ -13,6 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createBudgetRepo } from "../budget.ts";
 import { createHabitsRepo } from "../habits.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
@@ -376,30 +377,30 @@ test("applying the same op list twice changes nothing the second time", async ()
   );
 });
 
-test("an op for a Stage 2 table refuses the whole batch and writes nothing", async () => {
+test("an op for a Stage 3 table refuses the whole batch and writes nothing", async () => {
   const pair = await openPair();
   const notes = createNotesRepo(pair.a.driver);
   await notes.createNote({ title: "Arrives", content: "" });
   const valid = await opsOf(pair.a);
   assert.equal(valid.length, 1);
 
-  const ledgerOp = syntheticOp(
+  const vaultOp = syntheticOp(
     await deviceOf(pair.a),
     2,
-    "expense_entries",
+    "vault_items",
     "9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f",
     "create",
-    { amount_cents: 500 },
+    { title: "ciphertext" },
     2,
   );
 
   await assert.rejects(
     applyOps(pair.b.driver, {
       peerId: await deviceOf(pair.a),
-      origin: "mobile",
-      ops: [...valid, ledgerOp],
+      origin: "desktop",
+      ops: [...valid, vaultOp],
     }),
-    /Stage 1 does not move/,
+    /Stage 2 does not move/,
   );
   assert.equal(
     await count(pair.b, "SELECT count(*) AS n FROM notes"),
@@ -409,6 +410,248 @@ test("an op for a Stage 2 table refuses the whole batch and writes nothing", asy
   assert.equal(
     await count(pair.b, "SELECT count(*) AS n FROM sync_row_stamps"),
     0,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 — Budget's five tables move under §2.3's authority (§12.2).
+// ---------------------------------------------------------------------------
+
+/** A Budget row on a store, read whole: what the merge actually wrote. */
+interface EntryRow {
+  uid: string | null;
+  amount_cents: number;
+  category_id: number;
+  wallet_id: number;
+  entry_date: string;
+  note: string;
+}
+
+async function entryOn(
+  store: SyncFixture,
+  table: "expense_entries" | "income_entries",
+): Promise<EntryRow[]> {
+  return store.driver.query<EntryRow>(`SELECT * FROM "${table}" ORDER BY id`);
+}
+
+test("a phone's expense entry lands on the desktop with both parents resolved by uid", async () => {
+  const pair = await openPair();
+  const onA = createBudgetRepo(pair.a.driver);
+  const walletId = await onA.createWallet("Cash");
+  const categoryId = await onA.createExpenseCategory("Food");
+  // Wallet and category are desktop-owned: they reach the phone first (§2.3).
+  await applyFrom(pair.b, pair.a);
+
+  const phoneWallet = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Cash'",
+  );
+  const phoneCategory = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM expense_categories WHERE name = 'Food'",
+  );
+  assert.ok(phoneWallet[0] && phoneCategory[0], "the phone holds both parents");
+
+  const onB = createBudgetRepo(pair.b.driver);
+  await onB.createExpenseEntry({
+    amountCents: 1_250,
+    categoryId: phoneCategory[0].id,
+    walletId: phoneWallet[0].id,
+    entryDate: "2026-11-13",
+    note: "lunch",
+  });
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const entries = await entryOn(pair.a, "expense_entries");
+  const entry = entries[0];
+  assert.ok(entry, "the entry landed on the desktop");
+  assert.equal(entries.length, 1);
+  assert.equal(entry.amount_cents, 1_250);
+  assert.equal(entry.note, "lunch");
+  assert.equal(entry.entry_date, "2026-11-13");
+  assert.equal(
+    entry.wallet_id,
+    walletId,
+    "the wallet uid resolved to the desktop's own row",
+  );
+  assert.equal(
+    entry.category_id,
+    categoryId,
+    "and the category uid to its own category row",
+  );
+  assert.deepEqual(
+    await stampOf(pair.a, "expense_entries", entry.uid ?? ""),
+    await stampOf(pair.b, "expense_entries", entry.uid ?? ""),
+    "both devices hold the entry under one stamp",
+  );
+});
+
+test("a desktop-created wallet and category arrive on the phone", async () => {
+  const pair = await openPair();
+  const onA = createBudgetRepo(pair.a.driver);
+  await onA.createWallet("Bank");
+  await onA.createIncomeCategory("Salary");
+  await onA.createExpenseCategory("Food");
+  await applyFrom(pair.b, pair.a);
+
+  for (const [table, name] of [
+    ["wallets", "Bank"],
+    ["income_categories", "Salary"],
+    ["expense_categories", "Food"],
+  ] as const) {
+    assert.equal(
+      await count(
+        pair.b,
+        `SELECT count(*) AS n FROM "${table}" WHERE name = ?`,
+        [name],
+      ),
+      1,
+      `${table} arrived exactly once, under its own uid`,
+    );
+  }
+
+  // The rows the phone received are usable rows, not mirrored labels: they are
+  // what its own entry form reads (decision 4's create path).
+  const [wallet] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Bank'",
+  );
+  const [category] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM expense_categories WHERE name = 'Food'",
+  );
+  assert.ok(wallet && category);
+  const entryId = await createBudgetRepo(pair.b.driver).createExpenseEntry({
+    amountCents: 400,
+    categoryId: category.id,
+    walletId: wallet.id,
+    entryDate: "2026-11-13",
+  });
+  assert.equal(entryId > 0, true);
+});
+
+test("a mobile-origin wallet create is refused and writes nothing", async () => {
+  const pair = await openPair();
+  const phoneId = await deviceOf(pair.b);
+  const op = syntheticOp(
+    phoneId,
+    1,
+    "wallets",
+    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "create",
+    { name: "Phone wallet", created_at: "2026-11-13" },
+    1,
+  );
+
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [op],
+      }),
+    /desktop-owned/,
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM wallets"),
+    0,
+    "§2.3: the phone never writes a wallet, so the desktop never holds one",
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM sync_row_stamps"),
+    0,
+  );
+});
+
+test("a mobile-origin entry edit is refused, and the same edit from the desktop applies", async () => {
+  const pair = await openPair();
+  const onA = createBudgetRepo(pair.a.driver);
+  const walletId = await onA.createWallet("Cash");
+  const categoryId = await onA.createExpenseCategory("Food");
+  const entryId = await onA.createExpenseEntry({
+    amountCents: 1_000,
+    categoryId,
+    walletId,
+    entryDate: "2026-11-13",
+  });
+  const [row] = await entryOn(pair.a, "expense_entries");
+  assert.ok(row?.uid);
+  assert.equal(entryId > 0, true);
+
+  // A correction an append-only table does not take from the phone (§2.3). The
+  // op is written the way the wire writes one, because no phone writer makes it.
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    9,
+    "expense_entries",
+    row.uid,
+    "update",
+    { amount_cents: 900 },
+    10,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [edit],
+      }),
+    /never edits or deletes expense_entries/,
+  );
+  assert.equal(
+    (await entryOn(pair.a, "expense_entries"))[0]?.amount_cents,
+    1_000,
+    "the refused edit wrote nothing",
+  );
+
+  await applyOps(pair.a.driver, {
+    peerId: phoneId,
+    origin: "desktop",
+    ops: [edit],
+  }).then((statements) => pair.a.driver.batch(statements));
+  assert.equal(
+    (await entryOn(pair.a, "expense_entries"))[0]?.amount_cents,
+    900,
+    "§2.3: the desktop is the authority for every synced table, so a correction flows",
+  );
+});
+
+test("a desktop category whose name the phone already holds is a no-op, not a failed batch", async () => {
+  const pair = await openPair();
+  const phoneUid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  await pair.b.driver.execute(
+    "INSERT INTO expense_categories (uid, name, created_at) VALUES (?, 'Food', '2026-11-01')",
+    [phoneUid],
+  );
+  const onA = createBudgetRepo(pair.a.driver);
+  await onA.createExpenseCategory("Food");
+  const [desktopRow] = await pair.a.driver.query<{ uid: string }>(
+    "SELECT uid FROM expense_categories",
+  );
+  assert.ok(desktopRow);
+
+  // The desktop's create collides on `UNIQUE (name)` but never on identity: it
+  // is a second record with the same name (§8.4's fold already answered this
+  // for a snapshot), so the apply is a no-op instead of a constraint failure
+  // that would wedge every later batch on the same op.
+  await applyFrom(pair.b, pair.a);
+
+  const rows = await pair.b.driver.query<{ uid: string; name: string }>(
+    "SELECT uid, name FROM expense_categories",
+  );
+  assert.equal(rows.length, 1, "the phone keeps its one Food");
+  assert.equal(rows[0]?.uid, phoneUid, "and it is the phone's own record");
+  assert.notEqual(rows[0]?.uid, desktopRow.uid);
+  assert.equal(
+    await count(
+      pair.b,
+      "SELECT count(*) AS n FROM sync_row_stamps WHERE entity_uid = ?",
+      [desktopRow.uid],
+    ),
+    0,
+    "a no-op writes no stamp for a record this device does not hold",
+  );
+  assert.equal(
+    (await readState(pair.b.driver)).lamport,
+    1,
+    "but the batch still moved its clock, as a delivered batch does (§4.2)",
   );
 });
 

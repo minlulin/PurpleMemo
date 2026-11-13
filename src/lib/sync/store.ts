@@ -666,7 +666,7 @@ export const LOCAL_FOREIGN_KEYS: Partial<
  * two different records, and an incoming snapshot row whose name already
  * exists locally is that same record created twice, not a second one (§8.4).
  */
-const NATURAL_KEYS: Partial<Record<SyncTable, string>> = {
+export const NATURAL_KEYS: Partial<Record<SyncTable, string>> = {
   collections: "name",
   wallets: "name",
   income_categories: "name",

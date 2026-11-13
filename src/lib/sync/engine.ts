@@ -40,14 +40,20 @@ import {
   FOREIGN_KEYS,
   type HeldConflictRow,
   LOCAL_FOREIGN_KEYS,
+  NATURAL_KEYS,
 } from "./store.ts";
 
 /**
- * The eight tables Stage 1 may move (§12.1). Anything else — including a table
- * that syncs in a LATER stage — is refused rather than applied: an op for
- * Budget's ledger arriving today is a protocol bug, not a head start.
+ * The tables sync moves through Stage 2 (§12.1, §12.2): Stage 1's eight plus
+ * Budget's five.
+ *
+ * This is the ONE place the set lives — the engine's stage gate below and the
+ * session's sender filter both read it, so a table can never travel without
+ * being applicable. Anything else, including a table a later stage moves
+ * (Business, Loans, Vault), is refused rather than applied: an op for it
+ * arriving today is a protocol bug, not a head start.
  */
-export const STAGE_ONE_TABLES = [
+export const UNLOCKED_TABLES = [
   "collections",
   "notes",
   "tasks",
@@ -56,6 +62,11 @@ export const STAGE_ONE_TABLES = [
   "shopping_items",
   "habits",
   "habit_logs",
+  "wallets",
+  "income_categories",
+  "expense_categories",
+  "income_entries",
+  "expense_entries",
 ] as const satisfies readonly SyncTable[];
 
 const OP_KINDS: readonly OpKind[] = ["create", "update", "toggle", "delete"];
@@ -297,9 +308,9 @@ function validate(op: PeerOp, request: ApplyRequest): void {
     );
   }
   const table = op.entity_table;
-  if (!(STAGE_ONE_TABLES as readonly string[]).includes(table)) {
+  if (!(UNLOCKED_TABLES as readonly string[]).includes(table)) {
     throw new Error(
-      `${name} names ${table}, which Stage 1 does not move (§12.1).`,
+      `${name} names ${table}, which Stage 2 does not move (§12.1, §12.2).`,
     );
   }
   if (!OP_KINDS.includes(op.op)) {
@@ -325,6 +336,43 @@ function validate(op: PeerOp, request: ApplyRequest): void {
   if (!verdict.allowed)
     throw new Error(`${name} was refused: ${verdict.reason}`);
   for (const field of fields) destinationOf(table, field, op);
+}
+
+/**
+ * §7.2: does this device already hold the record this create describes?
+ *
+ * Two spellings of one identity. The uid IS the record (§1.1), so a row
+ * wearing it is that record — the merge path answers it, and the guard makes
+ * the no-op explicit before an INSERT could meet the unique uid index. A
+ * natural-key table (`NATURAL_KEYS`) also identifies a record by its `name`,
+ * and two devices can mint the same name under different uids: the baseline
+ * seeds every wallet on a fresh install, and either device may create `Food`.
+ * Inserting that would fail `UNIQUE (name)` and abort the batch (§7.4) on an
+ * op that is merely redundant, so the create is skipped instead.
+ */
+async function identityAlreadyHeld(
+  driver: DataDriver,
+  table: SyncTable,
+  op: PeerOp,
+  fields: Record<string, unknown>,
+): Promise<boolean> {
+  const [byUid] = await driver.query<{ one: number }>(
+    `SELECT 1 AS one FROM "${table}" WHERE uid = ?`,
+    [op.entity_uid],
+  );
+  if (byUid !== undefined) return true;
+
+  const key = NATURAL_KEYS[table];
+  if (key === undefined) return false;
+  const value = fields[key];
+  // A natural key is never null on these tables (`name TEXT NOT NULL UNIQUE`),
+  // so a create that omitted one has nothing to collide with.
+  if (typeof value !== "string" && typeof value !== "number") return false;
+  const [byKey] = await driver.query<{ uid: string | null }>(
+    `SELECT uid FROM "${table}" WHERE "${key}" = ? LIMIT 1`,
+    [value],
+  );
+  return byKey !== undefined;
 }
 
 /**
@@ -671,13 +719,12 @@ async function composeOp(
     if (op.op !== "create") {
       return EMPTY_OUTCOME;
     }
-    const inserted = insertStatements(
-      op,
-      parsePayload(op),
-      stamp,
-      delivered,
-      now,
-    );
+    const fields = parsePayload(op);
+    // §7.2: a create for a record this device already holds writes nothing.
+    if (await identityAlreadyHeld(driver, table, op, fields)) {
+      return EMPTY_OUTCOME;
+    }
+    const inserted = insertStatements(op, fields, stamp, delivered, now);
     return {
       ...EMPTY_OUTCOME,
       effects: inserted.effects,
