@@ -288,6 +288,7 @@ function panelState(pairingId: string): PairingPanelState {
     session: { offer, failedAttempts: [], usedAt: null },
     offer,
     listener: listener(),
+    syncAcked: 0,
   };
 }
 

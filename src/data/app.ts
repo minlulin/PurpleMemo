@@ -25,6 +25,7 @@ import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
 import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
+import { createSyncRepo } from "../lib/sync/syncSession.ts";
 import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
 import { createTrashRepo } from "../lib/trash.ts";
@@ -118,6 +119,7 @@ export const pairingRepo = createPairingRepo(driver);
 
 /** The phone's side of pairing: redeem, wire, then pin (§11.6.1, Session 7 T2). */
 export const mobilePairingRepo = createMobilePairingRepo(driver);
+export const syncRepo = createSyncRepo(driver);
 
 export function searchWorkspace(input: string, options?: SearchOptions) {
   return globalSearch(driver, input, options);

@@ -31,9 +31,12 @@ import type {
   PairingListenerInfo,
   PairingLocalInfo,
   PairingOpenInput,
+  SyncOutcomeInput,
+  SyncTakeResult,
   UploadOutcomeInput,
   UploadTakeResult,
 } from "../../data/driver.ts";
+import { applyOps, type PeerOp } from "./engine.ts";
 import { readUploadOps } from "./mobilePairing.ts";
 import {
   createPairingSession,
@@ -50,11 +53,13 @@ import {
 } from "./pairing.ts";
 import type { SyncTable } from "./protocol.ts";
 import {
+  ackStatements,
   assertSyncTable,
   type PeerRow,
   readPeers,
   uploadStatements,
 } from "./store.ts";
+import { readSyncOps } from "./syncSession.ts";
 
 /** The driver surface the panel uses — one method per real IPC command. */
 export interface PairingTransport {
@@ -74,6 +79,25 @@ export interface PairingTransport {
    * from a validated op, never free text.
    */
   existingUids(table: SyncTable, uids: readonly string[]): Promise<string[]>;
+  /**
+   * §6's exchange, which only the production driver has: a panel double that
+   * models the code and the upload but not the ongoing sync simply omits the
+   * trio, and its settle tick applies no push because none can be reported.
+   */
+  sync?: SyncApplyTransport;
+}
+
+/** The three calls one staged-push apply needs, grouped so it can be absent. */
+export interface SyncApplyTransport {
+  /** Take the staged push for the engine; `null` when none is ready. */
+  take(): Promise<SyncTakeResult | null>;
+  /** Report the engine's verdict, for the listener to seal to the phone. */
+  report(input: SyncOutcomeInput): Promise<void>;
+  /**
+   * Apply the phone's operations with `applyOps` — the store's one batch, the
+   * caller's one transaction — and report the highest seq applied.
+   */
+  apply(peerId: string, ops: readonly PeerOp[]): Promise<number>;
 }
 
 export interface PairingPanelState {
@@ -83,6 +107,9 @@ export interface PairingPanelState {
   /** The offer with the endpoint the live listener bound (§11.1). */
   offer: PairingOffer;
   listener: PairingListenerInfo;
+  /** The highest own seq the phone's `sync-applied` has been acknowledged at
+   * (§6.5) — kept so the settle tick does not re-ack on every poll. */
+  syncAcked: number;
 }
 
 /**
@@ -140,6 +167,7 @@ export async function openPairingPanel(
     session,
     listener,
     offer: { ...session.offer, endpoint },
+    syncAcked: 0,
   };
 }
 
@@ -481,6 +509,55 @@ export async function applyStagedUpload(
   }
 }
 
+/** What one staged-push apply did — a value, so the order can be tested. */
+export interface SyncApplyOutcome {
+  /** Operations taken from the staging (0 when nothing was staged). */
+  staged: number;
+  /** The highest seq the engine applied. */
+  appliedThrough: number;
+  /** The refusal's reason, when the apply did not commit. */
+  error: string | null;
+}
+
+/**
+ * Apply the phone's staged push (§6, §7) — the panel's third writing duty.
+ *
+ * The staging is TAKEN first, so no second tick can apply the same operations;
+ * the documents are narrowed before the engine sees them; the engine merges
+ * in ONE batch (its own reads are against this device's rows); and the outcome
+ * is reported either way, because the phone's verdict is that report. Taking is
+ * once, so a taken-and-failed push is not retried in this window — a new window
+ * is a new push.
+ */
+export async function applyStagedSync(
+  transport: SyncApplyTransport,
+  peerId: string,
+): Promise<SyncApplyOutcome | null> {
+  const taken = await transport.take();
+  if (taken === null) return null;
+  try {
+    const read = readSyncOps(taken.ops);
+    if (!read.ok) throw new Error(read.reason);
+    const appliedThrough = await transport.apply(peerId, read.ops);
+    const outcome: SyncApplyOutcome = {
+      staged: read.ops.length,
+      appliedThrough,
+      error: null,
+    };
+    await transport.report({
+      appliedThrough: outcome.appliedThrough,
+      error: null,
+    });
+    return outcome;
+  } catch (error) {
+    const message = uploadErrorText(error);
+    await transport
+      .report({ appliedThrough: null, error: message })
+      .catch(() => undefined);
+    return { staged: taken.ops.length, appliedThrough: 0, error: message };
+  }
+}
+
 export async function settlePairingPanel(
   transport: PairingTransport,
   state: PairingPanelState,
@@ -495,11 +572,38 @@ export async function settlePairingPanel(
     await applyStagedUpload(transport).catch(() => undefined);
     current = await transport.pairingStatus().catch(() => current);
   }
+  // §6: a committed push is this panel's to apply too, and the phone polls for
+  // the verdict — so it runs on the tick that first sees `staged`, exactly
+  // like the upload above.
+  if (
+    current.syncState === "staged" &&
+    current.peerDeviceId !== null &&
+    transport.sync !== undefined
+  ) {
+    await applyStagedSync(transport.sync, current.peerDeviceId).catch(
+      () => undefined,
+    );
+    current = await transport.pairingStatus().catch(() => current);
+  }
+  // …and the phone's `sync-applied` becomes this device's acknowledgement of
+  // its own outbox (§6.5). Recorded once per position: `ackStatements` is
+  // idempotent, but re-running it every tick would be a write per second.
+  let syncAcked = state.syncAcked;
+  if (
+    current.syncApplied !== null &&
+    current.syncApplied > syncAcked &&
+    current.peerDeviceId !== null
+  ) {
+    await transport
+      .batch(ackStatements(current.peerDeviceId, current.syncApplied))
+      .catch(() => undefined);
+    syncAcked = current.syncApplied;
+  }
   // The listener's code state comes first: a lockout on the wire or a phone's
   // redemption must close the socket on this tick, not when the 120 s timer
   // happens to run out — and the panel must learn it on the same tick (N3).
   const session = projectSession(state.session, current, now);
-  const next = { ...state, session, listener: current };
+  const next = { ...state, session, listener: current, syncAcked };
   const phase = pairingState(session, now);
   // §8.4: the phone can only dial the endpoint this window bound, and the
   // sealed hello, the person's Trust and the snapshot pull all need that same
@@ -592,6 +696,22 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     peers: () => readPeers(driver),
     pairingUploadTake: () => driver.pairingUploadTake(),
     pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
+    sync: {
+      take: () => driver.pairingSyncTake(),
+      report: (input) => driver.pairingSyncOutcome(input),
+      apply: async (peerId, ops) => {
+        // The engine reads this device's rows and stamps through the driver,
+        // and the batch it returns carries the cursor advance (§6.4) — one
+        // transaction, the caller's.
+        const statements = await applyOps(driver, {
+          peerId,
+          origin: "mobile",
+          ops,
+        });
+        await driver.batch(statements);
+        return ops.reduce((highest, op) => Math.max(highest, op.seq), 0);
+      },
+    },
     existingUids: async (table, uids) => {
       // The table is an allowlisted name from a validated op (§3.4 ran
       // first); the uids are bound parameters, chunked under SQLite's limit.
