@@ -17,7 +17,6 @@ tauri-build = { version = "2", features = [] }
 # `tray-icon` is opt-in in Tauri 2 (not a default feature): it gates
 # `tauri::tray` itself. One-line manifest change for the close-to-tray plan.
 tauri = { version = "2.12.3", features = ["tray-icon"] }
-tauri-plugin-updater = "2.13.3"
 tauri-plugin-notification = "2.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,18 +39,23 @@ libc = "0.2"
 getrandom = "0.4.3"
 tiny_http = "0.12.0"
 tauri-plugin-dialog = "2.8.2"
-tauri-plugin-opener = "2.7.2"
-# One running copy per user. Registered FIRST in `run` - a second
-# launch must be turned away before anything touches the database.
-tauri-plugin-single-instance = "2.5.4"
 
 # Desktop only: the OS credential store (`keyring`) has no Android backend -
 # its default implementation refuses that target outright - so on mobile the
 # database key is wrapped by the Android Keystore instead
 # (`src/key_store/android.rs`). Target-gated rather than feature-gated, so the
 # Android build cannot link or call it at all.
+#
+# The three plugins are here for the same reason: registration is already
+# `cfg(desktop)`-gated in `lib.rs`, so on Android they were compiled into the
+# library (the updater dragging reqwest and rustls with it) and never used.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 keyring = "4.2.0"
+tauri-plugin-updater = "2.13.3"
+tauri-plugin-opener = "2.7.2"
+# One running copy per user. Registered FIRST in `run` - a second
+# launch must be turned away before anything touches the database.
+tauri-plugin-single-instance = "2.5.4"
 
 # Android only: the platform seam talks to the Android Keystore through JNI.
 # Both crates are already in the dependency graph (transitively, through
@@ -79,3 +83,12 @@ lto = true
 opt-level = "s"
 strip = true
 panic = "abort"
+
+# rustc ICE workaround, UNVERIFIED (no release build has completed yet):
+# rustc 1.95.0 crashes compiling icu_locale_core under opt-level = "s" with
+# panic = "abort" (the Android release build, 2026-11-07). Building that one
+# package at opt-level 3 is the candidate workaround from the 2026-11-13
+# Android review; the other lead is rust-lang/rust #157148 (re-run with
+# --message-format short). Confirm or remove this at the first release build.
+[profile.release.package.icu_locale_core]
+opt-level = 3

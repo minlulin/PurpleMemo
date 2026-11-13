@@ -455,7 +455,24 @@ pub fn photo_delete(
 /// Every successful call appends to `key-export.log`.
 #[tauri::command]
 pub fn db_key_save(path: String) -> CmdResult<()> {
+    refuse_mobile_role()?;
     db::save_db_key_file(std::path::Path::new(&path))
+}
+
+/// Desktop-role commands refuse on mobile. The handler list is shared
+/// across platforms, so without this the phone's webview could invoke the
+/// desktop's parts — start the LAN share server, host a pairing window,
+/// export the database key — none of which exist in the phone's role
+/// (docs/ANDROID_DESIGN.md). The refusal lives at the command boundary,
+/// not in the UI, so no page needs to know it is there.
+#[cfg(mobile)]
+fn refuse_mobile_role() -> CmdResult<()> {
+    Err("this is a desktop-only part of Purple Memo".to_string())
+}
+
+#[cfg(not(mobile))]
+fn refuse_mobile_role() -> CmdResult<()> {
+    Ok(())
 }
 
 /// Write the backup archive to the file the user chose (review P1-1).
@@ -659,6 +676,7 @@ pub fn share_arm(state: State<'_, ShareState>) -> CmdResult<String> {
 /// `rowsAffected`/`lastInsertRowid` fields on [`db::ExecuteOutcome`].
 #[tauri::command(rename_all = "camelCase")]
 pub fn share_start(state: State<'_, ShareState>, consent_token: String) -> CmdResult<ShareInfo> {
+    refuse_mobile_role()?;
     state.start(&consent_token)
 }
 
@@ -675,6 +693,7 @@ pub fn share_start(state: State<'_, ShareState>, consent_token: String) -> CmdRe
 /// `forLock`, same as `consentToken` on [`share_start`].
 #[tauri::command(rename_all = "camelCase")]
 pub fn share_stop(state: State<'_, ShareState>, for_lock: Option<bool>) -> CmdResult<ShareInfo> {
+    refuse_mobile_role()?;
     if for_lock.unwrap_or(false) {
         state.stop_for_lock()
     } else {
@@ -685,6 +704,7 @@ pub fn share_stop(state: State<'_, ShareState>, for_lock: Option<bool>) -> CmdRe
 /// Current share state — also reports a server that stopped unexpectedly.
 #[tauri::command]
 pub fn share_status(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
+    refuse_mobile_role()?;
     state.status()
 }
 
@@ -693,6 +713,7 @@ pub fn share_status(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
 /// share path has no DB or filesystem access at all.
 #[tauri::command]
 pub fn share_publish(state: State<'_, ShareState>, snapshot_json: String) -> CmdResult<ShareInfo> {
+    refuse_mobile_role()?;
     state.publish(&snapshot_json)
 }
 
@@ -780,6 +801,10 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
                 if let Err(e) = crate::reset::clear_reset_marker(&db_state.data_dir) {
                     eprintln!("purple-memo: {e} — the reset completed; the leftover marker is retried on the next start");
                 }
+                // The phone's armed reminders and delivery records live
+                // outside the database the engine just wiped; forget them
+                // too (Android only, best-effort — see reminders.rs).
+                crate::reminders::clear_reminder_state_after_reset();
             }
             Ok(outcome)
         })
@@ -917,6 +942,7 @@ pub fn pairing_open(
     app: tauri::AppHandle,
     input: PairingOpenInput,
 ) -> CmdResult<PairingListenerInfo> {
+    refuse_mobile_role()?;
     let listener = app
         .try_state::<PairingListenerState>()
         .ok_or_else(|| "pairing listener state is not available — restart the app".to_string())?;
@@ -960,6 +986,7 @@ pub fn pairing_open(
 /// background paths as well as by the panel's own close (§11.5).
 #[tauri::command]
 pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
+    refuse_mobile_role()?;
     state.stop()
 }
 
@@ -967,6 +994,7 @@ pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<Pairin
 /// pinned, which the panel then stores as its pin (§11.2).
 #[tauri::command]
 pub fn pairing_status(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
+    refuse_mobile_role()?;
     state.status()
 }
 

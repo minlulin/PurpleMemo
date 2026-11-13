@@ -50,7 +50,20 @@ fn open_in_browser(url: &str) -> Result<(), String> {
     let mut env = vm
         .attach_current_thread()
         .map_err(|e| format!("could not attach to the Android runtime: {e}"))?;
-    start_view_intent(&mut env, context.context() as jni::sys::jobject, url)
+    let result = start_view_intent(&mut env, context.context() as jni::sys::jobject, url);
+    // A refused start (no browser installed, say) throws in Java, and the
+    // JNI error return alone leaves that exception pending on this thread,
+    // where it would surface later as a crash in unrelated code. Clear it
+    // here — and let a pending exception turn an apparent success into the
+    // failure it actually was.
+    if matches!(env.exception_check(), Ok(true)) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+        if result.is_ok() {
+            return Err("the system browser could not be started".to_string());
+        }
+    }
+    result
 }
 
 /// Build `Intent(ACTION_VIEW, Uri.parse(url))` and start it.
