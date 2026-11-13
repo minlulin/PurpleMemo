@@ -10,7 +10,7 @@
  * card words a success as a pairing only because that command resolved.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { mobilePairingRepo } from "../data/app.ts";
+import { mobilePairingRepo, syncRepo } from "../data/app.ts";
 import type { PhonePairResult } from "../data/driver.ts";
 import {
   isBareCode,
@@ -24,7 +24,8 @@ import {
   type PairingSession,
   parseOffer,
 } from "../lib/sync/pairing.ts";
-import type { SnapshotOp } from "../lib/sync/store.ts";
+import type { PeerRow, SnapshotOp } from "../lib/sync/store.ts";
+import type { SyncOutcome } from "../lib/sync/syncSession.ts";
 import { useT } from "./useTranslation.ts";
 
 type Scanning = "idle" | "scanning" | "unavailable";
@@ -68,6 +69,12 @@ export function MobilePairingCard() {
     alreadyKnown: number;
   } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // §6's ongoing sync: offered whenever this phone holds a desktop pin, not
+  // only inside a fresh pairing session.
+  const [pins, setPins] = useState<PeerRow[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [synced, setSynced] = useState<SyncOutcome | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -78,6 +85,21 @@ export function MobilePairingCard() {
 
   /** False once the card unmounts, so a late `getUserMedia` is released (N6). */
   const mountedRef = useRef(true);
+
+  // A pin is what makes a sync possible at all (§11.2), so the card reads them
+  // rather than inferring one from this session's pairing.
+  useEffect(() => {
+    let live = true;
+    void mobilePairingRepo
+      .peers()
+      .then((rows) => {
+        if (live) setPins(rows);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // A camera left running behind a tab change is a light and a battery, and it
   // would keep decoding frames nobody is reading.
@@ -212,6 +234,12 @@ export function MobilePairingCard() {
       setSession(result.session);
       if (result.paired) {
         setPaired(result.desktop);
+        // A pairing that just landed writes the pin, so the §6 surface appears
+        // without waiting for a remount.
+        void mobilePairingRepo
+          .peers()
+          .then(setPins)
+          .catch(() => undefined);
         setNotice(t("mobile.settings.pairConfirmed"));
       } else {
         // The protocol's own words: the desktop's refusal when it refused, and
@@ -298,6 +326,32 @@ export function MobilePairingCard() {
       }
     } finally {
       setUploadProgress(null);
+    }
+  };
+
+  /**
+   * One §6 session with the pinned desktop. The address comes from the code
+   * this session scanned; the key, the pairing id and the data line are the
+   * pin, read in Rust — the card never names a key.
+   */
+  const syncNow = async () => {
+    const endpoint = offer?.endpoint;
+    const pin =
+      pins.find((row) => row.device_id === paired?.desktopDeviceId) ?? pins[0];
+    if (endpoint === undefined || pin === undefined || syncing) return;
+    setSyncing(true);
+    setSyncError(null);
+    setSynced(null);
+    try {
+      const outcome = await syncRepo.run({
+        endpoint,
+        desktopDeviceId: pin.device_id,
+      });
+      setSynced(outcome);
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -466,6 +520,55 @@ export function MobilePairingCard() {
               ) : null}
             </>
           ) : null}
+        </section>
+      )}
+      {/* §6: the ongoing exchange. Offered on the pin, not on this session's
+          pairing — a phone that was paired last week can still sync, and one
+          that has never paired has nothing to sync with. */}
+      {pins.length === 0 ? null : (
+        <section className="mobile-section">
+          <h3 className="mobile-section-heading">
+            {t("mobile.settings.syncHeading")}
+          </h3>
+          <p className="mobile-note">{t("mobile.settings.syncBody")}</p>
+          {offer === null ? (
+            <p className="mobile-note">{t("mobile.settings.syncNeedsCode")}</p>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn"
+                disabled={syncing}
+                onClick={() => void syncNow()}
+              >
+                {syncing
+                  ? t("mobile.settings.syncProgress")
+                  : t("mobile.settings.syncStart")}
+              </button>
+              {synced?.confirmed ? (
+                <p className="alert alert-note" role="status">
+                  {synced.pushed === 0 && synced.pulled === 0
+                    ? t("mobile.settings.syncNothing")
+                    : t("mobile.settings.syncDone", {
+                        pushed: synced.pushed,
+                        pulled: synced.pulled,
+                      })}
+                </p>
+              ) : null}
+              {synced !== null && !synced.confirmed ? (
+                <p className="mobile-error" role="alert">
+                  {synced.state === "pending"
+                    ? t("mobile.settings.syncUnconfirmed")
+                    : `${t("mobile.settings.syncFailed")} ${synced.refusal?.message ?? ""}`}
+                </p>
+              ) : null}
+              {syncError !== null ? (
+                <p className="mobile-error" role="alert">
+                  {syncError}
+                </p>
+              ) : null}
+            </>
+          )}
         </section>
       )}
     </div>

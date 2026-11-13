@@ -380,6 +380,24 @@ export function PairingPanel() {
                   </dd>
                 </div>
               ) : null}
+              {/* §6: one exchange, both directions — the phone pushes, this
+                  panel's engine merges, and the phone's position comes back. */}
+              {view.sync !== null ? (
+                <div>
+                  <dt>Phone sync</dt>
+                  <dd>
+                    {view.sync.state === "receiving"
+                      ? `Receiving… (${view.sync.ops} change(s) so far)`
+                      : view.sync.state === "staged"
+                        ? `${view.sync.ops} change(s) received — applying…`
+                        : view.sync.state === "applying"
+                          ? "Applying…"
+                          : view.sync.state === "applied"
+                            ? `${view.sync.ops} change(s) applied${view.sync.applied === null ? "" : `, phone has everything through ${view.sync.applied}`}`
+                            : `Failed — ${view.sync.note ?? "the apply did not commit"}`}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           </div>
 

@@ -734,15 +734,37 @@ longer holds the phase open.
   while a conflict copy's restore keeps minting a new uid (§13.2) and a purge
   records nothing. That is also why resurrection is a create and not an edit: a
   field-level update cannot rebuild a row this device no longer holds, so it
-  writes nothing rather than invent a half-row. **Still open, so the item stays
-  unchecked:** the transport, the §13.1 delivery filter on both sides, and the
-  harness's 6 skipped invariants (Session 4). Tests: 9 new TS
+  writes nothing rather than invent a half-row.
+  **Transport and manual trigger BUILT 2026-11-13 (Stage 1, Session 3).**
+  `POST /pair/sync` (§9.7) carries the exchange on a fourth route with its own
+  kind allowlist, the same `admit` order, the revoked check first, 200-op
+  batches and ordered staging: `sync-push`/`sync-commit` from the phone (the
+  desktop stages, applies nothing), `sync-pull` serving this device's own
+  outbox after the phone's position — read once per window and served from
+  memory — `sync-applied`, and one **sealed** `sync-status` verdict. The panel's
+  settle tick applies a committed push with `applyOps` and reports the
+  outcome; the phone's `sync-applied` becomes this device's `ackStatements`.
+  `runSync` (`syncSession.ts`) is the phone's half: push past `cursor_out`
+  filtered to the eight Stage 1 tables, pull from `cursor_in` applying one wire
+  batch per `applyOps` batch, report the position, and believe the push only on
+  the sealed `applied` — the only thing that moves `cursor_out`. The trigger is
+  manual only: a **Sync now** action on the phone's pairing card, offered
+  whenever a desktop pin exists (with this session's scanned address — the pin
+  carries no endpoint, so a fresh scan is needed outside a pairing session),
+  plus a sync fact line in the desktop panel. **Still open, so the item stays
+  unchecked:** the §13.1 delivery filter on both sides, and the harness's 6
+  skipped invariants (Session 4, Stage 1's exit). Tests: 9 new TS
   (create/update/delete per table with the op read back from real SQLite, the
   list and habit cascade shapes, the check-in/un-check pair, the Budget
   boundary, and repository-level atomicity where a refused op rolls the whole
-  batch back) plus 14 engine tests over two real SQLite stores (Session 2: the
+  batch back), plus 14 engine tests over two real SQLite stores (Session 2: the
   §4/§5/§7 merge cases, the three §13.2 ones, the settle payloads, and the
-  record→delete→restore round trip).
+  record→delete→restore round trip), plus 5 session tests over two real stores
+  (Session 3: a crossed pair, an idle second session, an interrupted pull that
+  resumes, a Stage 2 op left home, and the applied verdict's ack), plus 6 Rust
+  loopback tests (the route's five — staged-not-applied, ordered batches and an
+  identical re-send, the pull's position and single read, the revoked refusal,
+  the sealed verdict's keys — and one client walk of push → pull → status).
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
 - [ ] Backup payload rules: device-local state excluded; restore bumps

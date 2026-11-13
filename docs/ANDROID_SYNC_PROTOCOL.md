@@ -649,6 +649,59 @@ upload whose plan is empty — the desktop already holds every record —
 sends nothing and is reported as such, grounded in the snapshot the same
 pairing just took.
 
+#### §9.7 The ongoing exchange (built 2026-11-13)
+
+After the first pairing, the two devices have operations for each other
+rather than records: §6's outbox rows, merged by §4 rather than adopted.
+They travel on a fourth route, `POST /pair/sync`, again following §8.5's
+pattern — the same `admit` order, its own kind allowlist, the revoked peer
+refused before anything else, and every phone message carrying
+`pairingId`, `protocolVersion`, `schemaVersion` and `generation`. Five
+kinds, both directions on one route because a sync is one exchange:
+
+- `sync-push` — one batch of the phone's operations, at most 200 per batch
+  and 64 batches, each op being §6.2's outbox document (`device_id`,
+  `seq`, `op_id`, `entity_table`, `entity_uid`, `op`, `base_counter`,
+  `counter`, `field_stamps`, `payload`). The desktop **stages** the batch;
+  a re-sent identical batch is acknowledged again, a different batch at a
+  staged index or a skipped index is refused `sync-busy`.
+- `sync-commit` — every batch was sent. A commit before the last batch is
+  `malformed`; a second commit is `replayed`.
+- `sync-pull` — `{ batch, afterSeq }`: the desktop serves its own outbox
+  rows with `seq > afterSeq`, read **once** on the first pull of the
+  window and held for the window's life (the §8.5 rule), in batches, each
+  reply **sealed**: `{ kind: "sync-ops", pairingId, batch, total, ops }`.
+  Asking for a batch twice re-serves the same rows; asking from another
+  position is `sync-mismatch`. The end of a pull is a batch with nothing
+  after it.
+- `sync-applied` — `{ throughSeq }`: the phone applied the desktop's ops
+  through that seq. Recorded on the listener for the panel, which turns it
+  into a §6.5 acknowledgement.
+- `sync-status` — the push verdict, **sealed** like §9.6's: `pending`, or
+  `applied` with the highest seq the desktop's engine applied, or `failed`
+  with the engine's own reason.
+
+The apply is the panel's, at the same seam as the upload: the settle tick
+that first sees `staged` takes the ops exactly once and runs `applyOps`
+over them in one batch — validation first (§7.7), so a refused operation
+refuses the batch with nothing written, and the cursor advance is that
+same batch's last statement (§6.4). The outcome it reports is what
+`sync-status` seals.
+
+**Only Stage 1's eight tables travel.** The sender filters its own outbox
+before batching, because an operation for a later stage can exist on
+either device (a Trash restore records for any synced table) and the
+engine would only refuse it; the filter is the sender keeping the wire
+honest, not a second safety net.
+
+**The cursors are the only memory.** `cursor_in` moves inside each apply
+batch, `cursor_out` moves when the phone believes the sealed `applied`
+verdict — never when a batch was merely sent. An interrupted session
+resumes from those two numbers: the phone re-offers nothing the desktop
+acknowledged, and asks for nothing it already applied. Silence is not
+success: a verdict that never arrives leaves every operation where it
+was, and the next session sends it again.
+
 ---
 
 ## 10. Restore, reset and the data generation

@@ -254,6 +254,17 @@ export interface PairingPanelView {
   freshCode: boolean;
   /** The upload's state, once the phone sends one (§9.1). */
   upload: PanelUploadView | null;
+  /** The ongoing exchange's state, once the phone pushes an op (§6). */
+  sync: PanelSyncView | null;
+}
+
+/** What the panel says about one staged push, in the facts line's words. */
+export interface PanelSyncView {
+  state: string;
+  ops: number;
+  /** The highest own seq the phone says it applied (§6.5), once reported. */
+  applied: number | null;
+  note: string | null;
 }
 
 /** What the panel may draw, for one instant. */
@@ -283,6 +294,15 @@ export function panelView(
             inserted: state.listener.uploadInserted,
             alreadyKnown: state.listener.uploadAlreadyKnown,
             note: state.listener.uploadNote,
+          },
+    sync:
+      state.listener.syncState === null
+        ? null
+        : {
+            state: state.listener.syncState,
+            ops: state.listener.syncOps,
+            applied: state.listener.syncApplied,
+            note: state.listener.syncNote,
           },
   };
 }

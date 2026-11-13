@@ -324,6 +324,19 @@ export const en = {
     "Everything on this phone is already on the desktop — nothing to send.",
   "mobile.settings.uploadFailed":
     "Nothing was sent. Your records stay on this phone — try again.",
+  "mobile.settings.syncBody":
+    "Send the changes you made here and bring the desktop's changes back. Both sides are merged, so an edit either side made is kept.",
+  "mobile.settings.syncStart": "Sync now",
+  "mobile.settings.syncProgress": "Syncing…",
+  "mobile.settings.syncDone":
+    "Synced: {pushed} change(s) sent, {pulled} received.",
+  "mobile.settings.syncNothing":
+    "Already up to date — nothing was sent or received.",
+  "mobile.settings.syncUnconfirmed":
+    "The desktop did not confirm in time. Your changes stay on this phone — sync again when both devices are on the same network.",
+  "mobile.settings.syncFailed": "The sync stopped:",
+  "mobile.settings.syncNeedsCode":
+    "Scan the desktop's pairing code to sync: this phone knows the desktop but not how to reach it right now.",
   "mobile.settings.permissionsHeading": "Permissions",
   "mobile.settings.notifications": "Notifications",
   "mobile.settings.notificationsOn":
@@ -1270,6 +1283,19 @@ export const my: Record<MessageKey, string> = {
     "ဤဖုန်းရှိ မှတ်တမ်းအားလုံး ကွန်ပျူတာတွင် ရှိပြီးသားဖြစ်ပါသည် — ပို့စရာ မရှိပါ။",
   "mobile.settings.uploadFailed":
     "ဘာမျှ မပို့ရသေးပါ။ သင့်မှတ်တမ်းများ ဤဖုန်းတွင် ကျန်ရှိပါသည် — ထပ်ကြိုးစားပါ။",
+  "mobile.settings.syncBody":
+    "ဤဖုန်းတွင် သင်ပြောင်းခဲ့သည်များကို ပို့ပြီး ကွန်ပျူတာမှ ပြောင်းချက်များကို ပြန်ယူပါသည်။ နှစ်ဖက်စလုံး ပေါင်းစပ်သောကြောင့် မည်သည့်ဖက်မှ ပြင်ချက်မဆို ကျန်ရှိပါသည်။",
+  "mobile.settings.syncStart": "ယခု ထပ်တူပြုရန်",
+  "mobile.settings.syncProgress": "ထပ်တူပြုနေသည်…",
+  "mobile.settings.syncDone":
+    "ထပ်တူပြုပြီးပါပြီ — ပြောင်းချက် {pushed} ခု ပို့ပြီး၊ {pulled} ခု လက်ခံရရှိပါသည်။",
+  "mobile.settings.syncNothing":
+    "အပ်ဒိတ်ဖြစ်ပြီးသားပါ — ပို့စရာလည်း မရှိ၊ လက်ခံစရာလည်း မရှိပါ။",
+  "mobile.settings.syncUnconfirmed":
+    "ကွန်ပျူတာက အချိန်မီ အတည်မပြုနိုင်ပါ။ သင့်ပြောင်းချက်များ ဤဖုန်းတွင် ကျန်ရှိပါသည် — စက်နှစ်လုံး တူညီသော ကွန်ရက်တွင် ရှိစဉ် ထပ်မံ ထပ်တူပြုပါ။",
+  "mobile.settings.syncFailed": "ထပ်တူပြုခြင်း ရပ်တန့်ခဲ့သည်:",
+  "mobile.settings.syncNeedsCode":
+    "ထပ်တူပြုရန် ကွန်ပျူတာ၏ တွဲချိတ်ကုဒ်ကို စကန်ပါ — ဤဖုန်းက ကွန်ပျူတာကို သိသော်လည်း ယခု ဆက်သွယ်နည်း မသိပါ။",
   "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
   "mobile.settings.notifications": "အသိပေးချက်များ",
   "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",

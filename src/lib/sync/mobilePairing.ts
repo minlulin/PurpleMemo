@@ -963,6 +963,8 @@ export function createMobilePairingRepo(driver: DataDriver & PairingDriver) {
       driver.pairingSnapshotAdopted(input, rows, tombstones),
   };
   return {
+    /** The desktop pins this phone holds — what makes a §6 sync possible. */
+    peers: () => readPeers(driver),
     pairWithDesktop: (
       session: PairingSession,
       typed: string,
