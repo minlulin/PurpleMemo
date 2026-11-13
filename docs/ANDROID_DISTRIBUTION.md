@@ -38,12 +38,17 @@ keyPassword=<key password>
 
 Two facts about the generated project, so nobody hunts for them:
 
-- `src-tauri/gen/android/app/build.gradle.kts` has **no `signingConfigs` block**
-  of its own; the Tauri CLI's Android build wires release signing from
-  `key.properties` when that file exists. With no `key.properties`, a release
-  build is not release-signed — the CLI falls back to the debug keystore (or
-  produces an unsigned APK, depending on the CLI version), which must never be
-  handed to a user.
+- `src-tauri/gen/android/app/build.gradle.kts` carries the `signingConfigs`
+  block itself — the Tauri CLI does **not** read `key.properties`; an earlier
+  version of this doc claimed it did, and following it produced an unsigned
+  APK. The block loads the gitignored `src-tauri/gen/android/key.properties`
+  when it exists and applies it to the release build type. With no
+  `key.properties`, a release build is **unsigned** and must never be handed
+  to a user.
+- Release builds run R8 (`optimization { enable = true }`). The Rust side
+  calls `ReminderBridge` and `SensitiveClipboard` by name over JNI, so
+  `app/proguard-rules.pro` keeps both classes' public statics; without those
+  keeps, reminders and sensitive clipboard copies fail silently in release.
 - `key.properties` and any `*.jks`/`*.keystore` are ignored by git; a
   `git status` that shows either is a bug to fix before committing.
 

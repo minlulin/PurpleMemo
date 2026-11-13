@@ -1,3 +1,4 @@
+import java.io.FileInputStream
 import java.util.Properties
 import org.gradle.api.GradleException
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -15,6 +16,17 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing (docs/ANDROID_DISTRIBUTION.md §1): the Tauri CLI does NOT
+// read key.properties — this block is the whole wiring. The file is gitignored
+// and lives in the generated project's root (gen/android/key.properties).
+// Without it a release build stays unsigned, which the distribution doc
+// treats as a build failure, never as a shippable APK.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
+}
+
 android {
     compileSdk = 37
     namespace = "com.minlulin.purplememo"
@@ -25,6 +37,16 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -40,6 +62,12 @@ android {
             }
         }
         getByName("release") {
+            // Applied only when key.properties exists, so a release build on a
+            // machine without the keystore still configures (it just stays
+            // unsigned and must not be shipped — see the distribution doc).
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             optimization {
                enable = true
             }
