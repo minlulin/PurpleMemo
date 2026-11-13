@@ -6,6 +6,12 @@ import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import { applyPayment, formatMMK } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
+import {
+  deleteStatements,
+  outboxStatements,
+  readRowId,
+  readRowUid,
+} from "./sync/store.ts";
 import type { LoanDirection, LoanRow, LoanState } from "./types.ts";
 import { newUid } from "./uid.ts";
 
@@ -52,20 +58,34 @@ export function createLoansRepo(driver: DataDriver) {
       // Cross-device UID at creation (docs/ANDROID_DESIGN.md, Phase A
       // contract) — a loan created offline on the phone carries its identity
       // before it ever pairs.
-      const r = await driver.execute(
-        `INSERT INTO loans (uid, counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at)
-         VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
-        [
-          newUid(),
-          input.counterparty,
-          input.direction,
-          input.amountCents,
-          input.dueDate ?? null,
-          input.note ?? "",
-          todayLocal(),
-        ],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      const fields = {
+        counterparty: input.counterparty,
+        direction: input.direction,
+        amount_cents: input.amountCents,
+        repaid_cents: 0,
+        due_date: input.dueDate ?? null,
+        note: input.note ?? "",
+        created_at: created,
+      };
+      await driver.batch([
+        {
+          sql: `INSERT INTO loans (uid, counterparty, direction, amount_cents, repaid_cents, due_date, note, created_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+          params: [
+            uid,
+            fields.counterparty,
+            fields.direction,
+            fields.amount_cents,
+            fields.due_date,
+            fields.note,
+            fields.created_at,
+          ],
+        },
+        ...outboxStatements([{ table: "loans", uid, kind: "create", fields }]),
+      ]);
+      return readRowId(driver, "loans", uid);
     },
 
     /**
@@ -88,13 +108,16 @@ export function createLoansRepo(driver: DataDriver) {
       return mutex.withLock(`loan:${id}`, async () => {
         const sets: string[] = [];
         const params: unknown[] = [];
+        const changed: Record<string, unknown> = {};
         if (fields.counterparty !== undefined) {
           sets.push("counterparty = ?");
           params.push(fields.counterparty);
+          changed.counterparty = fields.counterparty;
         }
         if (fields.direction !== undefined) {
           sets.push("direction = ?");
           params.push(fields.direction);
+          changed.direction = fields.direction;
         }
         if (fields.amountCents !== undefined) {
           if (fields.amountCents <= 0) {
@@ -109,21 +132,36 @@ export function createLoansRepo(driver: DataDriver) {
           }
           sets.push("amount_cents = ?");
           params.push(fields.amountCents);
+          changed.amount_cents = fields.amountCents;
         }
         if (fields.dueDate !== undefined) {
           sets.push("due_date = ?");
           params.push(fields.dueDate);
+          changed.due_date = fields.dueDate;
         }
         if (fields.note !== undefined) {
           sets.push("note = ?");
           params.push(fields.note);
+          changed.note = fields.note;
         }
         if (sets.length === 0) return;
         params.push(id);
-        await driver.execute(
-          `UPDATE loans SET ${sets.join(", ")} WHERE id = ?`,
-          params,
-        );
+        const uid = await readRowUid(driver, "loans", id);
+        await driver.batch([
+          { sql: `UPDATE loans SET ${sets.join(", ")} WHERE id = ?`, params },
+          ...outboxStatements(
+            uid
+              ? [
+                  {
+                    table: "loans" as const,
+                    uid,
+                    kind: "update",
+                    fields: changed,
+                  },
+                ]
+              : [],
+          ),
+        ]);
       });
     },
 
@@ -141,16 +179,36 @@ export function createLoansRepo(driver: DataDriver) {
           amountCents,
         );
         if (appliedCents === 0) return 0;
-        await driver.execute("UPDATE loans SET repaid_cents = ? WHERE id = ?", [
-          newPaidCents,
-          id,
+        const uid = await readRowUid(driver, "loans", id);
+        await driver.batch([
+          {
+            sql: "UPDATE loans SET repaid_cents = ? WHERE id = ?",
+            params: [newPaidCents, id],
+          },
+          // §6.1: a repayment is an update of exactly the counter it wrote.
+          ...outboxStatements(
+            uid
+              ? [
+                  {
+                    table: "loans" as const,
+                    uid,
+                    kind: "update" as const,
+                    fields: { repaid_cents: newPaidCents },
+                  },
+                ]
+              : [],
+          ),
         ]);
         return appliedCents;
       });
     },
 
     async deleteLoan(id: number): Promise<void> {
-      await driver.execute("DELETE FROM loans WHERE id = ?", [id]);
+      const uid = await readRowUid(driver, "loans", id);
+      await driver.batch([
+        { sql: "DELETE FROM loans WHERE id = ?", params: [id] },
+        ...deleteStatements(uid ? [{ table: "loans", uid }] : []),
+      ]);
     },
 
     /** Loans with their derived state + remaining balance, for list views. */

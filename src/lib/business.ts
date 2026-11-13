@@ -4,11 +4,17 @@
 // job in Receivable with the remaining balance (never negative).
 
 import type { DataDriver } from "../data/driver.ts";
-import { ledgerInsertStatement } from "./budget.ts";
+import { ledgerCreateEntry, ledgerInsertStatement } from "./budget.ts";
 import { addDays, todayLocal } from "./dates.ts";
 import { deleteLinkedEntity } from "./gallery.ts";
 import { applyPayment, formatMMK, outstandingCents } from "./money.ts";
 import { createKeyedMutex } from "./mutex.ts";
+import {
+  deleteStatements,
+  outboxStatements,
+  readRowId,
+  readRowUid,
+} from "./sync/store.ts";
 import type { JobRow, JobStatus, PayableRow, ShopRow } from "./types.ts";
 import { newUid } from "./uid.ts";
 
@@ -120,6 +126,7 @@ export function shopReceivableRows(
   if (loose !== undefined && loose.remaining_cents > 0) {
     rows.push({
       id: 0,
+      uid: null,
       name: "No shop",
       phone: "",
       address: "",
@@ -132,6 +139,7 @@ export function shopReceivableRows(
     if (t.shop_id === null || shops.some((s) => s.id === t.shop_id)) continue;
     rows.push({
       id: t.shop_id,
+      uid: null,
       name: `Deleted shop #${t.shop_id}`,
       phone: "",
       address: "",
@@ -177,17 +185,30 @@ export function createBusinessRepo(driver: DataDriver) {
     },
 
     async createShop(input: ShopInput): Promise<number> {
-      const r = await driver.execute(
-        "INSERT INTO shops (name, phone, address, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-        [
-          input.name,
-          input.phone ?? "",
-          input.address ?? "",
-          input.notes ?? "",
-          todayLocal(),
-        ],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      const fields = {
+        name: input.name,
+        phone: input.phone ?? "",
+        address: input.address ?? "",
+        notes: input.notes ?? "",
+        created_at: created,
+      };
+      await driver.batch([
+        {
+          sql: "INSERT INTO shops (name, phone, address, notes, created_at, uid) VALUES (?, ?, ?, ?, ?, ?)",
+          params: [
+            fields.name,
+            fields.phone,
+            fields.address,
+            fields.notes,
+            fields.created_at,
+            uid,
+          ],
+        },
+        ...outboxStatements([{ table: "shops", uid, kind: "create", fields }]),
+      ]);
+      return readRowId(driver, "shops", uid);
     },
 
     /**
@@ -198,34 +219,70 @@ export function createBusinessRepo(driver: DataDriver) {
     async updateShop(id: number, fields: Partial<ShopInput>): Promise<void> {
       const sets: string[] = [];
       const params: unknown[] = [];
+      const changed: Record<string, unknown> = {};
       if (fields.name !== undefined) {
         sets.push("name = ?");
         params.push(fields.name);
+        changed.name = fields.name;
       }
       if (fields.phone !== undefined) {
         sets.push("phone = ?");
         params.push(fields.phone);
+        changed.phone = fields.phone;
       }
       if (fields.address !== undefined) {
         sets.push("address = ?");
         params.push(fields.address);
+        changed.address = fields.address;
       }
       if (fields.notes !== undefined) {
         sets.push("notes = ?");
         params.push(fields.notes);
+        changed.notes = fields.notes;
       }
       if (sets.length === 0) return;
       params.push(id);
-      await driver.execute(
-        `UPDATE shops SET ${sets.join(", ")} WHERE id = ?`,
-        params,
-      );
+      const uid = await readRowUid(driver, "shops", id);
+      await driver.batch([
+        { sql: `UPDATE shops SET ${sets.join(", ")} WHERE id = ?`, params },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "shops" as const,
+                  uid,
+                  kind: "update",
+                  fields: changed,
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     async deleteShop(id: number): Promise<void> {
       // The FKs have no ON DELETE action: null out references first so the
       // delete never fails, then remove the shop. Jobs/payables keep their
       // data and render as shopless. One batch write (atomic).
+      const uid = await readRowUid(driver, "shops", id);
+      // §5.2/§6.1: the jobs this shop held lose their link in the SAME batch,
+      // so each is a job mutation with its own op — a peer told only about the
+      // delete would keep pointing at a shop that is gone. Same shape
+      // `deleteCollection` uses for the notes it unlinks; `payables` is §2.2
+      // and records nothing.
+      const held = await driver.query<{ uid: string | null }>(
+        "SELECT uid FROM jobs WHERE shop_id = ? ORDER BY id",
+        [id],
+      );
+      const unlinked = held
+        .map((job) => job.uid)
+        .filter((job): job is string => Boolean(job && job.length > 0))
+        .map((job) => ({
+          table: "jobs" as const,
+          uid: job,
+          kind: "update" as const,
+          fields: { shop_uid: null },
+        }));
       await driver.batch([
         {
           sql: "UPDATE jobs SET shop_id = NULL WHERE shop_id = ?",
@@ -236,6 +293,8 @@ export function createBusinessRepo(driver: DataDriver) {
           params: [id],
         },
         { sql: "DELETE FROM shops WHERE id = ?", params: [id] },
+        ...outboxStatements(unlinked),
+        ...deleteStatements(uid ? [{ table: "shops", uid }] : []),
       ]);
     },
 
@@ -244,21 +303,44 @@ export function createBusinessRepo(driver: DataDriver) {
       // Cross-device UID at creation (docs/ANDROID_DESIGN.md, Phase A
       // contract): a job typed on the phone is as sync-ready as one typed on
       // the desktop.
-      const r = await driver.execute(
-        `INSERT INTO jobs (uid, title, shop_id, total_cents, paid_cents, job_date, warranty_days, status, note, created_at)
-         VALUES (?, ?, ?, ?, 0, ?, ?, 'open', ?, ?)`,
-        [
-          newUid(),
-          input.title,
-          input.shopId ?? null,
-          input.totalCents,
-          input.jobDate,
-          input.warrantyDays ?? null,
-          input.note ?? "",
-          todayLocal(),
-        ],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      const shopId = input.shopId ?? null;
+      // The op names the shop by uid (§3.4); a local `shop_id` means a
+      // different shop on the peer.
+      const shopUid =
+        shopId === null
+          ? null
+          : ((await readRowUid(driver, "shops", shopId)) ?? null);
+      const fields = {
+        title: input.title,
+        shop_uid: shopUid,
+        total_cents: input.totalCents,
+        paid_cents: 0,
+        job_date: input.jobDate,
+        warranty_days: input.warrantyDays ?? null,
+        status: "open",
+        note: input.note ?? "",
+        created_at: created,
+      };
+      await driver.batch([
+        {
+          sql: `INSERT INTO jobs (uid, title, shop_id, total_cents, paid_cents, job_date, warranty_days, status, note, created_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?, 'open', ?, ?)`,
+          params: [
+            uid,
+            fields.title,
+            shopId,
+            fields.total_cents,
+            fields.job_date,
+            fields.warranty_days,
+            fields.note,
+            fields.created_at,
+          ],
+        },
+        ...outboxStatements([{ table: "jobs", uid, kind: "create", fields }]),
+      ]);
+      return readRowId(driver, "jobs", uid);
     },
 
     async getJob(id: number): Promise<JobRow | undefined> {
@@ -294,25 +376,34 @@ export function createBusinessRepo(driver: DataDriver) {
       return mutex.withLock(`job:${id}`, async () => {
         const sets: string[] = [];
         const params: unknown[] = [];
+        const changed: Record<string, unknown> = {};
         if (fields.title !== undefined) {
           sets.push("title = ?");
           params.push(fields.title);
+          changed.title = fields.title;
         }
         if (fields.shopId !== undefined) {
           sets.push("shop_id = ?");
           params.push(fields.shopId);
+          changed.shop_uid =
+            fields.shopId === null
+              ? null
+              : ((await readRowUid(driver, "shops", fields.shopId)) ?? null);
         }
         if (fields.warrantyDays !== undefined) {
           sets.push("warranty_days = ?");
           params.push(fields.warrantyDays);
+          changed.warranty_days = fields.warrantyDays;
         }
         if (fields.jobDate !== undefined) {
           sets.push("job_date = ?");
           params.push(fields.jobDate);
+          changed.job_date = fields.jobDate;
         }
         if (fields.note !== undefined) {
           sets.push("note = ?");
           params.push(fields.note);
+          changed.note = fields.note;
         }
         if (fields.totalCents !== undefined) {
           if (fields.totalCents <= 0) {
@@ -325,18 +416,33 @@ export function createBusinessRepo(driver: DataDriver) {
               `This job has already been paid ${formatMMK(job.paid_cents)}, so its total cannot be lowered below that.`,
             );
           }
+          const status = job.paid_cents >= fields.totalCents ? "paid" : "open";
           sets.push("total_cents = ?");
           params.push(fields.totalCents);
           // Keep the stored status in step with the new total.
           sets.push("status = ?");
-          params.push(job.paid_cents >= fields.totalCents ? "paid" : "open");
+          params.push(status);
+          changed.total_cents = fields.totalCents;
+          changed.status = status;
         }
         if (sets.length === 0) return;
         params.push(id);
-        await driver.execute(
-          `UPDATE jobs SET ${sets.join(", ")} WHERE id = ?`,
-          params,
-        );
+        const uid = await readRowUid(driver, "jobs", id);
+        await driver.batch([
+          { sql: `UPDATE jobs SET ${sets.join(", ")} WHERE id = ?`, params },
+          ...outboxStatements(
+            uid
+              ? [
+                  {
+                    table: "jobs" as const,
+                    uid,
+                    kind: "update",
+                    fields: changed,
+                  },
+                ]
+              : [],
+          ),
+        ]);
       });
     },
 
@@ -359,9 +465,13 @@ export function createBusinessRepo(driver: DataDriver) {
       // without it a delete landing between the payment's `getJob` read and
       // its batch removes the job first — the UPDATE then affects 0 rows
       // silently while the INSERT still books a phantom income entry.
-      return mutex.withLock(`job:${id}`, () =>
-        driver.batch(deleteLinkedEntity("job", id)),
-      );
+      return mutex.withLock(`job:${id}`, async () => {
+        const uid = await readRowUid(driver, "jobs", id);
+        await driver.batch([
+          ...deleteLinkedEntity("job", id),
+          ...deleteStatements(uid ? [{ table: "jobs", uid }] : []),
+        ]);
+      });
     },
 
     async listJobs(status?: JobStatus): Promise<JobRow[]> {
@@ -483,24 +593,43 @@ export function createBusinessRepo(driver: DataDriver) {
         // Nothing to apply (e.g. a duplicate submit for an already-paid
         // job): skip the write entirely — no 0-cent income entry.
         if (appliedCents === 0) return { fullyPaid, appliedCents: 0 };
-        const statements = [
+        const status = fullyPaid ? "paid" : "open";
+        // Cash basis: the receipt is income now, in the wallet it
+        // arrived in — whether or not the job is fully paid. The entry is a
+        // synced row like any other, so it records its own create (§6.1).
+        const entry = {
+          amountCents: appliedCents,
+          categoryId: await this.businessCategoryId(),
+          walletId: p.walletId,
+          entryDate: p.date,
+          note: `Job: ${job.title}`,
+          uid: newUid(),
+          createdAt: todayLocal(),
+        };
+        const jobUid =
+          typeof job.uid === "string" && job.uid.length > 0 ? job.uid : null;
+        await driver.batch([
           {
             sql: "UPDATE jobs SET paid_cents = ?, status = ? WHERE id = ?",
-            params: [newPaidCents, fullyPaid ? "paid" : "open", p.jobId],
+            params: [newPaidCents, status, p.jobId],
           },
-        ];
-        // Cash basis: the receipt is income now, in the wallet it
-        // arrived in — whether or not the job is fully paid.
-        statements.push(
-          ledgerInsertStatement("income", {
-            amountCents: appliedCents,
-            categoryId: await this.businessCategoryId(),
-            walletId: p.walletId,
-            entryDate: p.date,
-            note: `Job: ${job.title}`,
-          }),
-        );
-        await driver.batch(statements);
+          ledgerInsertStatement("income", entry),
+          // §6.1: the payment is a job update of exactly the fields it wrote,
+          // and the income row is a create. One batch, both records.
+          ...outboxStatements([
+            ...(jobUid
+              ? [
+                  {
+                    table: "jobs" as const,
+                    uid: jobUid,
+                    kind: "update" as const,
+                    fields: { paid_cents: newPaidCents, status },
+                  },
+                ]
+              : []),
+            await ledgerCreateEntry(driver, "income", entry),
+          ]),
+        ]);
         return { fullyPaid, appliedCents };
       });
     },
@@ -626,18 +755,26 @@ export function createBusinessRepo(driver: DataDriver) {
         const payable = rows[0];
         if (!payable) throw new Error(`payable ${p.payableId} not found`);
         if (payable.paid === 1) return;
+        // The payable itself is §2.2 and records nothing; the expense entry it
+        // books is a synced row, so that row's create records (§6.1).
+        const entry = {
+          amountCents: payable.amount_cents,
+          categoryId: p.categoryId,
+          walletId: p.walletId,
+          entryDate: p.date,
+          note: payable.title,
+          uid: newUid(),
+          createdAt: todayLocal(),
+        };
         await driver.batch([
           {
             sql: "UPDATE payables SET paid = 1 WHERE id = ?",
             params: [p.payableId],
           },
-          ledgerInsertStatement("expense", {
-            amountCents: payable.amount_cents,
-            categoryId: p.categoryId,
-            walletId: p.walletId,
-            entryDate: p.date,
-            note: payable.title,
-          }),
+          ledgerInsertStatement("expense", entry),
+          ...outboxStatements([
+            await ledgerCreateEntry(driver, "expense", entry),
+          ]),
         ]);
       });
     },

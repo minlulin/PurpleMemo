@@ -20,7 +20,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { DataDriver } from "../../data/driver.ts";
 import { createBudgetRepo } from "../budget.ts";
+import { createBusinessRepo } from "../business.ts";
 import { createHabitsRepo } from "../habits.ts";
+import { createLoansRepo } from "../loans.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createShoppingRepo } from "../shopping.ts";
 import { createTasksRepo } from "../tasks.ts";
@@ -417,6 +419,219 @@ test("an expense entry records create, update and delete, parents named by uid",
     ).length,
     1,
     "the delete leaves a tombstone (§5.1)",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 Session 2 — Business and Loans record; payables never do.
+// ---------------------------------------------------------------------------
+
+test("a job create names its shop by uid, and a shop's delete unlinks its jobs", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const business = createBusinessRepo(driver);
+
+  const shopId = await business.createShop({ name: "Alpha", phone: "09" });
+  const shop = await assertRecorded(store, "shops", shopId, "create");
+  assert.equal(shop.op.payload.name, "Alpha");
+  assert.equal(shop.op.payload.phone, "09");
+
+  await business.updateShop(shopId, { notes: "weekly" });
+  assert.deepEqual((await opsFor(driver, "shops")).at(-1)?.payload, {
+    notes: "weekly",
+  });
+
+  const jobId = await business.createJob({
+    title: "Fix roof",
+    shopId,
+    totalCents: 100_000,
+    jobDate: "2026-11-13",
+  });
+  const job = await assertRecorded(store, "jobs", jobId, "create");
+  assert.equal(
+    job.op.payload.shop_uid,
+    shop.uid,
+    "the job names its shop by uid (§3.4), never a local row number",
+  );
+  assert.equal(job.op.payload.total_cents, 100_000);
+  assert.equal(job.op.payload.paid_cents, 0);
+  assert.equal(job.op.payload.status, "open");
+
+  await business.deleteShop(shopId);
+  assert.equal(count(db, "SELECT count(*) AS n FROM shops"), 0);
+  const jobLink = (await opsFor(driver, "jobs")).at(-1);
+  assert.equal(
+    jobLink?.op,
+    "update",
+    "the unlinked job is its own mutation, recorded in the same batch (§6.1)",
+  );
+  assert.equal(jobLink?.entity_uid, job.uid);
+  assert.deepEqual(jobLink?.payload, { shop_uid: null });
+  const shopDelete = (await opsFor(driver, "shops")).at(-1);
+  assert.equal(shopDelete?.op, "delete");
+  assert.equal(
+    (await readTombstones(driver)).filter((row) => row.entity_table === "shops")
+      .length,
+    1,
+    "only the shop is tombstoned — the job was unlinked, not deleted",
+  );
+});
+
+test("a job update and delete record, and the delete tombstones the uid", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const business = createBusinessRepo(driver);
+  const jobId = await business.createJob({
+    title: "Fix roof",
+    totalCents: 100_000,
+    jobDate: "2026-11-13",
+  });
+  const created = await assertRecorded(store, "jobs", jobId, "create");
+
+  await business.updateJob(jobId, { title: "Fix roof, again" });
+  assert.deepEqual((await opsFor(driver, "jobs")).at(-1)?.payload, {
+    title: "Fix roof, again",
+  });
+
+  await business.deleteJob(jobId);
+  assert.equal(count(db, "SELECT count(*) AS n FROM jobs"), 0);
+  const deleted = (await opsFor(driver, "jobs")).at(-1);
+  assert.equal(deleted?.op, "delete");
+  assert.equal(deleted?.entity_uid, created.uid);
+  assert.equal(
+    (await readTombstones(driver)).filter((row) => row.entity_table === "jobs")
+      .length,
+    1,
+  );
+});
+
+test("a job payment records exactly the payment's fields, and books its income", async () => {
+  const store = openStore();
+  const { driver } = store;
+  const budget = createBudgetRepo(driver);
+  const business = createBusinessRepo(driver);
+  const categoryId = await budget.createIncomeCategory("Business");
+  const walletId = await budget.createWallet("Cash");
+  const jobId = await business.createJob({
+    title: "Fix roof",
+    totalCents: 100_000,
+    jobDate: "2026-11-13",
+  });
+
+  const result = await business.recordJobPayment({
+    jobId,
+    amountCents: 40_000,
+    walletId,
+    date: "2026-11-13",
+  });
+  assert.deepEqual(result, { fullyPaid: false, appliedCents: 40_000 });
+
+  const payment = (await opsFor(driver, "jobs")).at(-1);
+  assert.equal(payment?.op, "update");
+  assert.deepEqual(
+    payment?.payload,
+    { paid_cents: 40_000, status: "open" },
+    "only the fields the payment wrote (§6.1)",
+  );
+
+  const entries = await opsFor(driver, "income_entries");
+  assert.equal(entries.length, 1, "the receipt is a synced row, so it records");
+  assert.equal(entries[0]?.op, "create");
+  assert.equal(entries[0]?.payload.amount_cents, 40_000);
+  assert.equal(entries[0]?.payload.note, "Job: Fix roof");
+  assert.equal(
+    entries[0]?.payload.category_uid,
+    uidOf(store.db, "income_categories", categoryId),
+  );
+  assert.equal(
+    entries[0]?.payload.wallet_uid,
+    uidOf(store.db, "wallets", walletId),
+  );
+});
+
+test("a loan create, edit, repayment and delete each record one op", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const loans = createLoansRepo(driver);
+
+  const loanId = await loans.createLoan({
+    counterparty: "U Kyaw",
+    direction: "lent",
+    amountCents: 100_000,
+    dueDate: "2026-12-01",
+  });
+  const created = await assertRecorded(store, "loans", loanId, "create");
+  assert.equal(created.op.payload.counterparty, "U Kyaw");
+  assert.equal(created.op.payload.repaid_cents, 0);
+
+  await loans.updateLoan(loanId, { note: "called" });
+  assert.deepEqual((await opsFor(driver, "loans")).at(-1)?.payload, {
+    note: "called",
+  });
+
+  assert.equal(await loans.recordRepayment(loanId, 25_000), 25_000);
+  const repaid = (await opsFor(driver, "loans")).at(-1);
+  assert.equal(repaid?.op, "update");
+  assert.deepEqual(
+    repaid?.payload,
+    { repaid_cents: 25_000 },
+    "a repayment is exactly the counter it wrote (§6.1)",
+  );
+
+  await loans.deleteLoan(loanId);
+  assert.equal(count(db, "SELECT count(*) AS n FROM loans"), 0);
+  const deleted = (await opsFor(driver, "loans")).at(-1);
+  assert.equal(deleted?.op, "delete");
+  assert.equal(deleted?.entity_uid, created.uid);
+  assert.equal(
+    (await readTombstones(driver)).filter((row) => row.entity_table === "loans")
+      .length,
+    1,
+  );
+});
+
+test("a payable records nothing — but the expense it books does", async () => {
+  const store = openStore();
+  const { db, driver } = store;
+  const budget = createBudgetRepo(driver);
+  const business = createBusinessRepo(driver);
+  const categoryId = await budget.createExpenseCategory("Supplies");
+  const walletId = await budget.createWallet("Cash");
+  const before = await readState(driver);
+
+  const payableId = await business.createPayable({
+    title: "Cement",
+    amountCents: 7_000,
+    dueDate: "2026-12-01",
+  });
+  await business.updatePayable(payableId, { note: "urgent" });
+  assert.equal(count(db, "SELECT count(*) AS n FROM payables"), 1);
+  const afterWrites = await readState(driver);
+  assert.equal(
+    afterWrites.lamport,
+    before.lamport,
+    "§2.2: a payable never records, so it never spends a Lamport step",
+  );
+  assert.equal(
+    (await readOutbox(driver)).filter((row) => row.entity_table === "payables")
+      .length,
+    0,
+  );
+
+  await business.markPayablePaid({
+    payableId,
+    walletId,
+    categoryId,
+    date: "2026-11-13",
+  });
+  const entries = await opsFor(driver, "expense_entries");
+  assert.equal(entries.length, 1, "the expense entry it books is a synced row");
+  assert.equal(entries[0]?.payload.note, "Cement");
+  assert.equal(
+    (await readOutbox(driver)).filter((row) => row.entity_table === "payables")
+      .length,
+    0,
+    "and the payable itself still records nothing",
   );
 });
 

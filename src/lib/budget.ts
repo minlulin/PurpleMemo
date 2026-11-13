@@ -9,6 +9,7 @@ import { advanceDate, monthRange, todayLocal, yearRange } from "./dates.ts";
 import { createKeyedMutex } from "./mutex.ts";
 import {
   deleteStatements,
+  type OutboxEntry,
   outboxStatements,
   readRowId,
   readRowUid,
@@ -119,6 +120,39 @@ async function parentUid(
   id: number,
 ): Promise<string | null> {
   return (await readRowUid(driver, table, id)) ?? null;
+}
+
+/**
+ * The create op a ledger row implies (§6.1), for EVERY path that books money:
+ * this file's own entry forms, a job's payment, a payable's payment.
+ *
+ * Shared rather than re-spelled so the op's field list cannot drift from
+ * `ledgerInsertStatement`'s column list — the two are one fact written twice,
+ * once for the row and once for the wire — and so a parent is always named by
+ * uid (§3.4), whichever caller booked the entry.
+ */
+export async function ledgerCreateEntry(
+  driver: DataDriver,
+  kind: LedgerKind,
+  entry: EntryInput & { uid: string; createdAt: string },
+): Promise<OutboxEntry> {
+  return {
+    table: ledgerTable(kind),
+    uid: entry.uid,
+    kind: "create",
+    fields: {
+      amount_cents: entry.amountCents,
+      category_uid: await parentUid(
+        driver,
+        categoryTable(kind),
+        entry.categoryId,
+      ),
+      wallet_uid: await parentUid(driver, "wallets", entry.walletId),
+      entry_date: entry.entryDate,
+      note: entry.note ?? "",
+      created_at: entry.createdAt,
+    },
+  };
 }
 
 /**
@@ -432,32 +466,10 @@ export function createBudgetRepo(driver: DataDriver) {
     const table = ledgerTable(kind);
     const uid = newUid();
     const created = todayLocal();
-    const stmt = ledgerInsertStatement(kind, {
-      ...input,
-      uid,
-      createdAt: created,
-    });
+    const row = { ...input, uid, createdAt: created };
     await driver.batch([
-      stmt,
-      ...outboxStatements([
-        {
-          table,
-          uid,
-          kind: "create",
-          fields: {
-            amount_cents: input.amountCents,
-            category_uid: await parentUid(
-              driver,
-              categoryTable(kind),
-              input.categoryId,
-            ),
-            wallet_uid: await parentUid(driver, "wallets", input.walletId),
-            entry_date: input.entryDate,
-            note: input.note ?? "",
-            created_at: created,
-          },
-        },
-      ]),
+      ledgerInsertStatement(kind, row),
+      ...outboxStatements([await ledgerCreateEntry(driver, kind, row)]),
     ]);
     return readRowId(driver, table, uid);
   };

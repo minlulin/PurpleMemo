@@ -105,6 +105,8 @@ export interface RecurringPaymentRow {
 
 export interface ShopRow {
   id: number;
+  /** Cross-device identity (§1.1); NULL only on a pre-v7 row. */
+  uid: string | null;
   name: string;
   phone: string;
   address: string;
@@ -116,6 +118,8 @@ export type JobStatus = "open" | "paid";
 
 export interface JobRow {
   id: number;
+  /** Cross-device identity (§1.1); NULL only on a pre-v7 row. */
+  uid: string | null;
   title: string;
   shop_id: number | null;
   total_cents: number;
@@ -143,6 +147,8 @@ export type LoanState = "open" | "partial" | "overdue" | "closed";
 
 export interface LoanRow {
   id: number;
+  /** Cross-device identity (§1.1); NULL only on a pre-v7 row. */
+  uid: string | null;
   counterparty: string;
   direction: LoanDirection;
   amount_cents: number;

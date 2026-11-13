@@ -150,6 +150,53 @@ CREATE TABLE expense_entries (
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+-- Business and Loans (§12.2): shops is desktop-owned, jobs and loans are
+-- create-only, and payables is §2.2 — declared so the recording and engine
+-- tests can write every one of them.
+CREATE TABLE shops (
+  id INTEGER PRIMARY KEY,
+  uid TEXT,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
+  address TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE jobs (
+  id INTEGER PRIMARY KEY,
+  uid TEXT,
+  title TEXT NOT NULL,
+  shop_id INTEGER REFERENCES shops(id),
+  total_cents INTEGER NOT NULL CHECK (total_cents > 0),
+  paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (paid_cents >= 0),
+  job_date TEXT NOT NULL,
+  warranty_days INTEGER,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paid')),
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE payables (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  shop_id INTEGER REFERENCES shops(id),
+  due_date TEXT,
+  paid INTEGER NOT NULL DEFAULT 0 CHECK (paid IN (0, 1)),
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE loans (
+  id INTEGER PRIMARY KEY,
+  uid TEXT,
+  counterparty TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('lent', 'borrowed')),
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  repaid_cents INTEGER NOT NULL DEFAULT 0 CHECK (repaid_cents >= 0),
+  due_date TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
 -- Budget's two desktop-only tables (§2.2): declared so the recording boundary
 -- test can write them and prove they record nothing.
 CREATE TABLE expense_limits (
@@ -208,6 +255,9 @@ CREATE UNIQUE INDEX idx_shopping_items_uid ON shopping_items(uid);
 CREATE UNIQUE INDEX idx_habits_uid ON habits(uid);
 CREATE UNIQUE INDEX idx_habit_logs_uid ON habit_logs(uid);
 CREATE UNIQUE INDEX idx_wallets_uid ON wallets(uid);
+CREATE UNIQUE INDEX idx_shops_uid ON shops(uid);
+CREATE UNIQUE INDEX idx_jobs_uid ON jobs(uid);
+CREATE UNIQUE INDEX idx_loans_uid ON loans(uid);
 CREATE UNIQUE INDEX idx_income_categories_uid ON income_categories(uid);
 CREATE UNIQUE INDEX idx_income_entries_uid ON income_entries(uid);
 CREATE UNIQUE INDEX idx_expense_categories_uid ON expense_categories(uid);
