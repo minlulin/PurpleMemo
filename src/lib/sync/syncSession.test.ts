@@ -10,9 +10,10 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createBudgetRepo } from "../budget.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
-import { ackStatements, readOutbox } from "./store.ts";
+import { ackStatements, readOutbox, readState } from "./store.ts";
 import { runSync } from "./syncSession.ts";
 import {
   countRows as count,
@@ -192,6 +193,74 @@ test("an operation for a Stage 3 table stays home", async () => {
       ["vault_items"],
     ),
     0,
+  );
+});
+
+test("a phone's expense entry syncs and its Vault-shaped op stays home", async () => {
+  const { phone, desktop } = await pair();
+  // Budget's parents are desktop-owned, so they arrive before the entry can.
+  const onDesktop = createBudgetRepo(desktop.driver);
+  await onDesktop.createWallet("Cash");
+  await onDesktop.createExpenseCategory("Food");
+  const opening = ferry(phone, desktop);
+  const opened = await runSync(phone.driver, opening.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(opened.confirmed, true);
+
+  const [wallet] = await phone.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Cash'",
+  );
+  const [category] = await phone.driver.query<{ id: number }>(
+    "SELECT id FROM expense_categories WHERE name = 'Food'",
+  );
+  assert.ok(wallet && category, "the phone holds the wallet and category");
+  await createBudgetRepo(phone.driver).createExpenseEntry({
+    amountCents: 2_500,
+    categoryId: category.id,
+    walletId: wallet.id,
+    entryDate: "2026-11-13",
+    note: "taxi",
+  });
+
+  // A Stage 3 op, written the way its future writer will: §6.1's shape.
+  const state = await readState(phone.driver);
+  const vaultSeq = state.lastSeq + 1;
+  await phone.driver.execute(
+    `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+     VALUES (?, ?, 'op-vault', 'vault_items', '99999999-9999-4999-8999-999999999999', 'create', 0, ?, '{}', '{"title": "ciphertext"}', '2026-11-13T00:00:00.000Z')`,
+    [PHONE, vaultSeq, state.lamport],
+  );
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.confirmed, true);
+  assert.equal(outcome.pushed, 1, "the entry travels; the Vault op does not");
+  assert.deepEqual(
+    wire.pushed.map((op) => op.entity_table),
+    ["expense_entries"],
+  );
+
+  const [entry] = await desktop.driver.query<{
+    amount_cents: number;
+    note: string;
+    wallet_id: number;
+  }>("SELECT * FROM expense_entries");
+  assert.ok(entry, "the desktop holds the phone's entry");
+  assert.equal(entry.amount_cents, 2_500);
+  assert.equal(entry.note, "taxi");
+  assert.equal(
+    await count(desktop, "SELECT count(*) AS n FROM wallets"),
+    1,
+    "and it resolved the parent it already held, not a second one",
+  );
+
+  assert.deepEqual(
+    (await readOutbox(phone.driver)).map((row) => row.entity_table),
+    ["vault_items"],
+    "the Vault op is still pending for Stage 3",
   );
 });
 

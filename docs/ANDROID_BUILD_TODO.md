@@ -783,6 +783,47 @@ longer holds the phase open.
   filter rule is §13.1 Option A as built (spec §13.1 now records the build),
   and the suite reports no skipped test.
 - [ ] Stage 2: Budget append-only entries + Business/Loans create-only
+  **Budget half BUILT 2026-11-13 (Stage 2, Session 1).** Recording reaches
+  Budget's five §2.1 tables — `wallets`, `income_categories`,
+  `expense_categories`, `income_entries`, `expense_entries` — on the Stage 1
+  pattern: the mutation, its op, its `sync_row_stamps` entry and (for a
+  delete) its tombstone commit in ONE `driver.batch` (§6.1). Every create mints
+  its uid before the row exists, and an entry payload names its parents by uid
+  (`wallet_uid`, `category_uid`), never by a local row number (§3.4). Every
+  mutator on those tables records, not only the ones the session listed: a
+  rename is an update op, `convertEntry` records the delete of the old uid and
+  the create of the replacement under a new one, and `markRecurringPaid`
+  records one create per occurrence it books. The §2.2 tables in the same file
+  — `expense_limits`, `recurring_payments`, `payables` — still record nothing
+  and spend no Lamport step, and the recording test now pins THAT boundary
+  (§2.2) instead of the old "Budget records nothing" case.
+  **Apply half BUILT 2026-11-13 (Stage 2, Session 1).** The movable set lives in
+  one place, `UNLOCKED_TABLES` (`lib/sync/engine.ts`): Stage 1's eight plus
+  Budget's five. The engine's stage gate and `syncSession.ts`'s sender filter
+  both read it, so a table can never travel to a peer that would refuse it;
+  `vault_items` and the Business/Loans tables wait for their own stage. §2.3
+  does the authority work with no table-specific branch — a mobile-origin
+  wallet or category create is refused, a mobile-origin entry edit or delete is
+  refused, and the same edit with desktop origin applies. One addition to the
+  insert path (§7.2): a create whose uid — or, for a natural-key table
+  (`NATURAL_KEYS`), whose `name` — is already held here writes nothing, so a
+  same-name race can no longer abort a batch on a unique index.
+  **Known gap, recorded not solved:** that no-op drops the peer's uid and keeps
+  this device's row, so a later entry naming the un-adopted parent cannot
+  resolve its FK (`category_id NOT NULL`) and refuses the batch. §8.4's fold is
+  the mechanism that adopts the identity instead; this session's brief asked
+  for the no-op.
+  **Item stays unchecked:** `shops`, `jobs` and `loans` (create-only, with the
+  F3 aggregate-counter rule for `paid_cents` / `repaid_cents`) are Session 2.
+  Tests: 3 new TS in `lib/sync/recording.test.ts` (wallet and both category
+  creates plus a rename; an expense entry's create/update/delete with uid-named
+  parents; the §2.2 boundary), 5 new engine tests over two real SQLite stores
+  (a phone entry landing with both parents resolved, desktop wallet/category
+  reaching the phone, a refused mobile wallet create, a refused mobile entry
+  edit beside the desktop's applied one, and a duplicate-name create as a
+  no-op) with the old Stage 2 refusal case now aimed at `vault_items`, and 1
+  new session test (a phone entry crosses while a Vault-shaped op stays in its
+  outbox) beside the rewritten Stage 3 case.
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
 - [ ] Backup payload rules: device-local state excluded; restore bumps
   generation and forces re-pair
