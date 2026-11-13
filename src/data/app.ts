@@ -2,6 +2,7 @@
 // wired into the per-domain repositories. Pages import the repos from here —
 // they never touch the driver or Tauri IPC directly.
 
+import { isAndroidPlatform } from "../lib/android-reminders.ts";
 import { createBackupRepo } from "../lib/backup.ts";
 import { createBudgetRepo } from "../lib/budget.ts";
 import { createBusinessRepo } from "../lib/business.ts";
@@ -25,6 +26,7 @@ import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
 import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
+import type { Origin } from "../lib/sync/protocol.ts";
 import { readOwnDeviceId } from "../lib/sync/reminderDelivery.ts";
 import { createSyncRepo } from "../lib/sync/syncSession.ts";
 import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
@@ -35,7 +37,17 @@ import { createTauriDriver } from "./driver.ts";
 
 const driver = createTauriDriver();
 
-export const trashRepo = createTrashRepo(driver);
+/**
+ * This installation's own side of a pairing (§2.3): the APK is the phone, and
+ * both desktop builds are the desktop.
+ *
+ * Resolved ONCE, here, where the repositories are built — no library guesses
+ * it. The Trash needs it because a restore records a create op, and a create
+ * is only recordable from an origin §2.3 allows to write that table.
+ */
+const DEVICE_ORIGIN: Origin = isAndroidPlatform() ? "mobile" : "desktop";
+
+export const trashRepo = createTrashRepo(driver, DEVICE_ORIGIN);
 export const inboxRepo = createInboxRepo(driver);
 export const notesRepo = createNotesRepo(driver, trashRepo);
 export const journalRepo = createJournalRepo(driver, trashRepo);

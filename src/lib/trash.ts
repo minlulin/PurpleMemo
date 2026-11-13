@@ -6,7 +6,12 @@ import {
   LINKABLE_TYPES,
 } from "./entityLinks.ts";
 import { createKeyedMutex } from "./mutex.ts";
-import { isSyncTable, type SyncTable } from "./sync/protocol.ts";
+import {
+  isSyncTable,
+  type Origin,
+  type SyncTable,
+  writeAllowed,
+} from "./sync/protocol.ts";
 import { LOCAL_FOREIGN_KEYS, outboxStatements } from "./sync/store.ts";
 import type {
   LinkRow,
@@ -516,7 +521,32 @@ function insertStatement(
   };
 }
 
-export function createTrashRepo(driver: DataDriver) {
+/**
+ * §2.3's rule for the op a restore implies.
+ *
+ * A restore is a create BY THIS DEVICE — the row comes back under its old uid
+ * with this device's own fresh stamp — so it may record only where this
+ * device's origin may create on that table. A refusal does not refuse the
+ * restore: the row returns locally either way, it simply records nothing,
+ * because the peer would refuse the op and the batch carrying it would fail
+ * whole (§7.7). Notes, Tasks and both Shopping tables are two-way, so today
+ * every Trash type records from either device; the rule is what keeps that
+ * true if a desktop-owned table ever becomes trashable.
+ */
+export function restoreOpAllowed(table: SyncTable, origin: Origin): boolean {
+  return writeAllowed(table, "create", origin).allowed;
+}
+
+/**
+ * `origin` is this device's side of a pairing (§2.3), supplied by the caller —
+ * `data/app.ts` resolves it from the platform once, at composition. The
+ * default is the desktop's because the Trash is a desktop surface (the phone
+ * has none), so a library default and a test fixture describe the same device.
+ */
+export function createTrashRepo(
+  driver: DataDriver,
+  origin: Origin = "desktop",
+) {
   // One repository-level mutex for the whole trash lifecycle (J3). Every
   // multi-await mutation shares the key "trash" because they share
   // invariants, not rows: `App.tsx` fires a detached `purge()` the moment
@@ -653,6 +683,10 @@ export function createTrashRepo(driver: DataDriver) {
   ): Promise<BatchStatement[]> {
     const table = TABLES[type];
     if (!isSyncTable(table)) return [];
+    // §2.3: only an origin allowed to create on this table may record the
+    // resurrection. The restore itself is unaffected — this returns no
+    // statements, and the row is already in the caller's batch.
+    if (!restoreOpAllowed(table, origin)) return [];
     const uid = restored.uid;
     if (typeof uid !== "string" || uid.length === 0) return [];
     const foreignKeys = LOCAL_FOREIGN_KEYS[table as SyncTable] ?? {};

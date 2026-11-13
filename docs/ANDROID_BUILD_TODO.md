@@ -782,7 +782,7 @@ longer holds the phase open.
   with 0 skipped. **STAGE 1 EXIT:** the four sessions are recorded above, the
   filter rule is §13.1 Option A as built (spec §13.1 now records the build),
   and the suite reports no skipped test.
-- [ ] Stage 2: Budget append-only entries + Business/Loans create-only
+- [x] Stage 2: Budget append-only entries + Business/Loans create-only
   **Budget half BUILT 2026-11-13 (Stage 2, Session 1).** Recording reaches
   Budget's five §2.1 tables — `wallets`, `income_categories`,
   `expense_categories`, `income_entries`, `expense_entries` — on the Stage 1
@@ -813,8 +813,41 @@ longer holds the phase open.
   resolve its FK (`category_id NOT NULL`) and refuses the batch. §8.4's fold is
   the mechanism that adopts the identity instead; this session's brief asked
   for the no-op.
-  **Item stays unchecked:** `shops`, `jobs` and `loans` (create-only, with the
-  F3 aggregate-counter rule for `paid_cents` / `repaid_cents`) are Session 2.
+  **Business/Loans half BUILT 2026-11-13 (Stage 2, Session 2).** Recording
+  reaches `shops`, `jobs` and `loans` on the same pattern, and a job's payload
+  names its shop by uid (`shop_uid`), never a row number. Every mutator records,
+  not only the ones the brief listed: a rename is an update op, `deleteShop`
+  unlinks each of its jobs with its OWN `jobs` update op (`shop_uid: null`) and
+  tombstones only the shop, and `deleteJob` / `deleteLoan` tombstone their uid.
+  The payment paths record exactly the fields they change — `recordJobPayment`
+  one `jobs` update of `{paid_cents, status}` and `recordRepayment` one `loans`
+  update of `{repaid_cents}` — and the income/expense row a payment books is a
+  synced row, so it records its own create in the same batch (§6.1) through one
+  shared `ledgerCreateEntry` in `lib/budget.ts`. `payables` still records
+  nothing and spends no Lamport step (§2.2); `markPayablePaid`'s expense entry
+  records, the payable does not. `ShopRow`, `JobRow` and `LoanRow` now type the
+  `uid` column the schema has carried since v7.
+  **Apply half, Session 2:** `UNLOCKED_TABLES` is sixteen of the seventeen —
+  `shops`, `jobs` and `loans` joined it and `vault_items` alone is still
+  refused. §2.3's authority needed no table-specific branch: `shops` is
+  desktop-owned, so a mobile-origin shop op is refused; `jobs` and `loans` are
+  create-only, so a mobile-origin edit or delete is refused and a desktop one
+  applies; and a desktop payment reaches the phone as the two ops it always
+  was, so `paid_cents` and its receipt arrive together. `paid_cents` /
+  `repaid_cents` travel as ordinary update ops carrying the full new counter —
+  F3's aggregate rule has nothing to fold while the phone may not write them,
+  which is the create-only rule itself.
+  **Trash restore authority BUILT 2026-11-13 (Stage 2, Session 2).**
+  `restoreOpStatements` records a resurrection only where
+  `restoreOpAllowed(table, origin)` — i.e. §2.3's `writeAllowed(table,
+  "create", origin)` — allows it; `createTrashRepo` takes that `origin` as a
+  parameter, and `data/app.ts` resolves it ONCE, at composition, from
+  `isAndroidPlatform()`. No library guesses the origin. A refusal does not
+  refuse the restore: the row returns locally either way and simply records
+  nothing, so no batch can carry an op the peer would refuse. Today no Trash
+  type is desktop-owned (Notes, Tasks and both Shopping tables are two-way) and
+  the phone has no Trash screen at all, so the guard is inert — it is the rule,
+  not a behaviour, that is pinned.
   Tests: 3 new TS in `lib/sync/recording.test.ts` (wallet and both category
   creates plus a rename; an expense entry's create/update/delete with uid-named
   parents; the §2.2 boundary), 5 new engine tests over two real SQLite stores
@@ -823,7 +856,26 @@ longer holds the phase open.
   edit beside the desktop's applied one, and a duplicate-name create as a
   no-op) with the old Stage 2 refusal case now aimed at `vault_items`, and 1
   new session test (a phone entry crosses while a Vault-shaped op stays in its
-  outbox) beside the rewritten Stage 3 case.
+  outbox) beside the rewritten Stage 3 case. Session 2 adds 5 TS in
+  `lib/sync/recording.test.ts` (a job create naming its shop by uid beside a
+  shop's delete unlinking it; a job's update and delete with its tombstone; a
+  payment writing `{paid_cents, status}` and booking its recorded receipt; a
+  loan's create, edit, repayment and delete; a payable recording nothing while
+  its expense entry does), 5 engine tests over two real SQLite stores (a
+  phone's job landing with its shop resolved by uid and stamps agreeing,
+  desktop shop → phone, a desktop payment reaching the phone with its receipt
+  and both parents resolved, a refused mobile job edit, a phone loan, and a
+  desktop shop reaching the phone beside a refused mobile shop op), 1 session test
+  (a phone's job crosses while a Vault-shaped op stays home), and 1 Trash test
+  (`lib/sync/conflictTrash.test.ts`: a restore from either origin records one
+  `create` and restores the uid either way, with the refusal rule pinned on
+  `restoreOpAllowed` for the tables Trash cannot hold). Suite: 1122 TS, 308
+  Rust, 0 skipped.
+  **STAGE 2 EXIT:** the three sessions are recorded above; every §2.1 table
+  records, every §2.2 table does not, sixteen of the seventeen synced tables
+  move through the one gate, and §2.3's authority is enforced by the protocol
+  alone — the phone cannot write what the desktop owns, and a restore records
+  only what this device could have written.
 - [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
 - [ ] Backup payload rules: device-local state excluded; restore bumps
   generation and forces re-pair

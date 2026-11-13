@@ -18,8 +18,13 @@ import type {
   ExecuteOutcome,
   Queryable,
 } from "../../data/driver.ts";
-import { createTrashRepo, type TrashListItem } from "../trash.ts";
+import {
+  createTrashRepo,
+  restoreOpAllowed,
+  type TrashListItem,
+} from "../trash.ts";
 import { CONFLICT_COPY_LABEL, type ConflictLoser } from "./bootstrap.ts";
+import type { Origin } from "./protocol.ts";
 import {
   conflictCopyStatements,
   type HeldConflictRow,
@@ -354,6 +359,52 @@ test("restoring a conflict copy creates a new record with a new uid and never to
     "the copy is an ordinary record with a freshly minted uid",
   );
   assert.deepEqual(trashRows(db), [], "the copy left the Trash");
+});
+
+/** Trash a note and restore it on a device of `origin`; answer the ops made. */
+async function restoreNoteOps(
+  origin: Origin,
+): Promise<{ entity_table: string; op: string; entity_uid: string }[]> {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  seedLosingNote(db);
+  const trash = createTrashRepo(driver, origin);
+  await trash.trashEntity("note", LOSING_NOTE.id);
+  const [item] = await trash.list();
+  assert.ok(item);
+  await trash.restore(item.id);
+  assert.equal(
+    noteRows(db)[0]?.uid,
+    NOTE_UID,
+    "the note comes back locally under its own uid either way",
+  );
+  return db
+    .prepare(
+      "SELECT entity_table, op, entity_uid FROM sync_outbox ORDER BY seq",
+    )
+    .all() as { entity_table: string; op: string; entity_uid: string }[];
+}
+
+test("a restore records its create op only where §2.3 allows one", async () => {
+  const onPhone = await restoreNoteOps("mobile");
+  assert.equal(onPhone.length, 1, "a two-way table records from the phone too");
+  assert.equal(onPhone[0]?.entity_table, "notes");
+  assert.equal(onPhone[0]?.op, "create", "a restore is a resurrection (§5.3)");
+  assert.equal(onPhone[0]?.entity_uid, NOTE_UID);
+
+  const onDesktop = await restoreNoteOps("desktop");
+  assert.equal(onDesktop.length, 1, "the desktop records as before");
+
+  // No Trash type is desktop-owned today (Notes, Tasks and Shopping are all
+  // two-way), so the refusal branch is pinned on the rule itself: the synced
+  // tables a restore could not record from the phone are the desktop-owned
+  // and one-way ones.
+  assert.equal(restoreOpAllowed("wallets", "mobile"), false);
+  assert.equal(restoreOpAllowed("shops", "mobile"), false);
+  assert.equal(restoreOpAllowed("vault_items", "mobile"), false);
+  assert.equal(restoreOpAllowed("notes", "mobile"), true);
+  assert.equal(restoreOpAllowed("tasks", "mobile"), true);
+  assert.equal(restoreOpAllowed("wallets", "desktop"), true);
 });
 
 test("the ordinary delete → trash → restore round-trip is unchanged (notes and tasks)", async () => {
