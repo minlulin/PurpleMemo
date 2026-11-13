@@ -13,9 +13,10 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-
+import { createHabitsRepo } from "../habits.ts";
 import { createNotesRepo } from "../notes.ts";
 
+import { TRASH_CONFLICT_KIND } from "../trash.ts";
 import { applyOps, type PeerOp } from "./engine.ts";
 import type { Origin, VersionStamp } from "./protocol.ts";
 import {
@@ -408,6 +409,162 @@ test("an op for a Stage 2 table refuses the whole batch and writes nothing", asy
   assert.equal(
     await count(pair.b, "SELECT count(*) AS n FROM sync_row_stamps"),
     0,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task 2 — §13.2 conflict copies.
+// ---------------------------------------------------------------------------
+
+/**
+ * B holds a note whose title it edited locally, and A's newer edit of the same
+ * field arrives — so B is the device holding the losing value.
+ *
+ * A's title writes come after a second note's create, which is what gives them
+ * a counter above B's: counters are Lamport, so a device's second op is 3 only
+ * because something took 2.
+ */
+async function losingNoteConflict(pair: Pair): Promise<string> {
+  const uid = await sharedNote(pair);
+  const notesB = createNotesRepo(pair.b.driver);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowB);
+  await notesB.updateNote(rowB.id, { title: "B's copy" });
+
+  const notesA = createNotesRepo(pair.a.driver);
+  await notesA.createNote({ title: "Filler", content: "" });
+  const [rowA] = await notesIn(pair.a, uid);
+  assert.ok(rowA);
+  await notesA.updateNote(rowA.id, { title: "A's newer copy" });
+  return uid;
+}
+
+test("a same-field note conflict applies the winner and leaves one conflict copy", async () => {
+  const pair = await openPair();
+  const uid = await losingNoteConflict(pair);
+  // B's cursor is already past A's first two ops (the create it applied and
+  // the filler note), so only the title write is delivered.
+  const ops = (await opsOf(pair.a)).slice(2);
+  assert.equal(ops.length, 1, "precondition: one title write is delivered");
+
+  await applyFrom(pair.b, pair.a, { ops });
+
+  const [row] = await notesIn(pair.b, uid);
+  assert.equal(
+    row?.title,
+    "A's newer copy",
+    "the winning value is applied on the losing device",
+  );
+  const copies = await pair.b.driver.query<{
+    entity_type: string;
+    snapshot: string;
+  }>("SELECT entity_type, snapshot FROM trash_items");
+  assert.equal(copies.length, 1, "exactly one conflict copy (§13.2)");
+  const copy = copies[0];
+  assert.ok(copy);
+  assert.equal(copy.entity_type, "note");
+  const snapshot = JSON.parse(copy.snapshot) as {
+    entity: { title: string };
+    conflict: {
+      kind: string;
+      label: string;
+      table: string;
+      uid: string;
+      won: { title: string };
+    };
+  };
+  assert.equal(snapshot.conflict.kind, TRASH_CONFLICT_KIND);
+  assert.equal(
+    snapshot.conflict.label,
+    "Conflict copy — kept on this device only",
+  );
+  assert.equal(snapshot.conflict.table, "notes");
+  assert.equal(snapshot.conflict.uid, uid);
+  assert.equal(
+    snapshot.entity.title,
+    "B's copy",
+    "the copy holds the value that lost, as this device had it",
+  );
+  assert.equal(
+    snapshot.conflict.won.title,
+    "A's newer copy",
+    "and it carries the value that won, so the user can compare",
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "the other device never learns the copy existed",
+  );
+});
+
+test("a losing habit-log value merges without archiving anything", async () => {
+  const pair = await openPair();
+  const habits = createHabitsRepo(pair.a.driver);
+  const habitId = await habits.createHabit("Run");
+  await habits.toggleLog(habitId, "2026-11-13");
+  await applyFrom(pair.b, pair.a);
+  const [log] = await pair.b.driver.query<{ uid: string; done: number }>(
+    "SELECT uid, done FROM habit_logs",
+  );
+  assert.ok(log);
+  assert.equal(log.done, 1);
+
+  // No local writer edits a habit log, so the op is synthetic: the phone's
+  // check-in flag arriving from A with a newer stamp.
+  const op = syntheticOp(
+    await deviceOf(pair.a),
+    99,
+    "habit_logs",
+    log.uid,
+    "update",
+    { done: 0 },
+    (await readState(pair.a.driver)).lamport + 5,
+  );
+  await applyFrom(pair.b, pair.a, { ops: [op] });
+
+  const [merged] = await pair.b.driver.query<{ done: number }>(
+    "SELECT done FROM habit_logs WHERE uid = ?",
+    [log.uid],
+  );
+  assert.equal(merged?.done, 0, "the newer value merged in");
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "§13.2: a check-in is not content, so no copy is archived",
+  );
+});
+
+test("a conflict whose batch fails midway leaves neither the winner nor the copy", async () => {
+  const pair = await openPair();
+  const uid = await losingNoteConflict(pair);
+  const ops = (await opsOf(pair.a)).slice(2);
+
+  // A create that passes every check the engine can make and then fails in
+  // SQL: `tasks.repeat` has a CHECK the payload cannot satisfy.
+  const doomed = syntheticOp(
+    await deviceOf(pair.a),
+    98,
+    "tasks",
+    "8f8f8f8f-8f8f-4f8f-8f8f-8f8f8f8f8f8f",
+    "create",
+    { title: "Doomed", repeat: "hourly" },
+    (await readState(pair.a.driver)).lamport + 1,
+  );
+
+  await assert.rejects(
+    applyFrom(pair.b, pair.a, { ops: [...ops, doomed] }),
+    /CHECK|constraint/i,
+  );
+  const [row] = await notesIn(pair.b, uid);
+  assert.equal(
+    row?.title,
+    "B's copy",
+    "the winner was not applied — the batch rolled back whole",
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "and the copy went with it (§5.5: same transaction)",
   );
 });
 

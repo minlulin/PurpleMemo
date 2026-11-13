@@ -14,12 +14,15 @@
  *
  * Order inside the batch:
  *
- * 1. the Lamport advance (§4.2), so the next local write outranks what was
+ * 1. the §13.2 conflict copies, PREPENDED — a copy is the losing value as this
+ *    device still holds it, written in the winning apply's transaction (§5.5);
+ * 2. the Lamport advance (§4.2), so the next local write outranks what was
  *    merged here;
- * 2. the effects, in the order the ops arrived (§7.6);
- * 3. the cursor, appended by `applyStatements` (§6.4).
+ * 3. the effects, in the order the ops arrived (§7.6);
+ * 4. the cursor, appended by `applyStatements` (§6.4).
  */
 import type { BatchStatement, DataDriver } from "../../data/driver.ts";
+import { CONFLICT_COPY_LABEL } from "./bootstrap.ts";
 import {
   compareStamps,
   isSyncTable,
@@ -30,7 +33,14 @@ import {
   type VersionStamp,
   writeAllowed,
 } from "./protocol.ts";
-import { applyStatements, FOREIGN_KEYS, LOCAL_FOREIGN_KEYS } from "./store.ts";
+import {
+  applyStatements,
+  CONFLICT_TRASH_TYPES,
+  conflictCopyStatements,
+  FOREIGN_KEYS,
+  type HeldConflictRow,
+  LOCAL_FOREIGN_KEYS,
+} from "./store.ts";
 
 /**
  * The eight tables Stage 1 may move (§12.1). Anything else — including a table
@@ -450,14 +460,25 @@ function batchKey(table: string, uid: string): string {
   return `${table}\u0000${uid}`;
 }
 
-/** What one op contributed, and what the rest of the batch should assume. */
+/** What one op contributed: its effects, and the §13.2 copy it earned. */
 interface OpOutcome {
   effects: BatchStatement[];
+  /** The losing values, by payload field name — what the copy shows as `kept`. */
+  lostFields: Record<string, unknown>;
+  /** The winning values this apply wrote over them. */
+  wonFields: Record<string, unknown>;
+  /** The losing row as this device still holds it (empty when nothing lost). */
+  held: readonly HeldConflictRow[];
   /** What the rest of this batch should now assume about the record. */
   next?: BatchEntry;
 }
 
-const EMPTY_OUTCOME: OpOutcome = { effects: [] };
+const EMPTY_OUTCOME: OpOutcome = {
+  effects: [],
+  lostFields: {},
+  wonFields: {},
+  held: [],
+};
 
 /**
  * §4's merge for one op on a row this device holds.
@@ -468,8 +489,10 @@ const EMPTY_OUTCOME: OpOutcome = { effects: [] };
  * entry becomes the merge's outcome — the highest stamp involved — so a third
  * peer recomputing the merge reaches the same answer (§4.5).
  *
- * An op that changes nothing is a no-op — §7.2 makes re-delivery free — and an
- * op that changes some fields writes only those.
+ * A field whose local value is outranked is a §13.2 loser: the row as this
+ * device held it is archived, on this device, in the same transaction. Two
+ * kinds of table opt out — a check-in is not content, and an overwritten
+ * reminder definition is not either — and `CONFLICT_TRASH_TYPES` is the list.
  */
 function mergeOp(
   op: PeerOp,
@@ -483,6 +506,8 @@ function mergeOp(
   const mergedFields: Record<string, VersionStamp> = { ...held.fieldStamps };
   const assignments: string[] = [];
   const params: unknown[] = [];
+  const lostFields: Record<string, unknown> = {};
+  const wonFields: Record<string, unknown> = {};
   const won: Record<string, unknown> = {};
   const moved: VersionStamp[] = [];
 
@@ -490,9 +515,24 @@ function mergeOp(
     const destination = destinationOf(table, field, op);
     const incoming = fieldStamps[field] ?? stamp;
     const local = held.fieldStamps[field] ?? held.stamp;
-    // This device's value stands.
+    // This device's value stands, and the peer's value is the loser — which
+    // the PEER archives, on its own device (§13.2). Nothing to copy here.
     if (!outranks(incoming, local)) continue;
 
+    // The incoming value wins, so the value this device was holding is the
+    // §13.2 loser and is archived here, in this same transaction — unless
+    // the two sides agree, because a field both devices left alone is not a
+    // conflict. A foreign key is compared by presence only: one side holds a
+    // local row number and the other a uid, so the numbers are not comparable.
+    const localValue = held.row[destination.column] ?? null;
+    const disagrees =
+      destination.parent === undefined
+        ? localValue !== (value ?? null)
+        : (localValue === null) !== (value === null || value === undefined);
+    if (disagrees && !held.pending) {
+      lostFields[field] = localValue;
+      wonFields[field] = value ?? null;
+    }
     const resolved = resolveValue(value, destination.parent);
     assignments.push(`"${destination.column}" = ${resolved.sql}`);
     params.push(...resolved.params);
@@ -503,7 +543,7 @@ function mergeOp(
 
   if (assignments.length === 0) {
     // §7.2: a stale op — or this very op, delivered again — writes nothing.
-    return EMPTY_OUTCOME;
+    return { ...EMPTY_OUTCOME, lostFields, wonFields };
   }
 
   // The record's stamp is the highest stamp behind any value it now holds, so
@@ -523,6 +563,12 @@ function mergeOp(
         now,
       ),
     ],
+    lostFields,
+    wonFields,
+    held:
+      Object.keys(lostFields).length > 0 && CONFLICT_TRASH_TYPES[table]
+        ? [{ table, uid: op.entity_uid, row: held.row }]
+        : [],
     next: {
       held: {
         row: { ...held.row, ...won },
@@ -630,11 +676,12 @@ export async function applyOps(
   driver: DataDriver,
   request: ApplyRequest,
 ): Promise<BatchStatement[]> {
-  const { peerId, ops } = request;
+  const { peerId, ops, origin } = request;
   if (ops.length === 0) return [];
   for (const op of ops) validate(op, request);
 
   const now = new Date().toISOString();
+  const copies: BatchStatement[] = [];
   const effects: BatchStatement[] = [];
   let highestSeq = 0;
   let highestCounter = 0;
@@ -642,8 +689,28 @@ export async function applyOps(
   const overlay = new Map<string, BatchEntry>();
   for (const op of ops) {
     const outcome = await composeOp(driver, op, now, overlay);
-    if (outcome.next) {
+    if (outcome.next)
       overlay.set(batchKey(op.entity_table, op.entity_uid), outcome.next);
+    if (outcome.held.length > 0) {
+      // §5.5: the copy is written by the device that held the losing value,
+      // in the winning apply's own transaction.
+      copies.push(
+        ...conflictCopyStatements(
+          [
+            {
+              table: op.entity_table as SyncTable,
+              uid: op.entity_uid,
+              // This device holds the loser, so it writes the copy; the sender
+              // is the other side of the pairing.
+              loser: origin === "mobile" ? "desktop" : "mobile",
+              label: CONFLICT_COPY_LABEL,
+              kept: outcome.lostFields,
+              won: outcome.wonFields,
+            },
+          ],
+          outcome.held,
+        ),
+      );
     }
     effects.push(...outcome.effects);
     if (op.seq > highestSeq) highestSeq = op.seq;
@@ -657,5 +724,5 @@ export async function applyOps(
     params: [highestCounter, now],
   };
 
-  return applyStatements(peerId, highestSeq, [clock, ...effects]);
+  return applyStatements(peerId, highestSeq, [...copies, clock, ...effects]);
 }
