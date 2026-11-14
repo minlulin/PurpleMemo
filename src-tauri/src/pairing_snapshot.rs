@@ -446,8 +446,10 @@ fn read_tombstones(conn: &Connection) -> Result<Vec<SnapshotTombstone>, String> 
         let table: String = row
             .get(0)
             .map_err(|e| format!("could not read a tombstone: {e}"))?;
-        // §2.1: only the 17 tables can have a tombstone; anything else in this
-        // table is corruption and must not be shipped anywhere.
+        // §2.1/§2.2: only the 17 tables can have a tombstone; anything else in
+        // this table is corruption and must not be shipped anywhere. Refused,
+        // not skipped: a tombstone that reached the phone would delete a row
+        // there, so the whole read fails and the pair surface says why.
         if !UID_TABLES.contains(&table.as_str()) {
             return Err(format!(
                 "a tombstone names {table}, which is not a synced table (§2.1)"
@@ -876,17 +878,47 @@ mod tests {
         );
     }
 
+    /// §2.1/§2.2: one §2.2 list is what a peer must never see, so the read's
+    /// guard is exercised against every table either list names — plus one
+    /// sync-storage table, which is device-local for the same reason (§10.3).
+    /// A guard proven on `photos` alone would survive a narrowing to "anything
+    /// with a uid column".
     #[test]
     fn a_tombstone_for_a_table_outside_the_allowlist_is_refused() {
-        let conn = db();
-        conn.execute_batch(
-            "INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
-             VALUES ('photos', 'photo-1', 1, 'dev', 'op', '2026-01-01');",
-        )
-        .expect("planted tombstone");
+        const NOT_SYNCED: [&str; 15] = [
+            // DESKTOP_ONLY_TABLES (§2.2)
+            "expense_limits",
+            "recurring_payments",
+            "payables",
+            "settings",
+            "links",
+            "trash_items",
+            "photos",
+            "photo_refs",
+            "notes_fts",
+            // EXCLUDED_MODULE_TABLES (§2.2)
+            "contacts",
+            "contact_channels",
+            "contact_tags",
+            "journal_entries",
+            "memories",
+            // Device-local sync storage (§10.3).
+            "sync_peers",
+        ];
+        for table in NOT_SYNCED {
+            let conn = db();
+            conn.execute_batch(&format!(
+                "INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+                 VALUES ('{table}', 'planted-uid', 1, 'dev', 'op', '2026-01-01');"
+            ))
+            .expect("planted tombstone");
 
-        let error = read_snapshot(&conn).expect_err("a leak is not a snapshot");
-        assert!(error.contains("photos"), "{error}");
+            let error = read_snapshot(&conn).expect_err("a leak is not a snapshot");
+            assert!(
+                error.contains(table),
+                "a {table} tombstone must be refused by name: {error}"
+            );
+        }
     }
 
     #[test]
