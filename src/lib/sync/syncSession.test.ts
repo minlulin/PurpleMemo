@@ -14,7 +14,8 @@ import { createBudgetRepo } from "../budget.ts";
 import { createBusinessRepo } from "../business.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
-import { ackStatements, readOutbox, readState } from "./store.ts";
+import { createVaultRepo } from "../vault.ts";
+import { ackStatements, readOutbox } from "./store.ts";
 import { runSync } from "./syncSession.ts";
 import {
   countRows as count,
@@ -162,30 +163,32 @@ test("an interrupted pull resumes from cursor_in and converges without duplicati
   assert.equal((await peer(phone, DESKTOP)).cursor_in, 2);
 });
 
-test("an operation for a Stage 3 table stays home", async () => {
+test("a phone records no vault op, so nothing of the Vault reaches the wire", async () => {
   const { phone, desktop } = await pair();
-  // No writer records for a Stage 3 table yet, so the row is written the way
-  // one would be: the shape §6.1 commits with its mutation.
-  await phone.driver.execute(
-    `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
-     VALUES (?, 1, 'op-vault', 'vault_items', '99999999-9999-4999-8999-999999999999', 'create', 0, 1, '{}', '{"title": "ciphertext"}', '2026-11-13T00:00:00.000Z')`,
-    [PHONE],
-  );
-  await phone.driver.execute(
-    "UPDATE sync_state SET last_seq = 1, lamport = 1 WHERE id = 1",
-  );
+  // §2.3/§12.3: the vault is one-way desktop→mobile, and the phone's
+  // repository is built with its own origin — so a mobile vault write stays on
+  // this device and records nothing, rather than recording an op the desktop
+  // would refuse as a whole batch.
+  const vault = createVaultRepo(phone.driver, "mobile");
+  await vault.setupVault("phone-pass");
+  await vault.addItem("email", "s3cret", "phone-pass");
 
   const wire = ferry(phone, desktop);
   const outcome = await runSync(phone.driver, wire.phone, input, {
     sleep: async () => undefined,
   });
   assert.equal(outcome.confirmed, true);
-  assert.equal(outcome.pushed, 0, "nothing Stage 1 or 2 move was pending");
-  assert.equal(wire.pushed.length, 0, "not one Stage 3 op reached the wire");
+  assert.equal(outcome.pushed, 0, "nothing the peer may receive is pending");
+  assert.equal(wire.pushed.length, 0, "not one vault op reached the wire");
   assert.equal(
     await count(phone, "SELECT count(*) AS n FROM sync_outbox"),
+    0,
+    "and nothing was recorded to send later either (§2.3)",
+  );
+  assert.equal(
+    await count(phone, "SELECT count(*) AS n FROM vault_items"),
     1,
-    "it is still in the outbox for the stage that moves it",
+    "the item itself is still on the phone",
   );
   assert.equal(
     await count(
@@ -197,7 +200,7 @@ test("an operation for a Stage 3 table stays home", async () => {
   );
 });
 
-test("a phone's expense entry syncs and its Vault-shaped op stays home", async () => {
+test("a phone's expense entry syncs with both parents resolved by uid", async () => {
   const { phone, desktop } = await pair();
   // Budget's parents are desktop-owned, so they arrive before the entry can.
   const onDesktop = createBudgetRepo(desktop.driver);
@@ -224,21 +227,12 @@ test("a phone's expense entry syncs and its Vault-shaped op stays home", async (
     note: "taxi",
   });
 
-  // A Stage 3 op, written the way its future writer will: §6.1's shape.
-  const state = await readState(phone.driver);
-  const vaultSeq = state.lastSeq + 1;
-  await phone.driver.execute(
-    `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
-     VALUES (?, ?, 'op-vault', 'vault_items', '99999999-9999-4999-8999-999999999999', 'create', 0, ?, '{}', '{"title": "ciphertext"}', '2026-11-13T00:00:00.000Z')`,
-    [PHONE, vaultSeq, state.lamport],
-  );
-
   const wire = ferry(phone, desktop);
   const outcome = await runSync(phone.driver, wire.phone, input, {
     sleep: async () => undefined,
   });
   assert.equal(outcome.confirmed, true);
-  assert.equal(outcome.pushed, 1, "the entry travels; the Vault op does not");
+  assert.equal(outcome.pushed, 1, "the entry travels");
   assert.deepEqual(
     wire.pushed.map((op) => op.entity_table),
     ["expense_entries"],
@@ -257,15 +251,14 @@ test("a phone's expense entry syncs and its Vault-shaped op stays home", async (
     1,
     "and it resolved the parent it already held, not a second one",
   );
-
   assert.deepEqual(
     (await readOutbox(phone.driver)).map((row) => row.entity_table),
-    ["vault_items"],
-    "the Vault op is still pending for Stage 3",
+    [],
+    "the acknowledged entry was pruned (§6.5)",
   );
 });
 
-test("a phone's job crosses while a Vault-shaped op stays home", async () => {
+test("a phone's job crosses and its shop is created by uid", async () => {
   const { phone, desktop } = await pair();
   await createBusinessRepo(phone.driver).createJob({
     title: "Phone job",
@@ -273,21 +266,12 @@ test("a phone's job crosses while a Vault-shaped op stays home", async () => {
     jobDate: "2026-11-13",
   });
 
-  // A Stage 3 op, written the way its future writer will: §6.1's shape.
-  const state = await readState(phone.driver);
-  const vaultSeq = state.lastSeq + 1;
-  await phone.driver.execute(
-    `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
-     VALUES (?, ?, 'op-vault', 'vault_items', '88888888-8888-4888-8888-888888888888', 'create', 0, ?, '{}', '{"title": "ciphertext"}', '2026-11-13T00:00:00.000Z')`,
-    [PHONE, vaultSeq, state.lamport],
-  );
-
   const wire = ferry(phone, desktop);
   const outcome = await runSync(phone.driver, wire.phone, input, {
     sleep: async () => undefined,
   });
   assert.equal(outcome.confirmed, true);
-  assert.equal(outcome.pushed, 1, "the job travels; the Vault op does not");
+  assert.equal(outcome.pushed, 1, "the job travels");
   assert.deepEqual(
     wire.pushed.map((op) => op.entity_table),
     ["jobs"],
@@ -302,8 +286,8 @@ test("a phone's job crosses while a Vault-shaped op stays home", async () => {
   assert.equal(jobs[0]?.total_cents, 20_000);
   assert.deepEqual(
     (await readOutbox(phone.driver)).map((row) => row.entity_table),
-    ["vault_items"],
-    "the Vault op is still pending for Stage 3",
+    [],
+    "the acknowledged job was pruned (§6.5)",
   );
 });
 

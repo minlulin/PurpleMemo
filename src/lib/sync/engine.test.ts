@@ -127,8 +127,8 @@ async function count(
 
 /**
  * An operation no local writer produces — a phone's edit of a habit log, or an
- * op for a table Stage 1 does not move. Both are wire documents, so they are
- * written the way the wire writes them (§6.2).
+ * op for a table the allowlist never carries. Both are wire documents, so they
+ * are written the way the wire writes them (§6.2).
  */
 function syntheticOp(
   deviceId: string,
@@ -379,20 +379,23 @@ test("applying the same op list twice changes nothing the second time", async ()
   );
 });
 
-test("an op for a Stage 3 table refuses the whole batch and writes nothing", async () => {
+test("an op for a table outside the allowlist refuses the whole batch and writes nothing", async () => {
   const pair = await openPair();
   const notes = createNotesRepo(pair.a.driver);
   await notes.createNote({ title: "Arrives", content: "" });
   const valid = await opsOf(pair.a);
   assert.equal(valid.length, 1);
 
-  const vaultOp = syntheticOp(
+  // §2.2: a row that never leaves its device. Since Stage 3 every one of the
+  // seventeen synced tables moves, so the refusal has to be aimed at a table
+  // that is not on the allowlist at all.
+  const leaky = syntheticOp(
     await deviceOf(pair.a),
     2,
-    "vault_items",
+    "photos",
     "9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f",
     "create",
-    { title: "ciphertext" },
+    { rel_path: "photos/2026/01/x.png" },
     2,
   );
 
@@ -400,9 +403,9 @@ test("an op for a Stage 3 table refuses the whole batch and writes nothing", asy
     applyOps(pair.b.driver, {
       peerId: await deviceOf(pair.a),
       origin: "desktop",
-      ops: [...valid, vaultOp],
+      ops: [...valid, leaky],
     }),
-    /Stage 2 does not move/,
+    /sync allowlist/,
   );
   assert.equal(
     await count(pair.b, "SELECT count(*) AS n FROM notes"),

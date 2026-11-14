@@ -42,16 +42,20 @@ import {
   type HeldConflictRow,
   LOCAL_FOREIGN_KEYS,
   NATURAL_KEYS,
+  readVaultMetadata,
+  splitVaultMetadata,
+  vaultMetadataStatements,
+  vaultWipeStatements,
 } from "./store.ts";
 
 /**
- * The tables sync moves through Stage 2 (§12.1, §12.2): Stage 1's eight, plus
- * Budget's five and Business/Loans' three — sixteen of the seventeen.
+ * The tables sync moves: all seventeen of §2.1's core.
  *
  * This is the ONE place the set lives — the engine's stage gate below and the
  * session's sender filter both read it, so a table can never travel without
- * being applicable. `vault_items` alone stays out: Vault is Stage 3, and an op
- * for it arriving today is a protocol bug, not a head start.
+ * being applicable. Stage 3 added `vault_items`, the last one: it travels
+ * desktop→mobile only, under its password generation (§12.3), and the
+ * authority in `writeAllowed` is what keeps it one-way.
  */
 export const UNLOCKED_TABLES = [
   "collections",
@@ -70,6 +74,7 @@ export const UNLOCKED_TABLES = [
   "shops",
   "jobs",
   "loans",
+  "vault_items",
 ] as const satisfies readonly SyncTable[];
 
 const OP_KINDS: readonly OpKind[] = ["create", "update", "toggle", "delete"];
@@ -155,6 +160,21 @@ function parsePayload(op: PeerOp): Record<string, unknown> {
     );
   }
   return raw as Record<string, unknown>;
+}
+
+/**
+ * The payload fields an op may write as columns.
+ *
+ * For every table but one this is the payload. A vault payload also carries
+ * the §12.3 envelope (`vault_generation`, `vault_verifier`), which are not
+ * columns: the engine strips them here and writes them into this device's own
+ * settings instead — never into the row.
+ */
+function rowFieldsOf(op: PeerOp): Record<string, unknown> {
+  const payload = parsePayload(op);
+  return op.entity_table === "vault_items"
+    ? splitVaultMetadata(payload).fields
+    : payload;
 }
 
 /** The op's per-field stamps, each of which must itself be a stamp (§4.3). */
@@ -331,7 +351,7 @@ function validate(op: PeerOp, request: ApplyRequest): void {
     }
     return;
   }
-  const fields = Object.keys(parsePayload(op));
+  const fields = Object.keys(rowFieldsOf(op));
   const verdict =
     op.op === "update"
       ? updateFieldsAllowed(table, fields, request.origin)
@@ -339,6 +359,19 @@ function validate(op: PeerOp, request: ApplyRequest): void {
   if (!verdict.allowed)
     throw new Error(`${name} was refused: ${verdict.reason}`);
   for (const field of fields) destinationOf(table, field, op);
+  if (table === "vault_items") {
+    // §4.4: a vault row is aggregate-atomic. A write naming only part of the
+    // sealed triple could not land a row anyone can decrypt, so it is refused
+    // by name rather than half-applied.
+    const missing = ["ciphertext", "salt", "iv"].filter(
+      (column) => !fields.includes(column),
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `${name} sends a vault row without ${missing.join(", ")} (§4.4).`,
+      );
+    }
+  }
 }
 
 /**
@@ -662,16 +695,157 @@ function mergeOp(
 }
 
 /**
+ * The complete-row write a vault op lands (§12.3, §4.4).
+ *
+ * An upsert by uid rather than an UPDATE: after a rotation the incoming set is
+ * written into a table this batch has just emptied, and even without one the
+ * payload is the whole sealed row, so an insert and an update are the same
+ * write. Every column present in the payload lands, and nothing else is
+ * touched — the row is aggregate-atomic, not field-merged.
+ */
+function vaultUpsertStatement(
+  op: PeerOp,
+  fields: Record<string, unknown>,
+): BatchStatement {
+  const columns: string[] = ["uid"];
+  const values: string[] = ["?"];
+  const params: unknown[] = [op.entity_uid];
+  for (const [field, value] of Object.entries(fields)) {
+    const destination = destinationOf("vault_items", field, op);
+    columns.push(`"${destination.column}"`);
+    values.push("?");
+    params.push(value ?? null);
+  }
+  const updates = columns
+    .filter((column) => column !== "uid")
+    .map((column) => `${column} = excluded.${column}`);
+  return {
+    sql: `INSERT INTO vault_items (${columns.join(", ")})
+          VALUES (${values.join(", ")})
+          ON CONFLICT(uid) DO UPDATE SET ${updates.join(", ")}`,
+    params,
+  };
+}
+
+/**
+ * §12.3's vault path — the ONE table-specific branch the spec orders.
+ *
+ * Two things differ from §4's field merge, and both are the clause:
+ *
+ *  - **aggregate-atomic (§4.4).** A vault row is a sealed triple, so the op is
+ *    compared as a WHOLE row: the winner's ciphertext/salt/iv land together or
+ *    none of them does. There is no per-field winner and no §13.2 copy — a
+ *    losing vault value is not content, so Vault stays out of
+ *    `CONFLICT_TRASH_TYPES`.
+ *  - **generation-aware (§12.3).** A rotation re-seals every item and sends it
+ *    as an `update`, so after the wipe an op for a record this device does not
+ *    hold still writes it (`adopt`). §5.3's "an edit for a missing record
+ *    writes nothing" exists because an ordinary edit names only its fields;
+ *    a vault payload always carries the whole row.
+ */
+async function composeVaultOp(
+  driver: DataDriver,
+  op: PeerOp,
+  now: string,
+  overlay: Map<string, BatchEntry>,
+  adopt: boolean,
+): Promise<OpOutcome> {
+  const table = "vault_items" as const;
+  const stamp = opStamp(op);
+  const key = batchKey(table, op.entity_uid);
+  const prior = overlay.get(key);
+  // After a wipe nothing this device holds is part of the new generation, and
+  // nothing this batch composed before it survived it either.
+  const held = adopt
+    ? undefined
+    : prior !== undefined
+      ? "held" in prior
+        ? prior.held
+        : undefined
+      : await readHeld(driver, table, op.entity_uid);
+  const tombstone = adopt
+    ? undefined
+    : prior !== undefined
+      ? "gone" in prior
+        ? prior.gone
+        : undefined
+      : await readTombstone(driver, table, op.entity_uid);
+
+  if (op.op === "delete") {
+    if (tombstone !== undefined && tombstone.opId === op.op_id) {
+      return EMPTY_OUTCOME; // §7.2: already applied.
+    }
+    const effects: BatchStatement[] = [];
+    const removed = held !== undefined && outranks(stamp, held.stamp);
+    if (removed) {
+      effects.push({
+        sql: 'DELETE FROM "vault_items" WHERE uid = ?',
+        params: [op.entity_uid],
+      });
+      effects.push({
+        sql: "DELETE FROM sync_row_stamps WHERE entity_table = ? AND entity_uid = ?",
+        params: [table, op.entity_uid],
+      });
+    }
+    effects.push(tombstoneStatement(table, op.entity_uid, stamp, now));
+    return {
+      ...EMPTY_OUTCOME,
+      effects,
+      next: removed || held === undefined ? { gone: stamp } : undefined,
+    };
+  }
+
+  if (!adopt) {
+    // §5.3: a record a tombstone still outranks stays dead.
+    if (
+      held === undefined &&
+      tombstone !== undefined &&
+      outranks(tombstone, stamp)
+    ) {
+      return EMPTY_OUTCOME;
+    }
+    // §4.4: the row's stamp decides the whole row, so an op that does not
+    // outrank what this device holds writes none of its three fields.
+    if (held !== undefined && !outranks(stamp, held.stamp)) {
+      return EMPTY_OUTCOME;
+    }
+  }
+
+  const { fields } = splitVaultMetadata(parsePayload(op));
+  const stamps: Record<string, VersionStamp> = {};
+  const row: Record<string, unknown> = { uid: op.entity_uid };
+  for (const [field, value] of Object.entries(fields)) {
+    stamps[field] = stamp;
+    row[field] = value ?? null;
+  }
+  return {
+    ...EMPTY_OUTCOME,
+    effects: [
+      vaultUpsertStatement(op, fields),
+      rowStampStatement(table, op.entity_uid, stamp, stamps, now),
+    ],
+    next: { held: { row, stamp, fieldStamps: stamps } },
+  };
+}
+
+/**
  * One op, applied (§7). Reads what this device holds, decides by §4's order,
  * and returns the statements plus any losing value a §13.2 copy must keep.
+ *
+ * `adopt` is §12.3's one exception: after a generation change has wiped the
+ * local vault, the incoming set is written whole rather than compared.
  */
 async function composeOp(
   driver: DataDriver,
   op: PeerOp,
   now: string,
   overlay: Map<string, BatchEntry>,
+  adopt = false,
 ): Promise<OpOutcome> {
   const table = op.entity_table as SyncTable;
+  if (table === "vault_items") {
+    return composeVaultOp(driver, op, now, overlay, adopt);
+  }
   const stamp = opStamp(op);
   const delivered = parseFieldStamps(op);
   const key = batchKey(table, op.entity_uid);
@@ -818,8 +992,56 @@ export async function applyOps(
   let highestCounter = 0;
 
   const overlay = new Map<string, BatchEntry>();
+  /**
+   * The password generation this device holds (§12.3 decision 1), read at most
+   * once per batch — only a batch carrying vault ops needs it.
+   */
+  let vaultGeneration: number | null = null;
+  /** The §12.3 metadata is written once per batch, with the items it names. */
+  let vaultMetadataWritten = false;
+
   for (const op of ops) {
-    const outcome = await composeOp(driver, op, now, overlay);
+    // §6.4: the cursor advances past every op the batch carries, including one
+    // this device decided to write nothing for — otherwise it is re-delivered
+    // for ever.
+    if (op.seq > highestSeq) highestSeq = op.seq;
+    if (op.counter > highestCounter) highestCounter = op.counter;
+
+    let adopt = false;
+    if (op.entity_table === "vault_items") {
+      const name = `op ${op.device_id}#${op.seq}`;
+      const { metadata } = splitVaultMetadata(parsePayload(op));
+      if (metadata.generation === null) {
+        // Without a generation this device cannot tell whether the op may be
+        // mixed with what it holds, and guessing is the F3 failure itself.
+        throw new Error(`${name} carries no vault generation (§12.3).`);
+      }
+      vaultGeneration ??= (await readVaultMetadata(driver)).generation ?? 0;
+      // A generation this device has already left behind is a re-delivered op
+      // from before a rotation: it writes nothing, and none of its metadata.
+      // Applying it would put an item sealed under the old password back into
+      // a vault whose verifier proves the new one (F3).
+      if (metadata.generation < vaultGeneration) continue;
+      if (metadata.generation > vaultGeneration) {
+        // Decision 3: a new generation REPLACES the local set. The wipe is a
+        // statement of this batch, so the incoming generation lands in the
+        // same transaction — never beside the outgoing one.
+        effects.push(...vaultWipeStatements());
+        for (const key of [...overlay.keys()]) {
+          if (key.startsWith("vault_items\u0000")) overlay.delete(key);
+        }
+        vaultGeneration = metadata.generation;
+        adopt = true;
+      }
+      if (!vaultMetadataWritten) {
+        // Decision 2: this device's own settings, inside the batch that
+        // applies the items — the phone's `vault.ts` reads exactly these.
+        effects.push(...vaultMetadataStatements(metadata));
+        vaultMetadataWritten = true;
+      }
+    }
+
+    const outcome = await composeOp(driver, op, now, overlay, adopt);
     if (outcome.next)
       overlay.set(batchKey(op.entity_table, op.entity_uid), outcome.next);
     if (outcome.held.length > 0) {
@@ -844,8 +1066,6 @@ export async function applyOps(
       );
     }
     effects.push(...outcome.effects);
-    if (op.seq > highestSeq) highestSeq = op.seq;
-    if (op.counter > highestCounter) highestCounter = op.counter;
   }
 
   // §4.2: the next local write outranks everything just merged. One statement

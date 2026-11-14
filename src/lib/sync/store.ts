@@ -924,6 +924,19 @@ export function foldStatements(
  * arrives as an explicit `null` `_uid`, which is written as a literal NULL
  * rather than a subselect, so the two cases cannot be confused.
  */
+/**
+ * A row's fields as a write may use them.
+ *
+ * The vault's two envelope keys are not columns (§12.3 decision 2): they are
+ * written into this device's own settings by `vaultMetadataStatements`, never
+ * into the row. Every other table's fields are its columns, unchanged.
+ */
+function writableFields(op: SnapshotOp): Record<string, unknown> {
+  return op.table === "vault_items"
+    ? splitVaultMetadata(op.fields).fields
+    : op.fields;
+}
+
 function snapshotColumns(op: SnapshotOp): {
   columns: string[];
   values: string[];
@@ -933,7 +946,7 @@ function snapshotColumns(op: SnapshotOp): {
   const columns: string[] = ["uid"];
   const values: string[] = ["?"];
   const params: unknown[] = [op.uid];
-  for (const [key, value] of Object.entries(op.fields)) {
+  for (const [key, value] of Object.entries(writableFields(op))) {
     if (key === "uid") continue;
     if (key === "id") {
       throw new Error(
@@ -1269,8 +1282,36 @@ export function snapshotStatements(
       (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
   );
   const statements: BatchStatement[] = [];
-  for (const op of sorted)
+  // §12.3 decision 5: the vault section is WHOLESALE. The phone's vault is a
+  // copy of the desktop's, and an adoption is where the copy is taken — the
+  // existing items and their stamps go first, in this same transaction, and
+  // the snapshot's set lands under the generation it carries. A snapshot with
+  // no vault rows leaves this device's vault alone: nothing here is the
+  // desktop's to delete (§9.1), and an empty desktop vault would otherwise
+  // wipe a vault this device created for itself.
+  const vaultRows = sorted.filter((op) => op.table === "vault_items");
+  for (const op of sorted) {
+    if (op.table === "vault_items") continue;
     statements.push(...snapshotRowStatements(op, now, senderDeviceId));
+  }
+  if (vaultRows.length > 0) {
+    statements.push(...vaultWipeStatements());
+    // The envelope, once: every vault row of one snapshot carries the same
+    // pair, and the first that names a generation is the snapshot's.
+    const carried = vaultRows
+      .map((op) => splitVaultMetadata(op.fields).metadata)
+      .find(
+        (metadata) =>
+          metadata.generation !== null || metadata.verifier !== null,
+      );
+    statements.push(
+      ...vaultMetadataStatements(
+        carried ?? { generation: null, verifier: null },
+      ),
+    );
+    for (const op of vaultRows)
+      statements.push(...snapshotRowStatements(op, now, senderDeviceId));
+  }
   for (const tombstone of tombstones) {
     assertSyncTable(tombstone.table);
     const outranks = tombstoneOutranksRow(
