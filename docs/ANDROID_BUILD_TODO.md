@@ -893,7 +893,61 @@ longer holds the phase open.
   move through the one gate, and §2.3's authority is enforced by the protocol
   alone — the phone cannot write what the desktop owns, and a restore records
   only what this device could have written.
-- [ ] Stage 3: Vault one-way, generation-aware (never mix generations)
+- [x] Stage 3: Vault one-way, generation-aware (never mix generations)
+  **BUILT 2026-11-14 (Stage 3).** The vault's password **generation** is its
+  own counter, stored beside the verifier: `settings.vault_generation`, written
+  as `1` by `setupVault` and bumped once inside `changePassword`'s existing
+  batch. Deliberately NOT §10's `sync_state.data_generation` — a different
+  counter on a different line, and the code and comments keep the two names
+  apart. **The metadata carriage:** every desktop vault op — `addItem`,
+  `updateItem`, `deleteItem`, and one update per re-sealed item for a password
+  change — carries the row's STORED fields (ciphertext, salt and IV exactly as
+  written, never decrypted) plus two envelope keys, `vault_generation` and
+  `vault_verifier`, BESIDE them and never among them. The snapshot reader
+  (`pairing_snapshot.rs`) and its TS mirror in the upload reader
+  (`readLocalRows`) emit the same pair on vault rows. The receiving side writes
+  them into its OWN settings inside the batch that applies the items — the
+  verifier, the generation, and the setup marker derived from the verifier — so
+  `vault.ts`'s unlock path works unchanged and `isSetUp()` stops claiming "no
+  vault" over a vault it holds. §2.2 stands: the `settings` table never
+  crosses, and the marker is derived on receipt, not carried.
+  **The wipe rule.** `vault_items` joined `UNLOCKED_TABLES` — all seventeen
+  tables now move — in the one table-specific branch the spec orders. The
+  batch's first op of a NEWER generation empties `vault_items` and its stamps
+  as statements of that same batch, then adopts the incoming set whole; an
+  OLDER generation is a re-delivered op that writes nothing and none of its
+  metadata, so F3's mixed vault cannot be produced. Equal generations compare
+  as aggregates (§4.4): the row's stamp decides the whole row, the winner's
+  complete triple lands or none of it does, and vault conflicts archive nothing
+  (§13.2's set is still Notes/Tasks/Shopping). A delete is a tombstone. The
+  snapshot apply is wholesale: a snapshot's vault section deletes the phone's
+  items and stamps first, in the same transaction, then inserts the set under
+  its generation — while a snapshot carrying no vault rows leaves this device's
+  vault alone (§9.1: nothing there is the desktop's to delete).
+  **The phone still never writes the vault.** `createVaultRepo` takes the
+  installation's origin (`data/app.ts` resolves it once): it records nothing on
+  `mobile` and spends no Lamport step, and `writeAllowed` still refuses a
+  mobile-origin vault op at the engine — now with the table actually moving, so
+  that refusal is what keeps the vault one-way (§2.3). The phone's vault stays
+  **lookup/copy-only**: the mobile UI gains no vault writes in this stage.
+  Tests: 5 TS in `lib/vault.test.ts` (generation 1 and its verifier at setup; a
+  change bumps exactly once and its op set covers every item at the new
+  generation; a create's payload is the stored triple, compared as bytes, with
+  no plaintext anywhere; an edit and a delete record the whole row and its
+  tombstone; a mobile-origin repo records nothing at all), 5 in the new
+  `lib/sync/vaultSync.test.ts` over two real stores with the real `vault.ts` on
+  both sides (a desktop item reaches the phone and the PHONE unlocks and reads
+  it with the vault password; a password change rotates the phone's copy — the
+  new password opens it and the old one does not; a replayed old-generation op
+  resurrects and mixes nothing, the F3 scenario as a test; a mobile-origin
+  vault op is refused; an adopted snapshot leaves a working vault of the
+  snapshot's generation), and 2 Rust snapshot tests (a vault row carries its
+  generation and verifier beside its fields; no generation row reads as 0 with
+  a null verifier). Suite: 1133 TS, 310 Rust, 0 skipped.
+  **STAGE 3 EXIT:** every §2.1 table moves through the one gate; the generation
+  lives in `settings.vault_generation` and travels as an envelope key; a new
+  generation replaces and an old one writes nothing; vault rows are
+  aggregate-atomic and archive no conflict copies.
 - [ ] Backup payload rules: device-local state excluded; restore bumps
   generation and forces re-pair
 - [ ] Desktop-only rows provably never leave desktop (leak tests)
