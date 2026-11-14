@@ -948,9 +948,46 @@ longer holds the phase open.
   lives in `settings.vault_generation` and travels as an envelope key; a new
   generation replaces and an old one writes nothing; vault rows are
   aggregate-atomic and archive no conflict copies.
-- [ ] Backup payload rules: device-local state excluded; restore bumps
-  generation and forces re-pair
-- [ ] Desktop-only rows provably never leave desktop (leak tests)
+- [x] Backup payload rules: device-local state excluded; restore bumps
+  generation and forces re-pair — **written 2026-11-14** (§10.3). The app PIN
+  is named once, in `src/lib/backup.ts`: `DEVICE_LOCAL_SETTING_KEYS` =
+  `pin_hash`, `security_question`, `security_answer_hash` — the only keys
+  `settings.ts` marks device-local. The export drops them; the import skips
+  them on BOTH sides of the replacement, because the `settings` DELETE now
+  carries `WHERE key NOT IN (?, ?, ?)`: a restore keeps this device's PIN
+  instead of destroying the lock, and an older archive that still carries a PIN
+  cannot write one back. Everything else in `settings` travels (theme, locale,
+  and the vault's `vault_verifier` / `vault_generation`, §12.3).
+  `BACKUP_FORMAT_VERSION` stays 4 — an old archive imports, filtered. RESTORE
+  DISCIPLINE (§10.1), statements of `applyBackup`'s own batch and so atomic
+  with the rows: `data_generation` + 1, `re_pair_required` set, both peer
+  cursors zeroed, and the old line's outbox, delivery rows, tombstone acks,
+  tombstones and row stamps dropped (`restoreStatements` in
+  `src/lib/sync/store.ts`, the reset path's list extended because an import
+  batch runs with foreign keys OFF, where the cascade from outbox/tombstone to
+  its acks does not fire). Peers stay pinned and the device id is untouched:
+  §10.5's re-pair is the phone's move, not ours. Tests: the export omits the
+  three, an import that carries them leaves this device's PIN, a payload names
+  no `sync_*` table, one restore bumps by exactly 1 and a second bumps again.
+- [x] Desktop-only rows provably never leave desktop (leak tests) — **written
+  2026-11-14** (§2.2). One poison row in every table both §2.2 lists name —
+  `DESKTOP_ONLY_TABLES` (`expense_limits`, `recurring_payments`, `payables`,
+  `settings`, `links`, `trash_items`, `photos`, `photo_refs`, `notes_fts`) and
+  `EXCLUDED_MODULE_TABLES` (`contacts`, `contact_channels`, `contact_tags`,
+  `journal_entries`, `memories`) — planted in the real baseline schema on BOTH
+  stores, with a side marker so a row that crossed cannot be mistaken for the
+  receiver's own plant. Carriers checked: the served snapshot
+  (`src-tauri/src/pairing_snapshot.rs::no_desktop_only_row_reaches_a_batch`,
+  every frame serialized, not just the first), the upload read
+  (`readLocalRows`), a full sync session in both directions (the push's ops and
+  the pull's), and the backup payload's §10.3 half (no `sync_*` table, no app
+  PIN — a desktop-only module is still the user's own data on their own disk).
+  Every sweep carries a positive control — a note that must travel, and a vault
+  row that must carry `vault_generation` / `vault_verifier` — so a carrier that
+  sent nothing cannot pass, and the sanctioned envelope keys are asserted
+  present rather than merely tolerated. `src/lib/sync/leak.test.ts` opens
+  `openBaselineStore()` (the real `BASELINE_SQL`), because the Stage 1 fixture
+  cannot hold a `contacts` or `journal_entries` row at all.
 
 **Exit gate:** two populated devices converge; retries idempotent;
 interrupted apply/reset/restore cannot lose acknowledged writes; tombstones

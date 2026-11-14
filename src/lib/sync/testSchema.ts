@@ -363,10 +363,45 @@ export function openSyncStore(deviceId?: string): SyncFixture {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(STAGE_ONE_FIXTURE);
   applySyncStorage(db, deviceId);
+  return { db, driver: driverOver(db) };
+}
+
+/**
+ * `BASELINE_SQL`, sliced out of `schema.rs`: every table the app ships with, in
+ * the shape the app ships it.
+ */
+export function baselineSql(): string {
+  const match = /pub const BASELINE_SQL: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  if (!match?.[1]) {
+    throw new Error("BASELINE_SQL not found in src-tauri/src/schema.rs");
+  }
+  return match[1];
+}
+
+/**
+ * A store on the REAL baseline: every table §2.2 names exists, with the columns
+ * the app gives it, and `sync_state` is the baseline's own seeded identity.
+ *
+ * The §2.2 leak sweep needs that. `STAGE_ONE_FIXTURE` declares only the tables a
+ * sync test writes, so a poison row for `contacts` or `journal_entries` could
+ * not be planted there at all — and a sweep that cannot plant the row cannot
+ * fail.
+ */
+export function openBaselineStore(): SyncFixture {
+  const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec(baselineSql());
+  return { db, driver: driverOver(db) };
+}
+
+/** The app's driver contract in miniature, over a bare `DatabaseSync`. */
+export function driverOver(db: DatabaseSync): DataDriver {
   const run = (sql: string, params: unknown[] = []): void => {
     db.prepare(sql).run(...(params as never[]));
   };
-  const driver = {
+  return {
     query: async <T extends Queryable>(
       sql: string,
       params: unknown[] = [],
@@ -394,5 +429,4 @@ export function openSyncStore(deviceId?: string): SyncFixture {
       }
     },
   } as unknown as DataDriver;
-  return { db, driver };
 }

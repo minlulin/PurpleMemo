@@ -633,6 +633,169 @@ mod tests {
         assert!(!tables.contains(&"settings"));
     }
 
+    /// One poison row in every table §2.2 names — `DESKTOP_ONLY_TABLES` and
+    /// `EXCLUDED_MODULE_TABLES` in `src/lib/sync/protocol.ts`. The TS sweep
+    /// (`src/lib/sync/leak.test.ts`) plants the same set; a table added to §2.2
+    /// belongs in both.
+    ///
+    /// `expense_limits`, `links` and `photo_refs` have no free-text column (CHECK
+    /// constraints pin them to enums and numbers), so those three carry no marker
+    /// and are caught by the table-level assertions instead.
+    fn plant_desktop_only_rows(conn: &Connection, side: &str) {
+        let m = |table: &str| format!("LEAK-{side}-{table}");
+        let statements = [
+            format!(
+                "INSERT INTO expense_categories (name, created_at) VALUES ('{}', '2026-01-01')",
+                m("expense_categories")
+            ),
+            format!(
+                "INSERT INTO expense_limits (category_id, limit_cents) VALUES ((SELECT id FROM expense_categories WHERE name = '{}'), 4242)",
+                m("expense_categories")
+            ),
+            format!(
+                "INSERT INTO recurring_payments (title, amount_cents, frequency, next_due_date, created_at) VALUES ('{}', 4242, 'monthly', '2026-01-01', '2026-01-01')",
+                m("recurring_payments")
+            ),
+            format!(
+                "INSERT INTO payables (title, amount_cents, created_at) VALUES ('{}', 4242, '2026-01-01')",
+                m("payables")
+            ),
+            format!(
+                "INSERT INTO settings (key, value) VALUES ('{}', '{}')",
+                m("settings"),
+                m("settings")
+            ),
+            "INSERT INTO links (type_a, id_a, type_b, id_b, created_at) VALUES ('note', 4242, 'task', 4243, '2026-01-01')".to_string(),
+            format!(
+                "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at) VALUES ('note', 4242, '{{\"{}\":true}}', '2026-01-01', '2026-01-01')",
+                m("trash_items")
+            ),
+            format!(
+                "INSERT INTO photos (rel_path, sha256, ext, size_bytes, created_at) VALUES ('{}.jpg', '{}', 'jpg', 3, '2026-01-01')",
+                m("photos"),
+                m("photos")
+            ),
+            format!(
+                "INSERT INTO photo_refs (photo_id, entity_type, entity_id) VALUES ((SELECT id FROM photos WHERE rel_path = '{}.jpg'), 'note', 4242)",
+                m("photos")
+            ),
+            // An explicit rowid, high above any note: `notes_fts_ai` keeps the
+            // index in step with `notes`, and a poison row that took a note's
+            // rowid would fail the next note insert.
+            format!(
+                "INSERT INTO notes_fts (rowid, title, content, tags, folder) VALUES (999999, '{}', '', '', '')",
+                m("notes_fts")
+            ),
+            format!(
+                "INSERT INTO contacts (name, created_at) VALUES ('{}', '2026-01-01')",
+                m("contacts")
+            ),
+            format!(
+                "INSERT INTO contact_channels (contact_id, kind, value) VALUES ((SELECT id FROM contacts WHERE name = '{}'), 'phone', '{}')",
+                m("contacts"),
+                m("contact_channels")
+            ),
+            format!(
+                "INSERT INTO contact_tags (contact_id, tag) VALUES ((SELECT id FROM contacts WHERE name = '{}'), '{}')",
+                m("contacts"),
+                m("contact_tags")
+            ),
+            format!(
+                "INSERT INTO journal_entries (entry_date, content, created_at, updated_at) VALUES ('2026-02-02', '{}', '2026-01-01', '2026-01-01')",
+                m("journal_entries")
+            ),
+            format!(
+                "INSERT INTO memories (title, memory_date, created_at) VALUES ('{}', '2026-01-01', '2026-01-01')",
+                m("memories")
+            ),
+        ];
+        conn.execute_batch(&statements.join(";"))
+            .expect("poison rows");
+    }
+
+    /// §2.2 — the served snapshot's half of the leak sweep, checked as the wire
+    /// sees it: every batch, serialized, with the vault envelope as the positive
+    /// control (a leak test over an empty snapshot would pass perfectly).
+    #[test]
+    fn no_desktop_only_row_reaches_a_batch() {
+        const VAULT: &str = "44444444-4444-4444-8444-444444444444";
+        const SECTION_TABLES: [&str; 14] = [
+            "expense_limits",
+            "recurring_payments",
+            "payables",
+            "settings",
+            "links",
+            "trash_items",
+            "photos",
+            "photo_refs",
+            "notes_fts",
+            "contacts",
+            "contact_channels",
+            "contact_tags",
+            "journal_entries",
+            "memories",
+        ];
+
+        let conn = db();
+        seed_note(&conn);
+        conn.execute_batch(&format!(
+            "UPDATE notes SET title = 'TRAVELS-notes' WHERE uid = '{NOTE}';
+             INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+               VALUES ('{VAULT}', 'vault row', 'ct', 'salt', 'iv', '2026-01-01', '2026-01-01');
+             INSERT INTO settings (key, value) VALUES ('vault_setup', '{{\"version\":1}}');
+             INSERT INTO settings (key, value) VALUES ('vault_verify', '{{\"salt\":\"TRAVELS-vault\"}}');
+             INSERT INTO settings (key, value) VALUES ('vault_generation', '2');"
+        ))
+        .expect("vault envelope");
+        plant_desktop_only_rows(&conn, "desktop");
+
+        let snapshot = read_snapshot(&conn).expect("snapshot");
+        // Small frames, so the sweep also sees the rows cut across batches: a
+        // leak that only appears after a cut is still a leak.
+        let batches = snapshot.batches(256);
+        assert!(batches.len() > 1, "256 bytes cannot hold this snapshot");
+
+        let mut wire = String::new();
+        for batch in &batches {
+            wire.push_str(&batch.to_json("pair-1").to_string());
+            assert!(
+                batch
+                    .rows
+                    .iter()
+                    .all(|row| UID_TABLES.contains(&row.table.as_str())),
+                "every row in every batch names one of the 17 tables (§2.1)"
+            );
+        }
+        // Positive controls: the synced note and the vault's own line travelled.
+        assert!(wire.contains("TRAVELS-notes"));
+        assert!(wire.contains("vault_generation") && wire.contains("TRAVELS-vault"));
+
+        for table in SECTION_TABLES {
+            assert!(
+                !wire.contains(&format!("LEAK-desktop-{table}")),
+                "{table} leaked into a snapshot batch (§2.2)"
+            );
+            assert_eq!(
+                snapshot
+                    .rows
+                    .iter()
+                    .filter(|row| row.table == table)
+                    .count(),
+                0,
+                "{table} has no row in the snapshot (§2.2)"
+            );
+            let planted: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("poison row count");
+            assert!(
+                planted > 0,
+                "{table} must hold its poison row, or the sweep checks it blind"
+            );
+        }
+    }
+
     /// §12.3 (Stage 3 decision 2): a vault row carries the generation and the
     /// verifier it was sealed under, beside its stored fields.
     #[test]
