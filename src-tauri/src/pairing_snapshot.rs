@@ -246,6 +246,71 @@ fn read_all(conn: &Connection) -> Result<Snapshot, String> {
     Ok(Snapshot { rows, tombstones })
 }
 
+/// §12.3 (Stage 3 decision 2): the two envelope keys a snapshot's vault rows
+/// carry — the vault's **password** generation and the sealed verifier.
+///
+/// They are not columns (and must never become columns): they are read from
+/// this device's own `settings` and attached to every vault row beside its
+/// fields, so the receiving side can write them into ITS settings and unlock
+/// what it received. `settings` itself never crosses (§2.2).
+///
+/// This is deliberately NOT the §10 data generation: different counter,
+/// different lifecycle.
+const VAULT_GENERATION_KEY: &str = "vault_generation";
+const VAULT_VERIFY_KEY: &str = "vault_verify";
+
+fn vault_metadata(conn: &Connection) -> Result<(i64, Option<String>), String> {
+    let mut generation = 0i64;
+    let mut verifier: Option<String> = None;
+    let mut statement = conn
+        .prepare("SELECT key, value FROM settings WHERE key IN (?1, ?2)")
+        .map_err(|e| format!("could not read the vault's metadata: {e}"))?;
+    let mut rows = statement
+        .query([VAULT_GENERATION_KEY, VAULT_VERIFY_KEY])
+        .map_err(|e| format!("could not read the vault's metadata: {e}"))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("could not read the vault's metadata: {e}"))?
+    {
+        let key: String = row
+            .get(0)
+            .map_err(|e| format!("could not read the vault's metadata: {e}"))?;
+        let value: String = row
+            .get(1)
+            .map_err(|e| format!("could not read the vault's metadata: {e}"))?;
+        match key.as_str() {
+            VAULT_GENERATION_KEY => {
+                // A corrupt counter reads as 0 ("no vault"), the same way the
+                // phone's reader treats it: a guess here would name a
+                // generation nobody can compare against.
+                generation = serde_json::from_str(&value).unwrap_or(0);
+            }
+            VAULT_VERIFY_KEY => verifier = Some(value),
+            _ => {}
+        }
+    }
+    Ok((generation, verifier))
+}
+
+/// The envelope a vault row travels with (§12.3 decision 2). Every other
+/// table's rows carry their own fields and nothing else.
+fn with_vault_metadata(
+    conn: &Connection,
+    table: &str,
+    fields: &mut JsonMap<String, JsonValue>,
+) -> Result<(), String> {
+    if table != "vault_items" {
+        return Ok(());
+    }
+    let (generation, verifier) = vault_metadata(conn)?;
+    fields.insert(VAULT_GENERATION_KEY.to_string(), json!(generation));
+    fields.insert(
+        VAULT_VERIFY_KEY.to_string(),
+        verifier.map(JsonValue::String).unwrap_or(JsonValue::Null),
+    );
+    Ok(())
+}
+
 fn column_names(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
     let mut statement = conn
         .prepare(&format!("PRAGMA table_info({table})"))
@@ -339,6 +404,7 @@ fn read_table(conn: &Connection, table: &str, device_id: &str) -> Result<Vec<Sna
                 .map_err(|e| format!("could not read {table}.{name}: {e}"))?;
             fields.insert(name.clone(), json_value(value, table, name)?);
         }
+        with_vault_metadata(conn, table, &mut fields)?;
         let counter: Option<i64> = row
             .get(stamp_base)
             .map_err(|e| format!("could not read {table}'s stamp: {e}"))?;
@@ -565,6 +631,86 @@ mod tests {
         assert!(!tables.contains(&"photos"));
         assert!(!tables.contains(&"trash_items"));
         assert!(!tables.contains(&"settings"));
+    }
+
+    /// §12.3 (Stage 3 decision 2): a vault row carries the generation and the
+    /// verifier it was sealed under, beside its stored fields.
+    #[test]
+    fn a_vault_row_carries_its_generation_and_verifier() {
+        const VAULT_UID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let conn = db();
+        let verifier = "{\"salt\":\"s\",\"iv\":\"i\",\"ciphertext\":\"c\"}";
+        conn.execute_batch(&format!(
+            "INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+               VALUES ('{VAULT_UID}', 'email', 'ct', 'salt', 'iv', '2026-01-01', '2026-01-01');
+             INSERT INTO settings (key, value) VALUES ('vault_setup', '{{\"version\":1}}');
+             INSERT INTO settings (key, value) VALUES ('vault_verify', '{verifier}');
+             INSERT INTO settings (key, value) VALUES ('vault_generation', '2');
+             INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
+               VALUES ('{NOTE}', 'Note', 'body', '', '2026-01-01', '2026-01-01');"
+        ))
+        .expect("seed the vault");
+
+        let snapshot = read_snapshot(&conn).expect("snapshot");
+        let item = snapshot
+            .rows
+            .iter()
+            .find(|row| row.uid == VAULT_UID)
+            .expect("the vault item travelled");
+        assert_eq!(
+            item.fields.get("ciphertext").and_then(|v| v.as_str()),
+            Some("ct")
+        );
+        assert_eq!(
+            item.fields
+                .get(VAULT_GENERATION_KEY)
+                .and_then(|v| v.as_i64()),
+            Some(2),
+            "the vault's password generation travels beside the row"
+        );
+        assert_eq!(
+            item.fields.get(VAULT_VERIFY_KEY).and_then(|v| v.as_str()),
+            Some(verifier),
+            "the sealed verifier travels exactly as settings stores it"
+        );
+        // §2.2: the settings ROW itself never crosses, and no other table's row
+        // carries the vault's metadata.
+        let note = snapshot
+            .rows
+            .iter()
+            .find(|row| row.uid == NOTE)
+            .expect("the note travelled");
+        assert!(note.fields.get(VAULT_GENERATION_KEY).is_none());
+        assert!(note.fields.get(VAULT_VERIFY_KEY).is_none());
+        assert!(snapshot.rows.iter().all(|row| row.table != "settings"));
+    }
+
+    #[test]
+    fn a_vault_row_without_a_generation_reads_as_no_vault() {
+        const VAULT_UID: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        let conn = db();
+        conn.execute_batch(&format!(
+            "INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+               VALUES ('{VAULT_UID}', 'email', 'ct', 'salt', 'iv', '2026-01-01', '2026-01-01');"
+        ))
+        .expect("seed the vault");
+        let snapshot = read_snapshot(&conn).expect("snapshot");
+        let item = snapshot
+            .rows
+            .iter()
+            .find(|row| row.uid == VAULT_UID)
+            .expect("the vault item travelled");
+        assert_eq!(
+            item.fields
+                .get(VAULT_GENERATION_KEY)
+                .and_then(|v| v.as_i64()),
+            Some(0)
+        );
+        assert_eq!(
+            item.fields.get(VAULT_VERIFY_KEY),
+            Some(&JsonValue::Null),
+            "no verifier is spelled as null, not as a missing key"
+        );
     }
 
     #[test]

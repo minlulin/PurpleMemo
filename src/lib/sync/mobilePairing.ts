@@ -56,10 +56,14 @@ import {
   LOCAL_FOREIGN_KEYS,
   type PeerRow,
   readPeers,
+  readVaultMetadata,
   type SnapshotOp,
   type SnapshotStamp,
   type SnapshotTombstoneOp,
   snapshotStatements,
+  VAULT_GENERATION_FIELD,
+  VAULT_VERIFIER_FIELD,
+  type VaultMetadata,
 } from "./store.ts";
 
 export type FrameOutcome =
@@ -739,6 +743,9 @@ export async function readLocalRows(
     uidById.set(table, byId);
   }
   const out: SyncedRow[] = [];
+  // §12.3 (Stage 3 decision 2): read once, lazily — only a device that holds
+  // vault rows has anything to annotate with it.
+  let vault: VaultMetadata | null = null;
   for (const table of tables) {
     const stamps = await reader.query<{
       entity_uid: string;
@@ -774,6 +781,15 @@ export async function readLocalRows(
           continue;
         }
         fields[column] = value;
+      }
+      if (table === "vault_items") {
+        // The same two envelope keys the desktop's reader emits: the password
+        // generation the item was sealed under and the verifier that proves it.
+        // They ride beside the row, never as columns, and only a vault row
+        // carries them.
+        vault ??= await readVaultMetadata(reader);
+        fields[VAULT_GENERATION_FIELD] = vault.generation ?? 0;
+        fields[VAULT_VERIFIER_FIELD] = vault.verifier;
       }
       const stamp = stampByUid.get(uid);
       out.push({

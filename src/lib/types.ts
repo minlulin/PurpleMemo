@@ -331,6 +331,12 @@ export interface PhotoRefRow {
 
 export interface VaultItemRow {
   id: number;
+  /**
+   * The row's cross-device identity (§1.1). NULL only for a row written before
+   * the column existed — such a row cannot be named by an op until an edit
+   * gives it one.
+   */
+  uid: string | null;
   title: string;
   ciphertext: string; // base64 AES-256-GCM
   salt: string; // base64, vault-password salt

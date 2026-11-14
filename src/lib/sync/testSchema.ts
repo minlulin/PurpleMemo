@@ -175,6 +175,24 @@ CREATE TABLE jobs (
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+-- §12.3's Vault: the rows a Stage 3 sync carries, and the settings table its
+-- receiving side writes the marker, verifier and generation into.
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE vault_items (
+  id INTEGER PRIMARY KEY,
+  uid TEXT,
+  title TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_vault_items_uid ON vault_items(uid);
+
 CREATE TABLE payables (
   id INTEGER PRIMARY KEY,
   title TEXT NOT NULL,

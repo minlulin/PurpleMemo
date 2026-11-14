@@ -15,8 +15,13 @@
  * observe a stale counter and the transaction's own row is the only source of
  * truth.
  */
-import type { BatchStatement, DataDriver } from "../../data/driver.ts";
+import type {
+  BatchStatement,
+  DataDriver,
+  Queryable,
+} from "../../data/driver.ts";
 import { todayLocal } from "../dates.ts";
+import { SETTING_KEYS, settingsUpsertStatement } from "../settings.ts";
 import {
   TRASH_CONFLICT_KIND,
   TRASH_SNAPSHOT_COLUMNS,
@@ -608,6 +613,155 @@ export async function readRowId(
     );
   }
   return row.id;
+}
+
+// ---------------------------------------------------------------------------
+// §12.3 — Vault: one password generation, carried with the rows.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two envelope keys every vault operation and every snapshot vault row
+ * carries (Stage 3 decision 2).
+ *
+ * They ride ALONGSIDE the row's fields, never among them: `vault_items` has no
+ * such columns, and the values are written into the RECEIVING device's own
+ * `settings` — the settings table itself never crosses (§2.2).
+ *
+ * `vault_generation` is the vault's **password** generation: 1 at setup, +1 at
+ * every password change, which re-seals every item. It is deliberately NOT the
+ * §10 data generation — a different counter with a different lifecycle, and
+ * mixing the two names is how a restore would silently re-key the vault.
+ */
+export const VAULT_GENERATION_FIELD = "vault_generation";
+export const VAULT_VERIFIER_FIELD = "vault_verifier";
+
+/** The vault metadata a payload carries, once its fields are separated out. */
+export interface VaultMetadata {
+  /** The password generation, or null when the payload carried none. */
+  generation: number | null;
+  /** The sealed verifier, exactly as `settings.vault_verify` stores it. */
+  verifier: string | null;
+}
+
+/**
+ * The vault metadata this device holds, read the way its own `settings` store
+ * it. `generation` is null when no row exists (a vault set up before Stage 3,
+ * or none at all) — the caller decides what that means, because only the
+ * vault's own writer knows whether a vault exists here.
+ */
+export async function readVaultMetadata(reader: {
+  query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
+}): Promise<VaultMetadata> {
+  const rows = await reader.query<{ key: string; value: string }>(
+    "SELECT key, value FROM settings WHERE key IN (?, ?)",
+    [SETTING_KEYS.vaultGeneration, SETTING_KEYS.vaultVerify],
+  );
+  let generation: number | null = null;
+  let verifier: string | null = null;
+  for (const row of rows) {
+    if (row.key === SETTING_KEYS.vaultGeneration) {
+      try {
+        const value: unknown = JSON.parse(row.value);
+        if (typeof value === "number" && Number.isSafeInteger(value)) {
+          generation = value;
+        }
+      } catch {
+        // A corrupt counter reads as "no row": the next op's generation is a
+        // guess either way, and a thrown error here would block every local
+        // vault write over one damaged setting.
+      }
+    } else if (row.key === SETTING_KEYS.vaultVerify) {
+      verifier = row.value;
+    }
+  }
+  return { generation, verifier };
+}
+
+/**
+ * Split a vault payload into the row's own fields and the envelope (§12.3).
+ *
+ * A vault row's write may only use the fields half: `vault_generation` and
+ * `vault_verifier` are not columns, and `vaultMetadataStatements` is where they
+ * belong. Every other table's payload is its row, unchanged.
+ */
+export function splitVaultMetadata(fields: Record<string, unknown>): {
+  fields: Record<string, unknown>;
+  metadata: VaultMetadata;
+} {
+  if (
+    !Object.hasOwn(fields, VAULT_GENERATION_FIELD) &&
+    !Object.hasOwn(fields, VAULT_VERIFIER_FIELD)
+  ) {
+    return { fields, metadata: { generation: null, verifier: null } };
+  }
+  const row: Record<string, unknown> = { ...fields };
+  const raw = row[VAULT_GENERATION_FIELD];
+  const sealed = row[VAULT_VERIFIER_FIELD];
+  delete row[VAULT_GENERATION_FIELD];
+  delete row[VAULT_VERIFIER_FIELD];
+  return {
+    fields: row,
+    metadata: {
+      generation:
+        typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0
+          ? raw
+          : null,
+      verifier: typeof sealed === "string" && sealed.length > 0 ? sealed : null,
+    },
+  };
+}
+
+/**
+ * The RECEIVING side's own settings write for vault metadata (decision 2), for
+ * the same batch that applies the items.
+ *
+ * Three rows, because the phone's existing `vault.ts` reads three: the verifier
+ * (`unlock`'s only proof while the vault holds no item), the generation (what
+ * the next comparison reads), and the setup marker — which `isSetUp()` reads,
+ * so without it the phone would keep telling the user no vault exists while the
+ * items sit right there. None of them crossed as a settings row; each is
+ * written here from the envelope (§2.2 stands).
+ */
+export function vaultMetadataStatements(
+  metadata: VaultMetadata,
+): BatchStatement[] {
+  const statements: BatchStatement[] = [];
+  if (metadata.verifier !== null) {
+    statements.push(
+      settingsUpsertStatement(
+        SETTING_KEYS.vaultSetup,
+        JSON.stringify({ version: 1 }),
+      ),
+      settingsUpsertStatement(SETTING_KEYS.vaultVerify, metadata.verifier),
+    );
+  }
+  if (metadata.generation !== null) {
+    statements.push(
+      settingsUpsertStatement(
+        SETTING_KEYS.vaultGeneration,
+        JSON.stringify(metadata.generation),
+      ),
+    );
+  }
+  return statements;
+}
+
+/**
+ * The wholesale wipe a new generation's first operation runs (decision 3):
+ * every local item and its stamp, because the incoming generation is a
+ * complete re-seal and mixing the two sets is the F3 failure.
+ *
+ * Tombstones stay: they are delete proofs (§5.1), not items, and dropping them
+ * would let a re-delivered delete resurrect nothing but also forget it.
+ */
+export function vaultWipeStatements(): BatchStatement[] {
+  return [
+    { sql: "DELETE FROM vault_items" },
+    {
+      sql: "DELETE FROM sync_row_stamps WHERE entity_table = ?",
+      params: ["vault_items"],
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------

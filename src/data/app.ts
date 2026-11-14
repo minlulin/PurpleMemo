@@ -93,7 +93,12 @@ export const exportsRepo = createExportsRepo(driver, {
 });
 export const memoriesRepo = createMemoriesRepo(driver, trashRepo);
 export const galleryRepo = createGalleryRepo(driver);
-export const vaultRepo = createVaultRepo(driver);
+/**
+ * The vault records its mutations only on the desktop (§2.3, §12.3): `origin`
+ * is the same one the Trash resolves, so a phone holding this repo writes its
+ * own rows and records no operation a peer would refuse.
+ */
+export const vaultRepo = createVaultRepo(driver, DEVICE_ORIGIN);
 export const settingsRepo = createSettingsRepo(driver);
 /**
  * The backup repo, wired to the vault (J5). `importBackup` replaces every
