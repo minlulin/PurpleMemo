@@ -59,6 +59,14 @@ function rowStampDdl(): string {
 
 const DDL = syncDdl();
 const ROW_STAMP_DDL = rowStampDdl();
+/** The v11 alias table, sliced from the migration the app ships. */
+const ALIAS_DDL = (() => {
+  const match = /pub const MIGRATION_10_11: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  assert.ok(match?.[1], "MIGRATION_10_11 not found in schema.rs");
+  return match[1];
+})();
 
 /** Only the pre-v8 table the migration's ALTER touches. */
 const REMINDERS = `
@@ -83,6 +91,7 @@ function openPeer(): { db: DatabaseSync; driver: DataDriver } {
   db.exec(REMINDERS);
   db.exec(DDL);
   db.exec(ROW_STAMP_DDL);
+  db.exec(ALIAS_DDL);
   const run = (sql: string, params: unknown[] = []): void => {
     db.prepare(sql).run(...(params as never[]));
   };

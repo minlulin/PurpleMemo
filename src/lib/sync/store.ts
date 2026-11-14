@@ -492,8 +492,9 @@ export function revokePeerStatements(
  *  * the generation is bumped and `re_pair_required` is set — §10.2 refuses a
  *    peer still holding the old generation;
  *  * both cursors are zeroed: the numbers meant rows in the old line;
- *  * the outbox, its delivery rows, the tombstones, their acks and the row
- *    stamps are dropped: they describe the line that is gone, and delivering
+ *  * the outbox, its delivery rows, the tombstones, their acks, the row stamps
+ *    and the uid aliases are dropped: they describe the line that is gone, and
+ *    delivering
  *    them would push the pre-restore state back onto the phone. What the phone
  *    had not pushed yet is lost by design (§10.5) — a restored row is
  *    pre-history, read exactly as the v9 migration reads a pre-sync row
@@ -520,6 +521,11 @@ export function restoreStatements(now: Date = new Date()): BatchStatement[] {
     { sql: "DELETE FROM sync_tombstone_acks" },
     { sql: "DELETE FROM sync_tombstones" },
     { sql: "DELETE FROM sync_row_stamps" },
+    // v11: a loser uid was a name for a row in the line that is gone. Keeping
+    // the alias would resolve an old op onto whatever the restored line holds
+    // under that uid — or onto nothing — which is exactly the stale-authority
+    // failure §10.5 exists to stop.
+    { sql: "DELETE FROM sync_uid_aliases" },
   ];
 }
 
@@ -869,6 +875,50 @@ function assertIdentifier(name: string, owner: string): void {
       `${JSON.stringify(name)} is not a name ${owner} may receive (§8.4).`,
     );
   }
+}
+
+/**
+ * A uid a same-name fold retired, and the uid that survived it (schema v11).
+ *
+ * Exit gate ruling 1: the surviving uid is the §4 winner's, so exactly one of
+ * the two uids becomes history — but the other device may still have ops queued
+ * under it (a note inside that folder, an edit, a delete). This is the durable
+ * mapping the engine records at the fold and reads wherever an op, a payload
+ * parent or a tombstone names a record.
+ *
+ * Upserted rather than inserted: a fold can be reached again with the same loser
+ * (a re-delivered create), and the winner is the same answer every time.
+ */
+export function uidAliasStatements(
+  table: SyncTable,
+  loserUid: string,
+  winnerUid: string,
+  now: Date = new Date(),
+): BatchStatement[] {
+  if (loserUid === winnerUid) return [];
+  return [
+    {
+      sql: `INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(entity_table, loser_uid) DO UPDATE SET
+              winner_uid = excluded.winner_uid,
+              updated_at = excluded.updated_at`,
+      params: [table, loserUid, winnerUid, nowIso(now)],
+    },
+  ];
+}
+
+/** The uid a loser was folded onto, or undefined when this device never folded it. */
+export async function readUidAlias(
+  driver: DataDriver,
+  table: SyncTable,
+  uid: string,
+): Promise<string | undefined> {
+  const [row] = await driver.query<{ winner_uid: string }>(
+    "SELECT winner_uid FROM sync_uid_aliases WHERE entity_table = ? AND loser_uid = ?",
+    [table, uid],
+  );
+  return row?.winner_uid;
 }
 
 /**

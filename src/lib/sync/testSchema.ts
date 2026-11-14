@@ -293,6 +293,17 @@ function migrationDdl(): string {
   return match[1];
 }
 
+/** The v11 alias DDL, sliced out of `MIGRATION_10_11`. */
+function aliasDdl(): string {
+  const match = /pub const MIGRATION_10_11: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  if (!match?.[1]) {
+    throw new Error("MIGRATION_10_11 not found in src-tauri/src/schema.rs");
+  }
+  return match[1];
+}
+
 /** The v9 row-stamp DDL, sliced out of `BASELINE_SQL`. */
 function rowStampDdl(): string {
   const match =
@@ -324,7 +335,7 @@ function fixtureSafe(statement: string): boolean {
 
 /** Every sync-storage statement a fixture needs, in order. */
 export function syncStorageDdl(): string {
-  return `${migrationDdl()}\n${rowStampDdl()}\n`
+  return `${migrationDdl()}\n${rowStampDdl()}\n${aliasDdl()}\n`
     .split(";")
     .map(withoutComments)
     .filter((statement) => statement.length > 0 && fixtureSafe(statement))

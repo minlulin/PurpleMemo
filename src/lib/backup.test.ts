@@ -800,8 +800,9 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
     params?: unknown[];
   }[];
   const deletes = statements.filter((s) => s.sql.startsWith("DELETE FROM "));
-  // 31 table replacements, then the five sync-storage deletions §10.1 adds
-  // (delivery rows and acks before their parents, then the stamps).
+  // 31 table replacements, then the six sync-storage deletions §10.1 adds
+  // (delivery rows and acks before their parents, then the stamps and v11's
+  // aliases).
   assert.deepEqual(
     deletes.map((s) => s.sql),
     [
@@ -819,6 +820,7 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
       "DELETE FROM sync_tombstone_acks",
       "DELETE FROM sync_tombstones",
       "DELETE FROM sync_row_stamps",
+      "DELETE FROM sync_uid_aliases",
     ],
   );
   const noteInsert = statements.find((s) =>
@@ -1669,7 +1671,11 @@ test("a v9-era Trash fixture restores into the v10 schema and round-trips unchan
   // database built from `BASELINE_SQL`, and then exported again.
   const driver = importDriver();
   const schemaVersion = shippedSchemaVersion();
-  assert.equal(schemaVersion, 10, "the Trash widening is the v10 step");
+  assert.equal(
+    schemaVersion,
+    11,
+    "the Trash widening is the v10 step; v11 adds only the alias table",
+  );
   driver.db.exec(`PRAGMA user_version = ${schemaVersion}`);
 
   const noteUid = "11111111-1111-4111-8111-111111111111";
@@ -1930,6 +1936,11 @@ test("a restore bumps the generation, clears the old line's bookkeeping and keep
      VALUES ('notes', ?, 1, ?, 'op-1', '{}', '2026-01-01')`,
     [UID, before.deviceId],
   );
+  run(
+    `INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+     VALUES ('notes', ?, ?, '2026-01-01')`,
+    [OLD_UID, UID],
+  );
 
   const restore = async () => {
     const payload: BackupPayload = {
@@ -1959,6 +1970,11 @@ test("a restore bumps the generation, clears the old line's bookkeeping and keep
     rows("SELECT count(*) AS n FROM sync_row_stamps"),
     0,
     "a restored row is pre-history: no stamp may claim a write for it",
+  );
+  assert.equal(
+    rows("SELECT count(*) AS n FROM sync_uid_aliases"),
+    0,
+    "and a loser uid from the old line resolves to nothing (§10.5)",
   );
 
   const peer = db

@@ -884,6 +884,129 @@ test("the same swap with the stamps reversed converges on the other uid", async 
   }
 });
 
+/**
+ * Two `Work` folders made offline, with A's uid losing the tie, and only the
+ * collection creates crossed. Returns B's store already folded, which is the
+ * state an interrupted sync leaves behind.
+ */
+async function foldedFolder(pair: Pair): Promise<{
+  loser: string;
+  winner: string;
+}> {
+  const onA = createNotesRepo(pair.a.driver);
+  const onB = createNotesRepo(pair.b.driver);
+  const collectionA = await onA.createCollection("Work");
+  await onA.createNote({
+    title: "A's plan",
+    content: "",
+    collectionId: collectionA,
+  });
+  const collectionB = await onB.createCollection("Work");
+  await onB.createNote({
+    title: "B's plan",
+    content: "",
+    collectionId: collectionB,
+  });
+  const loser = await uidOf(pair.a, "collections", collectionA);
+  const winner = await uidOf(pair.b, "collections", collectionB);
+
+  // Session 1: the collection creates only. A's note stays in its outbox —
+  // unacknowledged writes are device-local (§10.3), so an interrupted sync is
+  // exactly "the creates crossed, the children did not".
+  await applyFrom(pair.b, pair.a, {
+    ops: (await opsOf(pair.a)).filter(
+      (op) => op.entity_table === "collections",
+    ),
+  });
+  return { loser, winner };
+}
+
+test("a child that arrives after the fold resolves to the winner", async () => {
+  const pair = await openPair();
+  const { loser, winner } = await foldedFolder(pair);
+  assert.equal(
+    await count(
+      pair.b,
+      "SELECT count(*) AS n FROM sync_uid_aliases WHERE entity_table = 'collections' AND loser_uid = ? AND winner_uid = ?",
+      [loser, winner],
+    ),
+    1,
+    "the fold recorded the losing uid (v11)",
+  );
+
+  // Session 2 — a NEW apply, because the batch's own map never survives its
+  // call. That is the restart: only the table can answer now.
+  await applyFrom(pair.b, pair.a, {
+    ops: (await opsOf(pair.a)).filter((op) => op.entity_table === "notes"),
+  });
+  const [note] = await pair.b.driver.query<{ collection_id: number | null }>(
+    "SELECT collection_id FROM notes WHERE title = ?",
+    ["A's plan"],
+  );
+  const { folder } = await workState(pair.b);
+  assert.equal(
+    note?.collection_id,
+    folder.id,
+    "the note naming the loser uid landed in the winner's folder",
+  );
+});
+
+test("an update and a delete naming the loser uid act on the winner row", async () => {
+  const pair = await openPair();
+  const { loser, winner } = await foldedFolder(pair);
+  const peer = await deviceOf(pair.a);
+
+  const rename = syntheticOp(
+    peer,
+    5,
+    "collections",
+    loser,
+    "update",
+    { name: "Work (renamed)" },
+    6,
+  );
+  await pair.b.driver.batch(
+    await applyOps(pair.b.driver, {
+      peerId: peer,
+      origin: "desktop",
+      ops: [rename],
+    }),
+  );
+  const rows = await pair.b.driver.query<{ uid: string; name: string }>(
+    "SELECT uid, name FROM collections",
+  );
+  assert.equal(rows.length, 1, "the edit did not mint a second folder");
+  assert.equal(rows[0]?.uid, winner);
+  assert.equal(
+    rows[0]?.name,
+    "Work (renamed)",
+    "the edit named the loser uid and changed the winner row",
+  );
+
+  const remove = syntheticOp(peer, 6, "collections", loser, "delete", {}, 7);
+  await pair.b.driver.batch(
+    await applyOps(pair.b.driver, {
+      peerId: peer,
+      origin: "desktop",
+      ops: [remove],
+    }),
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM collections"),
+    0,
+    "the delete removed the winner row",
+  );
+  assert.equal(
+    await count(
+      pair.b,
+      "SELECT count(*) AS n FROM sync_tombstones WHERE entity_table = 'collections' AND entity_uid = ?",
+      [winner],
+    ),
+    1,
+    "and the tombstone is the WINNER's, so both devices agree on what died",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Stage 2 Session 2 — Business/Loans: desktop-owned shops, create-only jobs
 // and loans (§12.2).

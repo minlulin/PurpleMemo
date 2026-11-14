@@ -238,6 +238,19 @@ function openDb(): { db: DatabaseSync; driver: DataDriver } {
   // table, and the uid indexes the real schema carries.
   db.exec(UPLOAD_FIXTURE);
   db.exec(rowStampDdl());
+  // v11: the fold's alias table, which an apply resolves uids against.
+  {
+    const match = /pub const MIGRATION_10_11: &str = r#"([\s\S]*?)"#;/.exec(
+      readFileSync(
+        new URL("../../../src-tauri/src/schema.rs", import.meta.url),
+        "utf8",
+      ),
+    );
+    if (match?.[1] === undefined) {
+      throw new Error("MIGRATION_10_11 not found in schema.rs");
+    }
+    db.exec(match[1]);
+  }
   for (const table of ["collections", "notes", "wallets"]) {
     db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_uid ON ${table}(uid)`,

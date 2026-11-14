@@ -64,6 +64,15 @@ function rowStampDdl(): string {
   return match[0];
 }
 
+/** The v11 alias DDL, sliced out of `MIGRATION_10_11` like the two above. */
+function aliasDdl(): string {
+  const match = /pub const MIGRATION_10_11: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  assert.ok(match?.[1], "MIGRATION_10_11 not found in src-tauri/src/schema.rs");
+  return match[1];
+}
+
 /** The pre-v8 tables these tests mutate (the columns they actually touch). */
 const V7_FIXTURE = `
 CREATE TABLE collections (
@@ -134,6 +143,7 @@ function openStore(): Store {
   db.exec(V7_FIXTURE);
   db.exec(migrationDdl());
   db.exec(rowStampDdl());
+  db.exec(aliasDdl());
   // The real schema gives every synced table a UNIQUE uid index (the v7
   // backfill); the fixture declares the columns, so the indexes are added here
   // for the same reason: `ON CONFLICT(uid)` is only meaningful with one.

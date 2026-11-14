@@ -28,7 +28,7 @@
 /// The schema version this build expects and stamps.
 use std::sync::OnceLock;
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -388,7 +388,7 @@ WHERE NOT EXISTS (SELECT 1 FROM sync_state);
 /// A name missing from it would leave a table behind in a fixture and only
 /// surface as a migration collision.
 #[cfg(test)]
-pub const SYNC_STORAGE_TABLES: [&str; 7] = [
+pub const SYNC_STORAGE_TABLES: [&str; 8] = [
     "sync_state",
     "sync_outbox",
     "sync_outbox_delivery",
@@ -396,6 +396,7 @@ pub const SYNC_STORAGE_TABLES: [&str; 7] = [
     "sync_tombstone_acks",
     "sync_peers",
     "sync_row_stamps",
+    "sync_uid_aliases",
 ];
 
 /// The full baseline DDL + seed data. Applied inside a single transaction by
@@ -493,6 +494,30 @@ DROP TABLE trash_items_v9;
 
 CREATE INDEX idx_trash_items_entity ON trash_items(entity_type, entity_id);
 CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);
+"#;
+
+/// Schema v10 → v11: `sync_uid_aliases`, the uid a fold retired.
+///
+/// Exit gate ruling 1: the surviving uid of a same-name fold is the §4 winner's,
+/// so one side's uid becomes history — but the other device may still have ops
+/// queued under it (a note inside that folder, an edit, a delete). This table is
+/// the mapping per table, so a loser uid resolves to the winner instead of
+/// writing a second row, adopting nothing, or deleting the wrong record.
+///
+/// Device-local, like the rest of the sync storage (§10.3): it never enters a
+/// backup payload, and `applyBackup`'s new-line discipline clears it with the
+/// stamps and tombstones.
+pub const MIGRATION_10_11: &str = r#"
+CREATE TABLE sync_uid_aliases (
+  entity_table TEXT NOT NULL,
+  loser_uid    TEXT NOT NULL,
+  winner_uid   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, loser_uid),
+  CHECK (loser_uid != winner_uid)
+);
+
+CREATE INDEX idx_sync_uid_aliases_winner ON sync_uid_aliases(winner_uid);
 "#;
 
 pub const BASELINE_SQL: &str = r#"
@@ -1030,6 +1055,19 @@ CREATE TABLE sync_row_stamps (
 );
 
 CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps(entity_uid);
+
+-- v11: the uid a same-name fold retired, and the uid that survived it
+-- (MIGRATION_10_11 carries the reasoning).
+CREATE TABLE sync_uid_aliases (
+  entity_table TEXT NOT NULL,
+  loser_uid    TEXT NOT NULL,
+  winner_uid   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, loser_uid),
+  CHECK (loser_uid != winner_uid)
+);
+
+CREATE INDEX idx_sync_uid_aliases_winner ON sync_uid_aliases(winner_uid);
 
 -- The flagged §13.1 marker: nullable and unread until that decision is made.
 ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;

@@ -42,8 +42,10 @@ import {
   type HeldConflictRow,
   LOCAL_FOREIGN_KEYS,
   NATURAL_KEYS,
+  readUidAlias,
   readVaultMetadata,
   splitVaultMetadata,
+  uidAliasStatements,
   vaultMetadataStatements,
   vaultWipeStatements,
 } from "./store.ts";
@@ -589,25 +591,38 @@ function batchKey(table: string, uid: string): string {
  */
 type UidAliases = Map<string, string>;
 
-function rememberAlias(
+/**
+ * Record a fold's loser → winner, in this batch and on disk (v11).
+ *
+ * Both are needed: the map is what the rest of the batch resolves against, and
+ * the row is what a later session resolves against — a child op queued under the
+ * losing uid can arrive after the session that folded it has closed.
+ */
+function foldAliasStatements(
   aliases: UidAliases,
   table: SyncTable,
   loser: string,
   winner: string,
-): void {
-  if (loser !== winner) aliases.set(batchKey(table, loser), winner);
+  now: string,
+): BatchStatement[] {
+  if (loser === winner) return [];
+  aliases.set(batchKey(table, loser), winner);
+  return uidAliasStatements(table, loser, winner, new Date(now));
 }
 
-/** Follow this batch's resolutions to a uid nothing else outranks. */
-function resolveInBatch(
+/** Follow this device's resolutions to a uid nothing else outranks. */
+async function resolveUid(
+  driver: DataDriver,
   aliases: UidAliases,
   table: SyncTable,
   uid: string,
-): string {
+): Promise<string> {
   let current = uid;
   for (let hop = 0; hop < 8; hop += 1) {
-    const winner = aliases.get(batchKey(table, current));
+    const cached = aliases.get(batchKey(table, current));
+    const winner = cached ?? (await readUidAlias(driver, table, current));
     if (winner === undefined || winner === current) return current;
+    aliases.set(batchKey(table, current), winner);
     current = winner;
   }
   return current;
@@ -879,18 +894,19 @@ async function composeVaultOp(
  * winner it folded onto. Only the parent keys carry a uid; every other field is
  * a value, never an identity.
  */
-function resolveParentUids(
+async function resolveParentUids(
+  driver: DataDriver,
   aliases: UidAliases,
   table: SyncTable,
   fields: Record<string, unknown>,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const parents = FOREIGN_KEYS[table];
   if (parents === undefined) return fields;
   let resolved: Record<string, unknown> | null = null;
   for (const [field, parent] of Object.entries(parents)) {
     const value = fields[field];
     if (typeof value !== "string") continue;
-    const winner = resolveInBatch(aliases, parent, value);
+    const winner = await resolveUid(driver, aliases, parent, value);
     if (winner === value) continue;
     resolved ??= { ...fields };
     resolved[field] = winner;
@@ -914,7 +930,12 @@ async function composeOp(
   const delivered = parseFieldStamps(op);
   // A payload names its parents by uid, and a uid this batch has folded is a
   // loser: resolve it to the winner before anything is composed with it.
-  const fields = resolveParentUids(aliases, table, parsePayload(op));
+  const fields = await resolveParentUids(
+    driver,
+    aliases,
+    table,
+    parsePayload(op),
+  );
   const key = batchKey(table, op.entity_uid);
   const prior = overlay.get(key);
 
@@ -1000,18 +1021,35 @@ async function composeOp(
           // The local row outranks the incoming create: no re-key. The create
           // arrives as already held (§7.2), and the INCOMING uid is the loser
           // whose later ops resolve to this row.
-          rememberAlias(aliases, table, op.entity_uid, identity.localUid);
-          return { ...EMPTY_OUTCOME, next: { held } };
+          return {
+            ...EMPTY_OUTCOME,
+            effects: foldAliasStatements(
+              aliases,
+              table,
+              op.entity_uid,
+              identity.localUid,
+              now,
+            ),
+            next: { held },
+          };
         }
         // The incoming create wins, so the local row folds onto its uid and the
         // LOCAL uid is the loser.
-        rememberAlias(aliases, table, identity.localUid, op.entity_uid);
         const rekeyed: HeldRow = {
           ...held,
           row: { ...held.row, uid: op.entity_uid },
         };
         const merged = mergeOp(op, rekeyed, stamp, delivered, now, fields);
-        const fold = foldStatements({ table, uid: op.entity_uid, fields });
+        const fold = [
+          ...foldAliasStatements(
+            aliases,
+            table,
+            identity.localUid,
+            op.entity_uid,
+            now,
+          ),
+          ...foldStatements({ table, uid: op.entity_uid, fields }),
+        ];
         const outcome: OpOutcome =
           merged.effects.length > 0
             ? { ...merged, effects: [...fold, ...merged.effects] }
@@ -1128,7 +1166,7 @@ export async function applyOps(
 
     // An op naming a uid this batch has already folded is an op about the
     // winner: the loser uid is only the name the sender still had for it.
-    const foldedUid = resolveInBatch(aliases, table, op.entity_uid);
+    const foldedUid = await resolveUid(driver, aliases, table, op.entity_uid);
     const effective: PeerOp =
       foldedUid === op.entity_uid ? op : { ...op, entity_uid: foldedUid };
 
