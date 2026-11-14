@@ -574,6 +574,45 @@ function batchKey(table: string, uid: string): string {
   return `${table}\u0000${uid}`;
 }
 
+/**
+ * A uid this batch has already decided is the loser of a fold, and the winner
+ * it folded onto.
+ *
+ * Ruling 1 (Phase C exit gate): the surviving uid is the §4 winner's, so a
+ * create each device minted offline for the same natural key converges on ONE
+ * uid instead of the two sides swapping identities. A loser uid is still the
+ * name of the record in every op the other device already queued, so the batch
+ * has to keep the mapping for as long as it is applying (§8.4).
+ *
+ * Task 2 makes this durable (`sync_uid_aliases`, schema v11); this map is the
+ * same fact for the length of one batch.
+ */
+type UidAliases = Map<string, string>;
+
+function rememberAlias(
+  aliases: UidAliases,
+  table: SyncTable,
+  loser: string,
+  winner: string,
+): void {
+  if (loser !== winner) aliases.set(batchKey(table, loser), winner);
+}
+
+/** Follow this batch's resolutions to a uid nothing else outranks. */
+function resolveInBatch(
+  aliases: UidAliases,
+  table: SyncTable,
+  uid: string,
+): string {
+  let current = uid;
+  for (let hop = 0; hop < 8; hop += 1) {
+    const winner = aliases.get(batchKey(table, current));
+    if (winner === undefined || winner === current) return current;
+    current = winner;
+  }
+  return current;
+}
+
 /** What one op contributed: its effects, and the §13.2 copy it earned. */
 interface OpOutcome {
   effects: BatchStatement[];
@@ -614,9 +653,9 @@ function mergeOp(
   stamp: VersionStamp,
   fieldStamps: Record<string, VersionStamp>,
   now: string,
+  fields: Record<string, unknown> = parsePayload(op),
 ): OpOutcome {
   const table = op.entity_table as SyncTable;
-  const fields = parsePayload(op);
   const mergedFields: Record<string, VersionStamp> = { ...held.fieldStamps };
   const assignments: string[] = [];
   const params: unknown[] = [];
@@ -835,11 +874,36 @@ async function composeVaultOp(
  * `adopt` is §12.3's one exception: after a generation change has wiped the
  * local vault, the incoming set is written whole rather than compared.
  */
+/**
+ * The payload with every foreign key that names a loser uid rewritten to the
+ * winner it folded onto. Only the parent keys carry a uid; every other field is
+ * a value, never an identity.
+ */
+function resolveParentUids(
+  aliases: UidAliases,
+  table: SyncTable,
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  const parents = FOREIGN_KEYS[table];
+  if (parents === undefined) return fields;
+  let resolved: Record<string, unknown> | null = null;
+  for (const [field, parent] of Object.entries(parents)) {
+    const value = fields[field];
+    if (typeof value !== "string") continue;
+    const winner = resolveInBatch(aliases, parent, value);
+    if (winner === value) continue;
+    resolved ??= { ...fields };
+    resolved[field] = winner;
+  }
+  return resolved ?? fields;
+}
+
 async function composeOp(
   driver: DataDriver,
   op: PeerOp,
   now: string,
   overlay: Map<string, BatchEntry>,
+  aliases: UidAliases,
   adopt = false,
 ): Promise<OpOutcome> {
   const table = op.entity_table as SyncTable;
@@ -848,6 +912,9 @@ async function composeOp(
   }
   const stamp = opStamp(op);
   const delivered = parseFieldStamps(op);
+  // A payload names its parents by uid, and a uid this batch has folded is a
+  // loser: resolve it to the winner before anything is composed with it.
+  const fields = resolveParentUids(aliases, table, parsePayload(op));
   const key = batchKey(table, op.entity_uid);
   const prior = overlay.get(key);
 
@@ -912,7 +979,6 @@ async function composeOp(
     if (op.op !== "create") {
       return EMPTY_OUTCOME;
     }
-    const fields = parsePayload(op);
     const identity = await identityOf(driver, table, op, fields);
     // §7.2: a create for a record this device already holds BY UID writes
     // nothing — that delivery is the same write arriving twice.
@@ -924,11 +990,27 @@ async function composeOp(
       // because that uid is the row's from here on.
       const held = await readHeld(driver, table, identity.localUid);
       if (held !== undefined) {
+        // Ruling 1 (Phase C exit gate): the surviving uid is the §4 winner's.
+        // Both devices compare these same two stamps and reach the same answer,
+        // so the pair converges on ONE uid — where folding unconditionally left
+        // each side holding the other's uid, swapped and still divergent.
+        const localWins =
+          held.stamp !== undefined && compareStamps(held.stamp, stamp) > 0;
+        if (localWins) {
+          // The local row outranks the incoming create: no re-key. The create
+          // arrives as already held (§7.2), and the INCOMING uid is the loser
+          // whose later ops resolve to this row.
+          rememberAlias(aliases, table, op.entity_uid, identity.localUid);
+          return { ...EMPTY_OUTCOME, next: { held } };
+        }
+        // The incoming create wins, so the local row folds onto its uid and the
+        // LOCAL uid is the loser.
+        rememberAlias(aliases, table, identity.localUid, op.entity_uid);
         const rekeyed: HeldRow = {
           ...held,
           row: { ...held.row, uid: op.entity_uid },
         };
-        const merged = mergeOp(op, rekeyed, stamp, delivered, now);
+        const merged = mergeOp(op, rekeyed, stamp, delivered, now, fields);
         const fold = foldStatements({ table, uid: op.entity_uid, fields });
         const outcome: OpOutcome =
           merged.effects.length > 0
@@ -966,7 +1048,7 @@ async function composeOp(
     };
   }
 
-  return mergeOp(op, held, stamp, delivered, now);
+  return mergeOp(op, held, stamp, delivered, now, fields);
 }
 
 /**
@@ -992,6 +1074,8 @@ export async function applyOps(
   let highestCounter = 0;
 
   const overlay = new Map<string, BatchEntry>();
+  /** Ruling 1's decisions so far: loser uid → winner uid, per table. */
+  const aliases: UidAliases = new Map();
   /**
    * The password generation this device holds (§12.3 decision 1), read at most
    * once per batch — only a batch carrying vault ops needs it.
@@ -1006,6 +1090,7 @@ export async function applyOps(
     // for ever.
     if (op.seq > highestSeq) highestSeq = op.seq;
     if (op.counter > highestCounter) highestCounter = op.counter;
+    const table = op.entity_table as SyncTable;
 
     let adopt = false;
     if (op.entity_table === "vault_items") {
@@ -1041,9 +1126,25 @@ export async function applyOps(
       }
     }
 
-    const outcome = await composeOp(driver, op, now, overlay, adopt);
+    // An op naming a uid this batch has already folded is an op about the
+    // winner: the loser uid is only the name the sender still had for it.
+    const foldedUid = resolveInBatch(aliases, table, op.entity_uid);
+    const effective: PeerOp =
+      foldedUid === op.entity_uid ? op : { ...op, entity_uid: foldedUid };
+
+    const outcome = await composeOp(
+      driver,
+      effective,
+      now,
+      overlay,
+      aliases,
+      adopt,
+    );
     if (outcome.next)
-      overlay.set(batchKey(op.entity_table, op.entity_uid), outcome.next);
+      overlay.set(
+        batchKey(op.entity_table, effective.entity_uid),
+        outcome.next,
+      );
     if (outcome.held.length > 0) {
       // §5.5: the copy is written by the device that held the losing value,
       // in the winning apply's own transaction.
@@ -1052,7 +1153,7 @@ export async function applyOps(
           [
             {
               table: op.entity_table as SyncTable,
-              uid: op.entity_uid,
+              uid: effective.entity_uid,
               // This device holds the loser, so it writes the copy; the sender
               // is the other side of the pairing.
               loser: origin === "mobile" ? "desktop" : "mobile",

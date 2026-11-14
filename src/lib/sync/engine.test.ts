@@ -618,7 +618,16 @@ test("a mobile-origin entry edit is refused, and the same edit from the desktop 
   );
 });
 
-test("a same-name create folds onto the phone's row, so the child naming it resolves", async () => {
+/**
+ * Exit gate ruling 1: the phone's Food and the desktop's Food collide on the
+ * natural key, and the phone's earlier stamp means ITS uid survives — the
+ * create is treated as already held. The desktop's entry, in the same batch,
+ * names the desktop's uid, which is now the loser; the batch's alias resolves
+ * it, so the child still lands on the phone's row. (Before the ruling this test
+ * asserted the re-key: the phone's row took the desktop's uid even though the
+ * phone's stamp won.)
+ */
+test("a same-name create leaves the winning row's uid alone, and its child still resolves", async () => {
   const pair = await openPair();
   const onPhone = createBudgetRepo(pair.b.driver);
   await onPhone.createWallet("Cash");
@@ -655,8 +664,8 @@ test("a same-name create folds onto the phone's row, so the child naming it reso
   assert.equal(categories.length, 1, "one Food, not two (§8.4)");
   assert.equal(
     categories[0]?.uid,
-    desktopCategory.uid,
-    "the phone's row now wears the incoming identity",
+    phoneCategory.uid,
+    "the phone's stamp wins, so the phone's uid is the surviving identity",
   );
   assert.equal(
     categories[0]?.id,
@@ -667,10 +676,10 @@ test("a same-name create folds onto the phone's row, so the child naming it reso
     await count(
       pair.b,
       "SELECT count(*) AS n FROM sync_row_stamps WHERE entity_uid = ?",
-      [desktopCategory.uid],
+      [phoneCategory.uid],
     ),
     1,
-    "the record's stamp moved with it, so a later merge knows what it holds",
+    "the record keeps the stamp it held, so a later merge knows what it has",
   );
 
   const entries = await pair.b.driver.query<{
@@ -685,7 +694,7 @@ test("a same-name create folds onto the phone's row, so the child naming it reso
   assert.equal(
     entries[0]?.category_id,
     phoneCategoryId,
-    "its category_uid resolved to the folded row",
+    "its category_uid — the losing uid — resolved to the surviving row",
   );
   const [wallet] = await pair.b.driver.query<{ id: number }>(
     "SELECT id FROM wallets",
@@ -693,7 +702,16 @@ test("a same-name create folds onto the phone's row, so the child naming it reso
   assert.equal(entries[0]?.wallet_id, wallet?.id, "and so did its wallet_uid");
 });
 
-test("a fold re-keys the row but never overwrites a newer local value", async () => {
+/**
+ * Before the exit gate's ruling 1 this was "a fold re-keys the row but never
+ * overwrites a newer local value": the local stamp outranked the incoming
+ * create, the values stood, and the identity STILL folded onto the incoming
+ * uid. The ruling makes that combination impossible — the uid that survives is
+ * the §4 winner's — so the local stamp winning now means the local uid survives
+ * too. Everything else the old test asserted (the value stands, the stamp
+ * carries) is unchanged.
+ */
+test("a fold with the local stamp winning keeps the local uid and the local value", async () => {
   const pair = await openPair();
   const phoneUid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   await pair.b.driver.execute(
@@ -714,7 +732,11 @@ test("a fold re-keys the row but never overwrites a newer local value", async ()
     created_at: string;
   }>("SELECT * FROM expense_categories");
   assert.equal(rows.length, 1);
-  assert.notEqual(rows[0]?.uid, phoneUid, "the identity folded");
+  assert.equal(
+    rows[0]?.uid,
+    phoneUid,
+    "ruling 1: the local stamp wins, so the local uid is the surviving one",
+  );
   assert.equal(
     rows[0]?.created_at,
     "2026-11-09",
@@ -726,8 +748,140 @@ test("a fold re-keys the row but never overwrites a newer local value", async ()
   assert.equal(
     stamp?.counter,
     9,
-    "and its stamp carried across to the new key (§4.2)",
+    "and its stamp is still the one the row held (§4.2)",
   );
+});
+
+/** A device's `Work` folder and every note, as the swap scenario checks them. */
+async function workState(store: SyncFixture): Promise<{
+  folder: { id: number; uid: string | null };
+  notes: { title: string; collection_id: number | null }[];
+}> {
+  const [folder] = await store.driver.query<{
+    id: number;
+    uid: string | null;
+  }>("SELECT id, uid FROM collections ORDER BY id");
+  assert.ok(folder, "the folder exists");
+  const notes = await store.driver.query<{
+    title: string;
+    collection_id: number | null;
+  }>("SELECT title, collection_id FROM notes ORDER BY id");
+  return { folder, notes };
+}
+
+/** The uid a just-created row landed on, read back from the table. */
+async function uidOf(
+  store: SyncFixture,
+  table: string,
+  id: number,
+): Promise<string> {
+  const [row] = await store.driver.query<{ uid: string | null }>(
+    `SELECT uid FROM "${table}" WHERE id = ?`,
+    [id],
+  );
+  assert.ok(row?.uid, "the row has a uid");
+  return row.uid;
+}
+
+/**
+ * The swap: both devices create the same folder offline, so each one's create
+ * arrives at the other. Before ruling 1 both sides folded toward the other's
+ * uid and the pair ended up holding SWAPPED identities — the same data under
+ * two different names, still divergent, with a child op naming the losing uid
+ * unresolvable on the peer.
+ *
+ * Both devices compare the same two stamps, so exactly one uid survives and
+ * the loser's side folds onto it. The winner is the higher stamp; here both
+ * creates are counter 1, so §4.2's device-id tie-break decides.
+ */
+test("two offline 'Work' folders converge on the winner's uid, in both directions", async () => {
+  const pair = await openPair();
+  const onA = createNotesRepo(pair.a.driver);
+  const onB = createNotesRepo(pair.b.driver);
+  const collectionA = await onA.createCollection("Work");
+  await onA.createNote({
+    title: "A's plan",
+    content: "",
+    collectionId: collectionA,
+  });
+  const collectionB = await onB.createCollection("Work");
+  await onB.createNote({
+    title: "B's plan",
+    content: "",
+    collectionId: collectionB,
+  });
+  const uidA = await uidOf(pair.a, "collections", collectionA);
+  const uidB = await uidOf(pair.b, "collections", collectionB);
+  // compareStamps: counter first (1 = 1 here), then the device id.
+  assert.ok(DEVICE_A < DEVICE_B, "the fixture's device ids decide this tie");
+  const winner = uidB;
+
+  await applyFrom(pair.b, pair.a);
+  await applyFrom(pair.a, pair.b);
+
+  for (const [side, store] of [
+    ["A", pair.a],
+    ["B", pair.b],
+  ] as const) {
+    assert.equal(
+      await count(store, "SELECT count(*) AS n FROM collections"),
+      1,
+      `${side} holds one folder, not two`,
+    );
+    const { folder, notes } = await workState(store);
+    assert.equal(
+      folder.uid,
+      winner,
+      `${side} converged on the winner's uid, not the other side's`,
+    );
+    assert.equal(notes.length, 2, `${side} holds both notes`);
+    assert.deepEqual(
+      notes.map((note) => note.collection_id),
+      [folder.id, folder.id],
+      `${side} has both notes inside the surviving folder`,
+    );
+    assert.notEqual(uidA, uidB);
+  }
+});
+
+test("the same swap with the stamps reversed converges on the other uid", async () => {
+  const pair = await openPair();
+  // A's clock is ahead, so A's create outranks B's on the counter alone.
+  await pair.a.driver.execute("UPDATE sync_state SET lamport = 5 WHERE id = 1");
+  const onA = createNotesRepo(pair.a.driver);
+  const onB = createNotesRepo(pair.b.driver);
+  const collectionA = await onA.createCollection("Work");
+  await onA.createNote({
+    title: "A's plan",
+    content: "",
+    collectionId: collectionA,
+  });
+  const collectionB = await onB.createCollection("Work");
+  await onB.createNote({
+    title: "B's plan",
+    content: "",
+    collectionId: collectionB,
+  });
+  const uidA = await uidOf(pair.a, "collections", collectionA);
+  const uidB = await uidOf(pair.b, "collections", collectionB);
+
+  await applyFrom(pair.b, pair.a);
+  await applyFrom(pair.a, pair.b);
+
+  for (const store of [pair.a, pair.b]) {
+    const { folder, notes } = await workState(store);
+    assert.equal(
+      folder.uid,
+      uidA,
+      "A's create outranks B's, so A's uid survives",
+    );
+    assert.notEqual(folder.uid, uidB);
+    assert.deepEqual(
+      notes.map((note) => note.collection_id),
+      [folder.id, folder.id],
+      "and both notes still sit inside it",
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
