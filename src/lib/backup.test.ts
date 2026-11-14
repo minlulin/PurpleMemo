@@ -29,6 +29,7 @@ import {
   type BackupPhotoEntry,
   buildBackupZip,
   createBackupRepo,
+  DEVICE_LOCAL_SETTING_KEYS,
   exceedsEncryptedBackupCap,
   exportBudget,
   MAX_BACKUP_ARCHIVE_BYTES,
@@ -799,9 +800,17 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
   }[];
   const deletes = statements.filter((s) => s.sql.startsWith("DELETE FROM "));
   assert.equal(deletes.length, 31);
+  // §10.3: `settings` is the one table whose replacement spares this device's
+  // device-local rows — the app PIN survives a restore.
   assert.deepEqual(
     deletes.map((s) => s.sql),
-    BACKUP_TABLES.map((t) => `DELETE FROM ${t}`),
+    BACKUP_TABLES.map((t) =>
+      t === "settings"
+        ? `DELETE FROM settings WHERE key NOT IN (${DEVICE_LOCAL_SETTING_KEYS.map(
+            () => "?",
+          ).join(", ")})`
+        : `DELETE FROM ${t}`,
+    ),
   );
   const noteInsert = statements.find((s) =>
     s.sql.startsWith("INSERT INTO notes"),
@@ -1733,4 +1742,121 @@ test("a clean payload still imports — the FK canary stays silent (P3-5)", asyn
     foreign_keys: number;
   };
   assert.equal(fk.foreign_keys, 1);
+});
+
+// ---------------------------------------------------------------------------
+// §10.3 — device-local settings never travel
+// ---------------------------------------------------------------------------
+
+/** One settings value as stored, or undefined when the row is absent. */
+function settingValue(driver: DataDriver & { db: DatabaseSync }, key: string) {
+  const row = driver.db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+test("a payload carries the theme and the vault verifier, never the app PIN", async () => {
+  const driver = importDriver();
+  driver.db.exec(`INSERT INTO settings (key, value) VALUES
+    ('pin_hash', 'poison-pin-hash'),
+    ('security_question', 'poison-question'),
+    ('security_answer_hash', 'poison-answer-hash'),
+    ('theme', '"light"'),
+    ('vault_verify', '{"salt":"s","iv":"i","ciphertext":"c"}'),
+    ('vault_generation', '1')`);
+
+  const { bytes } = await createBackupRepo(driver).exportBackup();
+  const { payload } = parseBackupZip(bytes);
+
+  const keys = (payload.data.settings ?? []).map((row) => String(row.key));
+  for (const kept of ["theme", "vault_verify", "vault_generation"]) {
+    assert.ok(keys.includes(kept), `${kept} must still travel`);
+  }
+  for (const gone of DEVICE_LOCAL_SETTING_KEYS) {
+    assert.ok(!keys.includes(gone), `${gone} must not travel`);
+  }
+  // The serialized payload is what leaves the device, so it is what is checked
+  // — a row set that looks right but serializes a hash would still be a leak.
+  const serialized = JSON.stringify(payload);
+  for (const poison of [
+    "pin_hash",
+    "poison-pin-hash",
+    "security_question",
+    "poison-question",
+    "security_answer_hash",
+    "poison-answer-hash",
+  ]) {
+    assert.ok(!serialized.includes(poison), `${poison} reached the payload`);
+  }
+  // The vault's keys are deliberately NOT device-local (§12.3): a restored
+  // vault must still unlock.
+  assert.deepEqual(
+    [...DEVICE_LOCAL_SETTING_KEYS],
+    ["pin_hash", "security_question", "security_answer_hash"],
+  );
+});
+
+test("an older backup's PIN rows are skipped, and the rest of its settings apply", async () => {
+  const driver = importDriver();
+  driver.db.exec(`INSERT INTO settings (key, value) VALUES
+    ('pin_hash', 'this-device-pin'),
+    ('security_question', 'this-device-question'),
+    ('theme', '"dark"')`);
+
+  // A payload written before the filter existed: it carries an app PIN.
+  const payload: BackupPayload = {
+    app: BACKUP_APP,
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: "2026-10-12T03:00:00.000Z",
+    data: {
+      ...emptyTables(),
+      settings: [
+        { key: "pin_hash", value: "someone-elses-pin" },
+        { key: "security_question", value: "someone-elses-question" },
+        { key: "security_answer_hash", value: "someone-elses-answer" },
+        { key: "theme", value: '"light"' },
+        { key: "vault_verify", value: '{"salt":"restored"}' },
+      ],
+    },
+  };
+  await applyBackup(driver, { payload, photos: [] });
+
+  assert.equal(
+    settingValue(driver, "pin_hash"),
+    "this-device-pin",
+    "the app PIN must survive an import that carries one",
+  );
+  assert.equal(
+    settingValue(driver, "security_question"),
+    "this-device-question",
+  );
+  assert.equal(
+    settingValue(driver, "security_answer_hash"),
+    undefined,
+    "and no recovery row may be created from the payload",
+  );
+  assert.equal(
+    settingValue(driver, "theme"),
+    '"light"',
+    "everything else in settings still applies",
+  );
+  assert.equal(
+    settingValue(driver, "vault_verify"),
+    '{"salt":"restored"}',
+    "the vault's own line travels (§12.3)",
+  );
+});
+
+test("the exported payload names no sync table", async () => {
+  const driver = importDriver();
+  const { bytes } = await createBackupRepo(driver).exportBackup();
+  const { payload } = parseBackupZip(bytes);
+  const tables = Object.keys(payload.data);
+  assert.equal(tables.length, BACKUP_TABLES.length);
+  assert.deepEqual(
+    tables.filter((table) => table.startsWith("sync_")),
+    [],
+    "§10.3: no sync table may enter a payload",
+  );
 });

@@ -36,6 +36,7 @@ import {
   linkIsSelfReferential,
 } from "./entityLinks.ts";
 import { digestFromPhotoPath } from "./gallery.ts";
+import { SETTING_KEYS } from "./settings.ts";
 import { validateTrashPayload } from "./trash.ts";
 import type { LinkableEntityType } from "./types.ts";
 
@@ -168,6 +169,42 @@ export const BACKUP_TABLES = [
   "trash_items",
 ];
 
+/**
+ * The settings keys a backup payload NEVER carries (§10.3, close-out
+ * decision 1).
+ *
+ * The app PIN is this installation's lock, not the user's data. A payload that
+ * carried `pin_hash` would hand the hash to whoever holds the file, and a
+ * restore of someone else's backup would replace this device's PIN with a
+ * password its owner never chose. The security question and its answer hash are
+ * the same lock's recovery path, so they travel with it — nowhere.
+ *
+ * Deliberately NOT here: everything else in `settings`. The theme and locale
+ * are ordinary preferences, and the vault's `vault_verify` /
+ * `vault_generation` are the VAULT's own data line (§12.3) — a restored vault
+ * must still unlock, so they keep travelling.
+ *
+ * `settings.ts` marks no further device- or mobile-local key today. A new one
+ * belongs in this list, not in a call site: both borders read it.
+ */
+export const DEVICE_LOCAL_SETTING_KEYS = [
+  SETTING_KEYS.pinHash,
+  SETTING_KEYS.securityQuestion,
+  SETTING_KEYS.securityAnswerHash,
+] as const;
+
+/**
+ * Is this settings row device-local? Applied on BOTH sides (decision 1): the
+ * export omits such a row, and an import skips it even when an older backup
+ * carries it — an old archive must never overwrite this device's app PIN.
+ */
+export function isDeviceLocalSetting(row: Row): boolean {
+  return (
+    typeof row.key === "string" &&
+    (DEVICE_LOCAL_SETTING_KEYS as readonly string[]).includes(row.key)
+  );
+}
+
 export interface BackupPayload {
   app: string;
   version: number;
@@ -265,6 +302,12 @@ export async function readBackupData(
   BACKUP_TABLES.forEach((table, i) => {
     data[table] = tableRows[i] ?? [];
   });
+  // §10.3: the app PIN never enters a payload — not the hash, and not the
+  // recovery question that unlocks the same device. Everything else in
+  // `settings` is user data or the vault's own line and travels (§12.3).
+  data.settings = (data.settings ?? []).filter(
+    (row) => !isDeviceLocalSetting(row),
+  );
   const photoRows = await driver.query<{
     rel_path: string;
     size_bytes: number;
@@ -821,13 +864,31 @@ export async function applyBackup(
     const data: Record<string, Row[]> = {
       ...parsed.payload.data,
       photos: photoRows,
+      // Decision 1's import half: a backup written before this filter existed
+      // may still carry an app PIN. It is dropped here, so the DELETE above
+      // (which spares this device's own device-local rows) cannot be undone by
+      // the rows that follow it.
+      settings: (parsed.payload.data.settings ?? []).filter(
+        (row) => !isDeviceLocalSetting(row),
+      ),
     };
 
     await driver.execute("PRAGMA foreign_keys = OFF", undefined, lease);
     try {
-      const statements: BatchStatement[] = BACKUP_TABLES.map((table) => ({
-        sql: `DELETE FROM ${table}`,
-      }));
+      const statements: BatchStatement[] = BACKUP_TABLES.map((table) =>
+        table === "settings"
+          ? {
+              // §10.3: the replacement spares this device's device-local rows,
+              // so the app PIN it already has survives the restore. Without the
+              // guard the DELETE would take the PIN with it — and the payload
+              // is not allowed to bring a replacement.
+              sql: `DELETE FROM settings WHERE key NOT IN (${DEVICE_LOCAL_SETTING_KEYS.map(
+                () => "?",
+              ).join(", ")})`,
+              params: [...DEVICE_LOCAL_SETTING_KEYS],
+            }
+          : { sql: `DELETE FROM ${table}` },
+      );
       for (const table of BACKUP_TABLES) {
         for (const row of data[table] ?? []) {
           statements.push(insertStatement(table, row));
