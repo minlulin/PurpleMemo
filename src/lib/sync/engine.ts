@@ -1119,8 +1119,17 @@ export async function applyOps(
    * once per batch — only a batch carrying vault ops needs it.
    */
   let vaultGeneration: number | null = null;
-  /** The §12.3 metadata is written once per batch, with the items it names. */
-  let vaultMetadataWritten = false;
+  /**
+   * The newest generation whose §12.3 metadata this batch has written.
+   *
+   * Once per BATCH is not enough, and the difference is a real failure: a peer
+   * that was away across a rotation pulls the pre-rotation create AND the
+   * re-sealed update in one batch, so the generation it must end up holding is
+   * the last one met, not the first. Writing the first leaves a verifier for the
+   * old password beside items sealed with the new one — a vault that opens with
+   * neither, which is the mix §12.3 exists to prevent.
+   */
+  let vaultMetadataGeneration: number | null = null;
 
   for (const op of ops) {
     // §6.4: the cursor advances past every op the batch carries, including one
@@ -1156,11 +1165,16 @@ export async function applyOps(
         vaultGeneration = metadata.generation;
         adopt = true;
       }
-      if (!vaultMetadataWritten) {
+      if (
+        vaultMetadataGeneration === null ||
+        metadata.generation > vaultMetadataGeneration
+      ) {
         // Decision 2: this device's own settings, inside the batch that
-        // applies the items — the phone's `vault.ts` reads exactly these.
+        // applies the items — the phone's `vault.ts` reads exactly these. An
+        // upsert, so a later generation in the same batch replaces the earlier
+        // one instead of arriving beside it.
         effects.push(...vaultMetadataStatements(metadata));
-        vaultMetadataWritten = true;
+        vaultMetadataGeneration = metadata.generation;
       }
     }
 

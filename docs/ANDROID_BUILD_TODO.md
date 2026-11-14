@@ -989,7 +989,92 @@ longer holds the phase open.
   `openBaselineStore()` (the real `BASELINE_SQL`), because the Stage 1 fixture
   cannot hold a `contacts` or `journal_entries` row at all.
 
-**Exit gate:** two populated devices converge; retries idempotent;
-interrupted apply/reset/restore cannot lose acknowledged writes; tombstones
-propagate; counters reconcile; Vault generations never mix; revoked peers
-rejected; backup/restore + migration fixtures pass.
+**PHASE C EXIT GATE — PASS, 2026-11-14.** Every criterion, with the suite that
+proves it, on the gate commit's `npm run verify` (**1146 TypeScript tests, 313
+Rust tests, 0 skipped**):
+
+- *Two populated devices converge* — `src/lib/sync/syncSession.test.ts` (“a
+  phone note and a desktop task cross in one session and both stores converge”);
+  `src/lib/sync/bootstrap.test.ts` (“first pairing between two populated devices
+  keeps every row on both sides”); `src/lib/sync/engine.test.ts` (both “Work”
+  swap tests); `src/lib/sync/leak.test.ts` (“a sync session carries the two-way
+  rows in both directions and no §2.2 row”).
+- *Retries idempotent* — `harness.test.ts` (“duplicate-delivery: the batch
+  crosses three times and stays three deliveries”); `syncSession.test.ts` (“a
+  second session with no new writes moves no operations and no cursors”, and the
+  idempotent acknowledgement at its end); `store.test.ts` (“applying the same
+  snapshot twice is a no-op, tombstone included”).
+- *Interrupted apply/reset/restore cannot lose acknowledged writes* —
+  `syncSession.test.ts` (“an interrupted pull resumes from cursor_in and
+  converges without duplicating”); `harness.test.ts` (“mid-apply-kill: nothing
+  commits, then the retry delivers all four”, plus the no-loss oracle);
+  `store.test.ts` (“an outbox row and its mutation commit or roll back together”,
+  “the cursor moves only inside the transaction that applied its effects”, “acks
+  prune a row only when every live peer has acknowledged it”);
+  `src/lib/backup.test.ts` (the restore discipline below).
+- *Tombstones propagate* — `engine.test.ts` (“a record, delete and restore round
+  trip reaches the other device”, “an edit that outranks a remote delete does not
+  resurrect a half-row”); `store.test.ts` (“a deleted row leaves a tombstone, and
+  a cascaded child gets its own”, “tombstones are collected only when every live
+  peer acked”); `harness.test.ts` (“cascaded-child-delete: the child tombstone is
+  in the same batch”).
+- *Counters reconcile* — `syncSession.test.ts` (“counters reconcile over a full
+  cycle both ways, a Vault rotation included”), the one proof the gate had to
+  add: both stores populated first (so the counters start apart), one session
+  carrying the phone's rows, the desktop's rows and a password rotation, then
+  each side's `cursor_in` equals the other's `last_seq`, both outboxes are pruned
+  to empty with no delivery row left behind, and each `cursor_out` is the peer's
+  acknowledgement of this device's own rows — not the peer's position.
+- *Vault generations never mix* — `src/lib/sync/vaultSync.test.ts` (all five,
+  including “an old-generation op replayed after a rotation resurrects nothing
+  (F3)”); `pairing_snapshot.rs` (“a vault row carries its generation and
+  verifier”); and the counters test's fresh-peer half: a phone pulling ACROSS a
+  rotation receives the create and the re-sealed update in the same batch and
+  must open with the new password and refuse the old. That half found a real
+  defect — the batch's §12.3 metadata was written once per batch, so the FIRST
+  generation's verifier stayed beside items sealed for the second (a vault that
+  opens with neither password). Fixed in the same commit: the metadata is
+  written once per generation, so the newest one wins (§12.3 decision 2).
+- *Revoked peers rejected* — `pairing.test.ts` (“a revoked peer is refused before
+  any effect, before anything else is checked”); `harness.test.ts`
+  (“revoked-peer: the refusal is a wall, and the write stays owed”); the Rust
+  listener's admission tests (`pairing_listener.rs`), and the route's own
+  snapshot tests, which go through the same `admit` path.
+- *Backup/restore + migration fixtures pass* — `src/lib/backup.test.ts` (the v9
+  Trash fixture imported into the shipped schema and exported again unchanged,
+  the §10.3 device-local exclusions, the restore's own statements);
+  `src-tauri/src/db.rs` (populated v7→v8, v9→v10 and v10→v11 fixtures, and the
+  baseline-agreement tests for each migrated table); `store.test.ts` and
+  `rowStamps.test.ts` read the shipped DDL rather than a copy of it.
+
+No criterion is left without a proving suite.
+
+**The fold ruling (exit gate, 2026-11-14).** A create whose natural key is held
+under another uid still folds (§8.4), but which uid survives is now decided, not
+merely “the incoming one”: the §4 winner's. The create's stamp is compared with
+the local row's `sync_row_stamps` stamp, and only an incoming win re-keys the
+local row; a local win treats the create as already held and the local uid
+stands. Two devices that each created the same folder offline compared the same
+two stamps and therefore keep the SAME uid — before this they folded toward
+each other and stayed divergent, swapped. The losing uid is kept as an alias in
+`sync_uid_aliases` (schema **v11**), device-local like the rest of the sync
+storage: never in a backup payload, cleared by a restore with the stamps and
+tombstones, and consulted wherever an apply resolves a uid — the op's entity, a
+payload's parent uid, and a tombstone's target. Aliases never travel: a device
+re-keys its own rows at fold time, so its reads, snapshots and uploads name the
+winner already.
+
+Two things the ruling corrected in the record rather than the code: the Stage 2
+test “a fold re-keys the row but never overwrites a newer local value” was NOT
+the incoming-wins case the exit-gate prompt claimed — its local stamp is counter
+9 against the desktop create's counter 1, so under the ruling that fold does not
+re-key at all, and the test was rewritten to say so (“a fold with the local stamp
+winning keeps the local uid and the local value”). The Stage 2 seed-fold test
+asserted the old unconditional re-key for the same reason and was rewritten
+(“a same-name create leaves the winning row's uid alone, and its child still
+resolves”), with the child now proving the in-batch alias instead.
+
+**Still open, and not part of this gate:** the signed release APK (Phase B's
+gate, §13.1's reminder-owner decision, and the upload's own WAVE 3 wording),
+and the two-device run of the fold — this gate proves the engine's determinism
+in tests, not on hardware.

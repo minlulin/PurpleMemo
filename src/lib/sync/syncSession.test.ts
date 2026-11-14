@@ -15,7 +15,7 @@ import { createBusinessRepo } from "../business.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
 import { createVaultRepo } from "../vault.ts";
-import { ackStatements, readOutbox } from "./store.ts";
+import { ackStatements, readOutbox, readState } from "./store.ts";
 import { runSync } from "./syncSession.ts";
 import {
   countRows as count,
@@ -324,4 +324,145 @@ test("an applied verdict records the ack, so the pushed rows are prunable", asyn
   // The desktop's acknowledgement is idempotent: asking again changes nothing.
   await phone.driver.batch(ackStatements(DESKTOP, 2));
   assert.equal((await peer(phone, DESKTOP)).cursor_out, 2);
+});
+
+/**
+ * The exit gate's one proof that was not written yet: **counters reconcile over
+ * a full cycle**.
+ *
+ * Both sides are populated before the session, so the counters start apart — a
+ * cycle that only ever ran from zero would prove nothing about reconciling them.
+ * The cycle carries one of each kind of payload: the phone's ordinary rows, the
+ * desktop's ordinary rows, and the Vault's rotation (the one op family that also
+ * carries a generation, §12.3).
+ *
+ * The desktop's own acknowledgement is the half the ferry leaves to the
+ * listener: the phone's applied report reaches it on `/pair/applied`, which
+ * records it with `ackStatements` (§6.5). The phone's ack of the desktop's
+ * outbox is `runSync`'s own last step, so it is not written here.
+ */
+test("counters reconcile over a full cycle both ways, a Vault rotation included", async () => {
+  const { phone, desktop } = await pair();
+  const phoneNotes = createNotesRepo(phone.driver);
+  await phoneNotes.createNote({ title: "Phone one", content: "" });
+  await phoneNotes.createNote({ title: "Phone two", content: "" });
+  const desktopTasks = createTasksRepo(desktop.driver);
+  await desktopTasks.createTask({ title: "Desktop one" });
+  await desktopTasks.createTask({ title: "Desktop two" });
+  const vault = createVaultRepo(desktop.driver, "desktop");
+  await vault.setupVault("pass-one");
+  await vault.addItem("email", "s3cret@example", "pass-one");
+  await vault.changePassword("pass-one", "pass-two");
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.confirmed, true, "the cycle went through whole");
+  assert.equal(outcome.state, "applied");
+
+  const desktopAck = wire.syncApplied;
+  assert.ok(desktopAck !== null, "the phone reported what it applied");
+  await desktop.driver.batch(ackStatements(PHONE, desktopAck));
+
+  const phoneSeq = (await readState(phone.driver)).lastSeq;
+  const desktopSeq = (await readState(desktop.driver)).lastSeq;
+  assert.equal(phoneSeq, 2, "the phone's own outbox is two records");
+  assert.ok(
+    desktopSeq > 2,
+    "the desktop's is two tasks plus the Vault rotation",
+  );
+
+  // §6.4: a cursor is the seq this device applied through, and nothing infers
+  // the other side's position. Reaching the end on both sides IS the
+  // reconciliation.
+  assert.equal(
+    (await peer(desktop, PHONE)).cursor_in,
+    phoneSeq,
+    "the desktop applied the phone's outbox to its end",
+  );
+  assert.equal(
+    (await peer(phone, DESKTOP)).cursor_in,
+    desktopSeq,
+    "the phone applied the desktop's outbox to its end",
+  );
+  // §6.5: `cursor_out` is the acked position, not the peer's outbox end — so
+  // each side records the OTHER's acknowledgement of its own rows.
+  assert.equal(
+    (await peer(phone, DESKTOP)).cursor_out,
+    phoneSeq,
+    "the desktop acked the phone's outbox to its end",
+  );
+  assert.equal(
+    (await peer(desktop, PHONE)).cursor_out,
+    desktopSeq,
+    "the phone acked the desktop's outbox to its end",
+  );
+
+  // §6.5: every row was delivered and acknowledged, so nothing is left to
+  // prune and no acknowledgement outlives the row it named.
+  assert.deepEqual(
+    await readOutbox(phone.driver),
+    [],
+    "the phone's outbox is prunable and pruned",
+  );
+  assert.deepEqual(
+    await readOutbox(desktop.driver),
+    [],
+    "the desktop's outbox is prunable and pruned",
+  );
+  for (const [name, store] of [
+    ["phone", phone],
+    ["desktop", desktop],
+  ] as const) {
+    assert.equal(
+      await count(store, "SELECT count(*) AS n FROM sync_outbox_delivery"),
+      0,
+      `${name} keeps no delivery row for a row that is gone`,
+    );
+  }
+
+  // And the counters are a means: the two stores hold the same records.
+  for (const [name, store] of [
+    ["phone", phone],
+    ["desktop", desktop],
+  ] as const) {
+    assert.equal(
+      await count(store, "SELECT count(*) AS n FROM notes"),
+      2,
+      `${name} holds both notes`,
+    );
+    assert.equal(
+      await count(store, "SELECT count(*) AS n FROM tasks"),
+      2,
+      `${name} holds both tasks`,
+    );
+  }
+  assert.equal(
+    await count(phone, "SELECT count(*) AS n FROM vault_items"),
+    1,
+    "the phone holds the rotated item",
+  );
+  const [generation] = await phone.driver.query<{ value: string }>(
+    "SELECT value FROM settings WHERE key = ?",
+    ["vault_generation"],
+  );
+  assert.equal(
+    generation?.value,
+    "2",
+    "and only in the rotation's generation, not the one it replaced",
+  );
+  // The generation is not just a number on a row: the phone's vault must OPEN
+  // with the rotation's password and refuse the one it replaced. That is the
+  // whole of §12.3 in one assertion pair — the batch carried both generations,
+  // so a verifier taken from the first would fail both.
+  const phoneVault = createVaultRepo(phone.driver, "mobile");
+  await assert.rejects(
+    phoneVault.unlock("pass-one"),
+    "the phone must not answer to the password the rotation replaced",
+  );
+  await phoneVault.unlock("pass-two");
+  const items = await phoneVault.listItems();
+  assert.equal(items.length, 1, "one item, not one per generation");
+  assert.equal(items[0]?.title, "email");
 });
