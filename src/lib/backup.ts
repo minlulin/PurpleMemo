@@ -37,6 +37,7 @@ import {
 } from "./entityLinks.ts";
 import { digestFromPhotoPath } from "./gallery.ts";
 import { SETTING_KEYS } from "./settings.ts";
+import { restoreStatements } from "./sync/store.ts";
 import { validateTrashPayload } from "./trash.ts";
 import type { LinkableEntityType } from "./types.ts";
 
@@ -908,6 +909,12 @@ export async function applyBackup(
       // always the last statement — and rephrased here: the raw SQLite text
       // ("NOT NULL constraint failed…") would say nothing the user can act
       // on, and a failure at any OTHER index keeps its own message.
+      // §10.1 (close-out decision 2): a restore starts a NEW data line. The
+      // generation bump and the old line's bookkeeping are statements of this
+      // same batch, so they commit with the rows they describe — a restore that
+      // committed without them would leave §10.2's guard unable to fire, and
+      // cursors, stamps and an outbox pointing at rows that no longer exist.
+      statements.push(...restoreStatements());
       const canary = statements.length;
       statements.push({
         sql: "INSERT INTO settings (key, value) SELECT 'import-fk-check', NULL WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)",

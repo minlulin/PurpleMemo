@@ -486,15 +486,23 @@ export function revokePeerStatements(
 }
 
 /**
- * §10.3/§10.4: the desktop's data line changed under the pairing (a restore,
- * or a deliberate reset), so:
+ * §10.1/§10.3/§10.4: the desktop's data line changed under the pairing (a
+ * restore, or a deliberate reset), so:
  *
  *  * the generation is bumped and `re_pair_required` is set — §10.2 refuses a
  *    peer still holding the old generation;
  *  * both cursors are zeroed: the numbers meant rows in the old line;
- *  * the outbox and tombstones are dropped: they describe the line that is
- *    gone, and delivering them would push the pre-restore state back onto the
- *    phone. What the phone had not pushed yet is lost by design (§10.5).
+ *  * the outbox, its delivery rows, the tombstones, their acks and the row
+ *    stamps are dropped: they describe the line that is gone, and delivering
+ *    them would push the pre-restore state back onto the phone. What the phone
+ *    had not pushed yet is lost by design (§10.5) — a restored row is
+ *    pre-history, read exactly as the v9 migration reads a pre-sync row
+ *    (no stamp, counter 0), so no stamp row may survive claiming otherwise.
+ *
+ * The acks and delivery rows are deleted EXPLICITLY even though both tables
+ * cascade from their parents: an import batch runs with foreign keys OFF, so a
+ * cascade is not guaranteed to fire — and an orphaned ack is exactly the
+ * bookkeeping §10.3 says is device-local.
  *
  * Deliberately NOT touched: `device_id` (the install is the same install) and
  * `sync_peers.generation` (that stale value is the evidence the handshake
@@ -507,8 +515,11 @@ export function restoreStatements(now: Date = new Date()): BatchStatement[] {
       params: [nowIso(now)],
     },
     { sql: "UPDATE sync_peers SET cursor_in = 0, cursor_out = 0" },
+    { sql: "DELETE FROM sync_outbox_delivery" },
     { sql: "DELETE FROM sync_outbox" },
+    { sql: "DELETE FROM sync_tombstone_acks" },
     { sql: "DELETE FROM sync_tombstones" },
+    { sql: "DELETE FROM sync_row_stamps" },
   ];
 }
 
