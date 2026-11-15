@@ -29,6 +29,7 @@ import {
 import { QR_QUIET_ZONE, qrMatrix } from "../lib/sync/qr.ts";
 import type { PeerRow } from "../lib/sync/store.ts";
 import { ConfirmButton } from "./ConfirmButton.tsx";
+import { useT } from "./useTranslation.ts";
 
 /** The QR's modules, drawn from the same matrix the round-trip test decodes. */
 function QrCode({ payload }: { payload: string }) {
@@ -67,6 +68,7 @@ function QrCode({ payload }: { payload: string }) {
 }
 
 export function PairingPanel() {
+  const t = useT();
   const [state, setState] = useState<PairingPanelState | null>(null);
   const [peers, setPeers] = useState<PeerRow[]>([]);
   const [busy, setBusy] = useState(false);
@@ -75,6 +77,12 @@ export function PairingPanel() {
   const [identity, setIdentity] = useState<PairingIdentityStatus | null>(null);
   // §11.1: the offer is a string a person can carry to a phone with no camera.
   const [copied, setCopied] = useState(false);
+  /**
+   * §11.4: this desktop's own operations the staged phone has not received.
+   * Read before Trust is offered, because a re-pair would strand them.
+   */
+  const [pendingChanges, setPendingChanges] = useState<number | null>(null);
+  const [discardNote, setDiscardNote] = useState<string | null>(null);
   const offerTextRef = useRef<HTMLElement | null>(null);
   const startingRef = useRef(false);
   const stateRef = useRef<PairingPanelState | null>(null);
@@ -240,6 +248,46 @@ export function PairingPanel() {
   const view = state === null ? null : panelView(state);
   const pending = state === null ? null : pendingConfirmation(state, peers);
   const recovery = identityRecovery(identity);
+  const rePairingPeer = pending?.existing?.deviceId ?? null;
+
+  // The count belongs to the phone being staged, so it is read whenever a
+  // different device is staged — never guessed from this window's own state.
+  useEffect(() => {
+    if (rePairingPeer === null) {
+      setPendingChanges(null);
+      return;
+    }
+    let live = true;
+    void pairingRepo
+      .pendingFor(rePairingPeer)
+      .then((count) => {
+        if (live) setPendingChanges(count);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [rePairingPeer]);
+
+  /**
+   * §11.4's discard act — the person's own, explicit choice. Separate from
+   * Trust on purpose: trusting a phone never drops unsent work by itself.
+   */
+  const discardPending = useCallback(async () => {
+    if (rePairingPeer === null) return;
+    setBusy(true);
+    setError(null);
+    setDiscardNote(null);
+    try {
+      const dropped = await pairingRepo.discard(rePairingPeer);
+      setPendingChanges(await pairingRepo.pendingFor(rePairingPeer));
+      setDiscardNote(t("pairing.discarded", { count: dropped }));
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [rePairingPeer, t]);
 
   return (
     <div className="pairing-panel">
@@ -441,11 +489,39 @@ export function PairingPanel() {
                   Waiting for the phone's hello — key possession not yet proven.
                 </p>
               )}
+              {/* §11.4: a re-pair zeroes the cursors, so anything this
+                  desktop still owes the phone would be stranded. Trust is
+                  disabled until it is synced or deliberately discarded, and
+                  the count is named rather than left to the person to guess. */}
+              {pendingChanges !== null && pendingChanges > 0 ? (
+                <div className="pairing-guard" role="alert">
+                  <p className="pairing-error">
+                    {t("pairing.pendingChanges", { count: pendingChanges })}
+                  </p>
+                  <ConfirmButton
+                    what={t("pairing.discardPendingWhat", {
+                      count: pendingChanges,
+                    })}
+                    className="btn btn-danger"
+                    disabled={busy}
+                    onConfirm={discardPending}
+                  >
+                    {t("pairing.discardPending")}
+                  </ConfirmButton>
+                </div>
+              ) : null}
+              {discardNote !== null ? (
+                <p className="muted" role="status">
+                  {discardNote}
+                </p>
+              ) : null}
               <div className="pairing-actions">
                 <button
                   type="button"
                   className="btn btn-primary"
-                  disabled={busy || !pending.helloReceived}
+                  disabled={
+                    busy || !pending.helloReceived || (pendingChanges ?? 0) > 0
+                  }
                   onClick={() => void trust()}
                 >
                   Trust matching fingerprint

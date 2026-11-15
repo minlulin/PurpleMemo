@@ -55,6 +55,7 @@ import {
   applyStatements,
   LOCAL_FOREIGN_KEYS,
   type PeerRow,
+  pendingForPeer,
   readPeers,
   readVaultMetadata,
   type SnapshotOp,
@@ -1007,6 +1008,12 @@ export function createMobilePairingRepo(driver: DataDriver & PairingDriver) {
   return {
     /** The desktop pins this phone holds — what makes a §6 sync possible. */
     peers: () => readPeers(driver),
+    /**
+     * §11.4: this phone's own operations that desktop has not acknowledged.
+     * The card reads it before a re-pair so the person sees what starting a
+     * new pairing would leave unsent.
+     */
+    pendingFor: (deviceId: string) => pendingForPeer(driver, deviceId),
     pairWithDesktop: (
       session: PairingSession,
       typed: string,

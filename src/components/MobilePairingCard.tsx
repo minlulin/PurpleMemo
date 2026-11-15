@@ -72,6 +72,12 @@ export function MobilePairingCard() {
   // §6's ongoing sync: offered whenever this phone holds a desktop pin, not
   // only inside a fresh pairing session.
   const [pins, setPins] = useState<PeerRow[]>([]);
+  /**
+   * §11.4: what a re-pair would leave unsent. The card cannot block the press
+   * — the pin write needs no acknowledgement — so it says the number plainly
+   * before the person confirms.
+   */
+  const [rePairPending, setRePairPending] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [synced, setSynced] = useState<SyncOutcome | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -100,6 +106,30 @@ export function MobilePairingCard() {
       live = false;
     };
   }, []);
+
+  const offerDesktopId = offer?.deviceId ?? null;
+  const alreadyPaired =
+    offerDesktopId !== null &&
+    pins.some((row) => row.device_id === offerDesktopId);
+
+  // A re-pair starts a new pairing with this phone's own unsent changes still
+  // in the outbox, so the count is read before Confirm is offered (§11.4).
+  useEffect(() => {
+    if (offerDesktopId === null) {
+      setRePairPending(null);
+      return;
+    }
+    let live = true;
+    void mobilePairingRepo
+      .pendingFor(offerDesktopId)
+      .then((count) => {
+        if (live) setRePairPending(count);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [offerDesktopId]);
 
   // A camera left running behind a tab change is a light and a battery, and it
   // would keep decoding frames nobody is reading.
@@ -431,6 +461,11 @@ export function MobilePairingCard() {
               onChange={(e) => setTyped(e.target.value)}
             />
           </label>
+          {alreadyPaired && rePairPending !== null && rePairPending > 0 ? (
+            <p className="mobile-note" role="status">
+              {t("mobile.settings.rePairPending", { count: rePairPending })}
+            </p>
+          ) : null}
           <button
             type="button"
             className="btn"

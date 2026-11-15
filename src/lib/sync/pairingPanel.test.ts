@@ -31,6 +31,7 @@ import {
 import {
   applyStagedUpload,
   closePairingPanel,
+  discardPendingOutbox,
   identityRecovery,
   openPairingPanel,
   type PairingPanelState,
@@ -41,7 +42,12 @@ import {
   pinAdmittedPeer,
   settlePairingPanel,
 } from "./pairingPanel.ts";
-import { readPeers, type SnapshotOp } from "./store.ts";
+import {
+  discardPendingForPeerStatements,
+  pendingForPeer,
+  readPeers,
+  type SnapshotOp,
+} from "./store.ts";
 
 const SCHEMA_RS = readFileSync(
   new URL("../../../src-tauri/src/schema.rs", import.meta.url),
@@ -155,6 +161,8 @@ function transportFor(
     pairingStatus: () => driver.pairingStatus(),
     batch: (statements) => driver.batch(statements),
     peers: async () => peers,
+    pendingFor: async () => 0,
+    discardPendingFor: async () => 0,
     pairingUploadTake: () => driver.pairingUploadTake(),
     pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
     // The mock driver holds no rows; the apply's own tests bring a real DB.
@@ -165,12 +173,18 @@ function transportFor(
 /** The §9.1 transport surface with nothing staged, for tests that never upload. */
 function noUpload(): Pick<
   PairingTransport,
-  "pairingUploadTake" | "pairingUploadOutcome" | "existingUids"
+  | "pairingUploadTake"
+  | "pairingUploadOutcome"
+  | "existingUids"
+  | "pendingFor"
+  | "discardPendingFor"
 > {
   return {
     pairingUploadTake: async () => null,
     pairingUploadOutcome: async () => undefined,
     existingUids: async () => [],
+    pendingFor: async () => 0,
+    discardPendingFor: async () => 0,
   };
 }
 
@@ -367,6 +381,74 @@ test("the code's peer becomes one sync_peers row, and a re-pair resets cursors",
     "Sam's phone",
     "re-pairing a known phone keeps the name it was given (N10)",
   );
+});
+
+test("Trust refuses while the desktop still owes the phone changes, and the discard act is its own press", async () => {
+  const { db, driver } = openDb();
+  const admitted = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => admitted,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => admitted,
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    ...noUpload(),
+    pendingFor: (deviceId) => pendingForPeer(driver, deviceId),
+    discardPendingFor: async (deviceId) => {
+      const pending = await pendingForPeer(driver, deviceId);
+      await driver.batch(discardPendingForPeerStatements(deviceId));
+      return pending;
+    },
+  };
+
+  // The first pairing, and then two of this desktop's own operations that the
+  // phone has never acknowledged.
+  await pinAdmittedPeer(transport, panelState("pair-1"));
+  const insertOutbox = db.prepare(
+    `INSERT INTO sync_outbox
+       (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+     VALUES (?, ?, ?, 'notes', ?, 'create', 0, ?, '{}', '{"title":"x"}', '2026-11-15')`,
+  );
+  insertOutbox.run(DESKTOP_DEVICE, 1, "op-1", "note-1", 1);
+  insertOutbox.run(DESKTOP_DEVICE, 2, "op-2", "note-2", 2);
+
+  await assert.rejects(
+    () => pinAdmittedPeer(transport, panelState("pair-2")),
+    /2 change\(s\) have not been delivered yet/,
+  );
+  const untouched = db
+    .prepare("SELECT pairing_id, cursor_out FROM sync_peers")
+    .get() as { pairing_id: string; cursor_out: number };
+  assert.equal(
+    untouched.pairing_id,
+    "pair-1",
+    "a refused Trust changed nothing",
+  );
+  assert.equal(untouched.cursor_out, 0);
+
+  // §11.4: discarding is the button's OWN act, so it is a separate call.
+  assert.equal(
+    await discardPendingOutbox(transport, PHONE_DEVICE),
+    2,
+    "it drops exactly the undelivered rows",
+  );
+  const left = db.prepare("SELECT count(*) AS n FROM sync_outbox").get() as {
+    n: number;
+  };
+  assert.equal(left.n, 0);
+
+  const write = await pinAdmittedPeer(transport, panelState("pair-2"));
+  assert.equal(write?.repinned, true, "Trust now proceeds (§11.4)");
+  const repinned = db.prepare("SELECT pairing_id FROM sync_peers").get() as {
+    pairing_id: string;
+  };
+  assert.equal(repinned.pairing_id, "pair-2");
 });
 
 test("nothing is pinned until the listener reports an admitted peer", async () => {
@@ -857,6 +939,8 @@ function uploadTransport(
     pairingStatus: async () => listener(),
     batch: (statements) => driver.batch(statements),
     peers: () => readPeers(driver),
+    pendingFor: async () => 0,
+    discardPendingFor: async () => 0,
     pairingUploadTake: async () => staged,
     pairingUploadOutcome: async (input) => {
       outcomes.push(input);

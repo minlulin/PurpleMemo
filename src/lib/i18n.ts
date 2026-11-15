@@ -302,6 +302,14 @@ export const en = {
   "mobile.settings.pairWireMissing":
     "The desktop has not paired this phone: a phone cannot send its key until its sealed pairing client is built. Nothing was paired in this step.",
   "mobile.settings.pairRefresh": "Scan again",
+  "mobile.settings.rePairPending":
+    "This desktop is already paired. {count} change(s) on this phone have not been sent yet — pairing again starts a new pairing with them still unsent, so sync first if you want to keep them.",
+  "pairing.pendingChanges":
+    "This desktop still holds {count} change(s) this phone has not received. Re-pairing now would strand them: sync first, or discard them deliberately.",
+  "pairing.discardPending": "Discard those changes",
+  "pairing.discardPendingWhat": "the {count} undelivered change(s)",
+  "pairing.discarded":
+    "Discarded {count} undelivered change(s). Trust can proceed.",
   "mobile.settings.pullHeading": "Copy from the desktop",
   "mobile.settings.pullBody":
     "This copies the desktop's records to this phone in one step: either the whole snapshot arrives or none of it does. Nothing is deleted on either device.",
@@ -1261,6 +1269,14 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pairWireMissing":
     "ကွန်ပျူတာက ဤဖုန်းကို မတွဲရသေးပါ — ဖုန်း၏ လုံခြုံသော တွဲချိတ်ပို့ချက် (sealed pairing client) ကို မတည်ဆောက်ရသေးပါ။ ဤအဆင့်တွင် ဘာမှ မတွဲချိတ်ရသေးပါ။",
   "mobile.settings.pairRefresh": "ထပ်စကင်ဖတ်ရန်",
+  "mobile.settings.rePairPending":
+    "ဤကွန်ပျူတာနှင့် တွဲချိတ်ပြီးသား ဖြစ်သည်။ ဤဖုန်းမှ ပြောင်းလဲမှု {count} ခု မပို့ရသေးပါ — ထပ်တွဲပါက ထိုပြောင်းလဲမှုများ မပို့ရဘဲ တွဲချိတ်မှု အသစ် စတင်မည် ဖြစ်သည်။ ထိန်းထားလိုပါက အရင် sync လုပ်ပါ။",
+  "pairing.pendingChanges":
+    "ဤကွန်ပျူတာတွင် ဤဖုန်း မရရှိသေးသော ပြောင်းလဲမှု {count} ခု ကျန်ရှိနေသည်။ ယခု ပြန်တွဲပါက ၎င်းတို့ ပျက်စီးမည် — အရင် sync လုပ်ပါ၊ သို့မဟုတ် တမင်ဖျက်ပါ။",
+  "pairing.discardPending": "ထိုပြောင်းလဲမှုများကို ဖျက်မည်",
+  "pairing.discardPendingWhat": "မပို့ရသေးသော ပြောင်းလဲမှု {count} ခု",
+  "pairing.discarded":
+    "မပို့ရသေးသော ပြောင်းလဲမှု {count} ခုကို ဖျက်လိုက်ပါပြီ။ Trust ဆက်လုပ်နိုင်ပါပြီ။",
   "mobile.settings.pullHeading": "ကွန်ပျူတာမှ ကူးယူရန်",
   "mobile.settings.pullBody":
     "ကွန်ပျူတာရှိ မှတ်တမ်းများကို ဤဖုန်းသို့ တစ်ဆင့်တည်းဖြင့် ကူးယူပါသည်။ အစုအစည်းတစ်ခုလုံး ရောက်လာမည်၊ သို့မဟုတ် တစ်ခုမျှ မရောက်ပါ။ မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",

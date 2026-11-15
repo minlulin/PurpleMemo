@@ -39,6 +39,7 @@ import type {
 import { applyOps, type PeerOp } from "./engine.ts";
 import { readUploadOps } from "./mobilePairing.ts";
 import {
+  canRePair,
   createPairingSession,
   encodeOffer,
   keyFingerprint,
@@ -55,7 +56,9 @@ import type { SyncTable } from "./protocol.ts";
 import {
   ackStatements,
   assertSyncTable,
+  discardPendingForPeerStatements,
   type PeerRow,
+  pendingForPeer,
   readPeers,
   uploadStatements,
 } from "./store.ts";
@@ -79,6 +82,14 @@ export interface PairingTransport {
    * from a validated op, never free text.
    */
   existingUids(table: SyncTable, uids: readonly string[]): Promise<string[]>;
+  /**
+   * §11.4: this device's own operations that peer has not acknowledged — the
+   * mutations a re-pair would strand. Read by Trust, which refuses while any
+   * exists (the discard act below is the only way past it).
+   */
+  pendingFor(deviceId: string): Promise<number>;
+  /** §11.4's discard act: drop those pending rows and answer how many. */
+  discardPendingFor(deviceId: string): Promise<number>;
   /**
    * §6's exchange, which only the production driver has: a panel double that
    * models the code and the upload but not the ongoing sync simply omits the
@@ -695,6 +706,14 @@ export async function pinAdmittedPeer(
   const existing = (await transport.peers()).find(
     (row) => row.device_id === deviceId,
   );
+  // §11.4: a re-pair zeroes the cursors and drops the old pairing's acks, so
+  // any operation this desktop has not delivered to that phone would be
+  // stranded by it. Trust refuses while that is true — the discard act, and
+  // only it, is how the person gets past this.
+  if (existing !== undefined) {
+    const verdict = canRePair(await transport.pendingFor(deviceId), false);
+    if (!verdict.ok) throw new Error(verdict.message);
+  }
   const peer = { deviceId, publicKey, generation: state.local.generation };
   const statements = existing
     ? // §11.4: a re-pair is a new pairing, not a new phone — the name the
@@ -712,6 +731,22 @@ export async function pinAdmittedPeer(
   };
 }
 
+/**
+ * §11.4's discard act, as one call: drop the pending operations for a re-pair
+ * the person has explicitly chosen to abandon. Answers how many were dropped;
+ * zero when there was nothing to drop, so the control is harmless when pressed
+ * twice.
+ *
+ * Nothing here trusts the phone — discarding is one act, Trust is another.
+ */
+export async function discardPendingOutbox(
+  transport: PairingTransport,
+  deviceId: string,
+): Promise<number> {
+  if ((await transport.pendingFor(deviceId)) === 0) return 0;
+  return transport.discardPendingFor(deviceId);
+}
+
 /** Bind the panel to the one production driver (`data/app.ts`). */
 export function createPairingRepo(driver: DataDriver & PairingDriver) {
   const transport: PairingTransport = {
@@ -721,6 +756,12 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     pairingStatus: () => driver.pairingStatus(),
     batch: (statements) => driver.batch(statements),
     peers: () => readPeers(driver),
+    pendingFor: (deviceId) => pendingForPeer(driver, deviceId),
+    discardPendingFor: async (deviceId) => {
+      const pending = await pendingForPeer(driver, deviceId);
+      await driver.batch(discardPendingForPeerStatements(deviceId));
+      return pending;
+    },
     pairingUploadTake: () => driver.pairingUploadTake(),
     pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
     sync: {
@@ -767,6 +808,8 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
         (await transport.pairingStatus()).peerDeviceId ?? undefined,
       ),
     pin: (state: PairingPanelState) => pinAdmittedPeer(transport, state),
+    pendingFor: (deviceId: string) => transport.pendingFor(deviceId),
+    discard: (deviceId: string) => discardPendingOutbox(transport, deviceId),
     local: () => driver.pairingLocal(),
     status: () => driver.pairingStatus(),
     peers: () => readPeers(driver),

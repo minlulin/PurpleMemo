@@ -583,6 +583,50 @@ export async function pendingCount(driver: DataDriver): Promise<number> {
 }
 
 /**
+ * §11.4: this device's own operations that `deviceId` has NOT acknowledged —
+ * exactly the mutations a re-pair would strand.
+ *
+ * The peer's `cursor_out` is its own acknowledgement (never a cursor inferred
+ * from another peer's), so `seq > cursor_out` is the pending set for THIS
+ * pairing. A peer row that is missing counts 0: nothing was ever delivered to
+ * an unknown device, and a re-pair of one is a first pairing.
+ */
+export async function pendingForPeer(
+  driver: DataDriver,
+  deviceId: string,
+): Promise<number> {
+  const [row] = await driver.query<{ pending: number }>(
+    `SELECT count(*) AS pending FROM sync_outbox
+      WHERE seq > COALESCE((SELECT cursor_out FROM sync_peers WHERE device_id = ?), 0)`,
+    [deviceId],
+  );
+  return row?.pending ?? 0;
+}
+
+/**
+ * §11.4's DISCARD act: drop the pending operations a re-pair would strand.
+ *
+ * Deliberately a separate statement set from `rePairStatements`: the spec calls
+ * discarding "the button's own, explicit act", so it is never a side effect of
+ * trusting a phone. The delivery rows for the rows this deletes go too — an ack
+ * that outlives the operation it named is bookkeeping for a row nobody holds.
+ */
+export function discardPendingForPeerStatements(
+  deviceId: string,
+): BatchStatement[] {
+  return [
+    {
+      sql: `DELETE FROM sync_outbox
+            WHERE seq > COALESCE((SELECT cursor_out FROM sync_peers WHERE device_id = ?), 0)`,
+      params: [deviceId],
+    },
+    {
+      sql: "DELETE FROM sync_outbox_delivery WHERE outbox_id NOT IN (SELECT id FROM sync_outbox)",
+    },
+  ];
+}
+
+/**
  * The uid this device holds for a local row (§1.1's `(table, uid)`), or
  * `undefined` when the row is gone.
  *
