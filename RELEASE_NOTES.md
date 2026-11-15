@@ -1,73 +1,55 @@
-# Purple Memo 0.1.1
-
-The first update to Purple Memo 0.1.0.
+# Purple Memo 0.2.0
 
 Purple Memo is a personal offline notebook and life/money manager for one
 person — notes, journal, tasks and reminders, budget and business tracking,
 contacts, and a photo library, in a single encrypted local database.
-Desktop-only (Tauri), fully offline: no accounts, no sync, no cloud.
 
-**Platform:** Windows 10/11 (x64). Linux and macOS build from source as
-best-effort only and receive no signed artifacts.
+This release adds the Android companion and the local-network sync that ties it
+to this desktop app. Pair once, and your records stay together.
 
 ## Upgrading
 
-Existing 0.1.0 installs update themselves: **Settings → Updates → Check for
-updates**. Your data, photos and settings are carried over untouched.
+Existing installs update themselves: **Settings → Updates → Check for
+updates**. Your data, photos and settings are carried over untouched — but read
+*Scope and compatibility* below before you update, because the database upgrade
+is one-way.
 
-## What's new
+## Pair your phone
 
-- **CSV import for tasks and contacts.** Pick a spreadsheet, preview what will
-  be written, and import only the rows you accept. Rejected rows are listed
-  with the data row number that failed, so the file can be corrected and
-  re-imported. A template with the exact expected columns downloads from the
-  import dialog. Imports are bounded — an oversized file or row count is
-  refused before anything is written, and a failure part-way through rolls the
-  whole import back.
-- **CSV export for tasks and contacts**, ready to open in a spreadsheet. The
-  initial bundle was also split, so the app starts lighter.
-- **A full-view reader for notes.** Notes open in a focused reading view, with
-  `Ctrl+E` switching between reading and editing, and the split workspace
-  layout reworked around it.
-- **Dashboard and tray.** Tasks on the dashboard carry an urgency badge, the
-  dashboard and habits roll over to the new day at midnight, and Purple Memo
-  now lives in the system tray: closing the window can leave it running in the
-  background, and that behaviour can be switched off in Settings.
-- **Settings, simplified.** Settings is now labels and controls — the
-  explanatory paragraphs are gone.
-- **Hardening, applied in waves.** A full audit sweep covered the engine seam,
-  the lock screen and session, PIN and vault crypto, backup and recovery,
-  reset, search, notes, contacts, tasks, the vault, business pages, gallery,
-  memories, loans, shopping, journal, inbox, habits, and the shared UI layer.
-  The fixes include: unverifiable PIN hashes fail closed; reset, import and LAN
-  share are coordinated by one lifecycle barrier; backups are validated before
-  and after decryption; photo size ceilings are checked before decoding;
-  markdown links preserve `tel:` while blocking dangerous schemes; Trash and
-  Gallery agree on who owns a photo; and every money-submit handler refuses a
-  second submit while one is in flight.
-- **Database schema v6.** The v5 → v6 migration adds nine indexes — note
-  browsing, photos by creation date, memories by memory date, habit logs,
-  budget ledger by category and date (income and expense), jobs by shop,
-  payables by paid state and due date, and shopping items by list and order —
-  and replaces the notes full-text trigger, so pinning or archiving a note no
-  longer rewrites its search row. Schema objects only: no rows are rewritten.
+Open **Settings → Pairing** and show the QR code; the phone scans it and you
+confirm the same short code on both screens. The two devices then find each
+other on your local network and exchange a first copy of everything they hold.
+The pairing key is per-install and stays on your machines.
 
-## Please read before installing
+## What moves between them
 
-- **Your database key is not in your backup.** Backups (Settings → Backup)
-  contain your data and photos, never the database key. The key lives in
-  your operating system's credential store and is exported separately
-  (Settings → Key export). Keep the exported key file somewhere safe and
-  separate — a backup without its key cannot be opened.
-- **No downgrades.** The database schema is forward-only (currently v6).
-  An older version of Purple Memo cannot open a database a newer version
-  has migrated, and installing an older version does not roll your data
-  back. To return to an older version, restore a backup taken before the
-  upgrade.
-- **One instance per machine.** Purple Memo runs as a single instance; a
-  second launch is turned away. This is deliberate — two copies must never
-  contend for the same encrypted database.
+Notes and to-do lists (including task reminders), shopping lists and habits,
+Budget, Business and Loans, and the Vault — the Vault arrives on the phone only
+after you enter its password there. Deletes travel too, so a record removed on
+one device is removed on the other, and conflicts are resolved field by field
+rather than by overwriting a whole record. A record that loses a conflict is
+kept in Trash on the losing side rather than discarded silently.
 
-## License
+Everything goes over your own local network: nothing is uploaded to a server,
+there is no account, and no cloud is involved.
 
-MIT — see the LICENSE file in the repository.
+## Reliability
+
+Under the hood this release is mostly sync correctness and data-safety work:
+byte-bounded pulls that never split a record, a refused oversized record named
+instead of failing obscurely, tombstone and delete ordering that survives
+interruption, honest acknowledgement of what a device actually applied, and a
+new data line whenever a backup is restored so old writes are not replayed into
+the restored database. Backups also no longer carry the app PIN.
+
+## Scope and compatibility
+
+- This GitHub release ships the **Windows desktop** build only. The Android
+  companion app is distributed separately — there is no APK download here.
+- Database migrations are forward-only: this version upgrades your database to
+  schema v12 and **older versions cannot open it afterwards**. Reinstalling an
+  older build does not roll your data back; to go back you must restore a
+  backup taken before the upgrade.
+- Backups restore rows and photos. The database encryption key is never part of
+  a backup — export it separately from **Settings → Key export** and keep it
+  somewhere safe.
