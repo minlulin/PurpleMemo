@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "purple-memo"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.4.3",

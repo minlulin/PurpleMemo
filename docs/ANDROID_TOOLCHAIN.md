@@ -71,9 +71,41 @@ RANLIB_aarch64-linux-android = llvm-ranlib
 PERL5LIB         = <local perl lib with the three modules>
 ```
 
-`PERL5LIB` must be kept out of MSYS2's path conversion
-(`MSYS2_ENV_CONV_EXCL`), or the value is rewritten into a Windows path that
-Git-Bash's perl cannot use.
+`PERL5LIB` must be **a POSIX path**, and must be kept out of MSYS2's path
+conversion (`MSYS2_ENV_CONV_EXCL`). Both halves were proven the hard way at the
+first release build (2026-11-15): passing the Windows form
+(`PERL5LIB='C:\Users\purpl\AppData\Local\Temp\android-perl\lib'`) reaches OpenSSL's
+`Configure` as
+
+```
+@INC entries checked: … C \Users\purpl\AppData\Local\Temp\android-perl\lib …
+Can't locate Locale/Maketext/Simple.pm in @INC
+  … BEGIN failed--compilation aborted at ./Configure line 23.
+```
+
+— the drive colon and every backslash are eaten, so the directory is simply not
+there. The form that works is the MSYS one:
+
+```
+export MSYS2_ENV_CONV_EXCL="PERL5LIB"
+export PERL5LIB='/c/Users/purpl/AppData/Local/Temp/android-perl/lib'
+```
+
+Git-Bash's perl resolves that path, and `Configure` then runs to completion.
+Sanity-check it before a build — this must print three `ok`s and no message
+about a loadable library:
+
+```
+PERL5LIB="$PERL5LIB" perl -MExtUtils::MakeMaker -MPod::Usage \
+  -MLocale::Maketext::Simple -e 'print "ok\n"'
+```
+
+Do **not** point `PERL5LIB` at Strawberry's own library tree instead of copying
+the modules out. Its pure-Perl modules load, but the first XS module pulled in
+fails with `loadable library and perl binaries are mismatched (got second hand
+key … needed …)`, because Strawberry's perl is MSWin32 and Git-Bash's is
+Cygwin. Copy the module directories (`ExtUtils`, `Pod`, `Locale`, `I18N`) and
+delete every `*.so`/`*.dll`/`*.xs`/`*.bs` from the copy.
 
 **Gradle also needs an `npm.bat`.** The generated `BuildTask.kt` invokes
 `npm`, falling back to `npm.cmd` and then `npm.bat`; this Node installation
@@ -85,13 +117,40 @@ them recreated. If the SQLCipher/OpenSSL step keeps costing time, MSYS2 is the
 cleaner substitute: its perl has the modules and Unix paths, and it provides
 `make` — items 1 and 2 stop being local hacks, and only item 3 remains.
 
+### The release-profile ICU stanza — confirmed (2026-11-15)
+
+`src-tauri/Cargo.toml` carries a package-level override:
+
+```
+[profile.release.package.icu_locale_core]
+opt-level = 3
+```
+
+It answers a real failure: rustc 1.95.0 **ICEd** compiling `icu_locale_core`
+under `opt-level = "s"` with `panic = "abort"` in the Android release build
+(2026-11-07), and the override was added as the candidate workaround without a
+build to prove it. The first signed release build (aarch64, 2026-11-15) is that
+trial, and the verdict is **works**: `icu_locale_core` compiled under the
+release profile with no ICE and no exit 101, and the build finished
+(the log reads "Finished `release` profile [optimized] target(s) in 10m 37s",
+then "Finished 1 APK"). No profile change, toolchain pin or nightly flag was
+needed.
+
+The stanza stays. If it is ever questioned, the evidence is cheap to re-read:
+a fresh `src-tauri/target/aarch64-linux-android/release/.fingerprint/icu_locale_core-*`
+directory dated to the build, and an absence of "internal compiler error" in
+the build log. If a future rustc does ICE through it, the fallback is the
+other lead recorded in the Cargo.toml comment — rust-lang/rust #157148 — and
+the re-run uses `--message-format short` to get a readable error.
+
 ### Rebuilding the shims after a `%TEMP%` cleanup
 
 Windows clears `%TEMP%`, which deletes the shims and with them the recipe above
 (Session 4 hit exactly that). Recreate them before building:
 
-1. `make.exe` — copy Strawberry's `gmake.exe`; a shell-script `make` dies with
-   OS error 216.
+1. `make.exe` — copy Strawberry's `gmake.exe`, which on this machine is
+   `C:\Strawberry\c\bin\gmake.exe` (not under `perl\bin`); a shell-script
+   `make` dies with OS error 216.
 2. `npm.bat` — write it from a heredoc (`@echo off`, then
    `call "C:\Program Files\nodejs\npm.cmd" %*`). Do not build it with `printf`
    and escaped backslashes: a half-eaten `\n` splits the path across lines and

@@ -169,13 +169,31 @@ npm run tauri -- signer generate -w .keys/updater.key
 - The `pubkey` in `tauri.conf.json` is the public half only; there is no
   signing secret in this repository and no hosted secret store.
 - **Schema migrations are forward-only, and downgrading is unsupported.** The
-  current schema is v8 (37 tables + the `notes_fts` index; v8 adds the six
-  device-local `sync_*` tables of docs/ANDROID_SYNC_PROTOCOL.md — outbox,
-  tombstones, peers, cursors, device identity — plus a nullable
-  `reminders.created_by_device_id`; v7 added the cross-device `uid` columns;
-  v6 the hot-path index set; v5 the `photo_refs`/`reminders` indexes; v4
-  `inbox_items`, `links`, `trash_items`); an older binary opens a migrated
-  database only to refuse it, by design. The `sync_*` tables are
+  current schema is **v12**: 40 regular tables plus the `notes_fts` FTS5 table
+  (its `_data`/`_idx`/`_docsize`/`_config` shadow tables are FTS internals and
+  do not count), as `schema.rs`'s module header and `BASELINE_SQL` state. Nine
+  of the 40 are device-local sync storage — `sync_state`, `sync_outbox`,
+  `sync_outbox_delivery`, `sync_tombstones`, `sync_tombstone_acks`,
+  `sync_peers`, `sync_row_stamps`, `sync_uid_aliases`,
+  `sync_tombstone_gc_log`. The v9–v12 steps, all device-local except v10:
+  v9 adds `sync_row_stamps` (the §4.2 stamp of the value each row currently
+  holds, backfilled at `migration-8-9` with whatever counter the database has,
+  since before v9 there is no per-row history); v10 **rebuilds** `trash_items`
+  to widen its `entity_type` CHECK with `shopping_list`/`shopping_item`, so a
+  Shopping conflict loser has somewhere to land (a rebuild, not an in-place
+  change — SQLite cannot widen a CHECK — and nothing else about the row shape,
+  ids or timestamps changes); v11 adds `sync_uid_aliases` (the uid a same-name
+  fold retired, so an op queued under it still resolves to the winner); v12
+  adds `sync_tombstone_gc_log` (the delete a GC pruned, so a stale create at or
+  below that counter cannot resurrect a row the user deleted). Earlier steps:
+  v8 the six original `sync_*` tables of docs/ANDROID_SYNC_PROTOCOL.md —
+  outbox, tombstones, peers, cursors/device identity — plus a nullable
+  `reminders.created_by_device_id`; v7 the cross-device `uid` columns; v6 the
+  hot-path index set; v5 the `photo_refs`/`reminders` indexes; v4
+  `inbox_items`, `links`, `trash_items`. An older binary opens a migrated
+  database only to refuse it, by design. Every table added after v8 is one of
+  the nine `sync_*` tables, so no migration past v8 has changed the backup
+  payload (still v4). The `sync_*` tables are
   device-local and deliberately absent from `BACKUP_TABLES` (§10.3), so a
   schema bump there changes no backup payload version. Release notes must say so, and
   must not imply that reinstalling an older version rolls the data back — the
