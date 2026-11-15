@@ -800,9 +800,9 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
     params?: unknown[];
   }[];
   const deletes = statements.filter((s) => s.sql.startsWith("DELETE FROM "));
-  // 31 table replacements, then the six sync-storage deletions §10.1 adds
-  // (delivery rows and acks before their parents, then the stamps and v11's
-  // aliases).
+  // 31 table replacements, then the sync-storage deletions §10.1 adds
+  // (delivery rows and acks before their parents, then the stamps, v11's
+  // aliases and v12's GC log).
   assert.deepEqual(
     deletes.map((s) => s.sql),
     [
@@ -821,6 +821,7 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
       "DELETE FROM sync_tombstones",
       "DELETE FROM sync_row_stamps",
       "DELETE FROM sync_uid_aliases",
+      "DELETE FROM sync_tombstone_gc_log",
     ],
   );
   const noteInsert = statements.find((s) =>
@@ -1673,8 +1674,8 @@ test("a v9-era Trash fixture restores into the v10 schema and round-trips unchan
   const schemaVersion = shippedSchemaVersion();
   assert.equal(
     schemaVersion,
-    11,
-    "the Trash widening is the v10 step; v11 adds only the alias table",
+    12,
+    "the Trash widening is the v10 step; v11 and v12 add only sync bookkeeping",
   );
   driver.db.exec(`PRAGMA user_version = ${schemaVersion}`);
 

@@ -28,7 +28,7 @@
 /// The schema version this build expects and stamps.
 use std::sync::OnceLock;
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -388,7 +388,7 @@ WHERE NOT EXISTS (SELECT 1 FROM sync_state);
 /// A name missing from it would leave a table behind in a fixture and only
 /// surface as a migration collision.
 #[cfg(test)]
-pub const SYNC_STORAGE_TABLES: [&str; 8] = [
+pub const SYNC_STORAGE_TABLES: [&str; 9] = [
     "sync_state",
     "sync_outbox",
     "sync_outbox_delivery",
@@ -397,6 +397,7 @@ pub const SYNC_STORAGE_TABLES: [&str; 8] = [
     "sync_peers",
     "sync_row_stamps",
     "sync_uid_aliases",
+    "sync_tombstone_gc_log",
 ];
 
 /// The full baseline DDL + seed data. Applied inside a single transaction by
@@ -518,6 +519,33 @@ CREATE TABLE sync_uid_aliases (
 );
 
 CREATE INDEX idx_sync_uid_aliases_winner ON sync_uid_aliases(winner_uid);
+"#;
+
+/// Schema v11 → v12: `sync_tombstone_gc_log`, the delete a GC pruned.
+///
+/// §5.4 lets the collector drop a tombstone once every live peer acknowledged
+/// it — but "every peer we know" is not "every peer that will ever exist", and a
+/// create op stamped at or below that delete can still arrive afterwards (a
+/// phone that was offline through the delete, or a stale redelivery). Before
+/// this table the only record of the delete went with the tombstone, so the
+/// stale create resurrected a row the user had deleted.
+///
+/// The log is device-local bookkeeping like the stamps and aliases (§10.3): it
+/// never enters a backup payload, and the restore discipline clears it with
+/// them. One row per uid, stamp-sized, replaced only by a later prune of the
+/// same record — it is never pruned itself in this wave.
+pub const MIGRATION_11_12: &str = r#"
+CREATE TABLE sync_tombstone_gc_log (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  pruned_at    TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstone_gc_log_uid ON sync_tombstone_gc_log(entity_uid);
 "#;
 
 pub const BASELINE_SQL: &str = r#"
@@ -1068,6 +1096,20 @@ CREATE TABLE sync_uid_aliases (
 );
 
 CREATE INDEX idx_sync_uid_aliases_winner ON sync_uid_aliases(winner_uid);
+
+-- v12: the delete a §5.4 GC pruned, so a stale create cannot resurrect the
+-- row it deleted (MIGRATION_11_12 carries the reasoning).
+CREATE TABLE sync_tombstone_gc_log (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  pruned_at    TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstone_gc_log_uid ON sync_tombstone_gc_log(entity_uid);
 
 -- The flagged §13.1 marker: nullable and unread until that decision is made.
 ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;

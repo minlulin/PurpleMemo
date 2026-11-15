@@ -35,9 +35,11 @@ import {
   writeAllowed,
 } from "./protocol.ts";
 import {
+  ABSENT_ROW_COPY_LABEL,
   applyStatements,
   CONFLICT_TRASH_TYPES,
   conflictCopyStatements,
+  DROPPED_OP_COPY_LABEL,
   droppedOpCopyStatements,
   FOREIGN_KEYS,
   foldStatements,
@@ -559,7 +561,17 @@ async function readTombstone(
     "SELECT counter, device_id, op_id FROM sync_tombstones WHERE entity_table = ? AND entity_uid = ?",
     [table, uid],
   );
-  return row ? toStamp(row) : undefined;
+  if (row) return toStamp(row);
+  // D-4: §5.4's collector may have pruned the tombstone already — every peer
+  // this device knows acknowledged it, which is not the same as "no older
+  // write is still in flight". The delete's stamp survives in the GC log, and
+  // a create stamped at or below it stays dead exactly as it would have with
+  // the tombstone still present.
+  const [logged] = await driver.query<StampRow>(
+    "SELECT counter, device_id, op_id FROM sync_tombstone_gc_log WHERE entity_table = ? AND entity_uid = ?",
+    [table, uid],
+  );
+  return logged ? toStamp(logged) : undefined;
 }
 
 /**
@@ -960,6 +972,7 @@ async function missingParent(
 function droppedOpOutcome(
   op: PeerOp,
   fields: Record<string, unknown>,
+  label: string = DROPPED_OP_COPY_LABEL,
 ): OpOutcome {
   return {
     ...EMPTY_OUTCOME,
@@ -967,6 +980,8 @@ function droppedOpOutcome(
       op.entity_table as SyncTable,
       op.entity_uid,
       fields,
+      undefined,
+      label,
     ),
   };
 }
@@ -1049,14 +1064,14 @@ async function composeOp(
       return EMPTY_OUTCOME;
     }
     // Resurrection needs the whole record, and only a create op carries it. A
-    // field-level edit that outranks a tombstone cannot rebuild the row it
-    // edits here: inserting the fields it names would either break the table's
-    // constraints (wedging every later batch on the same op) or converge the
-    // two devices on a half-row. So an edit for a record this device does not
-    // hold writes nothing — which is why the Trash restore records a
-    // create-kind op under the same uid (§5.3).
+    // field-level edit cannot rebuild the row it edits here: inserting the
+    // fields it names would either break the table's constraints (wedging
+    // every later batch on the same op) or converge the two devices on a
+    // half-row. So the row is not written (§5.3) — and, where the table is a
+    // §13.2 mutable entity, the fields the op named are archived in local
+    // trash instead of vanishing, so an acked edit is never a silent loss.
     if (op.op !== "create") {
-      return EMPTY_OUTCOME;
+      return droppedOpOutcome(op, fields, ABSENT_ROW_COPY_LABEL);
     }
     const identity = await identityOf(driver, table, op, fields);
     // §7.2: a create for a record this device already holds BY UID writes

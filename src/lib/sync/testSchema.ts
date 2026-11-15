@@ -304,6 +304,17 @@ function aliasDdl(): string {
   return match[1];
 }
 
+/** The v12 GC-log DDL, sliced out of `MIGRATION_11_12`. */
+function gcLogDdl(): string {
+  const match = /pub const MIGRATION_11_12: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  if (!match?.[1]) {
+    throw new Error("MIGRATION_11_12 not found in src-tauri/src/schema.rs");
+  }
+  return match[1];
+}
+
 /** The v9 row-stamp DDL, sliced out of `BASELINE_SQL`. */
 function rowStampDdl(): string {
   const match =
@@ -335,7 +346,7 @@ function fixtureSafe(statement: string): boolean {
 
 /** Every sync-storage statement a fixture needs, in order. */
 export function syncStorageDdl(): string {
-  return `${migrationDdl()}\n${rowStampDdl()}\n${aliasDdl()}\n`
+  return `${migrationDdl()}\n${rowStampDdl()}\n${aliasDdl()}\n${gcLogDdl()}\n`
     .split(";")
     .map(withoutComments)
     .filter((statement) => statement.length > 0 && fixtureSafe(statement))

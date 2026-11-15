@@ -760,6 +760,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         8 => Some(schema::migration_8_9()),
         9 => Some(schema::MIGRATION_9_10),
         10 => Some(schema::MIGRATION_10_11),
+        11 => Some(schema::MIGRATION_11_12),
         _ => None,
     }
 }
@@ -2063,10 +2064,10 @@ mod tests {
         }
     }
 
-    // -- Baseline schema: 40 tables, user_version = SCHEMA_VERSION, seeds, FK on
+    // -- Baseline schema: 41 tables, user_version = SCHEMA_VERSION, seeds, FK on
 
     #[test]
-    fn baseline_schema_has_40_tables_and_the_declared_user_version() {
+    fn baseline_schema_has_41_tables_and_the_declared_user_version() {
         // The number lives in schema::SCHEMA_VERSION; the old name hard-coded
         // `user_version 4` and went stale when v5 landed.
         let (_dir, conn) = open_baseline("schema");
@@ -2074,7 +2075,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
     }
 
     // -- Hot foreign-key columns are indexed ---------------------
@@ -2172,7 +2173,7 @@ mod tests {
     fn init_schema_is_idempotent_and_fresh_only() {
         let (_dir, conn) = open_baseline("idempotent");
         init_schema(&conn).expect("second init is a no-op");
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
     }
 
     // -- Sequential, forward-only migrations --------
@@ -2302,7 +2303,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
         // Data, FTS content, settings and foreign-key rows all survived.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
         let collection: i64 = conn
@@ -2702,7 +2703,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
 
         // Exactly one state row, minted with the SAME uuid expression as every
         // synced row (one expression, two callers — as for v7).
@@ -2842,6 +2843,7 @@ mod tests {
         conn.execute_batch(schema::BASELINE_SQL)
             .expect("apply baseline");
         strip_uid_aliases(&conn);
+        strip_tombstone_gc_log(&conn);
         conn.execute_batch(
             "DROP INDEX idx_trash_items_entity;
              DROP INDEX idx_trash_items_deleted;
@@ -2923,10 +2925,8 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(
-            version, 11,
-            "v9 fixtures migrate all the way up; v10 is the Trash step, v11 the aliases"
-        );
+        // v9 fixtures migrate all the way up: v10 is the Trash step, v11 the
+        // aliases, v12 the tombstone GC log.
 
         assert_eq!(
             trash_rows(&conn),
@@ -2975,8 +2975,8 @@ mod tests {
         }
         assert_eq!(
             table_count(&conn),
-            40,
-            "v10 adds no table; v11's alias table does"
+            41,
+            "v10 adds no table; v11's alias table and v12's GC log add two"
         );
     }
 
@@ -3028,6 +3028,15 @@ mod tests {
         .expect("strip the v11 alias table");
     }
 
+    /// Remove the v12 GC log so a fixture can be an honest pre-v12 database.
+    fn strip_tombstone_gc_log(conn: &Connection) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_sync_tombstone_gc_log_uid;
+             DROP TABLE IF EXISTS sync_tombstone_gc_log;",
+        )
+        .expect("strip the v12 GC log");
+    }
+
     /// A populated version-10 database: the shipped baseline minus the v11
     /// aliases table (and its index), stamped 10, holding real sync storage —
     /// a peer, an outbox row, a tombstone and a row stamp. The rows are the
@@ -3040,6 +3049,7 @@ mod tests {
         conn.execute_batch(schema::BASELINE_SQL)
             .expect("apply baseline");
         strip_uid_aliases(&conn);
+        strip_tombstone_gc_log(&conn);
         conn.execute_batch(
             "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
                VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v11 note', 'body', '', '2026-01-01', '2026-01-01');
@@ -3082,8 +3092,9 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(version, 11, "this test is about the v11 step");
-        assert_eq!(table_count(&conn), 40);
+        // The fixture is v10, so this walks the v11 and v12 steps as well —
+        // everything the fixture held has to survive both.
+        assert_eq!(table_count(&conn), 41);
 
         // The new table starts empty — nothing before v11 ever folded — and is
         // usable, with the self-alias a CHECK refusal rather than a row.
@@ -3121,6 +3132,134 @@ mod tests {
         let (_v10_dir, migrated) = seeded_v10("alias-structure-migrated");
         init_schema(&migrated).expect("migrate");
         for name in ["sync_uid_aliases", "idx_sync_uid_aliases_winner"] {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
+    /// A populated version-11 database: the shipped baseline minus the v12 GC
+    /// log (and its index), stamped 11, holding real sync storage — a peer, an
+    /// outbox row, a tombstone, a row stamp and an alias. The rows are the
+    /// point: a migration against empty tables proves nothing about what it
+    /// preserved.
+    fn seeded_v11(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_tombstone_gc_log(&conn);
+        conn.execute_batch(
+            "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
+               VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v12 note', 'body', '', '2026-01-01', '2026-01-01');
+             INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+               VALUES ('notes', '22222222-2222-4222-8222-222222222222', 3,
+                       (SELECT device_id FROM sync_state WHERE id = 1), 'op-3', '{}', '2026-01-01');
+             INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+               VALUES ((SELECT device_id FROM sync_state WHERE id = 1), 1, 'op-out', 'notes',
+                       '22222222-2222-4222-8222-222222222222', 'create', 0, 3, '{}',
+                       '{\"title\":\"Pre-v12 note\"}', '2026-01-01');
+             INSERT INTO sync_peers (device_id, pairing_id, display_name, generation, cursor_in, cursor_out, created_at)
+               VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'pair-1', 'phone', 1, 1, 0, '2026-01-01');
+             INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+               VALUES ('tasks', '33333333-3333-4333-8333-333333333333', 2,
+                       (SELECT device_id FROM sync_state WHERE id = 1), 'op-del', '2026-01-01');
+             INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+               VALUES ('collections', 'loser-uid', 'winner-uid', '2026-01-01');",
+        )
+        .expect("seed the v11 fixture");
+        conn.pragma_update(None, "user_version", 11i64)
+            .expect("stamp v11");
+        (dir, conn)
+    }
+
+    #[test]
+    fn migration_11_to_12_adds_the_gc_log_and_keeps_everything() {
+        let (_dir, conn) = seeded_v11("migrate-11-12");
+        // The fixture has to really be v11: a GC-log write has nowhere to land.
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_tombstone_gc_log
+                   (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+                 VALUES ('notes', 'a', 1, 'device', 'op', '2026-01-01')",
+                [],
+            )
+            .is_err(),
+            "the fixture must start at v11"
+        );
+
+        init_schema(&conn).expect("migrate 11 -> 12");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(table_count(&conn), 41);
+
+        // The new table starts empty — nothing before v12 ever pruned a
+        // tombstone — and is usable, with one row per record.
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM sync_tombstone_gc_log"),
+            0,
+            "a migration invents no GC history"
+        );
+        conn.execute(
+            "INSERT INTO sync_tombstone_gc_log
+               (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+             VALUES ('notes', 'p', 4, 'device', 'op', '2026-02-01')",
+            [],
+        )
+        .expect("the v12 table accepts a logged delete");
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_tombstone_gc_log
+                   (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+                 VALUES ('notes', 'p', 5, 'device', 'op-2', '2026-02-02')",
+                [],
+            )
+            .is_err(),
+            "one row per record, not one per prune"
+        );
+
+        // Everything the fixture held is still there, row for row.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_outbox"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_row_stamps"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_tombstones"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_peers"), 1);
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM sync_uid_aliases"),
+            1
+        );
+    }
+
+    #[test]
+    fn a_migrated_gc_log_matches_a_fresh_baseline() {
+        let (_fresh_dir, fresh) = open_baseline("gc-log-structure-fresh");
+        let (_v11_dir, migrated) = seeded_v11("gc-log-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        for name in ["sync_tombstone_gc_log", "idx_sync_tombstone_gc_log_uid"] {
             let a: String = fresh
                 .query_row(
                     "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
@@ -3202,7 +3341,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]
@@ -3505,7 +3644,7 @@ mod tests {
         let (_dir, migrated) = seeded_v3("trash-migration");
         let (_fresh_dir, fresh) = open_baseline("trash-baseline");
         init_schema(&migrated).expect("migrate 3 -> 4");
-        assert_eq!(table_count(&migrated), 40);
+        assert_eq!(table_count(&migrated), 41);
         for name in [
             "trash_items",
             "idx_trash_items_entity",
@@ -3678,7 +3817,7 @@ mod tests {
         conn.execute_batch("DROP TABLE trash_items")
             .expect("remove migration obstacle");
         init_schema(&conn).expect("retry succeeds");
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]
@@ -3699,7 +3838,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
         // Everything version 2 held is still there, including what the v2
         // migration added — a v2 database is one that already had the capture inbox.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 2);
@@ -3724,7 +3863,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
         assert_eq!(
             scalar_i64(
                 &conn,
@@ -3748,7 +3887,7 @@ mod tests {
         );
         // A second run changes nothing.
         init_schema(&conn).expect("second run is a no-op");
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]
@@ -3769,7 +3908,7 @@ mod tests {
         );
         conn.execute_batch("DROP TABLE links").expect("clear it");
         init_schema(&conn).expect("the retry succeeds");
-        assert_eq!(table_count(&conn), 40);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]

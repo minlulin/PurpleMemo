@@ -330,10 +330,27 @@ injection (§14.4).
 
 If a record is deleted at stamp `(5, desktop)` and edited at `(5, phone)`, the
 §4.2 total order decides — and the delete wins over any edit whose stamp is
-lower. An edit with a **higher** stamp than the tombstone resurrects the record
+lower. A create with a **higher** stamp than the tombstone resurrects the record
 as a new live record (a deliberate, visible act: the user edited a record they
 could still see). A tombstone is never removed by an edit of equal or lower
 stamp, and never by a retry.
+
+The same rule decides a write that reaches a device which does not hold the
+record at all — the ordinary case after a desktop restore, where the phone's
+edit outlives the row:
+
+- **A create** whose uid the receiver does not hold is applied as a normal
+  create; a create stamped at or below the tombstone stays dead.
+- **Any other op** (an edit or a delete for an absent row) writes no row. The
+  record cannot be rebuilt from a field list, and inventing one would either
+  violate a constraint or converge the two devices on a half-row. The op is
+  acknowledged, never retried forever.
+- Where the absent row's table is one of §13.2's mutable entities
+  (Notes/Tasks/Shopping), the fields the op **named** are archived as a
+  conflict copy in the receiver's local trash before the ack — the user's edit
+  survives in the place the spec already reserves for losing values. Tables
+  with no such copy (append-only rows, check-ins) drop the write, as §13.2
+  scopes that archive.
 
 #### §5.4 Tombstone collection
 

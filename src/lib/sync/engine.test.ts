@@ -24,6 +24,8 @@ import { createTrashRepo, TRASH_CONFLICT_KIND } from "../trash.ts";
 import { applyOps, type PeerOp } from "./engine.ts";
 import type { Origin, VersionStamp } from "./protocol.ts";
 import {
+  ackStatements,
+  collectTombstonesStatements,
   readOutbox,
   readState,
   readTombstones,
@@ -1712,4 +1714,134 @@ test("a create naming a deleted parent is copied and dropped, and the next op st
   assert.equal(snapshot.entity.list_id, null, "and its missing parent is null");
   assert.equal(snapshot.conflict.table, "shopping_items");
   assert.match(snapshot.conflict.label, /parent record is gone/);
+});
+
+// ---------------------------------------------------------------------------
+// §5.3's absent row (SW-03) and §5.4's GC log (D-4).
+// ---------------------------------------------------------------------------
+
+test("an edit to a record the restored desktop lacks is acked and archived (§5.3)", async () => {
+  const pair = await openPair();
+  const id = await createTasksRepo(pair.a.driver).createTask({
+    title: "Ticked off while the desktop was restored",
+    dueDate: "2026-11-20",
+  });
+  const [task] = await pair.a.driver.query<{
+    uid: string;
+    created_by_device_id?: string | null;
+  }>("SELECT uid FROM tasks WHERE id = ?", [id]);
+  assert.ok(task?.uid, "precondition: the task has a uid");
+  const created = (await opsOf(pair.a)).at(-1);
+  assert.ok(created, "precondition: the create is recorded");
+  await applyFrom(pair.b, pair.a);
+
+  // A restore: the desktop's line does not contain this record at all. Its
+  // rows are pre-history, so neither the row nor a tombstone is here.
+  await pair.a.driver.batch([
+    { sql: "DELETE FROM tasks WHERE uid = ?", params: [task.uid] },
+    {
+      sql: "DELETE FROM sync_row_stamps WHERE entity_uid = ?",
+      params: [task.uid],
+    },
+  ]);
+
+  // The phone ticks the task off — a field it may write (§2.3) — and delivers
+  // it to a desktop that no longer holds the record.
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    2,
+    "tasks",
+    task.uid,
+    "update",
+    { done: 1 },
+    created.counter + 1,
+  );
+  await applyFrom(pair.a, pair.b, { ops: [edit], origin: "mobile" });
+
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM tasks"),
+    0,
+    "an edit cannot rebuild a row from a field list (§5.3)",
+  );
+  const copies = await pair.a.driver.query<{ snapshot: string }>(
+    "SELECT snapshot FROM trash_items",
+  );
+  assert.equal(copies.length, 1, "the acked edit is not silently lost");
+  const snapshot = JSON.parse(copies[0]?.snapshot ?? "{}") as {
+    entity: { done: number };
+    conflict: { table: string; uid: string; label: string };
+  };
+  assert.equal(snapshot.conflict.table, "tasks");
+  assert.equal(snapshot.conflict.uid, task.uid);
+  assert.match(snapshot.conflict.label, /record it edited is gone/);
+  assert.equal(
+    snapshot.entity.done,
+    1,
+    "the fields the op named are recoverable from Trash",
+  );
+
+  // And it was acknowledged: the cursor moved past the op, so it is never
+  // re-delivered.
+  const [peer] = await pair.a.driver.query<{ cursor_in: number }>(
+    "SELECT cursor_in FROM sync_peers WHERE device_id = ?",
+    [phoneId],
+  );
+  assert.equal(peer?.cursor_in, edit.seq, "the op is acked (§7.7)");
+});
+
+test("a create a pruned tombstone outranks stays dead (§5.4, D-4)", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [row] = await notesIn(pair.a, uid);
+  assert.ok(row, "precondition: the desktop holds the note");
+
+  await createNotesRepo(pair.a.driver).deleteNote(row.id);
+  const deletion = (await opsOf(pair.a)).at(-1);
+  assert.ok(deletion, "precondition: the delete is recorded");
+
+  // The phone acknowledges the delete, and the maintenance pass collects the
+  // tombstone: every peer this device knows has it.
+  await pair.a.driver.batch(
+    ackStatements(await deviceOf(pair.b), deletion.seq),
+  );
+  await pair.a.driver.batch(collectTombstonesStatements());
+  assert.equal((await readTombstones(pair.a.driver)).length, 0);
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM sync_tombstone_gc_log"),
+    1,
+    "the delete's stamp survives the prune",
+  );
+
+  // A phone that was offline through the delete still delivers an older write.
+  const stale = syntheticOp(
+    await deviceOf(pair.b),
+    900,
+    "notes",
+    uid,
+    "create",
+    {
+      title: "Stale create",
+      content: "",
+      tags: "",
+      collection_uid: null,
+      pinned: 0,
+      archived: 0,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    },
+    deletion.counter - 1,
+  );
+  await applyFrom(pair.a, pair.b, { ops: [stale], origin: "mobile" });
+
+  assert.equal(
+    (await notesIn(pair.a, uid)).length,
+    0,
+    "the pruned delete still outranks the stale create — the row stays dead",
+  );
+  assert.equal(
+    (await readTombstones(pair.a.driver)).length,
+    0,
+    "and the dead create writes no second tombstone",
+  );
 });

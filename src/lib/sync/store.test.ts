@@ -73,6 +73,15 @@ function aliasDdl(): string {
   return match[1];
 }
 
+/** The v12 GC-log DDL, sliced out of `MIGRATION_11_12` like the two above. */
+function gcLogDdl(): string {
+  const match = /pub const MIGRATION_11_12: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  assert.ok(match?.[1], "MIGRATION_11_12 not found in src-tauri/src/schema.rs");
+  return match[1];
+}
+
 /** The pre-v8 tables these tests mutate (the columns they actually touch). */
 const V7_FIXTURE = `
 CREATE TABLE collections (
@@ -144,6 +153,7 @@ function openStore(): Store {
   db.exec(migrationDdl());
   db.exec(rowStampDdl());
   db.exec(aliasDdl());
+  db.exec(gcLogDdl());
   // The real schema gives every synced table a UNIQUE uid index (the v7
   // backfill); the fixture declares the columns, so the indexes are added here
   // for the same reason: `ON CONFLICT(uid)` is only meaningful with one.
@@ -513,6 +523,72 @@ test("tombstones are collected only when every live peer acked, and never with n
     count(db, "SELECT count(*) AS n FROM sync_tombstone_acks"),
     0,
     "acknowledgements cascade with their tombstone",
+  );
+});
+
+test("an ack credits the delete it received, not a later tombstone for the same record (SW-08)", async () => {
+  const { db, driver } = openStore();
+  await driver.batch(
+    registerPeerStatements({ deviceId: UID_PEER_A, generation: 1 }),
+  );
+  const uid = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+
+  // Delete once, then delete again after a restore: the second tombstone
+  // replaces the first under the same (table, uid) with a new op_id.
+  await driver.batch(deleteStatements([{ table: "notes", uid }]));
+  await driver.batch(deleteStatements([{ table: "notes", uid }]));
+
+  // The peer's ack covers only the FIRST delete. It must not credit the
+  // tombstone the second one wrote — the peer has never seen it.
+  await driver.batch(ackStatements(UID_PEER_A, 1));
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_tombstone_acks"),
+    0,
+    "an ack of seq 1 is not an ack of the delete at seq 2",
+  );
+
+  await driver.batch(ackStatements(UID_PEER_A, 2));
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_tombstone_acks"),
+    1,
+    "the ack that covers the second delete credits it",
+  );
+});
+
+test("a collected tombstone leaves its stamp in the GC log, and a restore clears the log", async () => {
+  const { db, driver } = openStore();
+  await driver.batch(
+    registerPeerStatements({ deviceId: UID_PEER_A, generation: 1 }),
+  );
+  const uid = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
+  await driver.batch(deleteStatements([{ table: "notes", uid }]));
+
+  await driver.batch(ackStatements(UID_PEER_A, 1));
+  await driver.batch(collectTombstonesStatements(new Date("2026-11-15")));
+
+  assert.equal(count(db, "SELECT count(*) AS n FROM sync_tombstones"), 0);
+  const [logged] = db
+    .prepare(
+      "SELECT entity_uid, counter, device_id, op_id, pruned_at FROM sync_tombstone_gc_log",
+    )
+    .all() as {
+    entity_uid: string;
+    counter: number;
+    device_id: string;
+    op_id: string;
+    pruned_at: string;
+  }[];
+  assert.equal(logged?.entity_uid, uid);
+  assert.match(logged?.pruned_at ?? "", /^2026-11-15/);
+  assert.ok(logged && logged.counter > 0 && logged.op_id.length > 0);
+
+  // A restore is a new data line: the log describes deletes that no longer
+  // happened here, so it goes with the other device-local bookkeeping (§10.5).
+  await driver.batch(restoreStatements());
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_tombstone_gc_log"),
+    0,
+    "the restore clears the GC log",
   );
 });
 

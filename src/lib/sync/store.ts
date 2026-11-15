@@ -342,12 +342,15 @@ export function ackStatements(
       params: [peerId, stamp, throughSeq],
     },
     {
+      // §5.4: the ack credits the DELETE it actually received, so it joins on
+      // the tombstone's own `op_id` — the operation that wrote it. Joining on
+      // `(table, uid)` credited whatever delete for that record came first,
+      // which after a restore-and-delete-again acked a tombstone the peer had
+      // never seen.
       sql: `INSERT OR IGNORE INTO sync_tombstone_acks (tombstone_id, peer_id, acked_at)
             SELECT t.id, ?, ?
             FROM sync_tombstones t
-            JOIN sync_outbox o ON o.entity_table = t.entity_table
-                               AND o.entity_uid = t.entity_uid
-                               AND o.op = 'delete'
+            JOIN sync_outbox o ON o.op_id = t.op_id
             WHERE o.seq <= ?`,
       params: [peerId, stamp, throughSeq],
     },
@@ -377,11 +380,15 @@ export function ackStatements(
  * the peer list must not be empty (a phone that pairs later would otherwise
  * resurrect the row), and a revoked peer is not asked again (§11.3).
  */
-export function collectTombstonesStatements(): BatchStatement[] {
-  return [
-    {
-      sql: `DELETE FROM sync_tombstones
-            WHERE EXISTS (SELECT 1 FROM sync_peers WHERE revoked_at IS NULL)
+export function collectTombstonesStatements(
+  now: Date = new Date(),
+): BatchStatement[] {
+  // §5.4 + D-4: a pruned tombstone leaves its stamp behind. "Every peer we
+  // know acked" is not "no later create will arrive" — a phone that was
+  // offline through the delete can still deliver an older write — so the
+  // delete's stamp moves into this device's GC log first, in the same batch,
+  // and the resurrection check consults it when no live tombstone exists.
+  const prunable = `EXISTS (SELECT 1 FROM sync_peers WHERE revoked_at IS NULL)
               AND NOT EXISTS (
                 SELECT 1 FROM sync_peers p
                 WHERE p.revoked_at IS NULL
@@ -389,7 +396,23 @@ export function collectTombstonesStatements(): BatchStatement[] {
                     SELECT 1 FROM sync_tombstone_acks a
                     WHERE a.tombstone_id = sync_tombstones.id AND a.peer_id = p.device_id
                   )
-              )`,
+              )`;
+  return [
+    {
+      sql: `INSERT INTO sync_tombstone_gc_log
+              (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+            SELECT entity_table, entity_uid, counter, device_id, op_id, ?
+            FROM sync_tombstones
+            WHERE ${prunable}
+            ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
+              counter = excluded.counter,
+              device_id = excluded.device_id,
+              op_id = excluded.op_id,
+              pruned_at = excluded.pruned_at`,
+      params: [nowIso(now)],
+    },
+    {
+      sql: `DELETE FROM sync_tombstones WHERE ${prunable}`,
     },
   ];
 }
@@ -533,6 +556,10 @@ export function restoreStatements(now: Date = new Date()): BatchStatement[] {
     // under that uid — or onto nothing — which is exactly the stale-authority
     // failure §10.5 exists to stop.
     { sql: "DELETE FROM sync_uid_aliases" },
+    // v12: a logged GC describes a delete in the line that is gone. The
+    // restored line's rows are pre-history, so keeping the log would let a
+    // stale stamp veto a write to a record this database never deleted.
+    { sql: "DELETE FROM sync_tombstone_gc_log" },
   ];
 }
 
@@ -1471,11 +1498,20 @@ export function conflictCopyStatements(
 export const DROPPED_OP_COPY_LABEL =
   "Conflict copy — its parent record is gone; kept on this device only";
 
+/**
+ * The same copy for a different absence (§5.3, SW-03): the op edited a record
+ * this device does not hold at all. Nothing is written for the record, but the
+ * values the op carried survive here rather than being acked and lost.
+ */
+export const ABSENT_ROW_COPY_LABEL =
+  "Conflict copy — the record it edited is gone; kept on this device only";
+
 export function droppedOpCopyStatements(
   table: SyncTable,
   uid: string,
   fields: Record<string, unknown>,
   today: string = todayLocal(),
+  label: string = DROPPED_OP_COPY_LABEL,
 ): BatchStatement[] {
   const type = CONFLICT_TRASH_TYPES[table];
   if (type === undefined) return [];
@@ -1488,7 +1524,7 @@ export function droppedOpCopyStatements(
   }
   const conflict: TrashConflictCopy = {
     kind: TRASH_CONFLICT_KIND,
-    label: DROPPED_OP_COPY_LABEL,
+    label,
     table,
     uid,
     won: {},
