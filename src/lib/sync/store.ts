@@ -29,12 +29,19 @@ import {
   type TrashConflictCopy,
   type TrashEntityType,
 } from "../trash.ts";
-import { CONFLICT_COPY_LABEL, type ConflictLoser } from "./bootstrap.ts";
 import {
+  CONFLICT_COPY_LABEL,
+  type ConflictLoser,
+  conflictLosers,
+  type SyncedRow,
+} from "./bootstrap.ts";
+import {
+  compareStamps,
   isSyncTable,
   type OpKind,
   SYNC_TABLES,
   type SyncTable,
+  type VersionStamp,
 } from "./protocol.ts";
 
 /** The single row of `sync_state` (`id INTEGER PRIMARY KEY CHECK (id = 1)`). */
@@ -1612,6 +1619,185 @@ export function snapshotStatements(
       params: [tombstone.uid, ...outranks.params],
     });
   }
+  return statements;
+}
+
+// ---------------------------------------------------------------------------
+// §9.2 — the merge a (re-)pairing performs, and §9.4's named replacement.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which rule a snapshot apply follows, named rather than implied:
+ *
+ *  * `merge` — §9.2's first pairing / ordinary re-pair. A row this device
+ *    already holds is the same record: §4's stamp comparison decides, the
+ *    winner's values land, and a losing value on a §13.2 mutable entity is
+ *    archived locally in the same batch.
+ *  * `replace` — §9.4's re-adoption after a restore: the desktop's data line
+ *    is a different line, so what the snapshot carries REPLACES what is here.
+ */
+export type SnapshotApplyMode = "merge" | "replace";
+
+/** §4's "before any stamp": a row nothing has ever stamped loses to any write. */
+const PRE_HISTORY: VersionStamp = { counter: 0, deviceId: "", opId: "" };
+
+/** The stamp this device holds for a record, if it has one (§4.2). */
+async function heldSnapshotStamp(
+  reader: AliasReader,
+  table: SyncTable,
+  uid: string,
+): Promise<VersionStamp | undefined> {
+  const [row] = await reader.query<{
+    counter: number;
+    device_id: string;
+    op_id: string;
+  }>(
+    "SELECT counter, device_id, op_id FROM sync_row_stamps WHERE entity_table = ? AND entity_uid = ?",
+    [table, uid],
+  );
+  return row
+    ? { counter: row.counter, deviceId: row.device_id, opId: row.op_id }
+    : undefined;
+}
+
+/**
+ * A held row's fields in the SNAPSHOT's shape, restricted to the keys the
+ * incoming row carries — what `conflictLosers` compares to decide whether the
+ * two sides actually disagree.
+ *
+ * A parent is compared by presence, never by number: the snapshot names it by
+ * uid and this device holds a local id, so the uid is read back through the
+ * parent table. Two rows that agree on every field produce no copy (§9.2: "a
+ * UID both sides hold with identical values: nothing to do").
+ */
+async function wireFieldsOfHeld(
+  reader: AliasReader,
+  table: SyncTable,
+  op: SnapshotOp,
+  row: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const fields: Record<string, unknown> = {};
+  for (const field of Object.keys(writableFields(op))) {
+    if (field === "id" || field === "uid") continue;
+    const column = field.endsWith("_uid")
+      ? `${field.slice(0, -"_uid".length)}_id`
+      : field;
+    const parent = LOCAL_FOREIGN_KEYS[table]?.[column];
+    if (parent === undefined) {
+      fields[field] = row[column] ?? null;
+      continue;
+    }
+    const local = row[column];
+    let uid: string | null = null;
+    if (typeof local === "number") {
+      const [parentRow] = await reader.query<{ uid: string | null }>(
+        `SELECT uid FROM "${parent}" WHERE id = ?`,
+        [local],
+      );
+      uid = parentRow?.uid ?? null;
+    }
+    fields[field] = uid;
+  }
+  return fields;
+}
+
+/**
+ * One staged row, merged rather than overwritten (§9.2, §13.2).
+ *
+ * A uid this device does not hold is a new record and lands as §8.4 always
+ * did. A uid it DOES hold is the same record seen by both devices: §4's order
+ * decides, and only the winner's values are written. When this device holds
+ * the losing value and the table is a §13.2 mutable entity, that value is
+ * copied to local trash FIRST, in this same batch — so a re-pair can no longer
+ * silently replace a newer local edit with the desktop's older copy.
+ */
+async function mergeSnapshotRow(
+  reader: AliasReader,
+  op: SnapshotOp,
+  now: Date,
+  senderDeviceId?: string,
+): Promise<BatchStatement[]> {
+  assertSyncTable(op.table);
+  const [held] = await reader.query<Record<string, unknown>>(
+    `SELECT * FROM "${op.table}" WHERE uid = ?`,
+    [op.uid],
+  );
+  if (held === undefined) return snapshotRowStatements(op, now, senderDeviceId);
+
+  const incoming: VersionStamp = {
+    counter: op.stamp.counter,
+    deviceId: op.stamp.deviceId,
+    opId: op.stamp.opId,
+  };
+  const heldStamp = await heldSnapshotStamp(reader, op.table, op.uid);
+  // This device's value stands (or the two agree): nothing is written, and
+  // the losing value is the SENDER's — its device writes that copy (§13.2).
+  if (compareStamps(incoming, heldStamp ?? PRE_HISTORY) <= 0) return [];
+
+  const mobile: SyncedRow = {
+    table: op.table,
+    uid: op.uid,
+    stamp: heldStamp ?? PRE_HISTORY,
+    fields: await wireFieldsOfHeld(reader, op.table, op, held),
+  };
+  const copies = conflictLosers([
+    { table: op.table, uid: op.uid, desktop: op, mobile },
+  ])
+    .filter((loser) => loser.loser === "mobile")
+    .flatMap((loser) =>
+      conflictCopyStatements(
+        [loser],
+        [{ table: op.table, uid: op.uid, row: held }],
+      ),
+    );
+  return [...copies, ...snapshotRowStatements(op, now, senderDeviceId)];
+}
+
+/**
+ * §8.4's apply with §9.2's merge, as one statement list for one transaction.
+ *
+ * Rows go parents-first (the child's subselect only finds a parent written
+ * earlier in the SAME batch), the vault section stays §12.3's wholesale
+ * replacement, and the tombstones keep their guarded writes. `mode` is explicit
+ * because the two paths are different rules: `merge` is §9.2 (first pairing and
+ * ordinary re-pair), `replace` is §9.4 (re-adoption after a restore).
+ */
+export async function snapshotApplyStatements(
+  reader: AliasReader,
+  ops: readonly SnapshotOp[],
+  tombstones: readonly SnapshotTombstoneOp[] = [],
+  now: Date = new Date(),
+  senderDeviceId?: string,
+  mode: SnapshotApplyMode = "merge",
+): Promise<BatchStatement[]> {
+  if (mode === "replace") {
+    return snapshotStatements(ops, tombstones, now, senderDeviceId);
+  }
+  const vault: SnapshotOp[] = [];
+  const rows: SnapshotOp[] = [];
+  for (const op of ops) {
+    assertSyncTable(op.table);
+    (op.table === "vault_items" ? vault : rows).push(op);
+  }
+  const order = new Map(
+    (Object.keys(SYNC_TABLES) as SyncTable[]).map((table, index) => [
+      table,
+      index,
+    ]),
+  );
+  const sorted = [...rows].sort(
+    (left, right) =>
+      (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
+  );
+  const statements: BatchStatement[] = [];
+  for (const op of sorted) {
+    statements.push(
+      ...(await mergeSnapshotRow(reader, op, now, senderDeviceId)),
+    );
+  }
+  statements.push(
+    ...snapshotStatements(vault, tombstones, now, senderDeviceId),
+  );
   return statements;
 }
 

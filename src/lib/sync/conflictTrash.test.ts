@@ -29,6 +29,7 @@ import {
   conflictCopyStatements,
   type HeldConflictRow,
   type SnapshotOp,
+  snapshotApplyStatements,
   snapshotRowStatements,
 } from "./store.ts";
 
@@ -514,4 +515,87 @@ test("a shopping conflict copy is a plain Trash row and survives a restart (§13
     listed.map((item) => item.conflict?.label),
     [CONFLICT_COPY_LABEL, CONFLICT_COPY_LABEL],
   );
+});
+
+/** The desktop's copy of the same note, under a given stamp and title. */
+function desktopNote(counter: number, title: string): SnapshotOp {
+  return {
+    ...winningNoteOp(),
+    stamp: {
+      counter,
+      deviceId: "desktop-7f3c",
+      opId: `desktop-7f3c#${counter}`,
+    },
+    fields: { ...winningNoteOp().fields, title },
+  };
+}
+
+/**
+ * §9.2 versus §9.4, on the real schema. A uid both sides hold is the same
+ * record: §4's stamp order decides, the loser on a §13.2 entity is archived,
+ * and only a re-adoption after a restore replaces wholesale — by name.
+ */
+test("a re-pair merges a shared uid by §4, and only a re-adoption replaces it", async () => {
+  const driver = sqliteDriver();
+  const { db } = driver;
+  seedLosingNote(db);
+  db.prepare(
+    `INSERT INTO sync_row_stamps
+       (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+     VALUES ('notes', ?, 7, 'phone-1', 'phone-1#7', '{}', '2026-01-01')`,
+  ).run(NOTE_UID);
+
+  // The snapshot is OLDER than this phone's edit: the desktop's row loses.
+  await driver.batch(
+    await snapshotApplyStatements(driver, [desktopNote(3, "Desktop older")]),
+  );
+  assert.equal(
+    noteRows(db)[0]?.title,
+    "Losing title",
+    "a re-pair does not overwrite a newer local value (§9.2)",
+  );
+  assert.deepEqual(
+    trashRows(db),
+    [],
+    "the loser here is the desktop's copy, so this device archives nothing",
+  );
+  const kept = db
+    .prepare("SELECT counter FROM sync_row_stamps WHERE entity_uid = ?")
+    .get(NOTE_UID) as { counter: number };
+  assert.equal(kept.counter, 7, "the stamp still describes the value on disk");
+
+  // The snapshot is NEWER: the desktop wins and the local value is archived.
+  await driver.batch(
+    await snapshotApplyStatements(driver, [desktopNote(9, "Desktop newer")]),
+  );
+  assert.equal(
+    noteRows(db)[0]?.title,
+    "Desktop newer",
+    "the winner's value lands",
+  );
+  const archived = trashRows(db);
+  assert.equal(archived.length, 1, "exactly one copy was archived (§13.2)");
+  assert.equal(
+    JSON.parse(archived[0]?.snapshot ?? "{}").entity.title,
+    "Losing title",
+    "the copy keeps the value that lost",
+  );
+
+  // §9.4: a re-adoption after a restore is a different rule, named at the call.
+  await driver.batch(
+    await snapshotApplyStatements(
+      driver,
+      [desktopNote(3, "Desktop older")],
+      [],
+      new Date(),
+      "desktop-7f3c",
+      "replace",
+    ),
+  );
+  assert.equal(
+    noteRows(db)[0]?.title,
+    "Desktop older",
+    "replace is wholesale and ignores the newer local stamp (§9.4)",
+  );
+  assert.equal(trashRows(db).length, 1, "a replacement archives no extra copy");
 });

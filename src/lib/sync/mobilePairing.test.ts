@@ -567,6 +567,10 @@ function sealedPull(
       async peers() {
         return [];
       },
+      // This phone holds nothing yet, so every staged row is new (§9.1).
+      async query<T>(): Promise<T[]> {
+        return [];
+      },
     },
   };
 }

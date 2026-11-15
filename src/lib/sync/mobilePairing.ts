@@ -58,10 +58,11 @@ import {
   pendingForPeer,
   readPeers,
   readVaultMetadata,
+  type SnapshotApplyMode,
   type SnapshotOp,
   type SnapshotStamp,
   type SnapshotTombstoneOp,
-  snapshotStatements,
+  snapshotApplyStatements,
   VAULT_GENERATION_FIELD,
   VAULT_VERIFIER_FIELD,
   type VaultMetadata,
@@ -328,6 +329,12 @@ export interface SnapshotPullTransport {
   batch(statements: BatchStatement[]): Promise<void>;
   /** This phone's pins, so the adoption names the peer it came from. */
   peers(): Promise<PeerRow[]>;
+  /**
+   * This device's own rows and stamps — what §9.2's merge reads before it
+   * decides whether the snapshot's row is the same record under a newer stamp
+   * or a newer value that must not overwrite a local edit.
+   */
+  query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
 export interface SnapshotRefusal {
@@ -577,6 +584,12 @@ export async function pullSnapshot(
   options: {
     pairingId: string;
     onProgress?: (progress: PullProgress) => void;
+    /**
+     * §9.2 by default. `replace` is §9.4's re-adoption after a restore, where
+     * the snapshot's data line replaces this one wholesale — named, never
+     * inferred from what happens to be absent.
+     */
+    mode?: SnapshotApplyMode;
   },
 ): Promise<SnapshotPullOutcome> {
   const stalled = (refusal: SnapshotRefusal, total: number) => ({
@@ -635,8 +648,17 @@ export async function pullSnapshot(
       input.desktopDeviceId,
       0,
       // §13.1: the desktop is the sender, so a reminder crossing this border
-      // without a creator is stamped as the desktop's.
-      snapshotStatements(staged, deleted, new Date(), input.desktopDeviceId),
+      // without a creator is stamped as the desktop's. §9.2: a row this phone
+      // already holds is MERGED by §4, not overwritten — and a losing local
+      // value is archived in the same batch (§13.2).
+      await snapshotApplyStatements(
+        transport,
+        staged,
+        deleted,
+        new Date(),
+        input.desktopDeviceId,
+        options.mode ?? "merge",
+      ),
     );
   } catch (error) {
     return stalled(splitRefusal(errorText(error)), total);
@@ -1002,6 +1024,7 @@ export function createMobilePairingRepo(driver: DataDriver & PairingDriver) {
     },
     request: (input, batch) => driver.pairingSnapshotRequest(input, batch),
     applied: (input, batch) => driver.pairingSnapshotApplied(input, batch),
+    query: (sql, params) => driver.query(sql, params),
     adopted: (input, rows, tombstones) =>
       driver.pairingSnapshotAdopted(input, rows, tombstones),
   };
@@ -1024,8 +1047,10 @@ export function createMobilePairingRepo(driver: DataDriver & PairingDriver) {
       input: SnapshotPullInput,
       pairingId: string,
       onProgress?: (progress: PullProgress) => void,
+      /** §9.4's re-adoption passes `replace`; everything else is §9.2. */
+      mode?: SnapshotApplyMode,
     ): Promise<SnapshotPullOutcome> =>
-      pullSnapshot(transport, input, { pairingId, onProgress }),
+      pullSnapshot(transport, input, { pairingId, onProgress, mode }),
     pushUpload: (
       input: SnapshotPullInput,
       desktopRows: readonly SyncedRow[],
