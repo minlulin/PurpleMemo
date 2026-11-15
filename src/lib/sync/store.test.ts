@@ -555,6 +555,32 @@ test("an ack credits the delete it received, not a later tombstone for the same 
   );
 });
 
+test("a revoked peer still blocks tombstone collection until it is forgotten (D-5)", async () => {
+  const { db, driver } = openStore();
+  await driver.batch(
+    registerPeerStatements({ deviceId: UID_PEER_A, generation: 1 }),
+  );
+  await driver.batch(
+    deleteStatements([
+      { table: "notes", uid: "2a2a2a2a-2a2a-4a2a-8a2a-2a2a2a2a2a2a" },
+    ]),
+  );
+  // Revoking stops this device sending to the peer; it does not erase what the
+  // peer knows, and that peer can still deliver a write older than the delete.
+  await driver.batch(revokePeerStatements(UID_PEER_A));
+  await driver.batch(collectTombstonesStatements());
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_tombstones"),
+    1,
+    "revoke is not forget: the tombstone stays until the peer is erased (§5.4)",
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM sync_tombstone_gc_log"),
+    0,
+    "and nothing was logged as pruned",
+  );
+});
+
 test("a collected tombstone leaves its stamp in the GC log, and a restore clears the log", async () => {
   const { db, driver } = openStore();
   await driver.batch(

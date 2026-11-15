@@ -30,6 +30,7 @@ import {
   readState,
   readTombstones,
   registerPeerStatements,
+  snapshotStatements,
 } from "./store.ts";
 import { openSyncStore, type SyncFixture } from "./testSchema.ts";
 
@@ -1844,4 +1845,77 @@ test("a create a pruned tombstone outranks stays dead (§5.4, D-4)", async () =>
     0,
     "and the dead create writes no second tombstone",
   );
+});
+
+test("equal-counter tombstones resolve by the full §4 order on both paths (SW-10)", async () => {
+  const uid = "2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b";
+  const lower = {
+    table: "notes" as const,
+    uid,
+    stamp: { counter: 5, deviceId: DEVICE_A, opId: "a#5" },
+  };
+  const higher = {
+    table: "notes" as const,
+    uid,
+    stamp: { counter: 5, deviceId: DEVICE_B, opId: "b#5" },
+  };
+
+  // The snapshot path, delivered in both orders: the counters are equal, so the
+  // device id decides, and the result cannot depend on arrival order.
+  const snapshotWinner = async (
+    order: readonly (typeof lower)[],
+  ): Promise<string | undefined> => {
+    const store = openSyncStore();
+    await store.driver.batch(snapshotStatements([], order));
+    const [stored] = await readTombstones(store.driver);
+    return stored?.device_id;
+  };
+  assert.equal(await snapshotWinner([lower, higher]), DEVICE_B);
+  assert.equal(await snapshotWinner([higher, lower]), DEVICE_B);
+
+  // The op path, from the same two deletes: the same winner, and the same
+  // stored op id — the two routes must agree field for field.
+  const opWinner = async (
+    order: readonly (typeof lower)[],
+  ): Promise<{ device: string | undefined; op: string | undefined }> => {
+    const store = openSyncStore();
+    for (const device of [DEVICE_A, DEVICE_B]) {
+      await store.driver.batch(
+        registerPeerStatements({ deviceId: device, generation: 1 }),
+      );
+    }
+    let seq = 1;
+    for (const tombstone of order) {
+      const op: PeerOp = {
+        device_id: tombstone.stamp.deviceId,
+        seq,
+        op_id: tombstone.stamp.opId,
+        entity_table: "notes",
+        entity_uid: uid,
+        op: "delete",
+        base_counter: tombstone.stamp.counter - 1,
+        counter: tombstone.stamp.counter,
+        field_stamps: "{}",
+        payload: "{}",
+      };
+      await store.driver.batch(
+        await applyOps(store.driver, {
+          peerId: op.device_id,
+          origin: "desktop",
+          ops: [op],
+        }),
+      );
+      seq += 1;
+    }
+    const [stored] = await readTombstones(store.driver);
+    return { device: stored?.device_id, op: stored?.op_id };
+  };
+  assert.deepEqual(await opWinner([lower, higher]), {
+    device: DEVICE_B,
+    op: "b#5",
+  });
+  assert.deepEqual(await opWinner([higher, lower]), {
+    device: DEVICE_B,
+    op: "b#5",
+  });
 });

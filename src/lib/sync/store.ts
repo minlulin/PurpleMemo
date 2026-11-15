@@ -388,14 +388,18 @@ export function collectTombstonesStatements(
   // offline through the delete can still deliver an older write — so the
   // delete's stamp moves into this device's GC log first, in the same batch,
   // and the resurrection check consults it when no live tombstone exists.
-  const prunable = `EXISTS (SELECT 1 FROM sync_peers WHERE revoked_at IS NULL)
+  //
+  // D-5: revoke is not forget. Every peer row still counts, revoked or not — a
+  // revoked device keeps its own rows and can come back with a write older
+  // than this delete, so it blocks collection until it is explicitly forgotten
+  // (§5.4), an erase act no screen performs yet.
+  const prunable = `EXISTS (SELECT 1 FROM sync_peers)
               AND NOT EXISTS (
                 SELECT 1 FROM sync_peers p
-                WHERE p.revoked_at IS NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM sync_tombstone_acks a
-                    WHERE a.tombstone_id = sync_tombstones.id AND a.peer_id = p.device_id
-                  )
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM sync_tombstone_acks a
+                  WHERE a.tombstone_id = sync_tombstones.id AND a.peer_id = p.device_id
+                )
               )`;
   return [
     {
@@ -1560,8 +1564,11 @@ export function droppedOpCopyStatements(
  * order the batches arrived in, because a child's subselect only finds a parent
  * that was written earlier in the same batch.
  *
- * A tombstone is only ever written forward: `excluded.counter >` the stored one
- * makes a re-delivered delete a no-op instead of a second, older record.
+ * A tombstone is only ever written forward, under the SAME §4 order the
+ * engine's `tombstoneStatement` uses — counter, then device id, then op id. The
+ * counter-only clause this replaced disagreed with the op path at equal
+ * counters, so the same two deletes resolved differently depending on which
+ * route delivered them.
  */
 export function snapshotStatements(
   ops: readonly SnapshotOp[],
@@ -1634,7 +1641,9 @@ export function snapshotStatements(
               device_id = excluded.device_id,
               op_id = excluded.op_id,
               deleted_at = excluded.deleted_at
-            WHERE excluded.counter > sync_tombstones.counter`,
+            WHERE excluded.counter > sync_tombstones.counter
+               OR (excluded.counter = sync_tombstones.counter AND excluded.device_id > sync_tombstones.device_id)
+               OR (excluded.counter = sync_tombstones.counter AND excluded.device_id = sync_tombstones.device_id AND excluded.op_id > sync_tombstones.op_id)`,
       params: [
         tombstone.table,
         tombstone.uid,

@@ -359,9 +359,17 @@ it** (`tombstoneGcEligible`): `acked_by ⊇ peers`. Consequences, all deliberate
 
 - An empty peer list collects nothing — a device that has never paired keeps
   its tombstones.
-- A peer that is revoked or removed from the allowlist stops blocking
-  collection only when it is explicitly forgotten (which is a user act with a
-  stated consequence: that device must re-pair and re-snapshot).
+- **Revoke is not forget.** A peer that is revoked or removed from the
+  allowlist keeps blocking collection: its rows are still on its disk, and it
+  can still deliver a write older than this delete. It stops blocking only when
+  it is **explicitly forgotten** — an erase act that removes the peer row and
+  its bookkeeping, with the stated consequence that the device must re-pair and
+  re-snapshot. No screen performs that act yet, so in practice every known peer
+  blocks collection: the safe reading.
+- The delete's stamp is not lost when the tombstone is collected. It moves to
+  this device's `sync_tombstone_gc_log`, and a create stamped at or below it
+  stays dead (§5.3) — an acknowledgment from every peer we know is evidence, not
+  a promise that no older write is still on its way.
 - Collection is a maintenance pass, never part of apply.
 
 #### §5.5 Trash never syncs, and a loser copy is not an op
