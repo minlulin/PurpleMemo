@@ -104,15 +104,47 @@ export interface WriteVerdict {
 }
 
 /**
- * The single toggle field each two-way table allows the phone to update (§2.3).
+ * The fields each two-way table allows the phone to update (§2.3).
+ *
  * A table absent from this map has no mobile update at all: notes are
  * create/delete, a habit check-in is a `habit_logs` row, and a shopping list is
  * created or deleted rather than renamed from the phone.
+ *
+ * Two entries are wider than a single toggle flag, and both are settled
+ * decisions rather than defaults:
+ *
+ *  - `tasks` carries `due_date` beside `done` because completing a repeating
+ *    task rolls it (§2.1's note): the roll is the completion, and §2.1 records
+ *    completion as an action both surfaces take. No other task field opens up.
+ *  - `reminders` carries `fired` and `remind_at` — a settle and a re-arm —
+ *    because §13.1 makes the creating device the one that arms and settles its
+ *    own reminders. The field list cannot express "its own": this matrix has
+ *    no row context, so it admits the settle fields and the per-row check
+ *    (`reminderUpdateOwnedBy`) runs where the row is read during apply
+ *    (`composeOp`). Every other mobile reminder update is still refused here.
  */
 const MOBILE_TOGGLE_FIELDS: Partial<Record<SyncTable, readonly string[]>> = {
-  tasks: ["done"],
+  tasks: ["done", "due_date"],
   shopping_items: ["done"],
+  reminders: ["fired", "remind_at"],
 };
+
+/**
+ * §13.1's per-row half of the reminder rule: a device may settle and re-arm
+ * only a reminder it created. A NULL creator never matches a mobile op — a
+ * NULL-creator row is the receiving device's own legacy-local row, and only a
+ * desktop-origin op may update it.
+ */
+export function reminderUpdateOwnedBy(
+  createdBy: unknown,
+  deviceId: string,
+): boolean {
+  return (
+    typeof createdBy === "string" &&
+    createdBy.length > 0 &&
+    createdBy === deviceId
+  );
+}
 
 /** May this device write this kind of operation to this table? (§2.3) */
 export function writeAllowed(

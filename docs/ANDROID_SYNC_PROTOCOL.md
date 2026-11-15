@@ -115,7 +115,7 @@ decisions 3, 4 and the interaction-model refinement. The phone's authority only:
 | Module | Tables | Phone may |
 |---|---|---|
 | Notes | `collections`, `notes` | create, delete, view |
-| Tasks | `tasks`, `reminders` | create; toggle `tasks.done`; delete; reminders per §13.1 |
+| Tasks | `tasks`, `reminders` | create; toggle `tasks.done`; complete a repeating task (`done` + `due_date`); delete; reminders per §13.1 |
 | Budget | `income_entries`, `expense_entries` | **append** only — never edit or delete |
 | Budget | `wallets`, `income_categories`, `expense_categories` | read only (desktop-owned) |
 | Business | `shops` | read only |
@@ -128,6 +128,25 @@ decisions 3, 4 and the interaction-model refinement. The phone's authority only:
 
 `src/lib/sync/protocol.ts` encodes this table as data (`SYNC_TABLES`,
 `writeAllowed`, `updateFieldsAllowed`); the harness asserts the boundary.
+
+**Note (D-1, full-sweep fix wave 1).** Two mobile updates are wider than a
+toggle flag, and both are named here so the matrix and this table cannot drift
+apart again:
+
+- **A repeating task's completion roll.** Completing a repeating task writes
+  `due_date` (and `done` for a one-off), from either surface — the roll *is* the
+  completion, and completion is an action both surfaces take. So a mobile-op
+  `update` on `tasks` may carry `done`, `due_date`, or both. No other task field
+  opens up.
+- **A reminder's settle and re-arm.** §13.1 makes the creating device the one
+  that arms and settles its own reminders, so a mobile-origin `update` on
+  `reminders` is allowed **iff** the row's `created_by_device_id` is the op's
+  `device_id`. A NULL creator never matches a mobile op (a NULL-creator row is
+  the receiving device's own legacy-local row); only a desktop-origin op may
+  update it. `updateFieldsAllowed` has no row context, so the matrix admits the
+  settle fields (`fired`, `remind_at`) and the per-row check runs where the row
+  is read during apply (`composeOp`); every other mobile reminder update is
+  refused in the matrix.
 
 #### §2.2 Desktop-only rows never leave the desktop
 
@@ -151,6 +170,11 @@ Only the operations above cross the wire, expressed as
 wire, no `db_execute` over LAN, and the receiving side validates the table, the
 op kind, the field set and the payload shape **before** any effect (§7.1). A
 `toggle` names the single field it flips; it is not a general update.
+
+The mobile field matrix is `tasks: {done, due_date}` (the completion roll,
+§2.1's note), `shopping_items: {done}`, and `reminders: {fired, remind_at}` —
+the last narrowed per row by §13.1 (only the creator's own reminder). Everything
+else a phone's `update` names is refused by name (§7.7).
 
 #### §2.4 Which peer's data is authoritative
 
@@ -1052,6 +1076,11 @@ phone would arm them too and both devices would fire.
   and the Android pass's rows for arming, notifying and settling. A device
   never settles a peer's reminder either: its `fired` state converges from the
   creator's own settle ops (§6.1).
+- That is enforced at the border too, not only by the delivery filter: a
+  mobile-origin `update` on `reminders` is refused unless the row's
+  `created_by_device_id` is the op's `device_id` (§2.1's note, `composeOp`). The
+  matrix admits the settle fields because it has no row context; the row check
+  is what makes "only its own" true.
 - Three borders stamp a creator, so a synced reminder never lands without one:
   the engine writes the create op's **author** (the payload's claim is
   ignored), while the snapshot apply and the upload apply stamp the **sender**

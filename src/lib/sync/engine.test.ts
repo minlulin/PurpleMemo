@@ -1509,3 +1509,119 @@ test("a conflict copy's restore mints a new uid and records that uid", async () 
     "the copy left the Trash",
   );
 });
+
+// ---------------------------------------------------------------------------
+// D-1 (full sweep) — the recorder and the authority matrix agree again.
+// ---------------------------------------------------------------------------
+
+test("a phone reminder settle applies on the desktop and the fired state converges", async () => {
+  const pair = await openPair();
+  const tasksPhone = createTasksRepo(pair.b.driver);
+  const id = await tasksPhone.createReminder({
+    title: "Stand up",
+    remindAt: "2026-11-20T09:00",
+  });
+  await tasksPhone.settleReminders([{ id, nextRemindAt: null }]);
+
+  // Before D-1 this batch was refused (§2.3) and the phone's cursor could
+  // never move past it: the settle wedged sync permanently.
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const rows = await pair.a.driver.query<{
+    uid: string;
+    fired: number;
+    created_by_device_id: string | null;
+  }>("SELECT uid, fired, created_by_device_id FROM reminders");
+  assert.equal(rows.length, 1, "the create and its settle both landed");
+  assert.equal(rows[0]?.fired, 1, "§13.1: the creator's settle is the truth");
+  assert.equal(
+    rows[0]?.created_by_device_id,
+    DEVICE_B,
+    "the engine stamps the op's author as the creator",
+  );
+});
+
+test("a phone settling a desktop-created reminder is still refused", async () => {
+  const pair = await openPair();
+  const tasksDesktop = createTasksRepo(pair.a.driver);
+  await tasksDesktop.createReminder({
+    title: "Desktop reminder",
+    remindAt: "2026-11-20T09:00",
+  });
+  // The desktop's reminder reaches the phone, and the phone's delivery filter
+  // means it never arms it — but a settle op naming it must still be refused.
+  await applyFrom(pair.b, pair.a);
+  const [onPhone] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM reminders",
+  );
+  assert.ok(onPhone);
+  const tasksPhone = createTasksRepo(pair.b.driver);
+  await tasksPhone.settleReminders([{ id: onPhone.id, nextRemindAt: null }]);
+
+  await assert.rejects(
+    () => applyFrom(pair.a, pair.b, { origin: "mobile" }),
+    /only the reminders it created \(§13\.1\)/,
+  );
+  const [onDesktop] = await pair.a.driver.query<{ fired: number }>(
+    "SELECT fired FROM reminders",
+  );
+  assert.equal(onDesktop?.fired, 0, "the refused settle wrote nothing");
+});
+
+test("a phone completing a repeating task applies and the rolled due date converges", async () => {
+  const pair = await openPair();
+  const tasksPhone = createTasksRepo(pair.b.driver);
+  const id = await tasksPhone.createTask({
+    title: "Water the plants",
+    dueDate: "2026-11-01",
+    repeat: "weekly",
+  });
+  // §2.1's note: the completion roll IS the completion, and completion is an
+  // action both surfaces take — so `due_date` rides the phone's update.
+  await tasksPhone.completeTask(id, "2026-11-15");
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const rows = await pair.a.driver.query<{ due_date: string; done: number }>(
+    "SELECT due_date, done FROM tasks",
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.due_date, "2026-11-22", "the roll converged");
+  assert.equal(rows[0]?.done, 0, "a repeating task stays open");
+});
+
+test("a phone task update carrying any other field is still refused", async () => {
+  const pair = await openPair();
+  const id = await createTasksRepo(pair.a.driver).createTask({
+    title: "Desktop task",
+    dueDate: "2026-11-20",
+  });
+  const [task] = await pair.a.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM tasks WHERE id = ?",
+    [id],
+  );
+  assert.ok(task?.uid);
+
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    4,
+    "tasks",
+    task.uid,
+    "update",
+    { title: "Phone title" },
+    5,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [edit],
+      }),
+    /cannot change title on tasks/,
+  );
+  const [held] = await pair.a.driver.query<{ title: string }>(
+    "SELECT title FROM tasks",
+  );
+  assert.equal(held?.title, "Desktop task", "no other task field opens up");
+});

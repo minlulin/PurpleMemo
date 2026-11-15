@@ -28,6 +28,7 @@ import {
   isSyncTable,
   type OpKind,
   type Origin,
+  reminderUpdateOwnedBy,
   type SyncTable,
   updateFieldsAllowed,
   type VersionStamp,
@@ -920,6 +921,7 @@ async function composeOp(
   now: string,
   overlay: Map<string, BatchEntry>,
   aliases: UidAliases,
+  origin: Origin,
   adopt = false,
 ): Promise<OpOutcome> {
   const table = op.entity_table as SyncTable;
@@ -1086,6 +1088,22 @@ async function composeOp(
     };
   }
 
+  // §13.1: a mobile settle or re-arm is legal only on the reminder that device
+  // created. The field matrix has no row context, so the row is checked here,
+  // where it has just been read — and refused by name (§7.7) rather than
+  // applied to a peer's reminder. A NULL creator is the receiving device's own
+  // legacy row, so it never matches (only a desktop op may update it).
+  if (
+    op.op === "update" &&
+    table === "reminders" &&
+    origin === "mobile" &&
+    !reminderUpdateOwnedBy(held.row.created_by_device_id, op.device_id)
+  ) {
+    throw new Error(
+      `op ${op.device_id}#${op.seq} was refused: a device settles and re-arms only the reminders it created (§13.1).`,
+    );
+  }
+
   return mergeOp(op, held, stamp, delivered, now, fields);
 }
 
@@ -1190,6 +1208,7 @@ export async function applyOps(
       now,
       overlay,
       aliases,
+      origin,
       adopt,
     );
     if (outcome.next)
