@@ -50,6 +50,7 @@ import {
   OPEN_DECISIONS,
   PROTOCOL_VERSION,
   planAdoption,
+  SETTLED_DECISIONS,
   tombstoneGcEligible,
   writeAllowed,
 } from "./protocol.ts";
@@ -137,6 +138,7 @@ test("every clause the code cites is one the spec defines", () => {
     for (const clause of item.clauses) cited.add(clause);
   }
   for (const decision of OPEN_DECISIONS) cited.add(decision.clause);
+  for (const decision of SETTLED_DECISIONS) cited.add(decision.clause);
   assert.ok(cited.size > 0);
   for (const clause of cited) {
     assert.ok(CLAUSES.has(clause), `${clause} is cited but not defined`);
@@ -151,9 +153,17 @@ test("the spec supersedes ANDROID_DESIGN.md §5 and ends on the oracle", () => {
   );
 });
 
-test("open decisions are recorded in the spec, the code and the todo", () => {
-  assert.ok(OPEN_DECISIONS.length >= 1, "a silent decision is the bug");
-  for (const decision of OPEN_DECISIONS) {
+test("whether a decision is open or settled is stated, never implied", () => {
+  // Nothing is pending: an open list that still carries answered questions is
+  // how a settled ruling gets re-litigated by the next session.
+  assert.equal(
+    OPEN_DECISIONS.length,
+    0,
+    "an open decision must be recorded here, and §13.1's is settled",
+  );
+
+  assert.ok(SETTLED_DECISIONS.length >= 1, "a silent ruling is the bug too");
+  for (const decision of SETTLED_DECISIONS) {
     assert.ok(CLAUSES.has(decision.clause), `${decision.id}: unknown clause`);
     assert.ok(
       SPEC.includes(decision.id),
@@ -164,10 +174,20 @@ test("open decisions are recorded in the spec, the code and the todo", () => {
       `${decision.id} is not carried into the todo`,
     );
     assert.ok(
-      decision.options.length >= 2,
-      `${decision.id} must offer the reviewer real options`,
+      decision.ruling.length > 30 && decision.built.length > 30,
+      `${decision.id} needs a ruling and the clause's built form`,
+    );
+    assert.ok(
+      !OPEN_DECISIONS.some((open) => open.id === decision.id),
+      `${decision.id} cannot be both open and settled`,
     );
   }
+  assert.ok(
+    SETTLED_DECISIONS.some(
+      (decision) => decision.id === "reminder-definition-owner",
+    ),
+    "§13.1's reminder-definition-owner was decided (Option A)",
+  );
 });
 
 // ---------------------------------------------------------------------------

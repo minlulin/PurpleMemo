@@ -1297,48 +1297,27 @@ export function snapshotRowStatements(
 }
 
 /**
- * §9.1's row write, the upload direction: a plain insert, never an upsert.
+ * §9.1's row write, the upload direction — the SAME rule as §8.4's, by ruling:
+ * a natural key folds, it never collides.
  *
- * The caller has already established that this device does not hold the uid
- * (that classification IS the upload plan), so the row lands as the new
- * record §9.2 promises, with the stamp the phone sent — the merge baseline
- * for everything Stage 1 later compares against it. There is deliberately
- * no §8.4 fold here: a natural-key collision on this side means a genuinely
- * distinct record was created under the same name on both devices while
- * unpaired, and silently overwriting either side's fields is not §9.1's to
- * decide — the insert refuses on the unique name, the whole apply rolls
- * back, and the failure is reported by name instead (§7.7).
+ * The plan offers only uids this device does not hold, so the ordinary case is
+ * a new record with the phone's stamp — the merge baseline for everything
+ * Stage 1 later compares against it. But the plan was computed against a
+ * snapshot, and the desktop can create a same-named record afterwards: a seed
+ * wallet, a category, a folder. §8.4 already says what that is — the same
+ * record, seen twice — so the local row keeps its `id` (its children stay
+ * attached), its `uid` is re-keyed to the incoming one, and the incoming fields
+ * and stamp land through the upsert, with the retired uid recorded as an alias.
+ *
+ * Before this ruling the two borders disagreed and the upload aborted whole on
+ * the unique name. §8.4 wins: one merge rule, `foldStatements`, on both.
  */
 export function uploadRowStatements(
   op: SnapshotOp,
   now: Date = new Date(),
   senderDeviceId?: string,
 ): BatchStatement[] {
-  assertSyncTable(op.table);
-  const { columns, values, params } = snapshotColumns(
-    withSenderCreator(op, senderDeviceId),
-  );
-  return [
-    {
-      sql: `INSERT INTO "${op.table}" (${columns
-        .map((column) => `"${column}"`)
-        .join(", ")})
-            VALUES (${values.join(", ")})`,
-      params,
-    },
-    {
-      sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
-            VALUES (?, ?, ?, ?, ?, '{}', ?)`,
-      params: [
-        op.table,
-        op.uid,
-        op.stamp.counter,
-        op.stamp.deviceId,
-        op.stamp.opId,
-        nowIso(now),
-      ],
-    },
-  ];
+  return snapshotRowStatements(op, now, senderDeviceId);
 }
 
 /**

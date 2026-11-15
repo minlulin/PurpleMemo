@@ -1308,7 +1308,7 @@ test("a tombstone still wins over a row the fold re-keyed", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// §9.1's upload apply: plain inserts, no upsert, no fold.
+// §9.1's upload apply: §8.4's fold and upsert, the same rule as the snapshot.
 // ---------------------------------------------------------------------------
 
 test("an uploaded child lands linked to its uploaded parent, with its stamp", async () => {
@@ -1328,9 +1328,11 @@ test("an uploaded child lands linked to its uploaded parent, with its stamp", as
       created_at: "2026-11-12",
     }),
   ]);
+  // §8.4's rule, by ruling: the natural-key fold runs on this border too, so
+  // the write is the same fold-then-upsert the snapshot apply uses.
   assert.ok(
-    statements.every((statement) => !/ON CONFLICT/i.test(statement.sql)),
-    "§9.1 inserts plainly — an upsert would silently rewrite a desktop row",
+    statements.some((statement) => /sync_uid_aliases/.test(statement.sql)),
+    "an uploaded row folds by natural key exactly as an adopted one does",
   );
   await driver.batch(statements);
 
@@ -1354,33 +1356,61 @@ test("an uploaded child lands linked to its uploaded parent, with its stamp", as
   assert.equal(stamp?.op_id, "op-desktop");
 });
 
-test("an upload whose name collides with a desktop row aborts whole", async () => {
+test("an upload whose name collides with a desktop row lands folded (§8.4)", async () => {
   const { db, driver } = openStore();
   db.prepare(
     "INSERT INTO wallets (uid, name, created_at) VALUES (?, 'Cash', '2026-11-01')",
   ).run(UID_PARENT);
-  // §9.1 has no natural-key fold (adoption already folded phone-side): the
-  // insert refuses, the batch rolls back, and the note travelling with the
-  // wallet is not left behind half-applied.
-  await assert.rejects(
-    driver.batch(
-      uploadStatements([
-        snapshotOp("wallets", UID_CHILD, 3, {
-          name: "Cash",
-          created_at: "2026-11-12",
-        }),
-        snapshotOp("notes", UID_CHILD, 4, {
-          title: "Travelling note",
-          content: "",
-          created_at: "2026-11-12",
-          updated_at: "2026-11-12",
-        }),
-      ]),
-    ),
-    /UNIQUE constraint failed: wallets\.name/,
+  const before = db
+    .prepare("SELECT id FROM wallets WHERE uid = ?")
+    .get(UID_PARENT) as { id: number };
+
+  // The two borders agree: a name both devices use is one record, not a
+  // collision — so the upload lands instead of aborting the whole batch.
+  await driver.batch(
+    uploadStatements([
+      snapshotOp("wallets", UID_CHILD, 3, {
+        name: "Cash",
+        created_at: "2026-11-12",
+      }),
+      snapshotOp("notes", UID_CHILD, 4, {
+        title: "Travelling note",
+        content: "",
+        created_at: "2026-11-12",
+        updated_at: "2026-11-12",
+      }),
+    ]),
   );
-  const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
-    n: number;
-  };
-  assert.equal(landed.n, 0, "nothing from the refused upload may remain");
+
+  const wallets = db.prepare("SELECT id, uid, name FROM wallets").all() as {
+    id: number;
+    uid: string;
+    name: string;
+  }[];
+  assert.equal(wallets.length, 1, "one record, not two");
+  assert.equal(
+    wallets[0]?.id,
+    before.id,
+    "the local row keeps its id, so its children stay attached",
+  );
+  assert.equal(
+    wallets[0]?.uid,
+    UID_CHILD,
+    "and is re-keyed to the incoming uid",
+  );
+  const alias = db
+    .prepare(
+      "SELECT winner_uid FROM sync_uid_aliases WHERE entity_table = 'wallets' AND loser_uid = ?",
+    )
+    .get(UID_PARENT) as { winner_uid: string } | undefined;
+  assert.equal(
+    alias?.winner_uid,
+    UID_CHILD,
+    "the retired uid stays resolvable on the device that folded it (D-6)",
+  );
+  assert.equal(
+    count(db, "SELECT count(*) AS n FROM notes"),
+    1,
+    "the rest of the upload lands too",
+  );
 });

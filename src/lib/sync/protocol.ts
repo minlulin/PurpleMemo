@@ -404,23 +404,48 @@ export interface OpenDecision {
 }
 
 /**
+ * A decision the spec HAS made, and where the ruling lives.
+ *
+ * These stay in code beside the open list for the same reason: a settled ruling
+ * that falls out of the documents every later session reads is how it gets
+ * re-opened by accident.
+ */
+export interface SettledDecision {
+  id: string;
+  clause: string;
+  /** What was decided, in one line. */
+  ruling: string;
+  /** Where the built form is, so the ruling is not just prose. */
+  built: string;
+}
+
+/**
  * Open decisions carried into MinLulin's review of the spec (§13.1).
  *
  * They live in code so a test can prove they are still recorded in both the
  * spec and the todo — an open question that quietly disappears from the
  * documents every later session reads is how it gets decided by accident.
+ * Empty is a state worth asserting: a decision that has been made belongs in
+ * `SETTLED_DECISIONS` instead, not left here to look pending.
  */
-export const OPEN_DECISIONS: readonly OpenDecision[] = [
+export const OPEN_DECISIONS: readonly OpenDecision[] = [];
+
+/**
+ * Decisions that are closed, with the clause that closed them.
+ *
+ * §13.1's `reminder-definition-owner` was Option A, and Option A is what the
+ * code does: `created_by_device_id` travels, the engine refuses a mobile
+ * reminder update on a row another device created (`reminderUpdateOwnedBy`),
+ * and each device notifies only for its own reminders. Keeping it "open" in
+ * this list made every later session re-read a question that had an answer.
+ */
+export const SETTLED_DECISIONS: readonly SettledDecision[] = [
   {
     id: "reminder-definition-owner",
     clause: "§13.1",
-    question:
-      "Who owns a reminder definition — the desktop, or whichever device created it?",
-    options: [
-      "A: definitions are two-way and each device notifies only for the reminders it created (recommended).",
-      "B: definitions stay desktop-owned; a phone-created reminder never syncs and stays on the phone.",
-    ],
-    recommendation:
-      "A: it keeps decision 9's sentence ('the creating device notifies') literally true and keeps reminders inside the 17-table core, at the cost of a `created_by_device_id` column and a delivery filter on both sides.",
+    ruling:
+      "Option A: reminder definitions are two-way, and each device arms and settles only the reminders it created.",
+    built:
+      "schema v8's created_by_device_id column, engine.ts's reminderUpdateOwnedBy guard, and the snapshot/upload border stamp in store.ts.",
   },
 ];

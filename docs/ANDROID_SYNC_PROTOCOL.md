@@ -312,12 +312,20 @@ tombstone insert are one transaction, as is the outbox append (§6.1).
 #### §5.2 Cascades travel as tombstones
 
 A delete that cascades locally must emit a tombstone for **each** row it
-removed. The cascades that matter (verified against `src-tauri/src/schema.rs`):
+removed. The cascades the schema actually has (verified against
+`src-tauri/src/schema.rs`; a cascade this list invents is as wrong as one it
+misses):
 
-- `collections` → `notes` (a note's `collection_id`);
 - `shopping_lists` → `shopping_items` (`ON DELETE CASCADE` in the schema);
-- `habits` → `habit_logs` (`ON DELETE CASCADE`);
-- a task and its `reminders`, where the desktop deletes them together;
+- `habits` → `habit_logs` (`ON DELETE CASCADE`) — desktop-side in practice, the
+  phone never deletes a habit;
+- `collections` → `notes` is **not** a cascade: the schema declares
+  `ON DELETE SET NULL`, so deleting a folder leaves its notes alive and
+  unlinked. Nothing is tombstoned, and nothing should be.
+- `reminders` are **standalone rows**: there is no task reference on them and no
+  cascade, so deleting a task does not delete its reminders. An app that wants a
+  reminder gone deletes it explicitly, and that delete emits its own tombstone
+  like any other;
 - a note's `photo_refs` are **local only** and never tombstoned — they are not
   in the allowlist (§2.2).
 
@@ -717,15 +725,17 @@ the ops exactly once and decides:
    known, never rewritten, whatever stamp they carry. Stage 1's op-apply
    inherits §4 merges for genuinely diverged rows; adoption has none,
    because §9.2's plan only offers uids the snapshot did not contain.
-3. **The rest insert plainly, in one transaction**, parents first, foreign
-   keys resolved by uid, each row's stamp recorded with it. There is **no
-   natural-key fold** here — adoption already folded every same-name pair
-   onto the desktop's uids on the phone's side at snapshot time (§8.4), so a
-   natural-key collision means a same-name record was created on the desktop
-   after the snapshot was read; the insert refuses, the transaction rolls
-   back, and the failure is reported to the phone with the database's own
-   reason. The upload is retried against a fresh snapshot, never silently
-   merged.
+3. **The rest land in one transaction**, parents first, foreign keys resolved
+   by uid, each row's stamp recorded with it — and through **§8.4's fold**, the
+   same `foldStatements` the snapshot border uses. Adoption already folded
+   every same-name pair on the phone's side when it read the snapshot, but the
+   desktop can create a same-named record afterwards (a seed wallet, a
+   category), and §8.4 is explicit: *a natural key folds, it never collides*. So
+   the desktop's row keeps its `id` (its children stay attached), its `uid` is
+   re-keyed to the incoming one with the retired uid recorded as an alias
+   (§7.7, D-6), and the incoming fields and stamp land through the upsert. Two
+   borders, one merge rule; an upload is never aborted over a name both devices
+   happen to use, and nothing is silently overwritten without that rule.
 
 The staging lives and dies with the pairing window: closing the panel
 discards an unapplied upload whole, and nothing on the desktop changes

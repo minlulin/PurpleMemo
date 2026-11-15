@@ -1074,18 +1074,18 @@ test("an upload that fails validation writes nothing and says why", async () => 
 
 test("a database refusal rolls the upload back and reaches the phone", async () => {
   const { db, driver } = openDb();
-  db.prepare(
-    "INSERT INTO wallets (uid, name, created_at) VALUES (?, 'Cash', 't')",
-  ).run(PHONE_WALLET);
+  // A row the schema itself refuses: `notes.title` is NOT NULL. A natural-key
+  // collision is no longer a refusal (§8.4 folds it), so the rollback has to be
+  // proven on a write the database really rejects.
   const staged: UploadTakeResult = {
     pairingId: "pair-1",
     ops: [
       uploadOp("wallets", PHONE_WALLET_2, 1, {
-        name: "Cash",
+        name: "Uploaded wallet",
         created_at: "t",
       }),
       uploadOp("notes", PHONE_NOTE, 1, {
-        title: "Travelling note",
+        title: null,
         content: "",
         created_at: "t",
         updated_at: "t",
@@ -1094,12 +1094,20 @@ test("a database refusal rolls the upload back and reaches the phone", async () 
   };
   const { transport, outcomes } = uploadTransport(driver, staged);
   const applied = await applyStagedUpload(transport);
-  assert.match(applied?.error ?? "", /UNIQUE constraint failed: wallets\.name/);
-  assert.match(outcomes[0]?.error ?? "", /wallets\.name/);
+  assert.match(applied?.error ?? "", /NOT NULL constraint failed/);
+  assert.match(outcomes[0]?.error ?? "", /NOT NULL constraint failed/);
   const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
     n: number;
   };
   assert.equal(landed.n, 0, "the refused upload leaves nothing behind");
+  const wallets = db.prepare("SELECT count(*) AS n FROM wallets").get() as {
+    n: number;
+  };
+  assert.equal(
+    wallets.n,
+    0,
+    "and the row before the refusal is rolled back with it",
+  );
 });
 
 test("the settle tick applies a staged upload and the view reports it", async () => {
