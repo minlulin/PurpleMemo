@@ -30,6 +30,12 @@ import {
  * `src-tauri/src/pairing_snapshot.rs`. Deliberately not `MAX_BATCH_BYTES`
  * (256 KiB): that is the export's bound, not a sealed frame's, and using it
  * here would let the phone accept a batch the desktop can never send.
+ *
+ * Both sides measure the SAME quantity: the whole batch document, wrapper
+ * included (`JSON.stringify` here; the cutter's `BATCH_WRAPPER_BYTES` there).
+ * A single record larger than `MAX_SERVABLE_ROW_BYTES` does not travel at all —
+ * the desktop refuses it by name (§8.5) rather than emitting a frame this cap
+ * would have to reject.
  */
 export const MAX_PAIRING_SNAPSHOT_BYTES = 30 * 1024;
 

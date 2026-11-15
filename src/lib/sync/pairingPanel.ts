@@ -267,6 +267,11 @@ export interface PairingPanelView {
   upload: PanelUploadView | null;
   /** The ongoing exchange's state, once the phone pushes an op (§6). */
   sync: PanelSyncView | null;
+  /**
+   * §8.5: the window's own note, when it has one — a record too large to copy
+   * is the case that matters, because it is why adoption cannot proceed.
+   */
+  note: string | null;
 }
 
 /** What the panel says about one staged push, in the facts line's words. */
@@ -315,6 +320,7 @@ export function panelView(
             applied: state.listener.syncApplied,
             note: state.listener.syncNote,
           },
+    note: state.listener.note,
   };
 }
 

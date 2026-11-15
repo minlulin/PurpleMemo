@@ -583,9 +583,23 @@ leaves the desktop.
    schemaVersion, generation, batch}` — asks for batch N (0-based).
 2. desktop → sealed `{kind:"snapshot", pairingId, batch, total,
    ops:[{table, uid, stamp, fields}], tombstones:[{table, uid, stamp}]}` — one
-   batch: ≤ 200 ops and ≤ 30 KiB of rows (§8.3). A single row larger than the
-   budget still travels: a record that cannot be sent is worse than a frame over
-   the target.
+   batch: ≤ 200 ops and ≤ 30 KiB of **plaintext document**, its wrapper
+   included (§8.3). Both sides measure that same quantity: the desktop cuts on
+   `MAX_SNAPSHOT_BATCH_BYTES` (`pairing_snapshot.rs`, wrapper and one separator
+   byte per op charged to every cut), the phone re-checks
+   `MAX_PAIRING_SNAPSHOT_BYTES` over the whole document (`bootstrap.ts`).
+
+   **A row larger than one servable batch does not travel.** Under a 64 KiB
+   frame with hex encoding there is no cut that makes it fit, so promising it
+   would only strand the pull: the desktop refuses the serve by name —
+   `record-too-large`, naming the table, the uid and the record's title or name,
+   and its size against the limit — before a single batch is cut. The panel
+   shows that reason as why adoption cannot proceed, and the phone renders the
+   same refusal as "a record on the other device is too large to copy" rather
+   than as a malformed batch. The limit is
+   `MAX_SERVABLE_ROW_BYTES = MAX_SNAPSHOT_BATCH_BYTES - BATCH_WRAPPER_BYTES`.
+   §11.6 and the phone's receipt cap are unchanged: the fix is to stop promising
+   what the frame cannot carry, not to widen the frame.
 3. phone validates the batch (op count, plaintext budget, every `uid`
    well-formed, every table in §2.1's 17, every stamp well-formed) and stages it
    **unapplied**.
@@ -608,9 +622,9 @@ leaves the desktop.
    serve, a table outside the 17), `pairing-mismatch`, `malformed`,
    `needs-re-pair` (canonical, never `generation-mismatch`), `unauthenticated`,
    `schema-mismatch`, `replayed` (an envelope counter already accepted, a batch
-   already acknowledged in this pull), `revoked`, and `snapshot-busy` (a second
+   already acknowledged in this pull), `revoked`, `snapshot-busy` (a second
    stream in one window: a request that skips past the batch the phone has not
-   acknowledged yet).
+   acknowledged yet), and `record-too-large` (§8.5's data refusal, above).
 
 **A snapshot moves no cursor.** Its adopted row stamps are the merge baseline
 for every record it carried — which value the row holds, and which write it

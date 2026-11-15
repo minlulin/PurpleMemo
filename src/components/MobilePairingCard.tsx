@@ -309,7 +309,11 @@ export function MobilePairingCard() {
         setPullError(
           outcome.refusal === null
             ? t("mobile.settings.pullFailed")
-            : `${t("mobile.settings.pullFailed")} ${outcome.refusal.message}`,
+            : // §8.5: a record too large to copy is not "malformed" to the
+              // person — the reason is the record itself, so say that.
+              outcome.refusal.code === "record-too-large"
+              ? `${t("mobile.settings.pullTooLarge")} ${outcome.refusal.message}`
+              : `${t("mobile.settings.pullFailed")} ${outcome.refusal.message}`,
         );
       }
     } finally {

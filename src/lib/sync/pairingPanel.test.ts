@@ -383,6 +383,25 @@ test("the code's peer becomes one sync_peers row, and a re-pair resets cursors",
   );
 });
 
+test("a record too large to copy is the panel's stated reason, in the backend's words (§8.5)", () => {
+  const note =
+    'a notes record f0000000-0000-4000-8000-000000000001 "Giant note" is 40120 bytes, over the 30592 bytes one copied batch can carry (§8.5)';
+  const view = panelView(
+    { ...panelState("pair-1"), listener: listener({ note }) },
+    Date.now(),
+  );
+  assert.equal(
+    view.note,
+    note,
+    "the panel says why adoption cannot proceed, not just that it did not",
+  );
+  assert.equal(
+    panelView(panelState("pair-1"), Date.now()).note,
+    null,
+    "a window with nothing to say shows nothing",
+  );
+});
+
 test("Trust refuses while the desktop still owes the phone changes, and the discard act is its own press", async () => {
   const { db, driver } = openDb();
   const admitted = listener({

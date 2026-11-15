@@ -580,6 +580,35 @@ const PULL_INPUT = {
   desktopDeviceId: PINNED_DESKTOP,
 };
 
+test("a record too large to copy arrives as its own refusal kind (§8.5)", async () => {
+  const reason =
+    'a notes record f0000000-0000-4000-8000-000000000001 "Giant note" is 40120 bytes, over the 30592 bytes one copied batch can carry (§8.5)';
+  const transport: SnapshotPullTransport = {
+    async request() {
+      throw new Error(`record-too-large: ${reason}`);
+    },
+    async applied() {},
+    async adopted() {},
+    async batch() {},
+    async peers() {
+      return [];
+    },
+    async query<T>(): Promise<T[]> {
+      return [];
+    },
+  };
+  const outcome = await pullSnapshot(transport, PULL_INPUT, {
+    pairingId: PULL_PAIRING,
+  });
+  assert.equal(outcome.applied, false);
+  assert.equal(
+    outcome.refusal?.code,
+    "record-too-large",
+    "the desktop's kind travels, not a generic malformed",
+  );
+  assert.equal(outcome.refusal?.message, reason);
+});
+
 test("a pull stages every batch, applies them in ONE transaction, then adopts", async () => {
   const { transport, calls } = sealedPull([
     [snapshotRow(1), snapshotRow(2)],

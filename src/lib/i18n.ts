@@ -321,6 +321,8 @@ export const en = {
     "Copied: {rows} record(s) and {tombstones} deletion(s).",
   "mobile.settings.pullFailed":
     "Nothing was copied. The whole snapshot has to arrive before any of it is applied — try again.",
+  "mobile.settings.pullTooLarge":
+    "A record on the other device is too large to copy:",
   "mobile.settings.uploadHeading": "Send to the desktop",
   "mobile.settings.uploadBody":
     "Send the records you created on this phone to the desktop. Records it already has are left exactly as they are, and nothing is deleted on either device.",
@@ -1288,6 +1290,7 @@ export const my: Record<MessageKey, string> = {
     "ကူးယူပြီးပါပြီ — မှတ်တမ်း {rows} ခု၊ ဖျက်မှတ် {tombstones} ခု။",
   "mobile.settings.pullFailed":
     "ဘာမျှ မကူးယူရသေးပါ။ အစုအစည်းတစ်ခုလုံး ရောက်မှသာ သိမ်းဆည်းမည်ဖြစ်သည် — ထပ်ကြိုးစားပါ။",
+  "mobile.settings.pullTooLarge": "အခြားစက်ရှိ မှတ်တမ်းတစ်ခုသည် ကူးယူရန် အလွန်ကြီးနေသည် —",
   "mobile.settings.uploadHeading": "ကွန်ပျူတာသို့ ပို့ရန်",
   "mobile.settings.uploadBody":
     "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများကို ကွန်ပျူတာသို့ ပို့ပါသည်။ ကွန်ပျူတာတွင် ရှိပြီးသား မှတ်တမ်းများကို ရှိသည့်အတိုင်း ထားမည်ဖြစ်ပြီး မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",

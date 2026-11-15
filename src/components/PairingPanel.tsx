@@ -446,6 +446,14 @@ export function PairingPanel() {
                   </dd>
                 </div>
               ) : null}
+              {/* §8.5: a record too large to copy is why adoption cannot
+                  proceed — the reason, not a silent stall. */}
+              {view.note !== null ? (
+                <div>
+                  <dt>Snapshot</dt>
+                  <dd>{view.note}</dd>
+                </div>
+              ) : null}
             </dl>
           </div>
 

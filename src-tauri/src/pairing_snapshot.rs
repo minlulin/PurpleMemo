@@ -49,6 +49,25 @@ pub const MAX_SNAPSHOT_BATCH_OPS: usize = 200;
 /// figures this constant used to carry — the happy path alone would not.
 pub const MAX_SNAPSHOT_BATCH_BYTES: usize = 30 * 1024;
 
+/// The plaintext cost of one batch document before any op: `kind`, the UUID
+/// `pairingId`, `batch`, `total` and the two array brackets — measured at 114
+/// bytes, rounded up. It is charged to EVERY cut below, and one byte per op is
+/// charged for the comma between elements, so `MAX_SNAPSHOT_BATCH_BYTES` bounds
+/// the document the phone measures rather than just the sum of its rows.
+///
+/// The phone's `MAX_PAIRING_SNAPSHOT_BYTES` (`src/lib/sync/mobilePairing.ts`)
+/// is the other half of this number: it measures `JSON.stringify` of the whole
+/// document, wrapper included, at the same 30 KiB. Change one, change both.
+pub const BATCH_WRAPPER_BYTES: usize = 128;
+
+/// §8.5, restated: the largest single record that can be copied at all.
+///
+/// A row travels in a batch of its own at worst, and that batch still carries
+/// the wrapper — so a row bigger than this cannot be framed under the 64 KiB
+/// envelope cap however it is cut, and the serve refuses it BY NAME instead of
+/// emitting a frame the phone can never accept.
+pub const MAX_SERVABLE_ROW_BYTES: usize = MAX_SNAPSHOT_BATCH_BYTES - BATCH_WRAPPER_BYTES;
+
 /// The §4.2 stamp of the value a row holds — or of the write that deleted it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stamp {
@@ -138,21 +157,23 @@ fn tombstone_json(tombstone: &SnapshotTombstone) -> JsonValue {
 impl Snapshot {
     /// Cut the read into batches under the frame's budget (§8.3).
     ///
-    /// A single row larger than the budget still travels — a record that cannot
-    /// be sent is worse than a frame that is over the target — and is the only
-    /// case where a batch exceeds `max_bytes`.
+    /// Every cut starts at `BATCH_WRAPPER_BYTES` and every element is charged
+    /// its own document bytes plus the comma after it, so `max_bytes` bounds the
+    /// batch's whole plaintext — the same quantity the phone checks and the
+    /// envelope seals. A row that cannot fit even alone is not cut around: §8.5
+    /// says it does not travel, and `unservable_row` is what refuses it.
     pub fn batches(&self, max_bytes: usize) -> Vec<SnapshotBatch> {
         let mut cuts: Vec<(Vec<SnapshotRow>, Vec<SnapshotTombstone>)> = Vec::new();
         let mut rows: Vec<SnapshotRow> = Vec::new();
         let mut tombstones: Vec<SnapshotTombstone> = Vec::new();
-        let mut bytes = 0usize;
+        let mut bytes = BATCH_WRAPPER_BYTES;
         for row in &self.rows {
-            let size = est_row_bytes(row);
+            let size = est_row_bytes(row) + 1;
             if !rows.is_empty()
                 && (rows.len() >= MAX_SNAPSHOT_BATCH_OPS || bytes + size > max_bytes)
             {
                 cuts.push((std::mem::take(&mut rows), Vec::new()));
-                bytes = 0;
+                bytes = BATCH_WRAPPER_BYTES;
             }
             bytes += size;
             rows.push(row.clone());
@@ -160,13 +181,13 @@ impl Snapshot {
         // Tombstones travel with the last data rows when they fit; otherwise
         // they get batches of their own.
         for tombstone in &self.tombstones {
-            let size = est_tombstone_bytes(tombstone);
+            let size = est_tombstone_bytes(tombstone) + 1;
             if (!rows.is_empty() || !tombstones.is_empty())
                 && (rows.len() + tombstones.len() >= MAX_SNAPSHOT_BATCH_OPS
                     || bytes + size > max_bytes)
             {
                 cuts.push((std::mem::take(&mut rows), std::mem::take(&mut tombstones)));
-                bytes = 0;
+                bytes = BATCH_WRAPPER_BYTES;
             }
             bytes += size;
             tombstones.push(tombstone.clone());
@@ -198,18 +219,90 @@ impl Snapshot {
     }
 }
 
+/// One op's own document bytes, measured rather than guessed: the row exactly
+/// as it serializes into `ops`. Keys, quotes and punctuation are all in here,
+/// which is why the cutter can treat its budget as the plaintext itself.
 fn est_row_bytes(row: &SnapshotRow) -> usize {
-    // + 96 for the table, uid, stamp and the op's own keys.
-    JsonValue::Object(row.fields.clone()).to_string().len()
-        + row.table.len()
-        + row.uid.len()
-        + row.stamp.device_id.len()
-        + row.stamp.op_id.len()
-        + 96
+    serde_json::to_vec(&row_json(row)).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 fn est_tombstone_bytes(tombstone: &SnapshotTombstone) -> usize {
-    tombstone.table.len() + tombstone.uid.len() + tombstone.stamp.device_id.len() + 64
+    serde_json::to_vec(&tombstone_json(tombstone)).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// A record whose own document cannot fit one servable batch (§8.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnservableRow {
+    pub table: String,
+    pub uid: String,
+    /// Its title or name, where the record has one — what the person recognizes.
+    pub name: Option<String>,
+    pub bytes: usize,
+}
+
+impl UnservableRow {
+    /// The words the desktop panel shows and the phone renders (§8.5): the
+    /// record by name, its size, and the limit, so the reason is actionable
+    /// instead of "adoption will not complete".
+    pub fn describe(&self) -> String {
+        let label = match &self.name {
+            Some(name) => format!(" \"{}\"", short(name)),
+            None => String::new(),
+        };
+        format!(
+            "a {} record {}{label} is {} bytes, over the {} bytes one copied batch can carry (§8.5)",
+            self.table, self.uid, self.bytes, MAX_SERVABLE_ROW_BYTES
+        )
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        json!({
+            "table": self.table,
+            "uid": self.uid,
+            "name": self.name,
+            "bytes": self.bytes,
+            "limit": MAX_SERVABLE_ROW_BYTES,
+            "reason": self.describe(),
+        })
+    }
+}
+
+/// A long title is trimmed for the message only; nothing else uses it.
+fn short(text: &str) -> String {
+    const LIMIT: usize = 60;
+    match text.char_indices().nth(LIMIT) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
+    }
+}
+
+impl Snapshot {
+    /// §8.5: the first record this device cannot serve, if there is one.
+    /// Measured against the row's real document, in the same accounting the
+    /// cutter uses — a row that fits a batch of its own is served.
+    pub fn unservable_row(&self) -> Option<UnservableRow> {
+        self.rows.iter().find_map(|row| {
+            let bytes = est_row_bytes(row) + 1;
+            (bytes > MAX_SERVABLE_ROW_BYTES).then(|| UnservableRow {
+                table: row.table.clone(),
+                uid: row.uid.clone(),
+                name: record_name(row),
+                bytes,
+            })
+        })
+    }
+}
+
+/// The one human label a record carries, where it has one.
+fn record_name(row: &SnapshotRow) -> Option<String> {
+    for key in ["title", "name", "text"] {
+        if let Some(JsonValue::String(value)) = row.fields.get(key) {
+            if !value.trim().is_empty() {
+                return Some(value.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Read every synced table and tombstone as one point in time (§8.4).
@@ -1097,6 +1190,69 @@ mod tests {
             op.get("id").is_none(),
             "a local rowid never leaves its device"
         );
+    }
+
+    /// §8.5 restated: a record that cannot fit one servable batch is refused
+    /// by name, with the record's own label — never emitted as a frame the
+    /// phone has to reject as malformed.
+    #[test]
+    fn an_oversized_row_is_unservable_and_named() {
+        let big = "x".repeat(MAX_SERVABLE_ROW_BYTES);
+        let snapshot = Snapshot {
+            rows: vec![padded_row(big.len())],
+            tombstones: Vec::new(),
+        };
+        let row = snapshot
+            .unservable_row()
+            .expect("a row over the servable limit is refused");
+        assert_eq!(row.table, "notes");
+        assert_eq!(row.uid, "11111111-1111-4111-8111-111111111111");
+        assert_eq!(row.name.as_deref(), Some("Note"), "named by its title");
+        assert!(row.bytes > MAX_SERVABLE_ROW_BYTES);
+        let words = row.describe();
+        assert!(words.contains("notes"), "{words}");
+        assert!(words.contains(&row.uid), "{words}");
+        assert!(words.contains("\"Note\""), "{words}");
+        assert!(
+            words.contains(&MAX_SERVABLE_ROW_BYTES.to_string()),
+            "the limit is part of the reason: {words}"
+        );
+    }
+
+    /// …and one just under the limit still travels, in a batch of its own.
+    #[test]
+    fn a_row_just_under_the_servable_limit_still_fits_one_batch() {
+        // Sized so the row's own document lands a few hundred bytes short.
+        let snapshot = Snapshot {
+            rows: vec![padded_row(MAX_SERVABLE_ROW_BYTES - 900)],
+            tombstones: Vec::new(),
+        };
+        assert!(snapshot.unservable_row().is_none());
+        let batches = snapshot.batches(MAX_SNAPSHOT_BATCH_BYTES);
+        assert_eq!(batches.len(), 1);
+        assert!(
+            plaintext_len(&batches[0]) <= MAX_SNAPSHOT_BATCH_BYTES,
+            "the wrapper is charged, so the document fits the phone's cap"
+        );
+    }
+
+    #[test]
+    fn the_cutter_measures_the_whole_document_including_its_wrapper() {
+        let conn = db();
+        conn.execute_batch(&format!(
+            "INSERT INTO notes (uid, title, content, created_at, updated_at)
+               VALUES ('{NOTE}', 'Note', '{}', '2026-01-01', '2026-01-01');",
+            "y".repeat(4000)
+        ))
+        .expect("seed a large note");
+        let snapshot = read_snapshot(&conn).expect("snapshot");
+        for batch in snapshot.batches(MAX_SNAPSHOT_BATCH_BYTES) {
+            assert!(
+                plaintext_len(&batch) <= MAX_SNAPSHOT_BATCH_BYTES,
+                "a cut batch is {} bytes of plaintext, over the budget",
+                plaintext_len(&batch)
+            );
+        }
     }
 
     /// The test the 48 KiB and 32 KiB figures would both have failed.

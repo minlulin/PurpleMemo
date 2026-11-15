@@ -468,6 +468,10 @@ struct SnapshotStream {
     /// Batches the phone acknowledged, in arrival order.
     acked: HashSet<usize>,
     adopted: bool,
+    /// §8.5: why this window cannot serve at all, when it cannot. Set by the
+    /// one refusal that is about the DATA rather than the protocol, so the
+    /// panel can show the person the record's name instead of silence.
+    note: Option<String>,
 }
 
 /// The snapshot reader the shell hands in: `pairing_snapshot::read_snapshot`
@@ -638,6 +642,16 @@ impl Running {
     }
 
     fn info(&self, note: Option<String>) -> PairingListenerInfo {
+        // §8.5's refusal outranks a stopped-window note: it is the reason a
+        // pull cannot proceed, and the person can only fix it by editing that
+        // record. Read before the other locks so the order is one-way.
+        let snapshot_note = self
+            .gate
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .note
+            .clone();
         let paired = self.gate.paired.lock().unwrap_or_else(|e| e.into_inner());
         // The code's live state lives in Rust (`Gate.offer`); the panel cannot
         // compute a lockout or a redemption from its own session (N3).
@@ -695,7 +709,7 @@ impl Running {
             sync_ops,
             sync_applied,
             sync_note,
-            note,
+            note: note.or(snapshot_note),
         }
     }
 }
@@ -1907,6 +1921,20 @@ fn serve_batch(gate: &Gate, pin: &Pin, requested: usize) -> Result<JsonValue, Re
             status: 500,
             attempts_left: None,
         })?;
+        // §8.5: a record bigger than one servable batch does not travel, and
+        // pretending otherwise strands the pull on a frame the phone can never
+        // accept. Refused by name, before a single batch is cut, so the phone
+        // shows the record and the panel keeps the same words.
+        if let Some(row) = snapshot.unservable_row() {
+            let message = row.describe();
+            stream.note = Some(message.clone());
+            return Err(RefusalReply {
+                code: "record-too-large",
+                message,
+                status: 409,
+                attempts_left: None,
+            });
+        }
         stream.batches = snapshot.batches(MAX_SNAPSHOT_BATCH_BYTES);
         stream.pairing_id = Some(gate.pairing_id.clone());
         stream.served.clear();
@@ -4916,6 +4944,43 @@ mod tests {
         );
         assert_eq!(status, 403, "{reply}");
         assert_eq!(refusal_reason(&reply), "sync-op-too-large");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn a_record_too_large_to_copy_is_refused_by_name_and_reaches_the_panel() {
+        let conn = Arc::new(Mutex::new(seeded_db(0, 0)));
+        {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute_batch(&format!(
+                "INSERT INTO notes (uid, title, content, created_at, updated_at)
+                   VALUES ('f0000000-0000-4000-8000-000000000001', 'Giant note', '{}',
+                           '2026-01-01', '2026-01-01');",
+                "x".repeat(crate::pairing_snapshot::MAX_SERVABLE_ROW_BYTES)
+            ))
+            .expect("seed a note over the servable limit");
+        }
+        let (state, port) = started_with_snapshot(false, Arc::clone(&conn));
+
+        let (status, reply) = post_snapshot(
+            port,
+            &seal_snapshot(1, &json!({ "kind": "snapshot-request", "batch": 0 })),
+        );
+        assert_eq!(status, 409, "{reply}");
+        assert_eq!(refusal_reason(&reply), "record-too-large");
+        let parsed: JsonValue = serde_json::from_str(&reply).expect("reply json");
+        let message = parsed["message"].as_str().expect("a reason");
+        assert!(message.contains("notes"), "{message}");
+        assert!(
+            message.contains("f0000000-0000-4000-8000-000000000001"),
+            "the record is named: {message}"
+        );
+        assert!(message.contains("Giant note"), "{message}");
+
+        // The panel's own status carries the same words, so the desktop says
+        // why adoption cannot proceed instead of stalling silently.
+        let info = state.status().expect("status");
+        assert_eq!(info.note.as_deref(), Some(message));
         state.stop().expect("stop");
     }
 }
