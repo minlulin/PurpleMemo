@@ -18,6 +18,7 @@ import { createBusinessRepo } from "../business.ts";
 import { createHabitsRepo } from "../habits.ts";
 import { createLoansRepo } from "../loans.ts";
 import { createNotesRepo } from "../notes.ts";
+import { createShoppingRepo } from "../shopping.ts";
 import { createTasksRepo } from "../tasks.ts";
 import { createTrashRepo, TRASH_CONFLICT_KIND } from "../trash.ts";
 import { applyOps, type PeerOp } from "./engine.ts";
@@ -1624,4 +1625,91 @@ test("a phone task update carrying any other field is still refused", async () =
     "SELECT title FROM tasks",
   );
   assert.equal(held?.title, "Desktop task", "no other task field opens up");
+});
+
+// ---------------------------------------------------------------------------
+// SW-07 / D-6 — an op whose parent is gone is dropped WITH a trace.
+// ---------------------------------------------------------------------------
+
+test("a create naming a deleted parent is copied and dropped, and the next op still applies", async () => {
+  const pair = await openPair();
+  // A shopping list, created and then deleted on the desktop — the parent the
+  // phone's queued op still names.
+  const lists = createShoppingRepo(pair.a.driver);
+  const listId = await lists.createList("Groceries");
+  const [known] = await pair.a.driver.query<{ uid: string }>(
+    "SELECT uid FROM shopping_lists WHERE id = ?",
+    [listId],
+  );
+  assert.ok(known?.uid);
+  await applyFrom(pair.b, pair.a);
+  await lists.deleteList(listId);
+  await applyFrom(pair.b, pair.a);
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM shopping_lists"),
+    0,
+    "the list is gone on both sides",
+  );
+
+  const phoneId = await deviceOf(pair.b);
+  const doomed = syntheticOp(
+    phoneId,
+    1,
+    "shopping_items",
+    "99999999-9999-4999-8999-999999999999",
+    "create",
+    {
+      text: "milk",
+      done: 0,
+      sort_order: 0,
+      list_uid: known.uid,
+    },
+    4,
+  );
+  const after = syntheticOp(
+    phoneId,
+    2,
+    "tasks",
+    "88888888-8888-4888-8888-888888888888",
+    "create",
+    {
+      title: "Still applies",
+      done: 0,
+      repeat: "none",
+      note: "",
+      created_at: "2026-11-14",
+    },
+    5,
+  );
+
+  // Before D-6 the item's NOT NULL `list_id` failed the whole batch, and every
+  // redelivery of the same two ops failed identically.
+  await applyOps(pair.a.driver, {
+    peerId: phoneId,
+    origin: "mobile",
+    ops: [doomed, after],
+  }).then((statements) => pair.a.driver.batch(statements));
+
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM shopping_items"),
+    0,
+    "the orphaned item is not written",
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM tasks"),
+    1,
+    "the op after it still applies — the batch proceeds",
+  );
+  const copies = await pair.a.driver.query<{ snapshot: string }>(
+    "SELECT snapshot FROM trash_items",
+  );
+  assert.equal(copies.length, 1, "the write is not silently lost");
+  const snapshot = JSON.parse(copies[0]?.snapshot ?? "{}") as {
+    entity: { text: string; list_id: number | null };
+    conflict: { table: string; label: string };
+  };
+  assert.equal(snapshot.entity.text, "milk", "what the op named is kept");
+  assert.equal(snapshot.entity.list_id, null, "and its missing parent is null");
+  assert.equal(snapshot.conflict.table, "shopping_items");
+  assert.match(snapshot.conflict.label, /parent record is gone/);
 });

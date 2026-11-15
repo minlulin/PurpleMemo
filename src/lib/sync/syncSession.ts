@@ -30,8 +30,14 @@ import type {
 } from "../../data/driver.ts";
 import { MAX_PAIRING_SNAPSHOT_BYTES } from "./bootstrap.ts";
 import { applyOps, type PeerOp, UNLOCKED_TABLES } from "./engine.ts";
-import { MAX_BATCH_OPS } from "./protocol.ts";
-import { ackStatements, readOutbox, readPeers } from "./store.ts";
+import { isSyncTable, MAX_BATCH_OPS } from "./protocol.ts";
+import {
+  ackStatements,
+  type OutboxRow,
+  readOutbox,
+  readPeers,
+  resolveWireParentUids,
+} from "./store.ts";
 
 /** The driver surface one session uses — one method per Rust command. */
 export interface SyncTransport {
@@ -110,18 +116,7 @@ function splitRefusal(message: string): SyncRefusal {
  * passed through untouched: the receiver's engine parses it, and a payload it
  * cannot parse is that engine's refusal to make, not this sender's to repair.
  */
-function wireOp(row: {
-  device_id: string;
-  seq: number;
-  op_id: string;
-  entity_table: string;
-  entity_uid: string;
-  op: string;
-  base_counter: number;
-  counter: number;
-  field_stamps: string;
-  payload: string;
-}): PeerOp {
+function wireOp(row: OutboxRow): PeerOp {
   return {
     device_id: row.device_id,
     seq: row.seq,
@@ -134,6 +129,41 @@ function wireOp(row: {
     field_stamps: row.field_stamps,
     payload: row.payload,
   };
+}
+
+/**
+ * D-6's send-time resolution: an op's payload parent uids are rewritten through
+ * this device's own `sync_uid_aliases` before it leaves.
+ *
+ * Payloads are never rewritten once recorded, so an op queued before a fold
+ * still names the uid the sender had. The receiver cannot resolve that uid, and
+ * a NULL parent in a NOT NULL foreign key would wedge the batch for ever; the
+ * sender does know — it folded the row — so it sends the winner's uid instead.
+ *
+ * A payload this device cannot parse is passed through untouched: that is the
+ * receiver's §7.7 refusal to make, not this sender's to repair.
+ */
+async function resolvedWireOp(
+  driver: DataDriver,
+  row: OutboxRow,
+): Promise<PeerOp> {
+  const op = wireOp(row);
+  if (!isSyncTable(op.entity_table)) return op;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(op.payload);
+  } catch {
+    return op;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return op;
+  }
+  const fields = await resolveWireParentUids(
+    driver,
+    op.entity_table,
+    parsed as Record<string, unknown>,
+  );
+  return fields === parsed ? op : { ...op, payload: JSON.stringify(fields) };
 }
 
 /**
@@ -284,7 +314,8 @@ export async function runSync(
   const pending = (await readOutbox(driver)).filter(
     (row) => row.seq > peer.cursor_out && movable.has(row.entity_table),
   );
-  const pushing = pending.map(wireOp);
+  const pushing: PeerOp[] = [];
+  for (const row of pending) pushing.push(await resolvedWireOp(driver, row));
   if (pushing.length > 0) {
     const batches = batchSyncOps(pushing);
     for (let batch = 0; batch < batches.length; batch += 1) {

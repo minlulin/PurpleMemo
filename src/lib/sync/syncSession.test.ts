@@ -15,7 +15,14 @@ import { createBusinessRepo } from "../business.ts";
 import { createNotesRepo } from "../notes.ts";
 import { createTasksRepo } from "../tasks.ts";
 import { createVaultRepo } from "../vault.ts";
-import { ackStatements, readOutbox, readState } from "./store.ts";
+import { planBootstrap } from "./bootstrap.ts";
+import { readLocalRows } from "./mobilePairing.ts";
+import {
+  ackStatements,
+  readOutbox,
+  readState,
+  snapshotStatements,
+} from "./store.ts";
 import { runSync } from "./syncSession.ts";
 import {
   countRows as count,
@@ -500,5 +507,107 @@ test("a fat outbox crosses as several in-budget push batches and prunes", async 
     (await peer(phone, DESKTOP)).cursor_out,
     60,
     "the sealed verdict moved the cursor past all 60",
+  );
+});
+
+test("a pre-pairing edit naming a folded seed resolves to the winner and sync converges", async () => {
+  const { phone, desktop } = await pair();
+  const PHONE_CATEGORY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const PHONE_WALLET = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+  // The phone's own baseline seeds: local rows, no ops — a seed is not an edit.
+  await phone.driver.batch([
+    {
+      sql: "INSERT INTO wallets (name, uid, created_at) VALUES ('Cash', ?, '2026-11-01')",
+      params: [PHONE_WALLET],
+    },
+    {
+      sql: "INSERT INTO expense_categories (name, uid, created_at) VALUES ('Food', ?, '2026-11-01')",
+      params: [PHONE_CATEGORY],
+    },
+  ]);
+  const [phoneWallet] = await phone.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE uid = ?",
+    [PHONE_WALLET],
+  );
+  const [phoneCategory] = await phone.driver.query<{ id: number }>(
+    "SELECT id FROM expense_categories WHERE uid = ?",
+    [PHONE_CATEGORY],
+  );
+  assert.ok(phoneWallet && phoneCategory);
+  // The pre-pairing edit: an append-only entry naming the phone's own seeds.
+  const entryId = await createBudgetRepo(phone.driver).createExpenseEntry({
+    amountCents: 1_500,
+    categoryId: phoneCategory.id,
+    walletId: phoneWallet.id,
+    entryDate: "2026-11-14",
+  });
+  assert.ok(entryId > 0);
+
+  // The desktop holds the same seeds under ITS uids.
+  const desktopBudget = createBudgetRepo(desktop.driver);
+  await desktopBudget.createWallet("Cash");
+  const desktopCategoryId = await desktopBudget.createExpenseCategory("Food");
+  const [desktopCategory] = await desktop.driver.query<{ uid: string }>(
+    "SELECT uid FROM expense_categories WHERE id = ?",
+    [desktopCategoryId],
+  );
+  assert.ok(desktopCategory?.uid);
+
+  // Pairing: the snapshot arrives and its same-name seeds FOLD the phone's rows
+  // onto the desktop's uids — recording the retired uids locally (D-6).
+  const plan = planBootstrap(
+    await readLocalRows(desktop.driver),
+    await readLocalRows(phone.driver),
+  );
+  await phone.driver.batch(
+    snapshotStatements(plan.snapshot, [], new Date(), DESKTOP),
+  );
+  const [folded] = await phone.driver.query<{ uid: string }>(
+    "SELECT uid FROM expense_categories WHERE name = 'Food'",
+  );
+  assert.equal(
+    folded?.uid,
+    desktopCategory.uid,
+    "the phone's seed now carries the desktop's uid",
+  );
+  const [alias] = await phone.driver.query<{ winner_uid: string }>(
+    "SELECT winner_uid FROM sync_uid_aliases WHERE entity_table = 'expense_categories' AND loser_uid = ?",
+    [PHONE_CATEGORY],
+  );
+  assert.equal(
+    alias?.winner_uid,
+    desktopCategory.uid,
+    "the retired uid stays resolvable on the device that folded it",
+  );
+
+  // The upload half of the first pairing has not run (an interrupted pairing is
+  // retryable, §9.4), so the queued edit is what carries the entry across.
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.state, "applied", "nothing wedges");
+  assert.equal(outcome.pushed, 1, "the queued edit crossed");
+
+  // Send-time resolution: the op carries the winner's uid, not the uid it was
+  // recorded under — which is what let the entry's NOT NULL parent resolve.
+  const pushed = wire.pushed[0];
+  assert.equal(pushed?.entity_table, "expense_entries");
+  assert.equal(
+    JSON.parse(pushed?.payload ?? "{}").category_uid,
+    desktopCategory.uid,
+  );
+  const entries = await desktop.driver.query<{
+    amount_cents: number;
+    category_id: number;
+  }>("SELECT * FROM expense_entries");
+  assert.equal(entries.length, 1, "the entry landed on the desktop");
+  assert.equal(entries[0]?.amount_cents, 1_500);
+  assert.equal(entries[0]?.category_id, desktopCategoryId);
+  // Aliases are this device's bookkeeping; they never travel.
+  assert.equal(
+    await count(desktop, "SELECT count(*) AS n FROM sync_uid_aliases"),
+    0,
   );
 });

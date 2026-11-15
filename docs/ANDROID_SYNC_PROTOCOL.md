@@ -453,6 +453,24 @@ mismatch produces a stated refusal naming the op. Silent drops are forbidden:
 they are indistinguishable from a lost batch and would hide a protocol bug
 forever.
 
+**One drop is not a refusal: an op whose parent is gone (D-6).** A payload names
+its parents by uid, and an op is never rewritten after it is recorded — so a
+pre-pairing op can name a parent uid that a fold later retired. That op cannot
+be applied: the parent subselect resolves to NULL, a `NOT NULL` foreign key
+refuses the whole batch, and every redelivery fails identically. The rules:
+
+- **Send-time resolution.** A sender resolves a payload's parent uids through
+  its own `sync_uid_aliases` before the op leaves, so a folded uid travels under
+  its winner. Aliases themselves never travel — the table is device-local.
+- **Folds leave aliases on the folding device**, from the engine's apply and
+  from the snapshot apply alike, so a retired uid stays resolvable there.
+- **The receive guard.** A foreign key that still resolves to nothing (after
+  alias consultation) is a **dropped-with-trace** op: it writes nothing for its
+  record and the batch proceeds. Where the table is a §13.2 mutable entity, the
+  fields the op named are first archived in that device's own Trash as a
+  conflict copy, so the write is not silently lost. Remaining tables drop with
+  no copy (§13.2's scope). The batch never fails on it.
+
 ---
 
 ## 8. Negotiation, batching, initial snapshot

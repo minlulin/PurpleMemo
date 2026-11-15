@@ -908,17 +908,71 @@ export function uidAliasStatements(
   ];
 }
 
+/** The narrow read surface an alias lookup needs — a driver, or any reader. */
+export interface AliasReader {
+  query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
+}
+
 /** The uid a loser was folded onto, or undefined when this device never folded it. */
 export async function readUidAlias(
-  driver: DataDriver,
+  reader: AliasReader,
   table: SyncTable,
   uid: string,
 ): Promise<string | undefined> {
-  const [row] = await driver.query<{ winner_uid: string }>(
+  const [row] = await reader.query<{ winner_uid: string }>(
     "SELECT winner_uid FROM sync_uid_aliases WHERE entity_table = ? AND loser_uid = ?",
     [table, uid],
   );
   return row?.winner_uid;
+}
+
+/**
+ * Follow this device's own fold history to the uid that names a record NOW
+ * (D-6, §8.4). A chain is possible — a row folded once can fold again onto a
+ * third uid — and is walked with the same hop bound the engine uses.
+ */
+export async function resolveWireUid(
+  reader: AliasReader,
+  table: SyncTable,
+  uid: string,
+): Promise<string> {
+  let current = uid;
+  for (let hop = 0; hop < 8; hop += 1) {
+    const winner = await readUidAlias(reader, table, current);
+    if (winner === undefined || winner === current) return current;
+    current = winner;
+  }
+  return current;
+}
+
+/**
+ * D-6's send-time resolution: a payload's parent uids, rewritten through this
+ * device's own `sync_uid_aliases` before the op leaves.
+ *
+ * Op payloads are never rewritten once recorded, so an op queued before a fold
+ * still names the uid the sender had for the parent. The receiver would compose
+ * a subselect for a uid it no longer holds — NULL into a NOT NULL foreign key,
+ * a batch that fails every redelivery. The sender resolves what it knows: a uid
+ * with an alias travels under its winner. Aliases themselves never travel; the
+ * table is device-local bookkeeping.
+ */
+export async function resolveWireParentUids(
+  reader: AliasReader,
+  table: SyncTable,
+  fields: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const parents = FOREIGN_KEYS[table];
+  if (parents === undefined) return fields;
+  let resolved: Record<string, unknown> | null = null;
+  for (const [field, parent] of Object.entries(parents)) {
+    const value = fields[field];
+    if (typeof value !== "string") continue;
+    const winner = await resolveWireUid(reader, parent, value);
+    if (winner === value) continue;
+    resolved ??= { ...fields };
+    resolved[field] = winner;
+  }
+  return resolved ?? fields;
 }
 
 /**
@@ -1077,6 +1131,38 @@ function withSenderCreator(
  * `field_stamps` stays empty because the snapshot carries a row stamp; claiming
  * per-field stamps here would claim more than the desktop sent.
  */
+/**
+ * D-6: the alias a SNAPSHOT fold must record, expressed in SQL so no read is
+ * needed before the batch.
+ *
+ * `foldStatements` re-keys a same-name local row onto the incoming uid, and
+ * without this the device that folded it keeps no memory of the uid it retired
+ * — so an op queued under that uid (or a payload naming it as a parent) had
+ * nothing to resolve against, which is how a pre-pairing edit could arrive
+ * naming a parent the receiver no longer holds. The engine's fold records the
+ * same fact through `uidAliasStatements`; this is the snapshot border's half.
+ */
+function foldAliasFromKeyStatements(
+  op: SnapshotOp,
+  now: Date,
+): BatchStatement[] {
+  const key = NATURAL_KEYS[op.table];
+  if (key === undefined) return [];
+  const value = op.fields[key];
+  if (typeof value !== "string") return [];
+  return [
+    {
+      sql: `INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+            SELECT ?, uid, ?, ? FROM "${op.table}"
+            WHERE "${key}" = ? AND uid IS NOT NULL AND uid <> ?
+            ON CONFLICT(entity_table, loser_uid) DO UPDATE SET
+              winner_uid = excluded.winner_uid,
+              updated_at = excluded.updated_at`,
+      params: [op.table, op.uid, nowIso(now), value, op.uid],
+    },
+  ];
+}
+
 export function snapshotRowStatements(
   op: SnapshotOp,
   now: Date = new Date(),
@@ -1090,8 +1176,13 @@ export function snapshotRowStatements(
     .filter((column) => column !== "uid")
     .map((column) => `"${column}" = excluded."${column}"`);
   // §8.4's fold comes first: a seed this device minted under its own uid has to
-  // become the incoming record before the upsert can find it by uid.
-  const statements = foldStatements(op);
+  // become the incoming record before the upsert can find it by uid. The alias
+  // is recorded in the same statement list (D-6), so the retired uid stays
+  // resolvable on the device that folded it — and only there.
+  const statements = [
+    ...foldAliasFromKeyStatements(op, now),
+    ...foldStatements(op),
+  ];
   statements.push(
     {
       sql: `INSERT INTO "${op.table}" (${columns
@@ -1307,6 +1398,68 @@ export function conflictCopyStatements(
     });
   }
   return statements;
+}
+
+/**
+ * §13.2's copy of a record an operation NAMED but could not land — D-6's
+ * dropped-with-trace (`docs/Full_Sweep_Fix_Wave_1.md`).
+ *
+ * The op's parent is gone (after alias consultation), so the write would break
+ * a foreign key and wedge every redelivery. The op is dropped, but not
+ * silently: for a §13.2 mutable entity the fields it named are archived in
+ * this device's own Trash, labelled as a copy, so the user's data survives in
+ * the place the spec reserves for losing values. Other tables drop with no
+ * copy, exactly as §13.2 scopes the archive.
+ *
+ * There is no local row behind this copy — the row was never written — so
+ * `entity_id` is a fresh local Trash slot rather than "the id of the row it
+ * lost to". Conflict copies are already excluded from every "is this id
+ * claimed by Trash?" query (`NOT_A_CONFLICT_COPY`), so the number names
+ * nothing live.
+ */
+export const DROPPED_OP_COPY_LABEL =
+  "Conflict copy — its parent record is gone; kept on this device only";
+
+export function droppedOpCopyStatements(
+  table: SyncTable,
+  uid: string,
+  fields: Record<string, unknown>,
+  today: string = todayLocal(),
+): BatchStatement[] {
+  const type = CONFLICT_TRASH_TYPES[table];
+  if (type === undefined) return [];
+  const entity: Record<string, unknown> = {};
+  for (const column of TRASH_SNAPSHOT_COLUMNS[type]) {
+    // The payload names parents by uid; the snapshot stores the local row
+    // number, which cannot be known for a row that was never written. Keeping
+    // it null is honest — the parent is exactly what is missing.
+    entity[column] = fields[column] ?? null;
+  }
+  const conflict: TrashConflictCopy = {
+    kind: TRASH_CONFLICT_KIND,
+    label: DROPPED_OP_COPY_LABEL,
+    table,
+    uid,
+    won: {},
+  };
+  const snapshot = {
+    version: TRASH_SNAPSHOT_VERSION,
+    snapshotId: crypto.randomUUID(),
+    entity,
+    channels: [],
+    tags: [],
+    photoRefs: [],
+    links: [],
+    inboxRefs: [],
+    conflict,
+  };
+  return [
+    {
+      sql: `INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+            VALUES (?, COALESCE((SELECT MAX(entity_id) FROM trash_items), 0) + 1, ?, ?, ?)`,
+      params: [type, JSON.stringify(snapshot), today, today],
+    },
+  ];
 }
 
 /**

@@ -38,6 +38,7 @@ import {
   applyStatements,
   CONFLICT_TRASH_TYPES,
   conflictCopyStatements,
+  droppedOpCopyStatements,
   FOREIGN_KEYS,
   foldStatements,
   type HeldConflictRow,
@@ -915,6 +916,61 @@ async function resolveParentUids(
   return resolved ?? fields;
 }
 
+/**
+ * D-6's guard: the first foreign key in `fields` that names no parent this
+ * device — or this batch — holds.
+ *
+ * A payload's parent uid that resolves to nothing (after alias resolution)
+ * would become a subselect returning NULL: a `NOT NULL` foreign key refuses the
+ * whole batch, and every redelivery refuses identically, which is a permanent
+ * wedge. The guard finds that op BEFORE its statement is composed. A parent
+ * created earlier in the same batch counts as held: it is not committed yet,
+ * but it will be when this batch's statements run.
+ */
+async function missingParent(
+  driver: DataDriver,
+  overlay: Map<string, BatchEntry>,
+  table: SyncTable,
+  fields: Record<string, unknown>,
+): Promise<{ field: string; parent: SyncTable; uid: string } | undefined> {
+  const parents = FOREIGN_KEYS[table];
+  if (parents === undefined) return undefined;
+  for (const [field, parent] of Object.entries(parents)) {
+    const uid = fields[field];
+    if (typeof uid !== "string") continue;
+    const prior = overlay.get(batchKey(parent, uid));
+    if (prior !== undefined) {
+      if ("held" in prior) continue;
+      return { field, parent, uid };
+    }
+    const [row] = await driver.query<{ one: number }>(
+      `SELECT 1 AS one FROM "${parent}" WHERE uid = ?`,
+      [uid],
+    );
+    if (row === undefined) return { field, parent, uid };
+  }
+  return undefined;
+}
+
+/**
+ * D-6's dropped-with-trace outcome: the op writes nothing for its record, and a
+ * §13.2 mutable entity's named fields are archived on this device instead of
+ * vanishing. Never a batch failure — the ops after it still apply (§7.7).
+ */
+function droppedOpOutcome(
+  op: PeerOp,
+  fields: Record<string, unknown>,
+): OpOutcome {
+  return {
+    ...EMPTY_OUTCOME,
+    effects: droppedOpCopyStatements(
+      op.entity_table as SyncTable,
+      op.entity_uid,
+      fields,
+    ),
+  };
+}
+
 async function composeOp(
   driver: DataDriver,
   op: PeerOp,
@@ -1080,6 +1136,12 @@ async function composeOp(
         return outcome;
       }
     }
+    // D-6: a create naming a parent that is gone cannot land its foreign key.
+    // It is dropped with a trace (a §13.2 copy where the table has one) and
+    // the batch proceeds, instead of failing its constraints for ever.
+    if ((await missingParent(driver, overlay, table, fields)) !== undefined) {
+      return droppedOpOutcome(op, fields);
+    }
     const inserted = insertStatements(op, fields, stamp, delivered, now);
     return {
       ...EMPTY_OUTCOME,
@@ -1104,7 +1166,16 @@ async function composeOp(
     );
   }
 
-  return mergeOp(op, held, stamp, delivered, now, fields);
+  const merged = mergeOp(op, held, stamp, delivered, now, fields);
+  // A stale op writes nothing, so there is nothing to guard and nothing to
+  // copy — only an op whose values would land can be dropped for its parent.
+  if (
+    merged.effects.length > 0 &&
+    (await missingParent(driver, overlay, table, fields)) !== undefined
+  ) {
+    return droppedOpOutcome(op, fields);
+  }
+  return merged;
 }
 
 /**

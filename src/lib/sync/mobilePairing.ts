@@ -742,6 +742,30 @@ export async function readLocalRows(
     }
     uidById.set(table, byId);
   }
+  // D-6's send-time resolution: a parent uid this device retired at a fold is
+  // sent under its winner. The alias table is read once for the pass — the same
+  // `sync_uid_aliases` rows `readUidAlias` reads, one query instead of one per
+  // foreign key.
+  const aliasRows = await reader.query<{
+    entity_table: string;
+    loser_uid: string;
+    winner_uid: string;
+  }>("SELECT entity_table, loser_uid, winner_uid FROM sync_uid_aliases");
+  const aliasOf = new Map(
+    aliasRows.map((row) => [
+      `${row.entity_table}\u0000${row.loser_uid}`,
+      row.winner_uid,
+    ]),
+  );
+  const resolveUid = (table: SyncTable, uid: string): string => {
+    let current = uid;
+    for (let hop = 0; hop < 8; hop += 1) {
+      const winner = aliasOf.get(`${table}\u0000${current}`);
+      if (winner === undefined || winner === current) return current;
+      current = winner;
+    }
+    return current;
+  };
   const out: SyncedRow[] = [];
   // §12.3 (Stage 3 decision 2): read once, lazily — only a device that holds
   // vault rows has anything to annotate with it.
@@ -772,12 +796,12 @@ export async function readLocalRows(
           // device does not hold resolves to null, spelled as the sender's
           // own NULL — the apply's NOT NULL constraints then decide.
           const wire = `${column.slice(0, -"_id".length)}_uid`;
+          const parentUid =
+            typeof value === "number"
+              ? uidById.get(parent)?.get(value)
+              : undefined;
           fields[wire] =
-            value === null
-              ? null
-              : typeof value === "number"
-                ? (uidById.get(parent)?.get(value) ?? null)
-                : null;
+            parentUid === undefined ? null : resolveUid(parent, parentUid);
           continue;
         }
         fields[column] = value;
