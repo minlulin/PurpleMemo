@@ -1462,8 +1462,8 @@ export function conflictCopyStatements(
 }
 
 /**
- * §13.2's copy of a record an operation NAMED but could not land — D-6's
- * dropped-with-trace (`docs/Full_Sweep_Fix_Wave_1.md`).
+ * §13.2's copy of a record an operation NAMED but could not land — the
+ * dropped-with-trace rule for an op whose parent is gone (PR #25, D-6).
  *
  * The op's parent is gone (after alias consultation), so the write would break
  * a foreign key and wedge every redelivery. The op is dropped, but not
