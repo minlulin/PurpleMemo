@@ -86,7 +86,8 @@ It only warns and exits 0 where there is nothing to arm: outside a git checkout
 
 `npm run verify` =
 `node scripts/check-hooks.mjs` → `node scripts/check-versions.mjs` →
-`biome check --error-on-warnings .` → token lint → `tsc --noEmit` →
+`biome check --error-on-warnings .` → token lint → dead-code lint →
+`tsc --noEmit` →
 `node --test "src/**/*.test.ts"` →
 `cargo test --manifest-path src-tauri/Cargo.toml` →
 `cargo clippy --all-targets -- -D warnings` → `cargo fmt --check` →

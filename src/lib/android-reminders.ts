@@ -153,8 +153,3 @@ export async function syncAndroidReminders(
 export async function copySensitive(text: string): Promise<number> {
   return await invoke<number>("clipboard_copy_sensitive", { text });
 }
-
-/** Debug builds only: read the clipboard back to prove the clear happened. */
-export async function clipboardProbeRead(): Promise<string> {
-  return await invoke<string>("clipboard_probe_read");
-}

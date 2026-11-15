@@ -44,9 +44,6 @@ import {
   type VersionStamp,
 } from "./protocol.ts";
 
-/** The single row of `sync_state` (`id INTEGER PRIMARY KEY CHECK (id = 1)`). */
-export const SYNC_STATE_ID = 1;
-
 export interface SyncState {
   deviceId: string;
   /** §10.2: bumped by a restore; a peer paired at an older value re-pairs. */

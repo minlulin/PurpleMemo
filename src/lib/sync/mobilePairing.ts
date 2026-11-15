@@ -295,17 +295,6 @@ export async function pairWithDesktop(
 // §8.4 — the pull: request every batch, stage them all, apply once, adopt.
 // ---------------------------------------------------------------------------
 
-/**
- * What the pull does, in the words the card shows before it starts.
- *
- * It states the two promises a person cannot see for themselves: the snapshot
- * is all-or-nothing, and nothing on either device is deleted (§9.1). The last
- * sentence is the honest half of a partial feature: there is no upload yet, so
- * what this phone created is not sent anywhere.
- */
-export const SNAPSHOT_PULL_DISCLOSURE =
-  "This copies the desktop's records to this phone in one step: either the whole snapshot arrives or none of it does. Nothing is deleted on either device.";
-
 /** §9.1's other half is a separate press — never left unsaid. */
 export const SNAPSHOT_PULL_MISSING =
   "Records you created on this phone are not sent by this step. The upload below sends them, and nothing leaves this phone until you press it.";

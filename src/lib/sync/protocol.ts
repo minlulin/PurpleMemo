@@ -273,14 +273,6 @@ export function nextCounter(seen: readonly number[]): number {
   return seen.reduce((max, value) => (value > max ? value : max), 0) + 1;
 }
 
-export function stampAfter(
-  deviceId: string,
-  opId: string,
-  seen: readonly number[],
-): VersionStamp {
-  return { counter: nextCounter(seen), deviceId, opId };
-}
-
 /**
  * Operation identity (§1.3): the pair a receiver dedups on. Retries re-send the
  * same pair, so "have I applied this already?" is a lookup, not a guess.

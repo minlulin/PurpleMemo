@@ -141,26 +141,6 @@ export function seedRecord(
   return stored;
 }
 
-/** Materialise a tombstone (test fixture or engine output). */
-export function seedTombstone(
-  peer: SimPeer,
-  tombstone: { table: string; uid: string; counter?: number },
-): SimTombstone {
-  const stored: SimTombstone = {
-    table: tombstone.table,
-    uid: tombstone.uid,
-    stamp: {
-      counter: tombstone.counter ?? peer.lamport + 1,
-      deviceId: peer.deviceId,
-      opId: `${peer.deviceId}#tombstone`,
-    },
-    ackedBy: [],
-  };
-  peer.tombstones.set(recordKey(tombstone.table, tombstone.uid), stored);
-  peer.records.delete(recordKey(tombstone.table, tombstone.uid));
-  return stored;
-}
-
 /** Queue a mutation in a peer's outbox exactly as a domain write would (§6.1). */
 export function makeOp(
   peer: SimPeer,
@@ -313,10 +293,6 @@ export function acknowledge(from: SimPeer, delivery: Delivery): void {
   if (through === null) return;
   from.outbox = from.outbox.filter((op) => op.seq > through);
   from.ackLog.push(...delivery.ops);
-}
-
-export function killPeer(peer: SimPeer): void {
-  peer.alive = false;
 }
 
 export function restartPeer(peer: SimPeer): void {
