@@ -1106,4 +1106,199 @@ mod tests {
             "app_restart registered"
         );
     }
+
+    // -- The populated, paired phone (F-1) --------------------------------
+
+    /// Every file under `root` as (relative path, bytes), in a stable order —
+    /// so "the desktop side is untouched" can be asserted byte-for-byte
+    /// instead of by eye.
+    fn tree_snapshot(root: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+                .expect("read the fixture dir")
+                .map(|entry| entry.expect("dir entry").path())
+                .collect();
+            paths.sort();
+            for path in paths {
+                if path.is_dir() {
+                    walk(base, &path, out);
+                } else {
+                    let rel = path
+                        .strip_prefix(base)
+                        .expect("every entry is under the root")
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push((rel, std::fs::read(&path).expect("read the fixture file")));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    /// Rows in the surfaces the wipe must empty: a note (the data itself), the
+    /// `pin_hash` settings row (the app lock), the paired desktop (the peer),
+    /// a queued operation (the outbox) and the sync cursors (`sync_state`).
+    /// Returns the number of planted rows, so the test can refuse to run
+    /// against a fixture that silently planted nothing.
+    fn plant_paired_state(conn: &rusqlite::Connection) -> i64 {
+        conn.execute(
+            "INSERT INTO notes (title, content, tags, pinned, archived, created_at, updated_at)
+             VALUES ('Only on this phone', 'never synced', 'f1', 0, 0,
+                     '2026-11-15T00:00:00Z', '2026-11-15T00:00:00Z')",
+            [],
+        )
+        .expect("plant a note");
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value)
+             VALUES ('pin_hash', '{\"salt\":\"c2FsdA==\",\"hash\":\"aGFzaA==\",\"iterations\":600000}')",
+            [],
+        )
+        .expect("plant the app PIN");
+        conn.execute(
+            "INSERT INTO sync_peers
+               (device_id, pairing_id, display_name, public_key, generation,
+                cursor_in, cursor_out, created_at)
+             VALUES ('11111111-1111-4111-8111-111111111111', 'pairing-1',
+                     'the desktop', 'public-key-material', 3, 7, 9,
+                     '2026-11-15T00:00:00Z')",
+            [],
+        )
+        .expect("plant the paired desktop");
+        conn.execute(
+            "INSERT INTO sync_outbox
+               (device_id, seq, op_id, entity_table, entity_uid, op,
+                base_counter, counter, created_at)
+             VALUES ('22222222-2222-4222-8222-222222222222', 1, 'op-1',
+                     'notes', 'uid-1', 'create', 0, 1,
+                     '2026-11-15T00:00:00Z')",
+            [],
+        )
+        .expect("plant an outbox entry");
+        conn.execute(
+            "UPDATE sync_state SET last_seq = 42, lamport = 42 WHERE id = 1",
+            [],
+        )
+        .expect("plant the sync cursors");
+
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM notes)
+                  + (SELECT count(*) FROM settings)
+                  + (SELECT count(*) FROM sync_peers)
+                  + (SELECT count(*) FROM sync_outbox)
+                  + (SELECT count(*) FROM sync_state)",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count the planted rows")
+    }
+
+    #[test]
+    fn a_populated_paired_phone_is_wiped_and_the_desktop_fixture_is_untouched() {
+        // The F-1 fixture: a phone that is populated AND paired — real rows in
+        // every surface the task names, plus the wrapped key blobs Android
+        // keeps beside the database — reset next to a "desktop" fixture that
+        // must come through byte-for-byte. This is the same engine the
+        // key-loss flow runs (`handle_key_load_failure`), reached here through
+        // the seams it wires rather than through a second wipe implementation.
+        let phone = TempDir::new("populated");
+        let desktop = TempDir::new("desktop-side");
+
+        // The desktop side of the fixture, planted first and snapshotted: its
+        // own database, photos and settings are exactly what a phone-side
+        // reset must leave alone.
+        std::fs::write(desktop.0.join("purple-memo.db"), b"desktop db bytes").expect("desktop db");
+        std::fs::create_dir_all(desktop.0.join("photos/2026")).expect("desktop photos");
+        std::fs::write(desktop.0.join("photos/2026/pic.jpg"), b"desktop photo").expect("photo");
+        std::fs::write(desktop.0.join("settings.json"), br#"{"theme":"dark"}"#)
+            .expect("desktop settings");
+        let desktop_before = tree_snapshot(&desktop.0);
+        assert!(
+            !desktop_before.is_empty(),
+            "the fixture must have a desktop side"
+        );
+
+        // The phone: a REAL encrypted database with the planted rows, then the
+        // two wrapped key blobs and one file that is not ours.
+        let key = crate::db::mint_key_hex().expect("mint key");
+        {
+            let conn = crate::db::open_encrypted_db(&phone.0.join(crate::db::DB_FILE_NAME), &key)
+                .expect("open the phone's database");
+            crate::db::init_schema(&conn).expect("the baseline schema");
+            let planted = plant_paired_state(&conn);
+            // Proof the fixture is what the test claims: rows exist BEFORE the
+            // wipe, so "no rows" afterwards cannot be a fixture that was empty
+            // to begin with.
+            assert!(planted >= 5, "the phone must start populated: {planted}");
+        }
+        // The connection is dropped above on purpose: this test's `close_db`
+        // seam is the no-op every recovery pass uses, so the handles must
+        // already be released for the deletion to succeed.
+
+        std::fs::write(phone.0.join("db-key.wrapped"), b"PMKW1-wrapped-dek").expect("dek blob");
+        std::fs::write(
+            phone.0.join("pairing-key.wrapped"),
+            b"PMPK1-wrapped-identity",
+        )
+        .expect("pairing blob");
+        std::fs::write(phone.0.join("unrelated.txt"), b"not ours").expect("unrelated file");
+
+        let key_seam_called = Cell::new(false);
+        let outcome = run_factory_reset(
+            |_| false,
+            || Ok(true),
+            || Ok(()),
+            &phone.0,
+            || {
+                // This is where key material goes: on Android `db::delete_db_key`
+                // removes the blobs and their Keystore aliases, on desktop the
+                // credential-store entry. The seam is injected, so the test
+                // models the file half of it here rather than reaching into a
+                // platform module that is not compiled on this host.
+                key_seam_called.set(true);
+                for name in ["db-key.wrapped", "pairing-key.wrapped"] {
+                    match std::fs::remove_file(phone.0.join(name)) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == ErrorKind::NotFound => {}
+                        Err(e) => return Err(format!("could not remove {name}: {e}")),
+                    }
+                }
+                Ok(true)
+            },
+        );
+
+        assert!(
+            outcome.complete,
+            "a populated, paired phone must be fully wipeable: {outcome:?}"
+        );
+
+        // No rows in any table: the store itself is gone, and with it the
+        // note, the PIN hash, the peer, the outbox entry and the cursors.
+        for path in db_file_paths(&phone.0) {
+            assert!(!path.exists(), "{} must be gone", path.display());
+        }
+        assert_listed_state_is_gone(&phone.0);
+
+        // No key material: the seam ran, and both wrapped blobs are gone with it.
+        assert!(key_seam_called.get(), "the key seam must run");
+        assert!(
+            !phone.0.join("db-key.wrapped").exists(),
+            "the wrapped database key must be gone"
+        );
+        assert!(
+            !phone.0.join("pairing-key.wrapped").exists(),
+            "the wrapped pairing key must be gone"
+        );
+        // And the file that is not ours still is: the engine removes the owned
+        // surface, not the directory.
+        assert!(phone.0.join("unrelated.txt").exists());
+
+        // The desktop side of the fixture, byte-for-byte.
+        assert_eq!(
+            tree_snapshot(&desktop.0),
+            desktop_before,
+            "a phone-side reset must not touch the desktop's data"
+        );
+    }
 }

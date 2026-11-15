@@ -25,6 +25,7 @@ import {
   shouldLockAfterBackground,
 } from "../lib/mobileShell.ts";
 import type { PageKey } from "../lib/navigation.ts";
+import type { ResetAttempt } from "../lib/reset.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import {
   IconBudget,
@@ -84,9 +85,20 @@ interface MobileShellProps {
   onLock: () => void;
   /** Drops decrypted caches the moment the app goes to the background. */
   onBackground: () => void;
+  /**
+   * Where a finished factory-reset attempt lands — the shell's top-level
+   * handler (F-1): the phone's Settings danger zone runs the same engine the
+   * desktop's does, and both hand the attempt to the same place, which
+   * replaces the workspace with the terminal result screen.
+   */
+  onResetFinished: (attempt: ResetAttempt) => void;
 }
 
-export function MobileShell({ onLock, onBackground }: MobileShellProps) {
+export function MobileShell({
+  onLock,
+  onBackground,
+  onResetFinished,
+}: MobileShellProps) {
   const t = useT();
   const [route, setRoute] = useState<MobileRoute>(MOBILE_LANDING);
   const [fabOpen, setFabOpen] = useState(false);
@@ -239,6 +251,7 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
             page={route.page}
             onCompose={(id) => go(routeForCompose(id))}
             onOpenNote={(id) => go(routeForNote(id))}
+            onResetFinished={onResetFinished}
           />
         ) : route.tab === "more" ? (
           <section className="mobile-page">
@@ -249,6 +262,7 @@ export function MobileShell({ onLock, onBackground }: MobileShellProps) {
             page={route.tab}
             onCompose={(id) => go(routeForCompose(id))}
             onOpenNote={(id) => go(routeForNote(id))}
+            onResetFinished={onResetFinished}
           />
         )}
       </main>
@@ -369,10 +383,13 @@ function SectionBody({
   page,
   onCompose,
   onOpenNote,
+  onResetFinished,
 }: {
   page: PageKey;
   onCompose: (id: FabActionId) => void;
   onOpenNote: (id: number) => void;
+  /** Forwarded to Settings, the only screen here that can finish a reset. */
+  onResetFinished: (attempt: ResetAttempt) => void;
 }) {
   const t = useT();
   const label = t(sectionLabel(page));
@@ -390,7 +407,8 @@ function SectionBody({
     return <LoansScreen onCompose={() => onCompose("loan")} />;
   if (page === "habits") return <HabitsScreen />;
   if (page === "vault") return <VaultScreen />;
-  if (page === "settings") return <SettingsScreen />;
+  if (page === "settings")
+    return <SettingsScreen onResetFinished={onResetFinished} />;
   if (page === "dashboard") return <DashboardScreen onOpenNote={onOpenNote} />;
   return (
     <section className="mobile-page">

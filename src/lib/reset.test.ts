@@ -8,6 +8,8 @@
 //      outcome verbatim, so a gap here is a blank label on a terminal screen;
 //   3. a throw-shaped attempt (IPC failure) never presents as success and
 //      carries no fabricated per-component rows.
+//   4. the phone's reset act is PIN-gated: no PIN means no proof needed, an
+//      unreadable PIN fails closed, and only the right PIN opens it.
 //
 // The call-site pins — factoryReset behind checkbox + ConfirmButton,
 // appRestart behind the complete-check — live in `src/reset-gate.test.ts`,
@@ -21,6 +23,7 @@ import type {
   ResetComponentName,
   ResetComponentStatus,
 } from "../data/driver.ts";
+import { hashPin } from "./crypto.ts";
 import { en, type MessageKey, my } from "./i18n.ts";
 import {
   bodyKey,
@@ -31,6 +34,7 @@ import {
   RESET_STATUS_LABEL_KEYS,
   resetAttemptFromError,
   resetAttemptFromOutcome,
+  resetPinAccepted,
   shouldRestart,
 } from "./reset.ts";
 
@@ -237,4 +241,28 @@ test("the catalogue keys this module hands out exist in the typed catalogue", ()
     const asKey: MessageKey = headingKey(attempt);
     assert.ok(asKey.length > 0);
   }
+});
+
+test("the phone's reset act opens on the right PIN and fails closed otherwise", async () => {
+  // No PIN set: there is nothing to prove, so the act opens (the owner's own
+  // phone, and the design's "lock setup offered" first-run state).
+  assert.equal(await resetPinAccepted({ kind: "absent" }, ""), true);
+  assert.equal(await resetPinAccepted({ kind: "absent" }, "anything"), true);
+
+  // An unreadable PIN never opens it — not on the right-looking entry, not on
+  // an empty one. There is material to verify against only if it can be
+  // trusted, and a corrupt row cannot tell a wrong PIN from a broken one.
+  for (const reason of ["corrupt", "malformed", "weak-iterations"] as const) {
+    const pin = { kind: "unreadable", reason } as const;
+    assert.equal(await resetPinAccepted(pin, "123456"), false, reason);
+    assert.equal(await resetPinAccepted(pin, ""), false, reason);
+  }
+
+  // A stored PIN: wrong refuses, right proceeds — and the comparison is the
+  // same `verifyPin` the lock screen uses, so the two gates share one truth.
+  const stored = { kind: "stored", hash: await hashPin("246810") } as const;
+  assert.equal(await resetPinAccepted(stored, ""), false);
+  assert.equal(await resetPinAccepted(stored, "123456"), false);
+  assert.equal(await resetPinAccepted(stored, "2468100"), false);
+  assert.equal(await resetPinAccepted(stored, "246810"), true);
 });

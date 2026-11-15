@@ -1,13 +1,15 @@
 // Factory-reset policy gate.
 //
-// The engine in Rust is deliberately NOT gated — `factory_reset` runs for any
+// The engine in Rust is deliberately NOT gated — `factoryReset` runs for any
 // caller. The acknowledgement gate lives entirely in this repository's
 // frontend, so these source pins are the deliverable's proof, the same way
 // `pages/import-guard.test.ts` pins the safety-copy ordering. Three rules:
 //
-//   1. `factoryReset()` is invoked from exactly one place — the guarded
-//      Settings handler, behind BOTH the permanent-destruction checkbox and
-//      the two-step ConfirmButton;
+//   1. `factoryReset()` is invoked from exactly two places, each behind its
+//      OWN two-step confirmation — the desktop's guarded Settings handler
+//      (permanent-destruction checkbox + two-step ConfirmButton) and the
+//      phone's Settings danger zone (consequence disclosure + app PIN + the
+//      explicit "Erase everything" second confirmation, F-1);
 //   2. `appRestart()` appears only behind the complete-check: the success
 //      screen, which renders solely when `shouldRestart` (complete: true) —
 //      a blocked reset NEVER restarts (owner decision);
@@ -18,8 +20,9 @@
 //      Danger zone (owner decision D1); it is not a second path to the
 //      engine, and it is never a restart.
 //
-// `lib/reset.test.ts` pins the pure decisions; this file pins the wiring that
-// `node --test` cannot mount.
+// `lib/reset.test.ts` pins the pure decisions (including the phone's
+// `resetPinAccepted` PIN gate); this file pins the wiring that `node --test`
+// cannot mount.
 
 import { strict as assert } from "node:assert";
 import { readdirSync, readFileSync } from "node:fs";
@@ -80,17 +83,19 @@ function handlerSource(src: string, name: string): string {
   throw new Error(`${name} body is not brace-balanced`);
 }
 
-test("factoryReset() is invoked from exactly one place in the app", () => {
+test("factoryReset() is invoked from exactly two places in the app", () => {
   // The definition in the driver is `function factoryReset(): Promise<...>`
-  // — no empty-parens call — so an empty-parens scan finds only CALLS.
+  // — no empty-parens call — so an empty-parens scan finds only CALLS. Sorted,
+  // because the directory walk's order is a filesystem detail the assertion
+  // should not depend on.
   const callSites: string[] = [];
   for (const { path, code } of sourceFiles()) {
     if (/\bfactoryReset\(\)/.test(code)) callSites.push(path);
   }
   assert.deepEqual(
-    callSites,
-    ["pages/SettingsPage.tsx"],
-    "the reset engine must be reachable only through the guarded Settings handler",
+    [...callSites].sort(),
+    ["components/MobileScreens.tsx", "pages/SettingsPage.tsx"],
+    "the reset engine must be reachable only through the two confirmed handlers",
   );
 });
 
@@ -158,6 +163,110 @@ test("the engine is reached only through the two-step ConfirmButton", () => {
     SETTINGS,
     /type="checkbox"\s*\n\s*checked=\{resetAck\}\s*\n\s*disabled=\{resetting\}/,
   );
+});
+
+test("the phone's reset act runs the engine only behind its own two-step flow", () => {
+  const mobile = read("components/MobileScreens.tsx");
+  // Two dialogs in order: the consequence disclosure (which also holds the
+  // PIN gate), then the explicit "Erase everything" confirmation. The stage
+  // machine is what separates them, so both are located by it.
+  const confirmAt = mobile.indexOf('resetStage === "confirm"');
+  const eraseAt = mobile.indexOf('resetStage === "erase"');
+  assert.ok(confirmAt !== -1, "the consequence dialog must exist");
+  assert.ok(eraseAt !== -1, "the erase dialog must exist");
+  assert.ok(
+    confirmAt < eraseAt,
+    "the disclosure must come before the erase confirmation",
+  );
+
+  // The PIN gate is the only thing that can advance the stage: exactly one
+  // `setResetStage("erase")`, inside `advancePastPin`, AFTER the pure policy
+  // has answered — which is where "wrong PIN refused, right PIN proceeds"
+  // lives (`lib/reset.test.ts` pins the answers themselves).
+  const advance = handlerSource(mobile, "advancePastPin");
+  const verify = advance.indexOf("await resetPinAccepted(");
+  const stage = advance.indexOf('setResetStage("erase")');
+  assert.notEqual(verify, -1, "the PIN policy must run in the gate");
+  assert.ok(stage > verify, "the stage may only advance after the PIN answers");
+  assert.equal(
+    (mobile.match(/setResetStage\("erase"\)/g) ?? []).length,
+    1,
+    "no code other than the PIN gate may set the erase stage",
+  );
+
+  // The disclosure dialog itself can never reach the engine: it only hands
+  // over to the erase dialog once the gate has passed.
+  const confirmDialog = mobile.slice(
+    confirmAt,
+    mobile.indexOf("</Dialog>", confirmAt),
+  );
+  assert.doesNotMatch(
+    confirmDialog,
+    /factoryReset|runPhoneReset/,
+    "the first dialog must not be a path to the engine",
+  );
+  // And its Continue button fails closed: no PIN state read yet, an unreadable
+  // PIN, or an empty entry are all refusals (a borrowed phone stays safe even
+  // if the settings read failed).
+  assert.match(
+    confirmDialog,
+    /facts\.pin === null \|\|[\s\S]*?facts\.pin\.kind === "unreadable"[\s\S]*?pinEntry === ""/,
+    "Continue must stay disabled while the PIN state is unknown or unreadable",
+  );
+
+  // The handler: stage guard and double-submit ref first, then the engine,
+  // then the attempt handed to the shell — outcome OR throw, never a swallow.
+  const run = handlerSource(mobile, "runPhoneReset");
+  const guard = run.indexOf('if (resetStage !== "erase") return;');
+  const call = run.indexOf("await factoryReset()");
+  assert.notEqual(guard, -1, "the handler must refuse outside the erase stage");
+  assert.ok(guard < call, "the stage guard must come before the engine runs");
+  assert.match(run, /if \(resettingRef\.current\) return;/);
+  const raised = run.indexOf("setResetting(true)");
+  assert.ok(
+    raised !== -1 && raised < call,
+    "busy state must be raised before the engine is invoked",
+  );
+  assert.match(
+    run,
+    /onResetFinished\(resetAttemptFromOutcome\(await factoryReset\(\)\)\)/,
+  );
+  assert.match(run, /onResetFinished\(resetAttemptFromError\(errText\(e\)\)\)/);
+  assert.doesNotMatch(run, /throw\b/);
+
+  // Exactly one entry, and it sits inside the erase dialog — a bare onClick
+  // anywhere else would make the second confirmation cosmetic.
+  const entries = [
+    ...mobile.matchAll(/onClick=\{\(\) => void runPhoneReset\(\)\}/g),
+  ];
+  assert.equal(
+    entries.length,
+    1,
+    "the erase confirmation button must be the only entry to the handler",
+  );
+  const entryAt = entries[0]?.index ?? -1;
+  assert.ok(
+    entryAt > eraseAt && entryAt < mobile.indexOf("</Dialog>", eraseAt),
+    "the entry must live inside the erase dialog",
+  );
+});
+
+test("the phone's finished attempt reaches the shell's one terminal screen", () => {
+  // App → MobileShell → SectionBody → Settings. One attempt-holder, one
+  // result screen: the phone must not grow a second one beside the desktop's.
+  assert.match(
+    SHELL,
+    /<MobileShell[^>]*onResetFinished=\{handleResetFinished\}/,
+    "the shell must hand the phone's attempts to the same handler",
+  );
+  const shell = read("components/MobileShell.tsx");
+  assert.match(shell, /onResetFinished: \(attempt: ResetAttempt\) => void/);
+  assert.ok(
+    (shell.match(/onResetFinished=\{onResetFinished\}/g) ?? []).length >= 3,
+    "both SectionBody branches and Settings must forward the handler",
+  );
+  const mobile = read("components/MobileScreens.tsx");
+  assert.match(mobile, /onResetFinished: \(attempt: ResetAttempt\) => void/);
 });
 
 test("appRestart() appears only behind the complete-check", () => {

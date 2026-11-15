@@ -651,8 +651,9 @@ function AppShell() {
    * below key off it), and the page is forced so a stale `page` cannot drop
    * the user onto a dead screen over a database the engine may have closed.
    * Deliberately not a second path to `factoryReset()`: the ack checkbox and
-   * the two-step ConfirmButton stay single-sited in SettingsPage, and this is
-   * never a restart.
+   * the two-step ConfirmButton stay in the desktop's SettingsPage, the phone's
+   * two-step confirmation stays in the mobile Settings, and this is never a
+   * restart.
    */
   const retryReset = () => {
     setResetAttempt(null);
@@ -660,8 +661,9 @@ function AppShell() {
   };
 
   /**
-   * Where every finished factory-reset attempt lands — SettingsPage's only
-   * path onto the terminal screen.
+   * Where every finished factory-reset attempt lands — the desktop Settings
+   * handler and the phone Settings' danger zone are both paths onto this one
+   * terminal screen.
    *
    * Two decisions ride here rather than in the page:
    *
@@ -923,8 +925,10 @@ function AppShell() {
   // The terminal reset screen comes FIRST: after any factory-reset
   // attempt — complete, blocked, or thrown — every DB command fails closed and
   // there is no path back into the workspace, so nothing below may render.
-  // "Retry reset" on that screen returns here with the outcome dropped and
-  // the workspace remounted at Settings, acknowledgement freshly unticked.
+  // "Retry reset" on that screen returns here with the outcome dropped: the
+  // desktop workspace remounts at Settings with the acknowledgement freshly
+  // unticked, and the phone shell remounts at its own landing route (its tab
+  // state lives inside the shell this branch unmounts).
   if (resetAttempt !== null) {
     return <ResetResultScreen attempt={resetAttempt} onRetry={retryReset} />;
   }
@@ -1005,7 +1009,11 @@ function AppShell() {
   // exactly as it was, so nothing below this branch changes there.
   if (isAndroidPlatform()) {
     return (
-      <MobileShell onLock={lockNow} onBackground={evictCachesOnBackground} />
+      <MobileShell
+        onLock={lockNow}
+        onBackground={evictCachesOnBackground}
+        onResetFinished={handleResetFinished}
+      />
     );
   }
 

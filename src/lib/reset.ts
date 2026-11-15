@@ -8,7 +8,9 @@
 //     never restarts the app (owner decision, Wave 2 brief);
 //   - every engine component name and status maps to a catalogue key, so the
 //     result screen renders the outcome verbatim in both languages;
-//   - a throw-shaped attempt (IPC failure) can never present as success.
+//   - a throw-shaped attempt (IPC failure) can never present as success;
+//   - the phone's reset act is opened by the app PIN (`resetPinAccepted`), so
+//     a borrowed phone cannot be wiped from Settings (F-1).
 //
 // The screens and the Settings handler are wiring; the decision rules are
 // here, and `reset.test.ts` pins them. The gate is frontend-only by design
@@ -21,6 +23,8 @@ import type {
   ResetComponentName,
   ResetComponentStatus,
 } from "../data/driver.ts";
+import type { PinState } from "./appLock.ts";
+import { verifyPin } from "./crypto.ts";
 import type { MessageKey } from "./i18n.ts";
 
 /**
@@ -161,4 +165,31 @@ export function isBlockedStatusKey(statusKey: MessageKey): boolean {
  */
 export function hasBlockedComponent(attempt: ResetAttempt): boolean {
   return outcomeRows(attempt).some((row) => isBlockedStatusKey(row.statusKey));
+}
+
+/**
+ * Whether the entered PIN opens the phone's reset act (F-1).
+ *
+ * A borrowed phone must not be wipeable from Settings, so a phone with an app
+ * PIN set has to prove the PIN before the second confirmation is even offered.
+ * The three answers a {@link PinState} can give map to three answers here:
+ *
+ * - `absent` — nothing to prove: the owner decided the phone is not locked;
+ * - `unreadable` — **fail closed**. The hash exists but cannot be trusted
+ *   (corrupt, malformed, a PBKDF2 count this app never wrote), so there is no
+ *   material to verify against and no way to tell a wrong PIN from a broken
+ *   row. Refusing is the only answer that cannot be talked into a wipe;
+ * - `stored` — a real PBKDF2 comparison against the same stored hash the lock
+ *   screen verifies against, so the two gates can never disagree.
+ *
+ * Pure and synchronous-ish by design: the decision rules live here and
+ * `reset.test.ts` pins them, while the screen owns only the wiring.
+ */
+export async function resetPinAccepted(
+  pin: PinState,
+  entered: string,
+): Promise<boolean> {
+  if (pin.kind === "absent") return true;
+  if (pin.kind === "unreadable") return false;
+  return verifyPin(entered, pin.hash);
 }

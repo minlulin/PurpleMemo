@@ -448,6 +448,31 @@ const GUARDS: {
     cleared: "setResetting(false)",
     raised: "setResetting(true)",
   },
+  // The phone's danger-zone reset (F-1). Same engine, same hazard: a second
+  // engine run would race the first one's file deletions mid-flight, and the
+  // engine is safe to RE-RUN after a partial reset but not to run
+  // concurrently. Its stage guard (the phone's equivalent of the desktop's
+  // acknowledgement checkbox) is pinned in `src/reset-gate.test.ts`.
+  {
+    page: "../components/MobileScreens.tsx",
+    handler: "runPhoneReset",
+    busy: "resettingRef.current",
+    cleared: "setResetting(false)",
+    raised: "setResetting(true)",
+    labelKey: "mobile.reset.running",
+  },
+  // The PIN gate in front of it (F-1: a borrowed phone must not be wipeable).
+  // `verifyPin` costs a 600k-iteration derivation, so a fast double-tap of
+  // Continue used to be able to start two of them before React re-rendered —
+  // and both would then advance the stage.
+  {
+    page: "../components/MobileScreens.tsx",
+    handler: "advancePastPin",
+    busy: "checkingPinRef.current",
+    cleared: "setCheckingPin(false)",
+    raised: "setCheckingPin(true)",
+    labelKey: "common.checking",
+  },
   // Settings' async actions: backup export, import,
   // key export, share start/stop, update check/install. One page-level
   // savingRef covers all seven — `shows(section)` mounts one section at a

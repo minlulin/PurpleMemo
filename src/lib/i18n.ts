@@ -382,6 +382,33 @@ export const en = {
   "mobile.settings.diagnosticsFailed": "Could not read diagnostics.",
   "mobile.settings.unknown": "unknown",
 
+  "mobile.reset.title": "Reset Purple Memo",
+  "mobile.reset.lead":
+    "Erase everything Purple Memo keeps on this phone. The desktop's data is not touched.",
+  "mobile.reset.action": "Reset Purple Memo…",
+  "mobile.reset.dialogTitle": "Reset Purple Memo on this phone?",
+  "mobile.reset.consequenceDatabase":
+    "This phone's local database is erased — every note, task, record and photo stored here.",
+  "mobile.reset.consequencePairing":
+    "Pairing and keys are erased — this phone is paired with no desktop afterwards.",
+  "mobile.reset.consequenceFirstRun":
+    "The app returns to first-run: no data, no pairing, and lock setup is offered again.",
+  "mobile.reset.consequenceDesktop":
+    "The desktop's data is not touched — only this phone is erased.",
+  "mobile.reset.consequenceLost":
+    "Records that exist only on this phone and were never synced are lost for good.",
+  "mobile.reset.pinLabel": "Enter your app PIN",
+  "mobile.reset.pinWrong": "That PIN is not correct.",
+  "mobile.reset.pinUnreadable":
+    "The app PIN setting could not be read, so this reset cannot be verified. It stays unavailable.",
+  "mobile.reset.continue": "Continue",
+  "mobile.reset.confirmTitle": "Erase everything on this phone?",
+  "mobile.reset.confirmBody":
+    "There is no undo. Purple Memo on this phone starts again as if it had just been installed.",
+  "mobile.reset.erase": "Erase everything",
+  "mobile.reset.running":
+    "Erasing this phone — the database is being closed and everything is being deleted. Do not close the app.",
+
   "reminders.noticeExact":
     "Reminders are scheduled on this phone and fire even when Purple Memo is closed.",
   "reminders.noticeInexact":
@@ -1345,6 +1372,33 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.keystoreBacking": "Keystore အနောက်ခံ",
   "mobile.settings.diagnosticsFailed": "စစ်ဆေးမှု အချက်အလက်ကို မဖတ်နိုင်ပါ။",
   "mobile.settings.unknown": "မသိ",
+
+  "mobile.reset.title": "Purple Memo ကို ရိစတေ့ပြုရန်",
+  "mobile.reset.lead":
+    "ဤဖုန်းတွင် Purple Memo က သိမ်းဆည်းထားသမျှအားလုံးကို ဖျက်ပစ်မည်။ ကွန်ပျူတာ (desktop) ၏ ဒေတာကို မထိပါ။",
+  "mobile.reset.action": "Purple Memo ကို ရိစတေ့ပြုမည်…",
+  "mobile.reset.dialogTitle": "ဤဖုန်းပေါ်တွင် Purple Memo ကို ရိစတေ့ပြုမည်လား?",
+  "mobile.reset.consequenceDatabase":
+    "ဤဖုန်း၏ ဒေတာဘေ့စ်ကို ဖျက်ပစ်မည် — ဤနေရာတွင် ရှိသော မှတ်စု၊ အလုပ်၊ မှတ်တမ်းနှင့် ဓာတ်ပုံအားလုံး။",
+  "mobile.reset.consequencePairing":
+    "တွဲချိတ်မှုနှင့် သော့များကို ဖျက်ပစ်မည် — ထို့နောက် ဤဖုန်းသည် ကွန်ပျူတာနှင့် တွဲချိတ်ထားခြင်း မရှိတော့ပါ။",
+  "mobile.reset.consequenceFirstRun":
+    "အက်ပ်သည် ပထမဆုံးအသုံးပြုမှုအဆင့်သို့ ပြန်သွားမည် — ဒေတာမရှိ၊ တွဲချိတ်မှုမရှိပါ၊ လော့ခ်သတ်မှတ်ခြင်းကို ထပ်မံ ပြုလုပ်ရန် တောင်းဆိုပါမည်။",
+  "mobile.reset.consequenceDesktop":
+    "ကွန်ပျူတာ (desktop) ၏ ဒေတာကို မထိပါ — ဤဖုန်းကိုသာ ဖျက်ပစ်မည်။",
+  "mobile.reset.consequenceLost":
+    "ဤဖုန်းတွင်သာ ရှိပြီး အဘယ်အချိန်မျှ မပို့ဖူးသော မှတ်တမ်းများ ပျောက်ဆုံးသွားမည်။",
+  "mobile.reset.pinLabel": "အက်ပ် PIN ကို ထည့်သွင်းပါ",
+  "mobile.reset.pinWrong": "PIN မမှန်ကန်ပါ။",
+  "mobile.reset.pinUnreadable":
+    "အက်ပ် PIN သတ်မှတ်ချက်ကို မဖတ်နိုင်သဖြင့် ဤရိစတေ့ကို အတည်မပြုနိုင်ပါ။ ၎င်းကို အသုံးပြု၍ မရပါ။",
+  "mobile.reset.continue": "ဆက်လက်မည်",
+  "mobile.reset.confirmTitle": "ဤဖုန်းပေါ်ရှိအားလုံးကို ဖျက်မည်လား?",
+  "mobile.reset.confirmBody":
+    "ပြန်လည်ရယူ၍ မရပါ။ ဤဖုန်းရှိ Purple Memo သည် အသစ်တင်သွင်းပြီးချိန်ကဲ့သို့ ပြန်စတင်မည်။",
+  "mobile.reset.erase": "အားလုံးကို ဖျက်မည်",
+  "mobile.reset.running":
+    "ဤဖုန်းကို ဖျက်နေပါသည် — ဒေတာဘေ့စ်ကို ပိတ်ပြီး အားလုံးကို ဖျက်နေပါသည်။ အက်ပ်ကို မပိတ်ပါနှင့်။",
 
   "reminders.noticeExact":
     "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသောကြောင့် Purple Memo ပိတ်ထားလည်း အချိန်တိုင်း အသိပေးပါမည်။",

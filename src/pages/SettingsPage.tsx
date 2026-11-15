@@ -763,12 +763,13 @@ export default function SettingsPage(p: SettingsPageProps) {
   useEffect(() => () => setResetAck(false), []);
 
   /**
-   * The ONLY call site of `factoryReset()` in the app (pinned by
-   * `src/reset-gate.test.ts`, because the policy gate is frontend-only by
-   * design and the tests are what keep it true). Both halves of the gate are
-   * enforced here as well as drawn on screen: the permanent-destruction
-   * checkbox (`resetAck`) is checked before the engine is invoked, and the
-   * action is only reachable through the two-step `ConfirmButton`.
+   * The DESKTOP's call site of `factoryReset()` — the other one is the phone
+   * Settings' danger zone; both are pinned by `src/reset-gate.test.ts`,
+   * because the policy gate is frontend-only by design and the tests are what
+   * keep it true. Both halves of the gate are enforced here as well as drawn
+   * on screen: the permanent-destruction checkbox (`resetAck`) is checked
+   * before the engine is invoked, and the action is only reachable through the
+   * two-step `ConfirmButton`.
    *
    * The attempt — resolved outcome OR throw — goes straight to the shell,
    * which replaces the workspace with the terminal result screen. This page
