@@ -466,3 +466,39 @@ test("counters reconcile over a full cycle both ways, a Vault rotation included"
   assert.equal(items.length, 1, "one item, not one per generation");
   assert.equal(items[0]?.title, "email");
 });
+
+test("a fat outbox crosses as several in-budget push batches and prunes", async () => {
+  const { phone, desktop } = await pair();
+  const notes = createNotesRepo(phone.driver);
+  // 3 KiB of body each: a 30 KiB frame holds only a handful of these, so a
+  // 60-note backlog cannot cross in one batch. Before SW-04's discipline this
+  // was the ordinary volume at which a pull could not be framed at all.
+  const body = "x".repeat(3 * 1024);
+  for (let index = 0; index < 60; index += 1) {
+    await notes.createNote({ title: `Bulk ${index}`, content: body });
+  }
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+
+  assert.equal(outcome.state, "applied");
+  assert.equal(outcome.confirmed, true);
+  assert.equal(outcome.pushed, 60, "every queued op crossed");
+  assert.equal(
+    await count(desktop, "SELECT count(*) AS n FROM notes"),
+    60,
+    "the desktop holds the whole backlog",
+  );
+  assert.deepEqual(
+    await readOutbox(phone.driver),
+    [],
+    "nothing acked is left unpruned",
+  );
+  assert.equal(
+    (await peer(phone, DESKTOP)).cursor_out,
+    60,
+    "the sealed verdict moved the cursor past all 60",
+  );
+});

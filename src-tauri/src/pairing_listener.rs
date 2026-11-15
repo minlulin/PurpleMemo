@@ -154,6 +154,26 @@ const SYNC_ACCEPTED_KINDS: [&str; 5] = [
 /// one bounded frame, never a data dump.
 const MAX_UPLOAD_BATCH_OPS: usize = 200;
 
+/// The plaintext budget of one sync-pull batch — the snapshot's figure, reused
+/// rather than re-derived: the same frame math decides it (`envelope::seal`
+/// hex-encodes, so the wire body is 2× the plaintext, and 30 KiB lanes ~62 KiB
+/// sealed under the 64 KiB cap). One number, both paths (§8.3).
+const MAX_SYNC_BATCH_BYTES: usize = crate::pairing_snapshot::MAX_SNAPSHOT_BATCH_BYTES;
+
+/// The largest single op the frame can carry alone, derived from the same
+/// arithmetic: half the frame minus the sealed header (~270 bytes), the reply's
+/// own wrapper (`kind`, `pairingId`, `batch`, `total`, `ops`) and the AEAD tag.
+/// An op over this cannot be delivered at all, so it is refused by name instead
+/// of becoming a frame that never encodes (SW-04).
+pub const MAX_SYNC_OP_BYTES: usize = MAX_FRAME_BYTES / 2 - 1024;
+
+/// One sync op's plaintext size, as the batch budget counts it: its own JSON
+/// plus the comma between ops. A field-level op is small; the figure exists for
+/// the one create op carrying a very large row.
+fn est_sync_op_bytes(op: &JsonValue) -> usize {
+    op.to_string().len() + 1
+}
+
 /// The most batches one upload may declare in a window. The frame cap bounds
 /// each batch's bytes; this bounds the staged total a window can be made to
 /// hold (64 × 200 ops is already far past any phone's offline backlog).
@@ -1395,9 +1415,27 @@ fn handle(mut stream: TcpStream, gate: &Gate) {
     let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
     let (status, body) = answer(&mut stream, gate);
-    let framed = match body {
-        Some(body) => encode_frame(&body.to_string()).unwrap_or_default(),
-        None => Vec::new(),
+    // A body that cannot be framed is a REFUSAL, never an empty 2xx: the old
+    // `unwrap_or_default()` answered 200 with no bytes, which a phone reads as a
+    // malformed batch after its own push has already committed — the two-way
+    // wedge SW-04 describes. Named, and still framed, so the client can report
+    // the reason instead of guessing (§7.7).
+    let (status, framed) = match body {
+        Some(body) => match encode_frame(&body.to_string()) {
+            Ok(frame) => (status, frame),
+            Err(message) => {
+                let refusal = RefusalReply {
+                    code: "frame-too-large",
+                    message,
+                    status: 500,
+                    attempts_left: None,
+                };
+                let framed = encode_frame(&refusal.body().to_string())
+                    .expect("a refusal body is far under the frame cap");
+                (refusal.status, framed)
+            }
+        },
+        None => (status, Vec::new()),
     };
     let _ = write_response(&mut stream, status, &framed);
 }
@@ -2403,13 +2441,38 @@ fn serve_sync_ops(gate: &Gate, pin: &Pin, message: &JsonValue) -> Result<JsonVal
         })?;
         // One batch even when it is empty: the end of a pull is a batch with
         // nothing after it, never an error and never silence.
+        //
+        // Cut with the snapshot's discipline (§8.3): ops in seq order, a
+        // boundary BEFORE the op that would cross the budget. Before SW-04 the
+        // count-only cut let a batch's encoded body pass the frame cap, and the
+        // handler's `encode_frame` fallback answered 200 with an empty body —
+        // the phone read a malformed batch after its push had committed and
+        // wedged. A single op larger than the batch budget still travels alone
+        // (a record that cannot be sent is worse than a frame over target); one
+        // larger than the frame can carry is refused by name, never dropped.
         let mut batches: Vec<Vec<JsonValue>> = Vec::new();
         let mut current: Vec<JsonValue> = Vec::new();
+        let mut bytes = 0usize;
         for row in rows {
-            current.push(row);
-            if current.len() == MAX_UPLOAD_BATCH_OPS {
-                batches.push(std::mem::take(&mut current));
+            let size = est_sync_op_bytes(&row);
+            if size > MAX_SYNC_OP_BYTES {
+                let names = json!({ "seq": row.get("seq").cloned().unwrap_or(JsonValue::Null),
+                                    "table": row.get("entity_table").cloned().unwrap_or(JsonValue::Null) });
+                return Err(RefusalReply::refused(
+                    "sync-op-too-large",
+                    format!(
+                        "op {names} is {size} bytes and cannot fit a {MAX_FRAME_BYTES}-byte pairing frame alone; it is refused by name rather than sent truncated (§8.3)."
+                    ),
+                ));
             }
+            if !current.is_empty()
+                && (current.len() >= MAX_UPLOAD_BATCH_OPS || bytes + size > MAX_SYNC_BATCH_BYTES)
+            {
+                batches.push(std::mem::take(&mut current));
+                bytes = 0;
+            }
+            bytes += size;
+            current.push(row);
         }
         if !current.is_empty() || batches.is_empty() {
             batches.push(current);
@@ -4760,6 +4823,99 @@ mod tests {
         );
         assert_eq!(status, 403, "{reply}");
         assert_eq!(refusal_reason(&reply), "revoked");
+        state.stop().expect("stop");
+    }
+
+    /// One of this device's ops carrying a payload of `bytes` bytes — the
+    /// mid-size create SW-04's budget has to cut between.
+    fn padded_sync_op(seq: u64, bytes: usize) -> JsonValue {
+        let mut op = sync_op(seq);
+        op["payload"] = json!(format!("{{\"note\":\"{}\"}}", "x".repeat(bytes)));
+        op
+    }
+
+    /// A window serving `ops`, whatever they are (the count-only helper above
+    /// cannot express a byte-sized stream).
+    fn started_with_ops(ops: Vec<JsonValue>) -> (PairingListenerState, u16) {
+        let source: SyncSource = Arc::new(move |after_seq| {
+            Ok(ops
+                .iter()
+                .filter(|op| op["seq"].as_u64().is_some_and(|seq| seq > after_seq))
+                .cloned()
+                .collect())
+        });
+        let state = PairingListenerState::default();
+        state.set_sync_source(source);
+        let info = state
+            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .expect("start");
+        (state, info.port.expect("port"))
+    }
+
+    #[test]
+    fn a_pull_cuts_its_batches_by_bytes_and_loses_no_op() {
+        let ops: Vec<JsonValue> = (1..=5).map(|seq| padded_sync_op(seq, 8 * 1024)).collect();
+        let (state, port) = started_with_ops(ops);
+
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-pull", "batch": 0, "afterSeq": 0 }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let (first, mut desktop) = opened_batch(&reply, 0);
+        let total = first["total"].as_u64().expect("total") as usize;
+        assert!(
+            total > 1,
+            "{} bytes of ops cannot be one {MAX_SYNC_BATCH_BYTES}-byte batch",
+            5 * 8 * 1024
+        );
+
+        let mut seen: Vec<u64> = Vec::new();
+        for batch in 0..total {
+            let document = if batch == 0 {
+                first.clone()
+            } else {
+                let (status, reply) = post_sync(
+                    port,
+                    &seal_sync(
+                        (batch as u64) + 1,
+                        &json!({ "kind": "sync-pull", "batch": batch, "afterSeq": 0 }),
+                    ),
+                );
+                assert_eq!(status, 200, "batch {batch}: {reply}");
+                let (document, counter) = opened_batch(&reply, desktop);
+                desktop = counter;
+                document
+            };
+            let entries = document["ops"].as_array().expect("ops");
+            let bytes: usize = entries.iter().map(est_sync_op_bytes).sum();
+            assert!(
+                bytes <= MAX_SYNC_BATCH_BYTES,
+                "every batch rides its budget ({batch}: {bytes} bytes)"
+            );
+            seen.extend(entries.iter().filter_map(|op| op["seq"].as_u64()));
+        }
+        assert_eq!(seen, vec![1, 2, 3, 4, 5], "every op arrives, in seq order");
+        state.stop().expect("stop");
+    }
+
+    #[test]
+    fn an_op_too_large_for_a_frame_is_refused_by_name() {
+        // Over half the frame in plaintext: sealed, it could never fit, so the
+        // serving side names it instead of cutting a batch that cannot encode.
+        let (state, port) = started_with_ops(vec![padded_sync_op(1, MAX_SYNC_OP_BYTES)]);
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-pull", "batch": 0, "afterSeq": 0 }),
+            ),
+        );
+        assert_eq!(status, 403, "{reply}");
+        assert_eq!(refusal_reason(&reply), "sync-op-too-large");
         state.stop().expect("stop");
     }
 }
