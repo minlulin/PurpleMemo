@@ -29,6 +29,7 @@ import {
   type BackupPhotoEntry,
   buildBackupZip,
   createBackupRepo,
+  DEVICE_LOCAL_SETTING_KEYS,
   exceedsEncryptedBackupCap,
   exportBudget,
   MAX_BACKUP_ARCHIVE_BYTES,
@@ -51,6 +52,7 @@ import {
   sealBackupContainer,
   WrongBackupPasswordError,
 } from "./backupContainer.ts";
+import { readState, restoreStatements } from "./sync/store.ts";
 
 const NOTE_ROW = {
   id: 1,
@@ -133,6 +135,12 @@ test("BACKUP_TABLES covers the 31 data tables and excludes the derived notes_fts
   assert.ok(
     BACKUP_TABLES.includes("trash_items"),
     "the capture trash is backed up",
+  );
+  // Sync storage is device-local: a restored database is a new data line, and
+  // carrying the outbox/cursors/generation along would fork it (§10.3).
+  assert.ok(
+    !BACKUP_TABLES.some((table) => table.startsWith("sync_")),
+    "the device-local sync tables never enter a backup payload",
   );
 });
 
@@ -792,10 +800,29 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
     params?: unknown[];
   }[];
   const deletes = statements.filter((s) => s.sql.startsWith("DELETE FROM "));
-  assert.equal(deletes.length, 31);
+  // 31 table replacements, then the sync-storage deletions §10.1 adds
+  // (delivery rows and acks before their parents, then the stamps, v11's
+  // aliases and v12's GC log).
   assert.deepEqual(
     deletes.map((s) => s.sql),
-    BACKUP_TABLES.map((t) => `DELETE FROM ${t}`),
+    [
+      ...BACKUP_TABLES.map((t) =>
+        // §10.3: `settings` is the one table whose replacement spares this
+        // device's device-local rows — the app PIN survives a restore.
+        t === "settings"
+          ? `DELETE FROM settings WHERE key NOT IN (${DEVICE_LOCAL_SETTING_KEYS.map(
+              () => "?",
+            ).join(", ")})`
+          : `DELETE FROM ${t}`,
+      ),
+      "DELETE FROM sync_outbox_delivery",
+      "DELETE FROM sync_outbox",
+      "DELETE FROM sync_tombstone_acks",
+      "DELETE FROM sync_tombstones",
+      "DELETE FROM sync_row_stamps",
+      "DELETE FROM sync_uid_aliases",
+      "DELETE FROM sync_tombstone_gc_log",
+    ],
   );
   const noteInsert = statements.find((s) =>
     s.sql.startsWith("INSERT INTO notes"),
@@ -1008,8 +1035,17 @@ test("applyBackup emits only plain identifiers in its SQL", async () => {
     first(canary, "fk canary").sql,
     "INSERT INTO settings (key, value) SELECT 'import-fk-check', NULL WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)",
   );
+  // The §10.1 restore statements are the second exemption, and static for the
+  // same reason: `sync/store.ts` writes them as constants, with nothing
+  // interpolated from the payload. Pin every one of them verbatim.
+  const restore = restoreStatements().map((s) => s.sql);
+  assert.deepEqual(
+    statements.map((s) => s.sql).filter((sql) => restore.includes(sql)),
+    restore,
+  );
   for (const s of statements) {
     if (s.sql.includes("pragma_foreign_key_check")) continue;
+    if (restore.includes(s.sql)) continue;
     // Only identifiers, parens, commas, spaces and `?` placeholders — no
     // quotes, semicolons or dashes that could carry a second statement.
     assert.match(
@@ -1465,6 +1501,22 @@ function baselineSql(): string {
   return sql;
 }
 
+/**
+ * The schema version the shipped `schema.rs` declares. Read rather than
+ * retyped, for the same reason `baselineSql()` is: the test must fail when the
+ * app's version and the test's assumption part ways, and it must fail on the
+ * line that says which version the assertion was about.
+ */
+function shippedSchemaVersion(): number {
+  const src = readFileSync(
+    new URL("../../src-tauri/src/schema.rs", import.meta.url),
+    "utf8",
+  );
+  const match = /pub const SCHEMA_VERSION: i64 = (\d+);/.exec(src);
+  assert.ok(match?.[1], "SCHEMA_VERSION must be readable from schema.rs");
+  return Number(match[1]);
+}
+
 const OFF_SHARE = {
   running: false,
   url: null,
@@ -1612,6 +1664,76 @@ test("a hand-crafted payload with a dangling row is refused and the current data
   assert.equal(fk.foreign_keys, 1, "FK must be restored after the refusal");
 });
 
+test("a v9-era Trash fixture restores into the v10 schema and round-trips unchanged", async () => {
+  // v10 widens `trash_items.entity_type` and changes nothing about the row's
+  // shape, so there is no backup format bump (§13.2, Task 1) — but that is a
+  // claim about the payload, so it is checked against the shipped schema: the
+  // fixture is a Trash row exactly as v9 could write it, it is imported into a
+  // database built from `BASELINE_SQL`, and then exported again.
+  const driver = importDriver();
+  const schemaVersion = shippedSchemaVersion();
+  assert.equal(
+    schemaVersion,
+    12,
+    "the Trash widening is the v10 step; v11 and v12 add only sync bookkeeping",
+  );
+  driver.db.exec(`PRAGMA user_version = ${schemaVersion}`);
+
+  const noteUid = "11111111-1111-4111-8111-111111111111";
+  const trashRow = {
+    id: 1,
+    entity_type: "note",
+    entity_id: 1,
+    snapshot: JSON.stringify({
+      version: 1,
+      snapshotId: "22222222-2222-4222-8222-222222222222",
+      entity: {
+        id: 1,
+        uid: noteUid,
+        title: "Trashed note",
+        content: "body",
+        tags: "",
+        collection_id: null,
+        pinned: 0,
+        archived: 0,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+      channels: [],
+      tags: [],
+      photoRefs: [],
+      links: [],
+      inboxRefs: [],
+    }),
+    deleted_at: "2026-02-01",
+    created_at: "2026-02-01",
+  };
+  const payload: BackupPayload = {
+    app: BACKUP_APP,
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: "2026-10-12T03:00:00.000Z",
+    data: {
+      ...emptyTables(),
+      notes: [{ ...NOTE_ROW, uid: noteUid }],
+      trash_items: [trashRow],
+    },
+  };
+
+  const applied = await applyBackup(driver, { payload, photos: [] });
+  assert.equal(applied.rows, 2, "the note and its Trash copy were written");
+  const version = driver.db.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  assert.equal(version.user_version, schemaVersion);
+
+  // The v10 export carries the same row back, byte for byte: the payload shape
+  // did not change with the schema.
+  const { bytes } = await createBackupRepo(driver).exportBackup();
+  const roundTrip = parseBackupZip(bytes);
+  assert.deepEqual(roundTrip.payload.data.trash_items, [trashRow]);
+  assert.equal(roundTrip.payload.version, BACKUP_FORMAT_VERSION);
+});
+
 test("a clean payload still imports — the FK canary stays silent (P3-5)", async () => {
   // The check must not fire on app-shaped data: a valid import still commits.
   const driver = importDriver();
@@ -1645,4 +1767,249 @@ test("a clean payload still imports — the FK canary stays silent (P3-5)", asyn
     foreign_keys: number;
   };
   assert.equal(fk.foreign_keys, 1);
+});
+
+// ---------------------------------------------------------------------------
+// §10.3 — device-local settings never travel
+// ---------------------------------------------------------------------------
+
+/** One settings value as stored, or undefined when the row is absent. */
+function settingValue(driver: DataDriver & { db: DatabaseSync }, key: string) {
+  const row = driver.db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+test("a payload carries the theme and the vault verifier, never the app PIN", async () => {
+  const driver = importDriver();
+  driver.db.exec(`INSERT INTO settings (key, value) VALUES
+    ('pin_hash', 'poison-pin-hash'),
+    ('security_question', 'poison-question'),
+    ('security_answer_hash', 'poison-answer-hash'),
+    ('theme', '"light"'),
+    ('vault_verify', '{"salt":"s","iv":"i","ciphertext":"c"}'),
+    ('vault_generation', '1')`);
+
+  const { bytes } = await createBackupRepo(driver).exportBackup();
+  const { payload } = parseBackupZip(bytes);
+
+  const keys = (payload.data.settings ?? []).map((row) => String(row.key));
+  for (const kept of ["theme", "vault_verify", "vault_generation"]) {
+    assert.ok(keys.includes(kept), `${kept} must still travel`);
+  }
+  for (const gone of DEVICE_LOCAL_SETTING_KEYS) {
+    assert.ok(!keys.includes(gone), `${gone} must not travel`);
+  }
+  // The serialized payload is what leaves the device, so it is what is checked
+  // — a row set that looks right but serializes a hash would still be a leak.
+  const serialized = JSON.stringify(payload);
+  for (const poison of [
+    "pin_hash",
+    "poison-pin-hash",
+    "security_question",
+    "poison-question",
+    "security_answer_hash",
+    "poison-answer-hash",
+  ]) {
+    assert.ok(!serialized.includes(poison), `${poison} reached the payload`);
+  }
+  // The vault's keys are deliberately NOT device-local (§12.3): a restored
+  // vault must still unlock.
+  assert.deepEqual(
+    [...DEVICE_LOCAL_SETTING_KEYS],
+    ["pin_hash", "security_question", "security_answer_hash"],
+  );
+});
+
+test("an older backup's PIN rows are skipped, and the rest of its settings apply", async () => {
+  const driver = importDriver();
+  driver.db.exec(`INSERT INTO settings (key, value) VALUES
+    ('pin_hash', 'this-device-pin'),
+    ('security_question', 'this-device-question'),
+    ('theme', '"dark"')`);
+
+  // A payload written before the filter existed: it carries an app PIN.
+  const payload: BackupPayload = {
+    app: BACKUP_APP,
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: "2026-10-12T03:00:00.000Z",
+    data: {
+      ...emptyTables(),
+      settings: [
+        { key: "pin_hash", value: "someone-elses-pin" },
+        { key: "security_question", value: "someone-elses-question" },
+        { key: "security_answer_hash", value: "someone-elses-answer" },
+        { key: "theme", value: '"light"' },
+        { key: "vault_verify", value: '{"salt":"restored"}' },
+      ],
+    },
+  };
+  await applyBackup(driver, { payload, photos: [] });
+
+  assert.equal(
+    settingValue(driver, "pin_hash"),
+    "this-device-pin",
+    "the app PIN must survive an import that carries one",
+  );
+  assert.equal(
+    settingValue(driver, "security_question"),
+    "this-device-question",
+  );
+  assert.equal(
+    settingValue(driver, "security_answer_hash"),
+    undefined,
+    "and no recovery row may be created from the payload",
+  );
+  assert.equal(
+    settingValue(driver, "theme"),
+    '"light"',
+    "everything else in settings still applies",
+  );
+  assert.equal(
+    settingValue(driver, "vault_verify"),
+    '{"salt":"restored"}',
+    "the vault's own line travels (§12.3)",
+  );
+});
+
+test("the exported payload names no sync table", async () => {
+  const driver = importDriver();
+  const { bytes } = await createBackupRepo(driver).exportBackup();
+  const { payload } = parseBackupZip(bytes);
+  const tables = Object.keys(payload.data);
+  assert.equal(tables.length, BACKUP_TABLES.length);
+  assert.deepEqual(
+    tables.filter((table) => table.startsWith("sync_")),
+    [],
+    "§10.3: no sync table may enter a payload",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// §10.1 — a restore starts a new data line
+// ---------------------------------------------------------------------------
+
+test("a restore bumps the generation, clears the old line's bookkeeping and keeps the peer", async () => {
+  const driver = importDriver();
+  const { db } = driver;
+  const PEER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const UID = "11111111-1111-4111-8111-111111111111";
+  const OLD_UID = "22222222-2222-4222-8222-222222222222";
+  const run = (sql: string, params: unknown[] = []) =>
+    db.prepare(sql).run(...(params as never[]));
+
+  const before = await readState(driver);
+  assert.equal(before.dataGeneration, 1, "the fixture starts at generation 1");
+
+  // The line that is about to be replaced: a row, a pinned peer with cursors
+  // part-way through it, and every kind of bookkeeping that describes it.
+  run(
+    "INSERT INTO notes (title, content, tags, pinned, archived, created_at, updated_at) VALUES ('old line', '', '', 0, 0, '2026-01-01', '2026-01-01')",
+  );
+  run(
+    `INSERT INTO sync_peers (device_id, pairing_id, display_name, public_key, generation, cursor_in, cursor_out, created_at)
+     VALUES (?, 'pair-1', 'phone', 'key', 1, 7, 9, '2026-01-01')`,
+    [PEER],
+  );
+  run(
+    `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+     VALUES (?, 1, 'op-1', 'notes', ?, 'create', 0, 1, '{}', '{}', '2026-01-01')`,
+    [before.deviceId, UID],
+  );
+  run(
+    `INSERT INTO sync_outbox_delivery (outbox_id, peer_id, acked_at)
+     VALUES ((SELECT id FROM sync_outbox), ?, '2026-01-01')`,
+    [PEER],
+  );
+  run(
+    `INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+     VALUES ('notes', ?, 2, ?, 'op-2', '2026-01-01')`,
+    [OLD_UID, before.deviceId],
+  );
+  run(
+    `INSERT INTO sync_tombstone_acks (tombstone_id, peer_id, acked_at)
+     VALUES ((SELECT id FROM sync_tombstones), ?, '2026-01-01')`,
+    [PEER],
+  );
+  run(
+    `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+     VALUES ('notes', ?, 1, ?, 'op-1', '{}', '2026-01-01')`,
+    [UID, before.deviceId],
+  );
+  run(
+    `INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+     VALUES ('notes', ?, ?, '2026-01-01')`,
+    [OLD_UID, UID],
+  );
+
+  const restore = async () => {
+    const payload: BackupPayload = {
+      app: BACKUP_APP,
+      version: BACKUP_FORMAT_VERSION,
+      exportedAt: "2026-10-12T03:00:00.000Z",
+      data: { ...emptyTables(), notes: [{ ...NOTE_ROW, title: "restored" }] },
+    };
+    await applyBackup(driver, { payload, photos: [] });
+  };
+  await restore();
+
+  const after = await readState(driver);
+  assert.equal(after.dataGeneration, 2, "exactly +1 (§10.1)");
+  assert.equal(
+    after.deviceId,
+    before.deviceId,
+    "the install keeps its own identity (§10.3)",
+  );
+  const rows = (sql: string) =>
+    (db.prepare(sql).get() as { n: number } | undefined)?.n ?? 0;
+  assert.equal(rows("SELECT count(*) AS n FROM sync_outbox"), 0);
+  assert.equal(rows("SELECT count(*) AS n FROM sync_outbox_delivery"), 0);
+  assert.equal(rows("SELECT count(*) AS n FROM sync_tombstones"), 0);
+  assert.equal(rows("SELECT count(*) AS n FROM sync_tombstone_acks"), 0);
+  assert.equal(
+    rows("SELECT count(*) AS n FROM sync_row_stamps"),
+    0,
+    "a restored row is pre-history: no stamp may claim a write for it",
+  );
+  assert.equal(
+    rows("SELECT count(*) AS n FROM sync_uid_aliases"),
+    0,
+    "and a loser uid from the old line resolves to nothing (§10.5)",
+  );
+
+  const peer = db
+    .prepare(
+      "SELECT device_id, generation, cursor_in, cursor_out, revoked_at FROM sync_peers",
+    )
+    .all() as {
+    device_id: string;
+    generation: number;
+    cursor_in: number;
+    cursor_out: number;
+    revoked_at: string | null;
+  }[];
+  assert.equal(
+    peer.length,
+    1,
+    "a restore is not a reset: the peer stays pinned",
+  );
+  assert.equal(peer[0]?.device_id, PEER);
+  assert.equal(peer[0]?.cursor_in, 0, "the numbers meant rows in the old line");
+  assert.equal(peer[0]?.cursor_out, 0);
+  assert.equal(peer[0]?.generation, 1, "that stale value is §10.2's evidence");
+  assert.equal(peer[0]?.revoked_at, null);
+
+  const notes = db.prepare("SELECT title FROM notes ORDER BY id").all() as {
+    title: string;
+  }[];
+  assert.deepEqual(
+    notes.map((row) => row.title),
+    ["restored"],
+    "the restored rows are the whole of the new line",
+  );
+
+  // A second restore is a second line, not a re-flagged first one.
+  await restore();
+  assert.equal((await readState(driver)).dataGeneration, 3);
 });

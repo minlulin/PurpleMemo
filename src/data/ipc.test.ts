@@ -46,13 +46,22 @@ test("every command the driver invokes is registered in Rust", () => {
   const commands = invokedCommands();
   // The exact surface: 23 commands, plus `factory_reset` and
   // `app_restart`, plus the import-lease pair (`backup_import_begin` /
-  // `backup_import_end`, E5) — 25. Bump deliberately, with the
-  // change that adds the command — the count is what catches a command
-  // dropped from BOTH sides at once.
+  // `backup_import_end`, E5), plus the pairing window's four (`pairing_local`,
+  // `pairing_open`, `pairing_close`, `pairing_status`, §11.5), plus the re-pair
+  // recovery pair (`pairing_identity_status`, `pairing_identity_replace`,
+  // §11.2), plus the phone's wire step (`pairing_phone_pair`, §11.6.1), plus
+  // the snapshot pull's three (`pairing_snapshot_request`/`_applied`/
+  // `_adopted`, §8.4), plus the upload's five (`pairing_upload_batch`/
+  // `_commit`/`_status` phone-side, `pairing_upload_take`/`_outcome`
+  // panel-side, §9.6), plus the §6 exchange's seven (`pairing_sync_push`,
+  // `_commit`/`_pull`/`_applied`/`_status` phone-side, `pairing_sync_take`/
+  // `_outcome` panel-side) — 47.
+  // Bump deliberately, with the change that adds the command —
+  // the count is what catches a command dropped from BOTH sides at once.
   assert.equal(
     commands.length,
-    25,
-    `expected the full 25-command surface, got ${commands.length}`,
+    47,
+    `expected the full 47-command surface, got ${commands.length}`,
   );
   for (const command of commands) {
     assert.ok(

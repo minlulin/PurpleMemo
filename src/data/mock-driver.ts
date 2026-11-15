@@ -10,12 +10,29 @@
 // the mock is where they are unit-testable at all.
 
 import { createHash } from "node:crypto";
+import { keyFingerprint } from "../lib/sync/pairing.ts";
 import type {
   BatchStatement,
   DataDriver,
   ExecuteOutcome,
+  PairingDriver,
+  PairingIdentityStatus,
+  PairingListenerInfo,
+  PairingLocalInfo,
+  PairingOpenInput,
+  PairingPhoneInput,
+  PhonePairResult,
   Queryable,
   ShareInfo,
+  SnapshotBatchResult,
+  SnapshotPullInput,
+  SyncBatchResult,
+  SyncOutcomeInput,
+  SyncStatusResult,
+  SyncTakeResult,
+  UploadOutcomeInput,
+  UploadStatusResult,
+  UploadTakeResult,
 } from "./driver.ts";
 
 /** `lifecycle.rs` IMPORT_BLOCKED — refused for anyone but the lease-holder. */
@@ -32,8 +49,20 @@ const NO_CONSENT =
 /** `share.rs` MAX_SNAPSHOT_BYTES — the ceiling `parse_snapshot` enforces. */
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
 
+/** The one desktop this mock knows how to be pinned to (§11.2). */
+const MOCK_DESKTOP_DEVICE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+/** `commands.rs` `pinned_pull`: a pull for an unpinned desktop is refused. */
+function requirePinned(input: SnapshotPullInput): void {
+  if (input.desktopDeviceId !== MOCK_DESKTOP_DEVICE_ID) {
+    throw new Error(
+      "this phone has not pinned that desktop, or the pairing was revoked, so there is nothing to pull (§11.2).",
+    );
+  }
+}
+
 export interface RecordedCall {
-  method: keyof DataDriver;
+  method: keyof DataDriver | keyof PairingDriver;
   args: unknown[];
 }
 
@@ -136,9 +165,9 @@ function parseSnapshot(json: string): { generatedAt: string } {
   return { generatedAt: object.generatedAt };
 }
 
-export interface MockDriver extends DataDriver {
+export interface MockDriver extends DataDriver, PairingDriver {
   calls: RecordedCall[];
-  callsTo(method: keyof DataDriver): RecordedCall[];
+  callsTo(method: keyof DataDriver | keyof PairingDriver): RecordedCall[];
   lastCall(): RecordedCall | undefined;
   /** Append canned `query` results (for rows only known after earlier calls). */
   pushResults(rows: Queryable[][]): void;
@@ -156,8 +185,137 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
     publishedAt: null,
     note: null,
   };
+  // Pairing window state for tests: closed until `pairingOpen` (§11.5), and no
+  // pin until a rendezvous reports one.
+  const stoppedPairing = (): PairingListenerInfo => ({
+    running: false,
+    port: null,
+    endpoint: null,
+    publicKey: null,
+    fingerprint: null,
+    peerDeviceId: null,
+    peerPublicKey: null,
+    peerFingerprint: null,
+    peerHelloReceived: false,
+    offerAttempts: 0,
+    offerRedeemed: false,
+    uploadState: null,
+    uploadOps: 0,
+    uploadInserted: null,
+    uploadAlreadyKnown: null,
+    uploadNote: null,
+    syncState: null,
+    syncOps: 0,
+    syncApplied: null,
+    syncNote: null,
+    note: null,
+  });
+  /** The fixed `0x11…` vector's public key and the grouping both screens show. */
+  const PAIRING_PUBLIC_KEY =
+    "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
+  const PAIRING_FINGERPRINT = "7B4E 909B BE7F FE44 C465 A220";
+  let pairing: PairingListenerInfo = stoppedPairing();
 
-  const record = (method: keyof DataDriver, args: unknown[]) => {
+  // §9.1's upload, mirrored at the depth a mock can honestly reach: batches
+  // stage in order, a commit completes the staging, the take is once, and
+  // the verdict is whatever outcome the panel reported — the apply itself is
+  // the real store's job, exactly as with the pull.
+  interface MockUpload {
+    batches: unknown[][];
+    total: number | null;
+    committed: boolean;
+    taken: boolean;
+    outcome:
+      | { inserted: number; alreadyKnown: number }
+      | { error: string }
+      | null;
+  }
+  const freshUpload = (): MockUpload => ({
+    batches: [],
+    total: null,
+    committed: false,
+    taken: false,
+    outcome: null,
+  });
+  let upload: MockUpload = freshUpload();
+
+  // §6's exchange at the same depth: a push stages in order and completes on a
+  // commit, the take is once, the verdict is whatever the panel's engine
+  // reported, and the pull serves the scripted rows (none by default).
+  interface MockSync {
+    push: unknown[][];
+    total: number | null;
+    committed: boolean;
+    taken: boolean;
+    outcome: { throughSeq: number } | { error: string } | null;
+    appliedThrough: number | null;
+    pull: unknown[];
+    pulledFrom: number | null;
+  }
+  const freshSync = (): MockSync => ({
+    push: [],
+    total: null,
+    committed: false,
+    taken: false,
+    outcome: null,
+    appliedThrough: null,
+    pull: [],
+    pulledFrom: null,
+  });
+  let sync: MockSync = freshSync();
+  const projectSync = (): void => {
+    const outcome = sync.outcome;
+    pairing = {
+      ...pairing,
+      syncState:
+        outcome !== null
+          ? "error" in outcome
+            ? "failed"
+            : "applied"
+          : sync.committed
+            ? sync.taken
+              ? "applying"
+              : "staged"
+            : sync.push.length > 0
+              ? "receiving"
+              : null,
+      syncOps: sync.push.reduce((count, batch) => count + batch.length, 0),
+      syncApplied: sync.appliedThrough,
+      syncNote: outcome !== null && "error" in outcome ? outcome.error : null,
+    };
+  };
+  const projectUpload = (): void => {
+    const outcome = upload.outcome;
+    pairing = {
+      ...pairing,
+      uploadState:
+        outcome !== null
+          ? "error" in outcome
+            ? "failed"
+            : "applied"
+          : upload.committed
+            ? upload.taken
+              ? "applying"
+              : "staged"
+            : upload.batches.length > 0
+              ? "receiving"
+              : null,
+      uploadOps: upload.batches.reduce(
+        (count, batch) => count + batch.length,
+        0,
+      ),
+      uploadInserted:
+        outcome !== null && "inserted" in outcome ? outcome.inserted : null,
+      uploadAlreadyKnown:
+        outcome !== null && "inserted" in outcome ? outcome.alreadyKnown : null,
+      uploadNote: outcome !== null && "error" in outcome ? outcome.error : null,
+    };
+  };
+
+  const record = (
+    method: keyof DataDriver | keyof PairingDriver,
+    args: unknown[],
+  ) => {
     calls.push({ method, args });
   };
 
@@ -215,6 +373,18 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
   const thumbs = new Map<string, Uint8Array>();
 
   const nextRowid = () => ++lastRowid;
+
+  // Pairing identity state for tests: one keypair, and no re-pair needed until
+  // a test asks for the recovery (§11.2, N2).
+  let identity: PairingIdentityStatus = {
+    present: true,
+    publicKey: PAIRING_PUBLIC_KEY,
+    fingerprint: PAIRING_FINGERPRINT,
+    needsRePair: false,
+    lost: false,
+    rePairRequired: false,
+    note: null,
+  };
 
   const mock: MockDriver = {
     calls,
@@ -423,6 +593,388 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       record("shareStatus", []);
       return { ...share };
     },
+    async pairingLocal(): Promise<PairingLocalInfo> {
+      record("pairingLocal", []);
+      return {
+        deviceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        generation: 1,
+        schemaVersion: 8,
+        protocolVersion: 1,
+        publicKey: PAIRING_PUBLIC_KEY,
+        fingerprint: PAIRING_FINGERPRINT,
+      };
+    },
+    async pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo> {
+      record("pairingOpen", [input]);
+      // Mirrors `pairing_listener.rs`: a code must be six digits and live, and
+      // an expired one refuses to open at all rather than opening a dead door.
+      if (input.offerCode !== null) {
+        if (!/^\d{6}$/.test(input.offerCode.replace(/[\s-]/g, ""))) {
+          throw new Error("the pairing code must be six digits");
+        }
+        if ((input.offerExpiresAt ?? 0) <= Date.now()) {
+          throw new Error("this pairing code expired");
+        }
+      }
+      pairing = {
+        running: true,
+        port: 8788,
+        endpoint: "192.168.1.5:8788",
+        publicKey: PAIRING_PUBLIC_KEY,
+        fingerprint: PAIRING_FINGERPRINT,
+        peerDeviceId: null,
+        peerPublicKey: null,
+        peerFingerprint: null,
+        peerHelloReceived: false,
+        offerAttempts: 0,
+        offerRedeemed: false,
+        uploadState: null,
+        uploadOps: 0,
+        uploadInserted: null,
+        uploadAlreadyKnown: null,
+        uploadNote: null,
+        syncState: null,
+        syncOps: 0,
+        syncApplied: null,
+        syncNote: null,
+        note: null,
+      };
+      upload = freshUpload();
+      sync = freshSync();
+      return { ...pairing };
+    },
+    async pairingClose(): Promise<PairingListenerInfo> {
+      record("pairingClose", []);
+      pairing = stoppedPairing();
+      return { ...pairing };
+    },
+    async pairingStatus(): Promise<PairingListenerInfo> {
+      record("pairingStatus", []);
+      return { ...pairing };
+    },
+    async pairingIdentityStatus(): Promise<PairingIdentityStatus> {
+      record("pairingIdentityStatus", []);
+      return { ...identity };
+    },
+    // Mirrors the Rust client's shape: the offer's address is the only one
+    // dialled, the six-digit code is checked, and the desktop's public facts
+    // come back; nothing is written here (§11.6.1).
+    async pairingPhonePair(input: PairingPhoneInput): Promise<PhonePairResult> {
+      record("pairingPhonePair", [input]);
+      if (!/^\d{6}$/.test(input.code.replace(/[\s-]/g, ""))) {
+        throw new Error("wrong-code: a pairing code is six digits (§11.1).");
+      }
+      return {
+        // A canonical v4 id for the mock desktop the fixtures describe.
+        desktopDeviceId: MOCK_DESKTOP_DEVICE_ID,
+        desktopPublicKey: input.publicKey,
+        desktopFingerprint: keyFingerprint(input.publicKey),
+        pairingId: input.pairingId,
+        generation: 1,
+        schemaVersion: 8,
+        protocolVersion: 1,
+      };
+    },
+    // Mirrors `commands.rs`: no confirmation, no replacement, and only the
+    // pairing slot is replaced — the rest of the identity state stands (§11.4).
+    async pairingIdentityReplace(
+      confirm: boolean,
+    ): Promise<PairingIdentityStatus> {
+      record("pairingIdentityReplace", [confirm]);
+      if (!confirm) {
+        throw new Error(
+          "re-pairing replaces this device's pairing key; it needs an explicit confirmation (§11.4).",
+        );
+      }
+      identity = {
+        present: true,
+        publicKey: PAIRING_PUBLIC_KEY,
+        fingerprint: PAIRING_FINGERPRINT,
+        needsRePair: true,
+        lost: false,
+        rePairRequired: true,
+        note: null,
+      };
+      return { ...identity };
+    },
+    // §8.4's pull, mirrored at the depth a mock can honestly reach: the pin is
+    // checked before anything is served (Rust reads it from `sync_peers`), the
+    // empty desktop is still one batch, and the application itself is the
+    // real store's job — these methods only record and refuse.
+    async pairingSnapshotRequest(
+      input: SnapshotPullInput,
+      batch: number,
+    ): Promise<SnapshotBatchResult> {
+      record("pairingSnapshotRequest", [input, batch]);
+      requirePinned(input);
+      if (batch !== 0) {
+        throw new Error(
+          `this snapshot has 1 batch(es); there is no batch ${batch}.`,
+        );
+      }
+      // The batch's own pairing id is the pin's, which this mock does not
+      // model beyond "the one pairing the fixtures describe".
+      return {
+        pairingId: "pair-1",
+        batch: 0,
+        total: 1,
+        ops: [],
+        tombstones: [],
+      };
+    },
+    async pairingSnapshotApplied(
+      input: SnapshotPullInput,
+      batch: number,
+    ): Promise<void> {
+      record("pairingSnapshotApplied", [input, batch]);
+      requirePinned(input);
+      if (batch !== 0) {
+        throw new Error("that batch was never served in this pull.");
+      }
+    },
+    async pairingSnapshotAdopted(
+      input: SnapshotPullInput,
+      rows: number,
+      tombstones: number,
+    ): Promise<void> {
+      record("pairingSnapshotAdopted", [input, rows, tombstones]);
+      requirePinned(input);
+    },
+    // §9.1's upload, at the same depth as the pull above: the pin is checked
+    // first, the staging discipline is the listener's, and no row is applied
+    // here — the panel's apply is the real store's job.
+    async pairingUploadBatch(
+      input: SnapshotPullInput,
+      batch: number,
+      total: number,
+      ops: unknown[],
+    ): Promise<void> {
+      record("pairingUploadBatch", [input, batch, total, ops]);
+      requirePinned(input);
+      if (upload.committed) {
+        throw new Error(
+          "upload-busy: this window's upload was already committed; a new upload opens a new window (§9.4).",
+        );
+      }
+      if (upload.total === null) upload.total = total;
+      if (upload.total !== total) {
+        throw new Error(
+          `malformed: this upload declared ${upload.total} batch(es) with its first batch, not ${total}.`,
+        );
+      }
+      if (batch < upload.batches.length) {
+        if (JSON.stringify(upload.batches[batch]) === JSON.stringify(ops)) {
+          return;
+        }
+        throw new Error(
+          "upload-busy: a different batch already holds this index; one upload streams per window (§9.1).",
+        );
+      }
+      if (batch > upload.batches.length) {
+        throw new Error(
+          "upload-busy: upload batches land in order; an earlier batch has not arrived (§9.1).",
+        );
+      }
+      upload.batches.push(ops);
+      projectUpload();
+    },
+    async pairingUploadCommit(input: SnapshotPullInput): Promise<void> {
+      record("pairingUploadCommit", [input]);
+      requirePinned(input);
+      if (upload.committed) {
+        throw new Error(
+          "replayed: this upload was already committed in this window (§7.2).",
+        );
+      }
+      if (upload.total === null || upload.batches.length !== upload.total) {
+        throw new Error(
+          "malformed: a commit names the whole upload, and not every batch was staged (§9.1).",
+        );
+      }
+      upload.committed = true;
+      projectUpload();
+    },
+    async pairingUploadStatus(
+      input: SnapshotPullInput,
+    ): Promise<UploadStatusResult> {
+      record("pairingUploadStatus", [input]);
+      requirePinned(input);
+      const outcome = upload.outcome;
+      if (outcome === null) {
+        return {
+          state: "pending",
+          inserted: 0,
+          alreadyKnown: 0,
+          message: null,
+        };
+      }
+      if ("error" in outcome) {
+        return {
+          state: "failed",
+          inserted: 0,
+          alreadyKnown: 0,
+          message: outcome.error,
+        };
+      }
+      return {
+        state: "uploaded",
+        inserted: outcome.inserted,
+        alreadyKnown: outcome.alreadyKnown,
+        message: null,
+      };
+    },
+    async pairingUploadTake(): Promise<UploadTakeResult | null> {
+      record("pairingUploadTake", []);
+      if (!upload.committed || upload.taken || upload.outcome !== null) {
+        return null;
+      }
+      upload.taken = true;
+      projectUpload();
+      return { pairingId: "pair-1", ops: upload.batches.flat() };
+    },
+    async pairingUploadOutcome(input: UploadOutcomeInput): Promise<void> {
+      record("pairingUploadOutcome", [input]);
+      const counts =
+        input.inserted !== null && input.alreadyKnown !== null
+          ? { inserted: input.inserted, alreadyKnown: input.alreadyKnown }
+          : null;
+      const failure = input.error !== null ? { error: input.error } : null;
+      if ((counts === null) === (failure === null)) {
+        throw new Error(
+          "an upload outcome is either its counts or its failure, never both or neither.",
+        );
+      }
+      if (upload.taken && upload.outcome === null) {
+        upload.outcome = counts ?? failure;
+        projectUpload();
+      }
+    },
+    async pairingSyncPush(
+      input: SnapshotPullInput,
+      batch: number,
+      total: number,
+      ops: unknown[],
+    ): Promise<void> {
+      record("pairingSyncPush", [input, batch, total, ops]);
+      requirePinned(input);
+      if (sync.committed) {
+        throw new Error(
+          "sync-busy: this window's push was already committed; a new push opens a new window.",
+        );
+      }
+      if (sync.total === null) sync.total = total;
+      else if (sync.total !== total) {
+        throw new Error(
+          `this push declared ${sync.total} batch(es) with its first batch, not ${total}.`,
+        );
+      }
+      if (batch < sync.push.length) {
+        const staged = sync.push[batch] ?? [];
+        if (JSON.stringify(staged) !== JSON.stringify(ops)) {
+          throw new Error(
+            "sync-busy: a different batch already holds this index; one push streams per window.",
+          );
+        }
+        return;
+      }
+      if (batch > sync.push.length) {
+        throw new Error(
+          "sync-busy: sync batches land in order; an earlier batch has not arrived.",
+        );
+      }
+      sync.push.push(ops);
+      projectSync();
+    },
+    async pairingSyncCommit(input: SnapshotPullInput): Promise<void> {
+      record("pairingSyncCommit", [input]);
+      requirePinned(input);
+      if (sync.committed) {
+        throw new Error("replayed: this push was already committed (§7.2).");
+      }
+      if (sync.total === null) {
+        throw new Error(
+          "no sync batch has arrived in this window, so there is nothing to commit.",
+        );
+      }
+      if (sync.push.length !== sync.total) {
+        throw new Error(
+          `${sync.push.length} of ${sync.total} batch(es) were staged; a commit names the whole push.`,
+        );
+      }
+      sync.committed = true;
+      projectSync();
+    },
+    async pairingSyncPull(
+      input: SnapshotPullInput,
+      batch: number,
+      afterSeq: number,
+    ): Promise<SyncBatchResult> {
+      record("pairingSyncPull", [input, batch, afterSeq]);
+      requirePinned(input);
+      if (sync.pulledFrom === null) {
+        sync.pulledFrom = afterSeq;
+        sync.pull = [];
+      } else if (sync.pulledFrom !== afterSeq) {
+        throw new Error(
+          "sync-mismatch: this window already served a pull from another position; a new one opens a new window.",
+        );
+      }
+      if (batch !== 0) {
+        throw new Error(
+          `this pull has 1 batch(es); there is no batch ${batch}.`,
+        );
+      }
+      return { pairingId: "pair-1", batch: 0, total: 1, ops: sync.pull };
+    },
+    async pairingSyncApplied(
+      input: SnapshotPullInput,
+      throughSeq: number,
+    ): Promise<void> {
+      record("pairingSyncApplied", [input, throughSeq]);
+      requirePinned(input);
+      sync.appliedThrough =
+        sync.appliedThrough === null
+          ? throughSeq
+          : Math.max(sync.appliedThrough, throughSeq);
+      projectSync();
+    },
+    async pairingSyncStatus(
+      input: SnapshotPullInput,
+    ): Promise<SyncStatusResult> {
+      record("pairingSyncStatus", [input]);
+      requirePinned(input);
+      const outcome = sync.outcome;
+      if (outcome === null) {
+        return { state: "pending", throughSeq: 0, message: null };
+      }
+      return "error" in outcome
+        ? { state: "failed", throughSeq: 0, message: outcome.error }
+        : { state: "applied", throughSeq: outcome.throughSeq, message: null };
+    },
+    async pairingSyncTake(): Promise<SyncTakeResult | null> {
+      record("pairingSyncTake", []);
+      if (!sync.committed || sync.taken || sync.outcome !== null) return null;
+      sync.taken = true;
+      projectSync();
+      return { ops: sync.push.flat() };
+    },
+    async pairingSyncOutcome(input: SyncOutcomeInput): Promise<void> {
+      record("pairingSyncOutcome", [input]);
+      const applied =
+        input.appliedThrough !== null
+          ? { throughSeq: input.appliedThrough }
+          : null;
+      const failure = input.error !== null ? { error: input.error } : null;
+      if ((applied === null) === (failure === null)) {
+        throw new Error(
+          "a sync outcome is either its applied position or its failure, never both or neither.",
+        );
+      }
+      if (sync.taken && sync.outcome === null) {
+        sync.outcome = applied ?? failure;
+        projectSync();
+      }
+    },
     async sharePublish(snapshotJson: string): Promise<ShareInfo> {
       record("sharePublish", [snapshotJson]);
       // Validated even when not running (`share.rs` `publish`): a malformed
@@ -442,7 +994,7 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       share = { ...share, publishedAt: snapshot.generatedAt };
       return { ...share };
     },
-    callsTo(method: keyof DataDriver): RecordedCall[] {
+    callsTo(method: keyof DataDriver | keyof PairingDriver): RecordedCall[] {
       return calls.filter((c) => c.method === method);
     },
     lastCall(): RecordedCall | undefined {

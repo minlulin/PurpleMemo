@@ -45,6 +45,8 @@ function overdue(dueDate: string | null, today: string): boolean {
   return dueDate !== null && dueDate < today;
 }
 
+import { AndroidReminderNotice } from "../components/AndroidReminderNotice.tsx";
+
 interface TasksPageProps {
   notifyNote: string | null;
   /** Bumped by the shell's poll when a reminder fires (review P3-32). */
@@ -317,6 +319,8 @@ export default function TasksPage({
           {notifyNote}
         </p>
       ) : null}
+
+      <AndroidReminderNotice />
 
       <div className="split-workspace-grid">
         <section className="settings-section" aria-label={t("tasks.openAria")}>

@@ -21,7 +21,17 @@ import {
   SETTING_KEYS,
   settingsUpsertStatement,
 } from "./settings.ts";
+import type { OpKind, Origin } from "./sync/protocol.ts";
+import {
+  outboxStatements,
+  readRowId,
+  readRowUid,
+  readVaultMetadata,
+  VAULT_GENERATION_FIELD,
+  VAULT_VERIFIER_FIELD,
+} from "./sync/store.ts";
 import type { VaultItemRow } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /**
  * How many vault items `changePassword` re-encrypts at once. Items are few and
@@ -45,6 +55,14 @@ export const VAULT_SETUP_KEY = SETTING_KEYS.vaultSetup;
  * password they never chose.
  */
 export const VAULT_VERIFY_KEY = SETTING_KEYS.vaultVerify;
+
+/**
+ * Settings key holding the vault's **password** generation (§12.3). It is not
+ * the §10 data generation: this one counts password changes, only ever moves
+ * forward with the single writer that owns the vault, and is what the phone
+ * compares an incoming item against before it may hold it.
+ */
+export const VAULT_GENERATION_KEY = SETTING_KEYS.vaultGeneration;
 
 /**
  * Thrown when the supplied password demonstrably failed to open the vault —
@@ -129,7 +147,23 @@ async function checkVerifier(
   driver: DataDriver,
   password: string,
 ): Promise<boolean> {
-  const raw = await createSettingsRepo(driver).getRaw(VAULT_VERIFY_KEY);
+  return verifyStored(
+    await createSettingsRepo(driver).getRaw(VAULT_VERIFY_KEY),
+    password,
+  );
+}
+
+/**
+ * The verifier check itself, for callers that already hold the stored text.
+ *
+ * `changePassword` reads the verifier anyway — it needs both it and the
+ * generation to record its ops (§12.3) — so re-reading it here would be a
+ * second query for a value the caller already has.
+ */
+async function verifyStored(
+  raw: string | null | undefined,
+  password: string,
+): Promise<boolean> {
   if (!raw) return false; // nothing stored — nothing to check
   let verifier: VaultVerifier;
   try {
@@ -152,7 +186,41 @@ async function checkVerifier(
   }
 }
 
-export function createVaultRepo(driver: DataDriver) {
+/**
+ * The envelope every vault op carries (§12.3 decision 2): the generation the
+ * row was sealed under and the verifier that proves that password.
+ *
+ * They travel beside the row's fields, never as columns. The receiving device
+ * writes them into its OWN settings in the same batch, so a phone that adopted
+ * the desktop's items can unlock what it received with the desktop's password.
+ *
+ * Ciphertext, salt and IV are exactly as stored — nothing here decrypts, and no
+ * op, payload or log ever holds a plaintext secret.
+ */
+function vaultEnvelope(metadata: {
+  generation: number;
+  verifier: string | null;
+}): Record<string, unknown> {
+  return {
+    [VAULT_GENERATION_FIELD]: metadata.generation,
+    [VAULT_VERIFIER_FIELD]: metadata.verifier,
+  };
+}
+
+/**
+ * The vault repository.
+ *
+ * `origin` is this installation's side of a pairing (§2.3), resolved once where
+ * the repo is built (`data/app.ts`). It exists because the vault is
+ * **one-way desktop→mobile**: the desktop records every vault mutation as an
+ * operation, the phone records none. A phone that recorded one would have it
+ * refused by the desktop's engine — and refused as a whole batch, taking the
+ * phone's unrelated operations down with it.
+ */
+export function createVaultRepo(
+  driver: DataDriver,
+  origin: Origin = "desktop",
+) {
   /**
    * In-memory derived keys (item id -> {salt, key, tag}); cleared by
    * `lockVault` and by a password change.
@@ -199,6 +267,55 @@ export function createVaultRepo(driver: DataDriver) {
   function dropKeyCache(): void {
     keyGeneration += 1;
     keyCache.clear();
+  }
+
+  /**
+   * The metadata this device's next vault op carries: the generation the row is
+   * sealed under, and the verifier for that password.
+   *
+   * A vault set up before Stage 3 has no counter row and is generation 1 by
+   * definition — nothing has ever rotated it. The read happens just before the
+   * batch, so it is a hint rather than a lock: a rotation landing in between
+   * would only make this op stale on the receiver, which is exactly what its
+   * generation comparison is for.
+   */
+  async function currentMetadata(): Promise<{
+    generation: number;
+    verifier: string | null;
+  }> {
+    const stored = await readVaultMetadata(driver);
+    return {
+      generation: stored.generation ?? 1,
+      verifier: stored.verifier,
+    };
+  }
+
+  /**
+   * §6.1/§12.3: the operations that carry a vault write to a peer, for the SAME
+   * batch as the mutation — or nothing at all.
+   *
+   * Nothing at all on mobile: the vault is one-way (§2.3), so the phone spends
+   * no query and records no op, and its outbox never carries a vault op for a
+   * peer to refuse.
+   */
+  async function recordOps(
+    entries: readonly {
+      uid: string;
+      kind: OpKind;
+      fields?: Record<string, unknown>;
+    }[],
+    metadata?: { generation: number; verifier: string | null },
+  ): Promise<BatchStatement[]> {
+    if (origin !== "desktop" || entries.length === 0) return [];
+    const envelope = vaultEnvelope(metadata ?? (await currentMetadata()));
+    return outboxStatements(
+      entries.map((entry) => ({
+        table: "vault_items" as const,
+        uid: entry.uid,
+        kind: entry.kind,
+        fields: { ...(entry.fields ?? {}), ...envelope },
+      })),
+    );
   }
 
   async function deriveItemKey(
@@ -252,6 +369,9 @@ export function createVaultRepo(driver: DataDriver) {
           params: [VAULT_SETUP_KEY, JSON.stringify({ version: 1 })],
         },
         await verifierSeal(password),
+        // §12.3: the vault starts at password generation 1, written in the same
+        // batch as the verifier it belongs to.
+        settingsUpsertStatement(VAULT_GENERATION_KEY, JSON.stringify(1)),
       ]);
       await this.unlock(password);
     },
@@ -308,19 +428,44 @@ export function createVaultRepo(driver: DataDriver) {
       const salt = randomSaltB64();
       const key = await deriveVaultKey(password, salt);
       const cipher = await encryptWithKey(key, plaintext);
-      const r = await driver.execute(
-        `INSERT INTO vault_items (title, ciphertext, salt, iv, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [title, cipher.ciphertext, salt, cipher.iv, todayLocal(), todayLocal()],
-      );
-      keyCache.set(r.lastInsertRowid, {
+      const uid = newUid();
+      const created = todayLocal();
+      // The op carries the row's STORED fields — ciphertext, salt and IV as
+      // they are written, never the plaintext it was made from.
+      const stored = {
+        title,
+        ciphertext: cipher.ciphertext,
+        salt,
+        iv: cipher.iv,
+        created_at: created,
+        updated_at: created,
+      };
+      const ops = await recordOps([{ uid, kind: "create", fields: stored }]);
+      await driver.batch([
+        {
+          sql: `INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          params: [
+            uid,
+            title,
+            cipher.ciphertext,
+            salt,
+            cipher.iv,
+            created,
+            created,
+          ],
+        },
+        ...ops,
+      ]);
+      const id = await readRowId(driver, "vault_items", uid);
+      keyCache.set(id, {
         salt,
         key,
         // This key was just used to encrypt the item, so the tag is the
         // password it really came from — not a guess (review P3-19).
         tag: await deriveVaultTag(password, salt),
       });
-      return r.lastInsertRowid;
+      return id;
     },
 
     /** Item metadata only — never the ciphertext. */
@@ -376,16 +521,28 @@ export function createVaultRepo(driver: DataDriver) {
       });
       const plaintext = fields.plaintext ?? stored;
       const cipher = await encryptWithKey(key, plaintext);
-      await driver.execute(
-        "UPDATE vault_items SET title = ?, ciphertext = ?, iv = ?, updated_at = ? WHERE id = ?",
-        [
-          fields.title ?? row.title,
-          cipher.ciphertext,
-          cipher.iv,
-          todayLocal(),
-          id,
-        ],
-      );
+      // The whole row travels, not only the fields this call changed: a vault
+      // row is aggregate-atomic (§4.4), so the winner's complete triple must be
+      // able to land without the receiver holding any of the old one.
+      const next = {
+        title: fields.title ?? row.title,
+        ciphertext: cipher.ciphertext,
+        salt: row.salt,
+        iv: cipher.iv,
+        created_at: row.created_at,
+        updated_at: todayLocal(),
+      };
+      const uid = await readRowUid(driver, "vault_items", id);
+      const ops = uid
+        ? await recordOps([{ uid, kind: "update", fields: next }])
+        : [];
+      await driver.batch([
+        {
+          sql: "UPDATE vault_items SET title = ?, ciphertext = ?, iv = ?, updated_at = ? WHERE id = ?",
+          params: [next.title, next.ciphertext, next.iv, next.updated_at, id],
+        },
+        ...ops,
+      ]);
     },
 
     /**
@@ -403,16 +560,26 @@ export function createVaultRepo(driver: DataDriver) {
       oldPassword: string,
       newPassword: string,
     ): Promise<void> {
+      // The generation this device holds, read before anything else: the change
+      // is what produces the next one, and every op it records names it.
+      const before = await currentMetadata();
+      const generation = before.generation + 1;
       const items = await driver.query<VaultItemRow>(
         "SELECT * FROM vault_items ORDER BY id",
       );
       // With no items the loop below cannot prove the old password, so the
       // verifier does it instead.
-      if (items.length === 0 && !(await checkVerifier(driver, oldPassword))) {
+      if (
+        items.length === 0 &&
+        !(await verifyStored(before.verifier, oldPassword))
+      ) {
         throw new WrongPasswordError("wrong current password");
       }
       const migrated: {
         id: number;
+        uid: string | null;
+        title: string;
+        created_at: string;
         ciphertext: string;
         salt: string;
         iv: string;
@@ -436,6 +603,9 @@ export function createVaultRepo(driver: DataDriver) {
           const cipher = await encryptWithKey(newKey, plaintext);
           return {
             id: item.id,
+            uid: item.uid,
+            title: item.title,
+            created_at: item.created_at,
             ciphertext: cipher.ciphertext,
             salt,
             iv: cipher.iv,
@@ -448,12 +618,51 @@ export function createVaultRepo(driver: DataDriver) {
       // against the NEW password, and there is no window in which the items
       // have moved to the new password but the verifier still expects the old
       // one (which would lock the user out of their own vault).
+      const sealed = await verifierSeal(newPassword);
+      const updated = todayLocal();
+      const verifier = (sealed.params ?? [])[1];
+      // §12.3: every re-sealed item records an update op under the NEW
+      // generation and the NEW verifier — the whole set, in this one batch, so
+      // the receiver can wipe the old generation and take the new one whole.
+      // An item with no uid (a pre-v7 row) cannot be named by an op; it is
+      // rotated here and stays device-local until an edit mints it an identity.
+      const ops = await recordOps(
+        migrated
+          .filter(
+            (m): m is typeof m & { uid: string } =>
+              typeof m.uid === "string" && m.uid.length > 0,
+          )
+          .map((m) => ({
+            uid: m.uid,
+            kind: "update" as const,
+            fields: {
+              title: m.title,
+              ciphertext: m.ciphertext,
+              salt: m.salt,
+              iv: m.iv,
+              created_at: m.created_at,
+              updated_at: updated,
+            },
+          })),
+        {
+          generation,
+          verifier: typeof verifier === "string" ? verifier : null,
+        },
+      );
       await driver.batch([
         ...migrated.map((m) => ({
           sql: "UPDATE vault_items SET ciphertext = ?, salt = ?, iv = ?, updated_at = ? WHERE id = ?",
-          params: [m.ciphertext, m.salt, m.iv, todayLocal(), m.id],
+          params: [m.ciphertext, m.salt, m.iv, updated, m.id],
         })),
-        await verifierSeal(newPassword),
+        sealed,
+        // §12.3 decision 1: the generation is bumped in the SAME batch as the
+        // rows it describes — a counter that moved separately could name a set
+        // of items it does not match.
+        settingsUpsertStatement(
+          VAULT_GENERATION_KEY,
+          JSON.stringify(generation),
+        ),
+        ...ops,
       ]);
       // The cache is dropped rather than re-tagged (review P3-19): every key in
       // it was derived from the OLD password, so each would need a fresh tag
@@ -465,7 +674,12 @@ export function createVaultRepo(driver: DataDriver) {
     },
 
     async deleteItem(id: number): Promise<void> {
-      await driver.execute("DELETE FROM vault_items WHERE id = ?", [id]);
+      const uid = await readRowUid(driver, "vault_items", id);
+      const ops = uid ? await recordOps([{ uid, kind: "delete" }]) : [];
+      await driver.batch([
+        { sql: "DELETE FROM vault_items WHERE id = ?", params: [id] },
+        ...ops,
+      ]);
       keyCache.delete(id);
     },
   };

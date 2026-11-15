@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Pairing scans the desktop's QR (§11.1). Android WebView only exposes
+         `navigator.mediaDevices.getUserMedia` to an app that declares CAMERA —
+         without this the card reports "This build cannot reach a camera here".
+         The runtime grant is requested when a scan starts; `required=false`
+         keeps the APK installable on a device without a camera, where the card
+         falls back to pasting the offer string. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Reminders: the notification itself, the exact-alarm grant the UI
+         falls back from when it is missing, and the boot listener that
+         re-arms alarms (AlarmManager does not keep them across a reboot). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- AndroidTV support -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <application
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.purple_memo"
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:label="@string/main_activity_title"
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- AndroidTV support -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <provider
+          android:name="androidx.core.content.FileProvider"
+          android:authorities="${applicationId}.fileprovider"
+          android:exported="false"
+          android:grantUriPermissions="true">
+          <meta-data
+            android:name="android.support.FILE_PROVIDER_PATHS"
+            android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Posts the reminder notification when the alarm fires, whether or
+             not Purple Memo is running. Not exported: only our PendingIntent
+             may target it. -->
+        <receiver
+          android:name=".ReminderReceiver"
+          android:exported="false" />
+
+        <!-- Re-arms persisted reminders after a reboot; the OS drops every
+             alarm when the phone restarts. -->
+        <receiver
+          android:name=".BootReceiver"
+          android:exported="false">
+          <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED" />
+          </intent-filter>
+        </receiver>
+    </application>
+</manifest>

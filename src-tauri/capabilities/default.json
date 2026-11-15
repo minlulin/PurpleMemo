@@ -1,7 +1,8 @@
 {
   "identifier": "default",
-  "description": "Default capability for the main window",
+  "description": "Default capability for the main window (desktop)",
   "windows": ["main"],
+  "platforms": ["linux", "windows", "macOS"],
   "permissions": [
     "core:default",
     "updater:default",

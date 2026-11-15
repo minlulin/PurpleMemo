@@ -43,18 +43,28 @@ import {
   LockScreen,
   SetupScreen,
 } from "./components/LockScreens.tsx";
+import { MobileShell } from "./components/MobileShell.tsx";
 import { ResetResultScreen } from "./components/ResetScreen.tsx";
 import { Skeleton } from "./components/Skeleton.tsx";
 import { ToastProvider, useToast } from "./components/Toast.tsx";
 import { usePlural, useT } from "./components/useTranslation.ts";
 import {
   inboxRepo,
+  localDeviceId,
+  pairingRepo,
   settingsRepo,
   shareRepo,
   tasksRepo,
   trashRepo,
   vaultRepo,
 } from "./data/app.ts";
+import {
+  ANDROID_REMINDER_SYNC_MS,
+  isAndroidPlatform,
+  missedOutcomes,
+  reminderSyncRows,
+  syncAndroidReminders,
+} from "./lib/android-reminders.ts";
 import {
   classifyPin,
   DEFAULT_AUTO_LOCK_MINUTES,
@@ -80,6 +90,7 @@ import {
   type ReminderMessages,
 } from "./lib/session.ts";
 import { SETTING_KEYS, type Theme } from "./lib/settings.ts";
+import { remindableHere } from "./lib/sync/reminderDelivery.ts";
 import type { LinkableEntity } from "./lib/types.ts";
 
 // Every page (including Dashboard, which sits behind the lock screen inside
@@ -207,10 +218,104 @@ function useReminderPoll(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    // Android delivers reminders through the OS alarm clock, not this poll: the
+    // process gets Dozed or killed, so a webview timer cannot fire. The bridge
+    // reconciles the armed alarms with the pending rows and hands back the ids
+    // that fired since the last sync; those settle here, without a second
+    // notification. Desktop keeps the poll below unchanged.
+    if (isAndroidPlatform()) {
+      let denialReported = false;
+      const sync = async () => {
+        try {
+          const granted = await ensureNotifyPermission();
+          if (cancelled) return;
+          if (!granted) {
+            if (!denialReported) {
+              denialReported = true;
+              setNotifyNote(permissionDeniedNote);
+            }
+            return;
+          }
+          // §13.1: only the reminders this device created are armed, notified
+          // and settled here; a peer's reminder converges from its creator.
+          const rows = remindableHere(
+            await tasksRepo.listReminders(false),
+            await localDeviceId(),
+          );
+          if (cancelled) return;
+          const preview = await settingsRepo
+            .getNotificationPreview()
+            .catch(() => false);
+          const now = localISODateTime(new Date());
+          const { report, outcomes } = await syncAndroidReminders(
+            rows,
+            preview,
+            now,
+          );
+          if (cancelled) return;
+          // Rows that came due while no alarm could fire (phone off, app
+          // force-stopped): the bridge skips past-due rows and reports
+          // nothing for them, so they settle here — notified late, as the
+          // desktop ticker does when it next runs, with the same preview
+          // rule the bridge rows follow — instead of pending forever.
+          const missed = missedOutcomes(rows, report.delivered ?? [], now);
+          if (missed.length > 0) {
+            const text = new Map(
+              reminderSyncRows(rows, preview).map((row) => [row.id, row]),
+            );
+            for (const outcome of missed) {
+              const row = text.get(outcome.id);
+              if (row) {
+                await sendNotification({ title: row.title, body: row.body });
+              }
+            }
+          }
+          const settled = [...outcomes, ...missed];
+          if (settled.length > 0) {
+            await tasksRepo.settleReminders(settled);
+            if (!cancelled) onFired();
+            // Settling re-arms a repeating reminder to its next future
+            // occurrence (and closes missed rows the bridge may still hold
+            // an inexact alarm for): reconcile once more with the fresh
+            // rows, so that state is armed — or cancelled — now, not at
+            // the next app open.
+            const fresh = remindableHere(
+              await tasksRepo.listReminders(false),
+              await localDeviceId(),
+            );
+            if (!cancelled) {
+              await syncAndroidReminders(
+                fresh,
+                preview,
+                localISODateTime(new Date()),
+              );
+            }
+          }
+        } catch {
+          // Best-effort, like the desktop poll: the rows stay listed.
+        }
+      };
+      void sync();
+      const nativeTimer = setInterval(
+        () => void sync(),
+        ANDROID_REMINDER_SYNC_MS,
+      );
+      return () => {
+        cancelled = true;
+        clearInterval(nativeTimer);
+      };
+    }
     const tick = createReminderTicker({
       messages,
       now: () => localISODateTime(new Date()),
-      due: (now) => tasksRepo.dueReminders(now),
+      // §13.1: the same rule the Android pass applies, from the same
+      // function — a reminder another device created is never due here, so it
+      // is never notified and never settled here either.
+      due: async (now) =>
+        remindableHere(
+          await tasksRepo.dueReminders(now),
+          await localDeviceId(),
+        ),
       settle: (outcomes) => tasksRepo.settleReminders(outcomes),
       requestPermission: ensureNotifyPermission,
       notify: ({ title, body }) => sendNotification({ title, body }),
@@ -608,7 +713,13 @@ function AppShell() {
       // token the user armed before locking and supersedes one an in-flight
       // start has already spent, so no listener can bind a moment after the
       // shell decided sharing ends here.
-      stopSharing: () => shareRepo.stopForLock(),
+      // §11.5: locking ends the pairing window too, and `pairing_close`
+      // resolves only once the port is refused — so the lock screen is never
+      // raised over a socket that still accepts a phone. A close that fails is
+      // retried and reported by the same teardown that reports a failed share
+      // stop, instead of being swallowed (N4).
+      stopSharing: () =>
+        Promise.all([shareRepo.stopForLock(), pairingRepo.close()]),
       onLocked: () => {
         unlockedRef.current = false;
         setUnlocked(false);
@@ -632,6 +743,33 @@ function AppShell() {
         unlockedRef.current || shareStopEpoch.current !== epoch,
     });
   }, [shareStopFailed, toast]);
+
+  // §11.5: app background ends the pairing window, exactly like the lock. The
+  // webview reports a hidden document when the window is minimised or the phone
+  // app leaves the foreground; closing is idempotent.
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") {
+        void pairingRepo.close().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => document.removeEventListener("visibilitychange", onHidden);
+  }, []);
+
+  /**
+   * Cache eviction on pause (decision 6): when the phone goes to the background
+   * nothing decrypted may linger in memory, even inside the 1-minute grace that
+   * keeps the session itself unlocked. Best-effort — the timer that decides the
+   * lock must not depend on this succeeding.
+   */
+  const evictCachesOnBackground = useCallback(() => {
+    try {
+      vaultRepo.lockVault();
+    } catch (e) {
+      toast.error(errText(e));
+    }
+  }, [toast]);
 
   /**
    * Entering the shell always re-reads the security state first,
@@ -859,6 +997,15 @@ function AppShell() {
         answerHash={boot.answerHash}
         onUnlock={enterWorkspace}
       />
+    );
+  }
+
+  // Android runs the mobile shell — bottom tabs, the More sheet, the creation
+  // FAB and the 1-minute background grace. Desktop keeps the sidebar workspace
+  // exactly as it was, so nothing below this branch changes there.
+  if (isAndroidPlatform()) {
+    return (
+      <MobileShell onLock={lockNow} onBackground={evictCachesOnBackground} />
     );
   }
 

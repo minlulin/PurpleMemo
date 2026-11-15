@@ -1,0 +1,7 @@
+{
+  "description": "Capability for the Android companion: no updater (the phone sideloads its APK and has no updater plugin) and no opener plugin (external links go through the app's own open_external_url command)",
+  "identifier": "mobile",
+  "permissions": ["core:default", "notification:default", "dialog:default"],
+  "platforms": ["android", "iOS"],
+  "windows": ["main"]
+}

@@ -1,4 +1,4 @@
-//! Encrypted DB core: SQLCipher via rusqlite, keyring key,
+//! Encrypted DB core: SQLCipher via rusqlite, platform key-store key,
 //! one mutex-serialized connection, baseline schema.
 //!
 //! Connection model: a single SQLCipher connection behind a mutex —
@@ -22,8 +22,6 @@ use crate::schema;
 /// Database file name inside the app data dir.
 pub const DB_FILE_NAME: &str = "purple-memo.db";
 
-const KEYRING_SERVICE: &str = "com.minlulin.purplememo";
-const KEYRING_ACCOUNT: &str = "db-encryption-key";
 const KEY_HEX_LEN: usize = 64;
 
 /// How long a write waits for a lock held elsewhere before giving up.
@@ -81,7 +79,7 @@ pub struct ExecuteOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Key management — mint-once into the OS credential store
+// Key management — mint-once into the platform key store
 // ---------------------------------------------------------------------------
 
 /// Mint a fresh random 256-bit key as lowercase hex.
@@ -101,16 +99,14 @@ pub fn validate_stored_key(key: &str) -> Result<String, String> {
     }
 }
 
-/// Read the DB key back out of the OS credential store for the Settings
+/// Read the DB key back out of the platform key store for the Settings
 /// key-export step. Read-only: unlike [`load_or_mint_db_key`]
 /// it never mints — a missing entry is an error, not a fresh key.
 pub fn read_db_key() -> Result<String, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    match entry.get_password() {
-        Ok(key) => validate_stored_key(&key),
-        Err(keyring::Error::NoEntry) => Err("no DB encryption key stored".to_string()),
-        Err(e) => Err(format!("failed to read DB key from credential store: {e}")),
+    match crate::key_store::read(crate::key_store::Slot::Database) {
+        Ok(Some(key)) => validate_stored_key(&key),
+        Ok(None) => Err("no DB encryption key stored".to_string()),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -136,7 +132,14 @@ pub enum KeyLoadError {
     /// user can recover by restoring an exported key file; nothing is ever
     /// minted over the existing database.
     MissingKeyForExistingDb(String),
-    /// Everything else: keyring unavailable, stored key malformed, and so on.
+    /// The platform key that protected an existing database is gone (Android
+    /// Keystore removal, rotation, or device key loss). No retry and no other
+    /// key can recover it, so the documented outcome is fail closed, wipe the
+    /// mobile copy, and re-pair from desktop. Android-only: desktop uses
+    /// [`Self::MissingKeyForExistingDb`] instead, because there the key can
+    /// also be restored from an exported file.
+    KeyLost(String),
+    /// Everything else: key store unreachable, stored key malformed, and so on.
     Other(String),
 }
 
@@ -144,9 +147,9 @@ impl KeyLoadError {
     /// The user-facing message, whichever class this error is.
     pub fn message(&self) -> &str {
         match self {
-            KeyLoadError::MissingKeyForExistingDb(message) | KeyLoadError::Other(message) => {
-                message
-            }
+            KeyLoadError::MissingKeyForExistingDb(message)
+            | KeyLoadError::KeyLost(message)
+            | KeyLoadError::Other(message) => message,
         }
     }
 
@@ -155,11 +158,30 @@ impl KeyLoadError {
     pub fn is_missing_key_for_existing_db(&self) -> bool {
         matches!(self, KeyLoadError::MissingKeyForExistingDb(_))
     }
+
+    /// True when the key material is unrecoverable, so `boot` must wipe the
+    /// local copy rather than offer choices that cannot work.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn is_key_lost(&self) -> bool {
+        matches!(self, KeyLoadError::KeyLost(_))
+    }
 }
 
 impl From<String> for KeyLoadError {
     fn from(message: String) -> Self {
         KeyLoadError::Other(message)
+    }
+}
+
+impl From<crate::key_store::KeyStoreError> for KeyLoadError {
+    fn from(error: crate::key_store::KeyStoreError) -> Self {
+        use crate::key_store::KeyStoreError;
+        match error {
+            KeyStoreError::Lost(message) => KeyLoadError::KeyLost(message),
+            KeyStoreError::Unavailable(message) | KeyStoreError::Failed(message) => {
+                KeyLoadError::Other(message)
+            }
+        }
     }
 }
 
@@ -178,18 +200,17 @@ impl From<String> for KeyLoadError {
 /// [`KeyLoadError::MissingKeyForExistingDb`] class, which the boot-failure
 /// dialog turns into the restore offer.
 pub fn load_or_mint_db_key(db_path: &Path) -> Result<DbKey, KeyLoadError> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    match entry.get_password() {
-        Ok(key) => Ok(DbKey {
+    match crate::key_store::read(crate::key_store::Slot::Database)? {
+        Some(key) => Ok(DbKey {
             hex: validate_stored_key(&key)?,
             freshly_minted: false,
         }),
-        Err(keyring::Error::NoEntry) => {
+        None => {
             if db_file_exists(db_path) {
-                return Err(KeyLoadError::MissingKeyForExistingDb(
-                    missing_key_for_existing_db(db_path),
-                ));
+                // A database with no key is never re-keyed. Which class that
+                // refusal takes depends on whether this platform can still
+                // produce the key at all — see [`separated_db_and_key`].
+                return Err(separated_db_and_key(db_path));
             }
             let key = mint_key_hex()?;
             store_db_key(&key)?;
@@ -198,22 +219,17 @@ pub fn load_or_mint_db_key(db_path: &Path) -> Result<DbKey, KeyLoadError> {
                 freshly_minted: true,
             })
         }
-        Err(e) => Err(format!("failed to read DB key from credential store: {e}").into()),
     }
 }
 
-/// Write `key` into the OS credential store's single slot — the same slot
+/// Write `key` into the platform key store's single slot — the same slot
 /// [`load_or_mint_db_key`] mints into on first run, and the slot the
 /// exported-key restore path fills after a successful open.
 pub fn store_db_key(key: &str) -> Result<(), String> {
     // Never store something that is not a key: the slot is one entry deep and
     // a malformed value would block every later run.
     validate_stored_key(key)?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    entry
-        .set_password(key)
-        .map_err(|e| format!("failed to store DB key in credential store: {e}"))
+    crate::key_store::write(crate::key_store::Slot::Database, key).map_err(|e| e.to_string())
 }
 
 /// Escape a filesystem path so it is safe to embed in ONE audit-log line
@@ -322,9 +338,7 @@ pub fn restore_db_key_from_file(
 /// [`remove_abandoned_new_db`]: discarding the key while the freshly created
 /// file stays would strand a database whose only key is gone (E9).
 pub fn discard_minted_key() {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        let _ = entry.delete_credential();
-    }
+    let _ = crate::key_store::delete(crate::key_store::Slot::Database);
 }
 
 /// Undo a first run that failed after creating its database (E9).
@@ -593,6 +607,36 @@ pub fn missing_key_for_existing_db(db_path: &Path) -> String {
     )
 }
 
+/// Which failure class "an encrypted database exists but the platform key store
+/// holds no key for it" takes on this platform.
+///
+/// Desktop: recoverable — the user may still have the exported key file, so
+/// boot offers the restore path and touches nothing.
+///
+/// Android: not recoverable — the wrapping key exists only in this device's
+/// Keystore, so this is key loss: fail closed, wipe the mobile copy, re-pair
+/// from desktop (design decision 6).
+fn separated_db_and_key(db_path: &Path) -> KeyLoadError {
+    if crate::key_store::MISSING_KEY_IS_RECOVERABLE {
+        KeyLoadError::MissingKeyForExistingDb(missing_key_for_existing_db(db_path))
+    } else {
+        KeyLoadError::KeyLost(key_lost_for_existing_db(db_path))
+    }
+}
+
+/// The refusal for the key-loss class: the copy on the phone is unrecoverable,
+/// so say so and say what fixes it.
+pub fn key_lost_for_existing_db(db_path: &Path) -> String {
+    format!(
+        "the database {} exists but the Android Keystore no longer holds the key that protected \
+         its encryption key (the key was removed, rotated, or the device lost it). Purple Memo \
+         will not open this copy with anything else and will not mint a replacement key over it. \
+         The phone's local copy is wiped so the data cannot be left stranded, and the phone must \
+         be paired with the desktop app again.",
+        db_path.display()
+    )
+}
+
 fn is_key_hex(s: &str) -> bool {
     s.len() == KEY_HEX_LEN && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -711,6 +755,12 @@ fn migration_step(from: i64) -> Option<&'static str> {
         3 => Some(schema::MIGRATION_3_4),
         4 => Some(schema::MIGRATION_4_5),
         5 => Some(schema::MIGRATION_5_6),
+        6 => Some(schema::migration_6_7()),
+        7 => Some(schema::MIGRATION_7_8),
+        8 => Some(schema::migration_8_9()),
+        9 => Some(schema::MIGRATION_9_10),
+        10 => Some(schema::MIGRATION_10_11),
+        11 => Some(schema::MIGRATION_11_12),
         _ => None,
     }
 }
@@ -870,7 +920,7 @@ pub fn reconcile_open_txn(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete the DB encryption key from the OS credential store — factory reset
+/// Delete the DB encryption key from the platform key store — factory reset
 /// only.
 ///
 /// Returns `Ok(true)` when a key was removed and `Ok(false)` when there was
@@ -880,16 +930,18 @@ pub fn reconcile_open_txn(conn: &Connection) -> Result<(), String> {
 /// its key. This is deliberately not used anywhere else; nothing but a reset
 /// may remove the key.
 pub fn delete_db_key() -> Result<bool, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| format!("keyring entry unavailable: {e}"))?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(true),
-        // No key stored: already absent, which the reset reports as success.
-        Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(format!(
-            "failed to delete the DB key from the credential store: {e}"
-        )),
-    }
+    // `Ok(false)` means "no key stored": already absent, which a reset reports
+    // as success. On Android the same call also removes the wrapped key blob.
+    let database =
+        crate::key_store::delete(crate::key_store::Slot::Database).map_err(|e| e.to_string())?;
+    // The reset's key component removes the pairing identity too (§10.3): a
+    // fresh install mints a new keypair and a new device id, and a reset that
+    // left the old pairing secret behind could resume a pairing the user
+    // believes was erased. Losing it is safe — pairing then fails closed and the
+    // device re-pairs with a new key.
+    let pairing = crate::key_store::delete(crate::key_store::Slot::PairingIdentity)
+        .map_err(|e| e.to_string())?;
+    Ok(database || pairing)
 }
 
 // ---------------------------------------------------------------------------
@@ -2012,10 +2064,10 @@ mod tests {
         }
     }
 
-    // -- Baseline schema: 32 tables, user_version = SCHEMA_VERSION, seeds, FK on
+    // -- Baseline schema: 41 tables, user_version = SCHEMA_VERSION, seeds, FK on
 
     #[test]
-    fn baseline_schema_has_32_tables_and_the_declared_user_version() {
+    fn baseline_schema_has_41_tables_and_the_declared_user_version() {
         // The number lives in schema::SCHEMA_VERSION; the old name hard-coded
         // `user_version 4` and went stale when v5 landed.
         let (_dir, conn) = open_baseline("schema");
@@ -2023,7 +2075,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
     }
 
     // -- Hot foreign-key columns are indexed ---------------------
@@ -2121,10 +2173,24 @@ mod tests {
     fn init_schema_is_idempotent_and_fresh_only() {
         let (_dir, conn) = open_baseline("idempotent");
         init_schema(&conn).expect("second init is a no-op");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
     }
 
     // -- Sequential, forward-only migrations --------
+
+    /// Remove the v7 identity columns so a fixture can be an honest pre-v7
+    /// database. The indexes go first: SQLite refuses to drop an indexed
+    /// column, and the fixture's job is to look like an older install.
+    fn strip_uid_columns(conn: &Connection) {
+        let mut sql = String::new();
+        for table in schema::UID_TABLES {
+            sql.push_str(&format!("DROP INDEX idx_{table}_uid;\n"));
+        }
+        for table in schema::UID_TABLES {
+            sql.push_str(&format!("ALTER TABLE {table} DROP COLUMN uid;\n"));
+        }
+        conn.execute_batch(&sql).expect("strip v7 uid columns");
+    }
 
     /// A database that looks exactly like a version-1 install: the current
     /// baseline with everything version 2 and later added removed again, stamped
@@ -2171,6 +2237,10 @@ mod tests {
              END;",
         )
         .expect("strip v2+ additions");
+        strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 1i64)
             .expect("stamp v1");
         conn.execute_batch(
@@ -2233,7 +2303,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
         // Data, FTS content, settings and foreign-key rows all survived.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
         let collection: i64 = conn
@@ -2396,6 +2466,826 @@ mod tests {
         );
     }
 
+    /// A version-6 database: the baseline with the v7 identity columns stripped
+    /// again, stamped 6, holding rows in the tables Phase A writes so the
+    /// backfill has something real to stamp.
+    fn seeded_v6(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
+        conn.pragma_update(None, "user_version", 6i64)
+            .expect("stamp v6");
+        conn.execute_batch(
+            "INSERT INTO notes (title, content, tags, created_at, updated_at)
+               VALUES ('Pre-v7 note', 'body', 'a', '2026-01-01', '2026-01-02');
+             INSERT INTO collections (name, created_at) VALUES ('Work', '2026-01-01');
+             INSERT INTO tasks (title, due_date, done, repeat, note, created_at)
+               VALUES ('Pre-v7 task', '2026-01-05', 0, 'none', '', '2026-01-01');
+             INSERT INTO shopping_lists (name, created_at) VALUES ('Groceries', '2026-01-01');
+             INSERT INTO shopping_items (list_id, text, done, sort_order)
+               VALUES (1, 'milk', 0, 0);",
+        )
+        .expect("seed pre-v7 rows");
+        (dir, conn)
+    }
+
+    /// Canonical UUID v4 text: 36 lowercase chars, the version and variant
+    /// nibbles in the right places. Hand-checked rather than regexed because the
+    /// crate would be a dependency for one assertion.
+    fn is_uuid_v4(value: &str) -> bool {
+        let chars: Vec<char> = value.chars().collect();
+        if chars.len() != 36 {
+            return false;
+        }
+        for (index, ch) in chars.iter().enumerate() {
+            let hyphen = matches!(index, 8 | 13 | 18 | 23);
+            if hyphen {
+                if *ch != '-' {
+                    return false;
+                }
+                continue;
+            }
+            if !(*ch).is_ascii_hexdigit() || (*ch).is_ascii_uppercase() {
+                return false;
+            }
+        }
+        chars[14] == '4' && matches!(chars[19], '8' | '9' | 'a' | 'b')
+    }
+
+    #[test]
+    fn migration_6_7_stamps_uid_v4_on_every_synced_row_and_matches_the_baseline() {
+        let (_dir, migrated) = seeded_v6("uid-migration");
+        init_schema(&migrated).expect("migrate 6 -> 7");
+        let version: i64 = migrated
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        // One expression, two callers: the migration backfills with it and the
+        // baseline seeds mint with it, so a seed row is stamped exactly like a
+        // migrated one instead of being left NULL.
+        assert!(
+            schema::BASELINE_SQL.contains(schema::UID_V4_SQL),
+            "the baseline seeds must use the same UUID expression as the migration"
+        );
+
+        for table in schema::UID_TABLES {
+            let missing = scalar_i64(
+                &migrated,
+                &format!("SELECT count(*) FROM {table} WHERE uid IS NULL"),
+            );
+            assert_eq!(missing, 0, "{table}: a pre-v7 row was left without a uid");
+            let sql = format!("SELECT uid FROM {table}");
+            let mut statement = migrated.prepare(&sql).expect("prepare uid read");
+            let uids: Vec<String> = statement
+                .query_map([], |row| row.get::<_, Option<String>>(0))
+                .expect("query uids")
+                .map(|row| row.expect("uid read").expect("uid present"))
+                .collect();
+            for uid in &uids {
+                assert!(is_uuid_v4(uid), "{table}: {uid} is not a UUID v4");
+            }
+        }
+
+        // Not vacuous: the seeded Phase A rows are among the stamped rows.
+        assert_eq!(
+            scalar_i64(
+                &migrated,
+                "SELECT count(*) FROM notes WHERE uid IS NOT NULL"
+            ),
+            1,
+            "the pre-v7 note must have been backfilled"
+        );
+        assert_eq!(
+            scalar_i64(
+                &migrated,
+                "SELECT count(*) FROM shopping_items WHERE uid IS NOT NULL"
+            ),
+            1,
+            "the pre-v7 shopping item must have been backfilled"
+        );
+
+        // The identity is unique: reusing a minted uid is refused by the index.
+        let duplicate = migrated.execute(
+            "INSERT INTO notes (title, content, tags, created_at, updated_at, uid)
+             VALUES ('clone', '', '', '2026-01-01', '2026-01-01', (SELECT uid FROM notes LIMIT 1))",
+            [],
+        );
+        assert!(duplicate.is_err(), "a duplicate uid must be refused");
+
+        // And the migrated indexes are exactly the fresh baseline's.
+        let (_fresh_dir, fresh) = open_baseline("uid-baseline");
+        for table in schema::UID_TABLES {
+            let name = format!("idx_{table}_uid");
+            let fresh_sql: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .expect("fresh structure");
+            let migrated_sql: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .expect("migrated structure");
+            assert_eq!(
+                normalize_sql(&fresh_sql),
+                normalize_sql(&migrated_sql),
+                "{name} differs between fresh baseline and migration"
+            );
+        }
+    }
+
+    /// Remove the v8 sync-storage tables and the reminders marker so a fixture
+    /// can be an honest pre-v8 database. Children go before parents: with
+    /// foreign keys on, dropping `sync_outbox` while `sync_outbox_delivery`
+    /// still references it is refused.
+    fn strip_sync_storage(conn: &Connection) {
+        let has_marker = scalar_i64(
+            conn,
+            "SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'created_by_device_id'",
+        ) > 0;
+        let mut sql = String::new();
+        for index in [
+            "idx_sync_outbox_seq",
+            "idx_sync_outbox_entity",
+            "idx_sync_tombstones_entity",
+        ] {
+            sql.push_str(&format!("DROP INDEX IF EXISTS {index};\n"));
+        }
+        for table in schema::SYNC_STORAGE_TABLES.iter().rev() {
+            sql.push_str(&format!("DROP TABLE IF EXISTS {table};\n"));
+        }
+        // `ADD COLUMN` has no IF NOT EXISTS, so the guard is explicit.
+        if has_marker {
+            sql.push_str("ALTER TABLE reminders DROP COLUMN created_by_device_id;\n");
+        }
+        conn.execute_batch(&sql).expect("strip v8 sync storage");
+    }
+
+    /// A version-7 database: the baseline with the v8 storage stripped again,
+    /// stamped 7, holding one row in every synced table so the migration has
+    /// real data to preserve — an empty database would pass that check
+    /// vacuously.
+    fn seeded_v7(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_sync_storage(&conn);
+        conn.pragma_update(None, "user_version", 7i64)
+            .expect("stamp v7");
+        conn.execute_batch(
+            "INSERT INTO collections (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111112', 'Work', '2026-01-01');
+             INSERT INTO notes (uid, title, content, tags, collection_id, created_at, updated_at)
+               VALUES ('11111111-1111-4111-8111-111111111111', 'Pre-v8 note', 'body', 'a', 1, '2026-01-01', '2026-01-02');
+             INSERT INTO tasks (uid, title, due_date, done, repeat, note, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111113', 'Pre-v8 task', '2026-01-05', 0, 'none', '', '2026-01-01');
+             INSERT INTO reminders (uid, title, remind_at, repeat, note, fired, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111114', 'Pre-v8 reminder', '2026-01-05T09:00', 'none', '', 0, '2026-01-01');
+             INSERT INTO shops (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111115', 'Shop', '2026-01-01');
+             INSERT INTO jobs (uid, title, total_cents, job_date, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111116', 'Job', 1000, '2026-01-01', '2026-01-01');
+             INSERT INTO loans (uid, counterparty, direction, amount_cents, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111117', 'Ko Aung', 'lent', 1000, '2026-01-01');
+             INSERT INTO habits (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-111111111118', 'Walk', '2026-01-01');
+             INSERT INTO habit_logs (uid, habit_id, log_date, done)
+               VALUES ('11111111-1111-4111-8111-111111111119', 1, '2026-01-01', 1);
+             INSERT INTO shopping_lists (uid, name, created_at)
+               VALUES ('11111111-1111-4111-8111-11111111111a', 'Groceries', '2026-01-01');
+             INSERT INTO shopping_items (uid, list_id, text, done, sort_order)
+               VALUES ('11111111-1111-4111-8111-11111111111b', 1, 'milk', 0, 0);
+             INSERT INTO vault_items (uid, title, ciphertext, salt, iv, created_at, updated_at)
+               VALUES ('11111111-1111-4111-8111-11111111111c', 'Email', 'c', 's', 'i', '2026-01-01', '2026-01-01');
+             INSERT INTO income_entries (uid, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+               VALUES ('11111111-1111-4111-8111-11111111111d', 500, 1, 1, '2026-01-01', '', '2026-01-01');
+             INSERT INTO expense_entries (uid, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+               VALUES ('11111111-1111-4111-8111-11111111111e', 200, 1, 1, '2026-01-01', '', '2026-01-01');",
+        )
+        .expect("seed pre-v8 rows");
+        (dir, conn)
+    }
+
+    #[test]
+    fn migration_7_8_adds_sync_storage_and_keeps_every_row() {
+        let (_dir, conn) = seeded_v7("sync-migration");
+        // The fixture really is pre-v8: no outbox, no marker column.
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='sync_outbox'"
+            ),
+            0
+        );
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'created_by_device_id'"
+            ),
+            0
+        );
+
+        init_schema(&conn).expect("migrate 7 -> current");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(table_count(&conn), 41);
+
+        // Exactly one state row, minted with the SAME uuid expression as every
+        // synced row (one expression, two callers — as for v7).
+        assert!(
+            schema::MIGRATION_7_8.contains(schema::UID_V4_SQL),
+            "the device id must be minted with the shared UUID expression"
+        );
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_state"), 1);
+        let device_id: String = conn
+            .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .expect("device id");
+        assert!(is_uuid_v4(&device_id), "{device_id} is not a UUID v4");
+        assert_eq!(
+            scalar_i64(&conn, "SELECT data_generation FROM sync_state WHERE id = 1"),
+            1,
+            "a fresh line starts at generation 1"
+        );
+        assert_eq!(
+            scalar_i64(&conn, "SELECT lamport FROM sync_state WHERE id = 1"),
+            0
+        );
+        assert_eq!(
+            scalar_i64(&conn, "SELECT last_seq FROM sync_state WHERE id = 1"),
+            0
+        );
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT re_pair_required FROM sync_state WHERE id = 1"
+            ),
+            0
+        );
+
+        // Nothing was lost: every synced table kept its uid and its rows.
+        for table in schema::UID_TABLES {
+            assert_eq!(
+                scalar_i64(
+                    &conn,
+                    &format!("SELECT count(*) FROM {table} WHERE uid IS NULL")
+                ),
+                0,
+                "{table}: a pre-v8 row lost its uid"
+            );
+            assert!(
+                scalar_i64(&conn, &format!("SELECT count(*) FROM {table}")) > 0,
+                "{table}: the fixture seeded no row, so the check is vacuous"
+            );
+        }
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
+        assert_eq!(
+            conn.query_row("SELECT title FROM notes WHERE id = 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .expect("note row"),
+            "Pre-v8 note"
+        );
+
+        // §13.1's marker: present, nullable, and NULL for a pre-v8 reminder.
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'created_by_device_id'"
+            ),
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM reminders WHERE created_by_device_id IS NULL"
+            ),
+            1,
+            "the marker must stay nullable — nothing writes it yet"
+        );
+
+        // The new storage starts empty and quiet.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_outbox"), 0);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_tombstones"), 0);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_peers"), 0);
+    }
+
+    #[test]
+    fn a_migrated_sync_storage_matches_a_fresh_baseline() {
+        // The baseline repeats MIGRATION_7_8's DDL (one raw string cannot
+        // reference a const), so the agreement is pinned rather than trusted.
+        let (_fresh_dir, fresh) = open_baseline("sync-structure-fresh");
+        let (_v7_dir, migrated) = seeded_v7("sync-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        let mut names: Vec<&str> = schema::SYNC_STORAGE_TABLES.to_vec();
+        names.extend([
+            "idx_sync_outbox_seq",
+            "idx_sync_outbox_entity",
+            "idx_sync_tombstones_entity",
+            // The ALTER rewrites reminders, so a migrated table and a fresh one
+            // must come out identical.
+            "reminders",
+        ]);
+        for name in names {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
+    /// A populated version-9 database: the shipped baseline with `trash_items`
+    /// rebuilt at the v9 CHECK (five entity types), stamped 9.
+    ///
+    /// Built by rebuilding rather than by subtraction: v9's table differs from
+    /// the baseline in exactly one constraint, and rewriting that constraint is
+    /// the difference v10 makes. The rows are the point — a migration test
+    /// against an empty table proves nothing about what it preserved.
+    fn seeded_v9(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_uid_aliases(&conn);
+        strip_tombstone_gc_log(&conn);
+        conn.execute_batch(
+            "DROP INDEX idx_trash_items_entity;
+             DROP INDEX idx_trash_items_deleted;
+             ALTER TABLE trash_items RENAME TO trash_items_v10;
+             CREATE TABLE trash_items (
+               id             INTEGER PRIMARY KEY,
+               entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry')),
+               entity_id      INTEGER NOT NULL CHECK (entity_id > 0),
+               snapshot       TEXT NOT NULL CHECK (json_valid(snapshot)),
+               deleted_at     TEXT NOT NULL,
+               created_at     TEXT NOT NULL
+             );
+             INSERT INTO trash_items (id, entity_type, entity_id, snapshot, deleted_at, created_at)
+               SELECT id, entity_type, entity_id, snapshot, deleted_at, created_at FROM trash_items_v10;
+             DROP TABLE trash_items_v10;
+             CREATE INDEX idx_trash_items_entity ON trash_items(entity_type, entity_id);
+             CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);",
+        )
+        .expect("rebuild trash_items at the v9 CHECK");
+        conn.pragma_update(None, "user_version", 9i64)
+            .expect("stamp v9");
+        // One row per type v9 could hold. The snapshot text is not a valid
+        // Trash snapshot on purpose: this test is about the table, and the
+        // bytes are compared exactly, so any rewrite of them would show.
+        conn.execute_batch(
+            "INSERT INTO trash_items (id, entity_type, entity_id, snapshot, deleted_at, created_at) VALUES
+               (1, 'note',          7, '{\"entity\":{\"id\":7,\"title\":\"note copy\"}}',          '2026-02-01', '2026-02-01'),
+               (2, 'task',          8, '{\"entity\":{\"id\":8,\"title\":\"task copy\"}}',          '2026-02-02', '2026-02-02'),
+               (3, 'contact',       9, '{\"entity\":{\"id\":9,\"name\":\"contact copy\"}}',        '2026-02-03', '2026-02-03'),
+               (4, 'memory',       10, '{\"entity\":{\"id\":10,\"title\":\"memory copy\"}}',      '2026-02-04', '2026-02-04'),
+               (5, 'journal_entry', 11, '{\"entity\":{\"id\":11,\"entry_date\":\"2026-02-05\"}}', '2026-02-05', '2026-02-05');",
+        )
+        .expect("seed representative v9 Trash rows");
+        (dir, conn)
+    }
+
+    /// Every `trash_items` column, in id order — the comparison the v10 test
+    /// makes before and after the step.
+    fn trash_rows(conn: &Connection) -> Vec<(i64, String, i64, String, String, String)> {
+        conn.prepare(
+            "SELECT id, entity_type, entity_id, snapshot, deleted_at, created_at FROM trash_items ORDER BY id",
+        )
+        .expect("prepare trash read")
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .expect("query trash rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect trash rows")
+    }
+
+    #[test]
+    fn migration_9_10_widens_the_trash_check_and_keeps_every_row() {
+        let (_dir, conn) = seeded_v9("trash-v10-migration");
+        let before = trash_rows(&conn);
+        assert_eq!(before.len(), 5, "the fixture must be populated");
+        // The v9 constraint really refuses a shopping type — otherwise the
+        // fixture is not v9 and the test proves nothing.
+        assert!(
+            conn.execute(
+                "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+                 VALUES ('shopping_list', 1, '{}', '2026-02-06', '2026-02-06')",
+                [],
+            )
+            .is_err(),
+            "the fixture must start at the v9 CHECK"
+        );
+
+        init_schema(&conn).expect("migrate 9 -> 11");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        // v9 fixtures migrate all the way up: v10 is the Trash step, v11 the
+        // aliases, v12 the tombstone GC log.
+
+        assert_eq!(
+            trash_rows(&conn),
+            before,
+            "every Trash row must survive the rebuild byte for byte"
+        );
+
+        // The widened CHECK accepts the two shopping types §13.2 needs…
+        conn.execute(
+            "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+             VALUES ('shopping_list', 3, '{}', '2026-02-06', '2026-02-06')",
+            [],
+        )
+        .expect("a shopping_list conflict copy must be storable");
+        conn.execute(
+            "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+             VALUES ('shopping_item', 4, '{}', '2026-02-06', '2026-02-06')",
+            [],
+        )
+        .expect("a shopping_item conflict copy must be storable");
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM trash_items"), 7);
+
+        // …and still refuses anything else: widening is not dropping.
+        assert!(
+            conn.execute(
+                "INSERT INTO trash_items (entity_type, entity_id, snapshot, deleted_at, created_at)
+                 VALUES ('photo', 1, '{}', '2026-02-07', '2026-02-07')",
+                [],
+            )
+            .is_err(),
+            "the CHECK must still name exactly the supported types"
+        );
+
+        // The rebuild recreates both indexes, and nothing else moved.
+        for index in ["idx_trash_items_entity", "idx_trash_items_deleted"] {
+            assert_eq!(
+                scalar_i64(
+                    &conn,
+                    &format!(
+                        "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='{index}'"
+                    )
+                ),
+                1,
+                "{index} must exist after the rebuild"
+            );
+        }
+        assert_eq!(
+            table_count(&conn),
+            41,
+            "v10 adds no table; v11's alias table and v12's GC log add two"
+        );
+    }
+
+    #[test]
+    fn a_migrated_trash_table_matches_a_fresh_baseline() {
+        // The baseline repeats the rebuilt DDL (one raw string cannot
+        // reference a const), so the agreement is pinned rather than trusted.
+        let (_fresh_dir, fresh) = open_baseline("trash-structure-fresh");
+        let (_v9_dir, migrated) = seeded_v9("trash-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        for name in [
+            "trash_items",
+            "idx_trash_items_entity",
+            "idx_trash_items_deleted",
+        ] {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
+    /// Remove the v11 alias table so a fixture can be an honest pre-v11
+    /// database. The index goes first, as with every other subtraction here.
+    fn strip_uid_aliases(conn: &Connection) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_sync_uid_aliases_winner;
+             DROP TABLE IF EXISTS sync_uid_aliases;",
+        )
+        .expect("strip the v11 alias table");
+    }
+
+    /// Remove the v12 GC log so a fixture can be an honest pre-v12 database.
+    fn strip_tombstone_gc_log(conn: &Connection) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_sync_tombstone_gc_log_uid;
+             DROP TABLE IF EXISTS sync_tombstone_gc_log;",
+        )
+        .expect("strip the v12 GC log");
+    }
+
+    /// A populated version-10 database: the shipped baseline minus the v11
+    /// aliases table (and its index), stamped 10, holding real sync storage —
+    /// a peer, an outbox row, a tombstone and a row stamp. The rows are the
+    /// point: a migration against empty tables proves nothing about what it
+    /// preserved.
+    fn seeded_v10(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_uid_aliases(&conn);
+        strip_tombstone_gc_log(&conn);
+        conn.execute_batch(
+            "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
+               VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v11 note', 'body', '', '2026-01-01', '2026-01-01');
+             INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+               VALUES ('notes', '22222222-2222-4222-8222-222222222222', 3,
+                       (SELECT device_id FROM sync_state WHERE id = 1), 'op-3', '{}', '2026-01-01');
+             INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+               VALUES ((SELECT device_id FROM sync_state WHERE id = 1), 1, 'op-out', 'notes',
+                       '22222222-2222-4222-8222-222222222222', 'create', 0, 3, '{}',
+                       '{\"title\":\"Pre-v11 note\"}', '2026-01-01');
+             INSERT INTO sync_peers (device_id, pairing_id, display_name, generation, cursor_in, cursor_out, created_at)
+               VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'pair-1', 'phone', 1, 1, 0, '2026-01-01');
+             INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+               VALUES ('tasks', '33333333-3333-4333-8333-333333333333', 2,
+                       (SELECT device_id FROM sync_state WHERE id = 1), 'op-del', '2026-01-01');",
+        )
+        .expect("strip v11");
+        conn.pragma_update(None, "user_version", 10i64)
+            .expect("stamp v10");
+        (dir, conn)
+    }
+
+    #[test]
+    fn migration_10_to_11_adds_the_uid_alias_table_and_keeps_the_sync_storage() {
+        let (_dir, conn) = seeded_v10("migrate-10-11");
+        // The fixture has to really be v10: an alias write has nowhere to land.
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+                 VALUES ('notes', 'a', 'b', '2026-01-01')",
+                [],
+            )
+            .is_err(),
+            "the fixture must start at v10"
+        );
+
+        init_schema(&conn).expect("migrate 10 -> 11");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        // The fixture is v10, so this walks the v11 and v12 steps as well —
+        // everything the fixture held has to survive both.
+        assert_eq!(table_count(&conn), 41);
+
+        // The new table starts empty — nothing before v11 ever folded — and is
+        // usable, with the self-alias a CHECK refusal rather than a row.
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM sync_uid_aliases"),
+            0
+        );
+        conn.execute(
+            "INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+             VALUES ('collections', 'loser', 'winner', '2026-02-01')",
+            [],
+        )
+        .expect("the v11 table accepts an alias");
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+                 VALUES ('collections', 'same', 'same', '2026-02-01')",
+                [],
+            )
+            .is_err(),
+            "a uid cannot be its own loser"
+        );
+
+        // Everything the fixture held is still there, row for row.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_outbox"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_row_stamps"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_tombstones"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_peers"), 1);
+    }
+
+    #[test]
+    fn a_migrated_alias_table_matches_a_fresh_baseline() {
+        let (_fresh_dir, fresh) = open_baseline("alias-structure-fresh");
+        let (_v10_dir, migrated) = seeded_v10("alias-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        for name in ["sync_uid_aliases", "idx_sync_uid_aliases_winner"] {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
+    /// A populated version-11 database: the shipped baseline minus the v12 GC
+    /// log (and its index), stamped 11, holding real sync storage — a peer, an
+    /// outbox row, a tombstone, a row stamp and an alias. The rows are the
+    /// point: a migration against empty tables proves nothing about what it
+    /// preserved.
+    fn seeded_v11(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_tombstone_gc_log(&conn);
+        conn.execute_batch(
+            "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
+               VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v12 note', 'body', '', '2026-01-01', '2026-01-01');
+             INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+               VALUES ('notes', '22222222-2222-4222-8222-222222222222', 3,
+                       (SELECT device_id FROM sync_state WHERE id = 1), 'op-3', '{}', '2026-01-01');
+             INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+               VALUES ((SELECT device_id FROM sync_state WHERE id = 1), 1, 'op-out', 'notes',
+                       '22222222-2222-4222-8222-222222222222', 'create', 0, 3, '{}',
+                       '{\"title\":\"Pre-v12 note\"}', '2026-01-01');
+             INSERT INTO sync_peers (device_id, pairing_id, display_name, generation, cursor_in, cursor_out, created_at)
+               VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'pair-1', 'phone', 1, 1, 0, '2026-01-01');
+             INSERT INTO sync_tombstones (entity_table, entity_uid, counter, device_id, op_id, deleted_at)
+               VALUES ('tasks', '33333333-3333-4333-8333-333333333333', 2,
+                       (SELECT device_id FROM sync_state WHERE id = 1), 'op-del', '2026-01-01');
+             INSERT INTO sync_uid_aliases (entity_table, loser_uid, winner_uid, updated_at)
+               VALUES ('collections', 'loser-uid', 'winner-uid', '2026-01-01');",
+        )
+        .expect("seed the v11 fixture");
+        conn.pragma_update(None, "user_version", 11i64)
+            .expect("stamp v11");
+        (dir, conn)
+    }
+
+    #[test]
+    fn migration_11_to_12_adds_the_gc_log_and_keeps_everything() {
+        let (_dir, conn) = seeded_v11("migrate-11-12");
+        // The fixture has to really be v11: a GC-log write has nowhere to land.
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_tombstone_gc_log
+                   (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+                 VALUES ('notes', 'a', 1, 'device', 'op', '2026-01-01')",
+                [],
+            )
+            .is_err(),
+            "the fixture must start at v11"
+        );
+
+        init_schema(&conn).expect("migrate 11 -> 12");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(table_count(&conn), 41);
+
+        // The new table starts empty — nothing before v12 ever pruned a
+        // tombstone — and is usable, with one row per record.
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM sync_tombstone_gc_log"),
+            0,
+            "a migration invents no GC history"
+        );
+        conn.execute(
+            "INSERT INTO sync_tombstone_gc_log
+               (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+             VALUES ('notes', 'p', 4, 'device', 'op', '2026-02-01')",
+            [],
+        )
+        .expect("the v12 table accepts a logged delete");
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_tombstone_gc_log
+                   (entity_table, entity_uid, counter, device_id, op_id, pruned_at)
+                 VALUES ('notes', 'p', 5, 'device', 'op-2', '2026-02-02')",
+                [],
+            )
+            .is_err(),
+            "one row per record, not one per prune"
+        );
+
+        // Everything the fixture held is still there, row for row.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_outbox"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_row_stamps"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_tombstones"), 1);
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM sync_peers"), 1);
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM sync_uid_aliases"),
+            1
+        );
+    }
+
+    #[test]
+    fn a_migrated_gc_log_matches_a_fresh_baseline() {
+        let (_fresh_dir, fresh) = open_baseline("gc-log-structure-fresh");
+        let (_v11_dir, migrated) = seeded_v11("gc-log-structure-migrated");
+        init_schema(&migrated).expect("migrate");
+        for name in ["sync_tombstone_gc_log", "idx_sync_tombstone_gc_log_uid"] {
+            let a: String = fresh
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("fresh structure");
+            let b: String = migrated
+                .query_row(
+                    "SELECT ifnull(sql, '') FROM sqlite_master WHERE name = ?",
+                    [name],
+                    |r| r.get(0),
+                )
+                .expect("migrated structure");
+            assert!(
+                !a.is_empty(),
+                "{name} is missing from the baseline — the DDL copy drifted"
+            );
+            assert_eq!(
+                normalize_sql(&a),
+                normalize_sql(&b),
+                "{name} differs between a fresh baseline and a migrated database"
+            );
+        }
+    }
+
     /// SQLite records the DDL as it was typed, so two textually different but
     /// equivalent definitions compare equal here and not in `assert_eq!`. Comments
     /// are dropped too: the two copies of this DDL sit under different explanatory
@@ -2451,7 +3341,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]
@@ -2554,6 +3444,10 @@ mod tests {
                  END;",
             )
             .expect("strip v2+");
+            strip_uid_columns(&conn);
+            // A pre-v8 fixture must not keep the v8 tables the baseline now
+            // carries, or the real 7 -> 8 step collides with them.
+            strip_sync_storage(&conn);
             conn.pragma_update(None, "user_version", 1i64)
                 .expect("stamp v1");
             conn.execute_batch(
@@ -2679,6 +3573,10 @@ mod tests {
              END;",
         )
         .expect("strip v3 additions");
+        strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 2i64)
             .expect("stamp v2");
         conn.execute_batch(
@@ -2732,6 +3630,10 @@ mod tests {
              END;",
         )
         .expect("strip v4 addition");
+        strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 3i64)
             .expect("stamp v3");
         (dir, conn)
@@ -2742,7 +3644,7 @@ mod tests {
         let (_dir, migrated) = seeded_v3("trash-migration");
         let (_fresh_dir, fresh) = open_baseline("trash-baseline");
         init_schema(&migrated).expect("migrate 3 -> 4");
-        assert_eq!(table_count(&migrated), 32);
+        assert_eq!(table_count(&migrated), 41);
         for name in [
             "trash_items",
             "idx_trash_items_entity",
@@ -2812,6 +3714,10 @@ mod tests {
              END;",
         )
         .expect("strip v5 additions");
+        strip_uid_columns(&conn);
+        // A pre-v8 fixture must not keep the v8 tables the baseline now
+        // carries, or the real 7 -> 8 step collides with them.
+        strip_sync_storage(&conn);
         conn.pragma_update(None, "user_version", 4i64)
             .expect("stamp v4");
         conn.execute_batch(
@@ -2911,7 +3817,7 @@ mod tests {
         conn.execute_batch("DROP TABLE trash_items")
             .expect("remove migration obstacle");
         init_schema(&conn).expect("retry succeeds");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]
@@ -2932,7 +3838,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
         // Everything version 2 held is still there, including what the v2
         // migration added — a v2 database is one that already had the capture inbox.
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM notes"), 2);
@@ -2957,7 +3863,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, schema::SCHEMA_VERSION);
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
         assert_eq!(
             scalar_i64(
                 &conn,
@@ -2981,7 +3887,7 @@ mod tests {
         );
         // A second run changes nothing.
         init_schema(&conn).expect("second run is a no-op");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]
@@ -3002,7 +3908,7 @@ mod tests {
         );
         conn.execute_batch("DROP TABLE links").expect("clear it");
         init_schema(&conn).expect("the retry succeeds");
-        assert_eq!(table_count(&conn), 32);
+        assert_eq!(table_count(&conn), 41);
     }
 
     #[test]

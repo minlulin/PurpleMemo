@@ -26,6 +26,12 @@ export const SETTING_KEYS = {
   vaultSetup: "vault_setup",
   vaultVerify: "vault_verify",
   /**
+   * The vault's PASSWORD generation (§12.3, Stage 3): 1 when the vault is set
+   * up, +1 at every password change. Deliberately not the §10 data generation
+   * (`sync_state.data_generation`) — a different counter, a different line.
+   */
+  vaultGeneration: "vault_generation",
+  /**
    * Prefix of the durable photo-cleanup records gallery.ts writes. The value
    * is the one already stored in existing databases — renaming it would hide
    * every record written by an older build and orphan those files.

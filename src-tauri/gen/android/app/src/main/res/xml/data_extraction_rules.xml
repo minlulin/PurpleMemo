@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Design decision 6 (docs/ANDROID_DESIGN.md): app data never leaves the
+     device through Google backup or device-to-device transfer. The encrypted
+     database, the wrapped Keystore blobs and the reminder preferences are
+     excluded for both paths; android:allowBackup="false" on the application
+     element is the pre-API-31 half of the same rule. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

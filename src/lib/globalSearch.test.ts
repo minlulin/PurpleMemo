@@ -39,12 +39,14 @@ import {
 const SQLITE_FIXTURE = `
 CREATE TABLE notes (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
+  uid       TEXT,
   tags TEXT NOT NULL DEFAULT '', collection_id INTEGER, pinned INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE VIRTUAL TABLE notes_fts USING fts5(title, content, tags, folder);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, due_date TEXT, done INTEGER NOT NULL DEFAULT 0,
+  uid       TEXT,
   repeat TEXT NOT NULL DEFAULT 'none', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
 CREATE TABLE contacts (
@@ -61,6 +63,7 @@ CREATE TABLE memories (
 );
 CREATE TABLE jobs (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, shop_id INTEGER, total_cents INTEGER NOT NULL,
+  uid       TEXT,
   paid_cents INTEGER NOT NULL DEFAULT 0, job_date TEXT NOT NULL, warranty_days INTEGER,
   status TEXT NOT NULL DEFAULT 'open', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
@@ -70,18 +73,21 @@ CREATE TABLE payables (
 );
 CREATE TABLE loans (
   id INTEGER PRIMARY KEY, counterparty TEXT NOT NULL, direction TEXT NOT NULL,
+  uid       TEXT,
   amount_cents INTEGER NOT NULL, repaid_cents INTEGER NOT NULL DEFAULT 0,
   due_date TEXT, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
 CREATE TABLE shopping_lists (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE shopping_items (
   id INTEGER PRIMARY KEY, list_id INTEGER NOT NULL, text TEXT NOT NULL,
+  uid       TEXT,
   done INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0
 );
 -- Present so the contract's EXCLUSIONS can be asserted as exclusions: a search
 -- that reached into any of these would find these rows.
 CREATE TABLE vault_items (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, ciphertext TEXT NOT NULL,
+  uid       TEXT,
   salt TEXT NOT NULL, iv TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);

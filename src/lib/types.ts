@@ -1,5 +1,8 @@
-// Row/domain types for the 31-table schema — the 32nd, `notes_fts`, is the
-// trigger-maintained FTS index (SCHEMA_VERSION 6). Every table in that schema
+// Row/domain types for the 37-table schema — the 38th, `notes_fts`, is the
+// trigger-maintained FTS index. The six device-local sync-storage tables added
+// in SCHEMA_VERSION 8 (`sync_*`: outbox, tombstones, peers, device identity)
+// are typed where they are read, in `sync/store.ts`, and are never in a backup
+// payload. Every other table in that schema
 // has a `*Row` here, including the two ledger tables, `settings` and
 // `trash_items` (docs/AUDIT.md SCHEMA-02). Money is integer cents
 // everywhere; dates are local `yyyy-mm-dd` strings unless the field says
@@ -7,13 +10,24 @@
 // `ContactRow.birthday` is `yyyy-mm-dd` or yearless `mm-dd`. Domain objects
 // mirror rows — major units appear only at display/parse edges.
 
-export interface CollectionRow {
+/**
+ * Cross-device identity (docs/ANDROID_DESIGN.md, "Cross-device UID contract").
+ * Every synced table has this column and every creation path mints one; it is
+ * optional on the row types because a projection with an explicit column list
+ * (`listNotes`, the title picker) does not select it, and fixtures written
+ * before schema v7 carry none.
+ */
+interface SyncedRow {
+  uid?: string | null;
+}
+
+export interface CollectionRow extends SyncedRow {
   id: number;
   name: string;
   created_at: string;
 }
 
-export interface NoteRow {
+export interface NoteRow extends SyncedRow {
   id: number;
   title: string;
   content: string;
@@ -91,6 +105,8 @@ export interface RecurringPaymentRow {
 
 export interface ShopRow {
   id: number;
+  /** Cross-device identity (§1.1); NULL only on a pre-v7 row. */
+  uid: string | null;
   name: string;
   phone: string;
   address: string;
@@ -102,6 +118,8 @@ export type JobStatus = "open" | "paid";
 
 export interface JobRow {
   id: number;
+  /** Cross-device identity (§1.1); NULL only on a pre-v7 row. */
+  uid: string | null;
   title: string;
   shop_id: number | null;
   total_cents: number;
@@ -129,6 +147,8 @@ export type LoanState = "open" | "partial" | "overdue" | "closed";
 
 export interface LoanRow {
   id: number;
+  /** Cross-device identity (§1.1); NULL only on a pre-v7 row. */
+  uid: string | null;
   counterparty: string;
   direction: LoanDirection;
   amount_cents: number;
@@ -138,13 +158,13 @@ export interface LoanRow {
   created_at: string;
 }
 
-export interface ShoppingListRow {
+export interface ShoppingListRow extends SyncedRow {
   id: number;
   name: string;
   created_at: string;
 }
 
-export interface ShoppingItemRow {
+export interface ShoppingItemRow extends SyncedRow {
   id: number;
   list_id: number;
   text: string;
@@ -152,20 +172,20 @@ export interface ShoppingItemRow {
   sort_order: number;
 }
 
-export interface HabitRow {
+export interface HabitRow extends SyncedRow {
   id: number;
   name: string;
   created_at: string;
 }
 
-export interface HabitLogRow {
+export interface HabitLogRow extends SyncedRow {
   id: number;
   habit_id: number;
   log_date: string;
   done: number; // 0 | 1
 }
 
-export interface TaskRow {
+export interface TaskRow extends SyncedRow {
   id: number;
   title: string;
   due_date: string | null;
@@ -239,7 +259,7 @@ export interface RelatedItem {
   gone: boolean;
 }
 
-export interface ReminderRow {
+export interface ReminderRow extends SyncedRow {
   id: number;
   title: string;
   remind_at: string; // local `yyyy-mm-ddTHH:mm`, not a date-only day
@@ -247,6 +267,12 @@ export interface ReminderRow {
   note: string;
   fired: number; // 0 | 1
   created_at: string;
+  /**
+   * §13.1 Option A: the device that created the reminder, and so the only one
+   * that arms it, notifies it and settles it. NULL is a legacy-local row from
+   * before the column existed, which reads as this device's.
+   */
+  created_by_device_id?: string | null;
 }
 
 export type ContactChannelKind = "phone" | "email" | "other";
@@ -305,6 +331,12 @@ export interface PhotoRefRow {
 
 export interface VaultItemRow {
   id: number;
+  /**
+   * The row's cross-device identity (§1.1). NULL only for a row written before
+   * the column existed — such a row cannot be named by an op until an edit
+   * gives it one.
+   */
+  uid: string | null;
   title: string;
   ciphertext: string; // base64 AES-256-GCM
   salt: string; // base64, vault-password salt
@@ -334,13 +366,21 @@ export interface SettingRow {
   value: string;
 }
 
-/** Entity types Trash can hold — the `trash_items.entity_type` CHECK list. */
+/**
+ * Entity types Trash can hold — the `trash_items.entity_type` CHECK list.
+ *
+ * The two shopping types are schema v10's addition (§13.2): a conflict loser
+ * from a mutable Shopping record archives like a note's or a task's. Ordinary
+ * shopping deletes still do not go to Trash — no Shopping screen calls them.
+ */
 export type TrashEntityType =
   | "note"
   | "task"
   | "contact"
   | "memory"
-  | "journal_entry";
+  | "journal_entry"
+  | "shopping_list"
+  | "shopping_item";
 
 /** One `trash_items` row. `snapshot` is JSON text. */
 export interface TrashItemRow {

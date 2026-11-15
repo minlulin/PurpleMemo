@@ -19,3 +19,8 @@
 *.css text eol=lf
 # rustfmt: keep Rust sources LF so a checkout on any OS formats identically.
 *.rs text eol=lf
+# The generated Android Gradle wrapper is a POSIX sh script with a `#!/bin/sh`
+# shebang and no extension, so the `*.sh` rule above never matched it — the same
+# failure mode the `.mjs` note describes: a CRLF checkout makes `./gradlew`
+# unrunnable.
+src-tauri/gen/android/gradlew text eol=lf

@@ -135,6 +135,212 @@ export interface ShareInfo {
   note: string | null;
 }
 
+/**
+ * The pairing window's state (§11.5). `endpoint` is the `host:port` the offer's
+ * QR carries. `peerPublicKey`/`peerFingerprint` appear once a code-confirmed
+ * rendezvous **staged** a candidate in THIS window (§11.1, §11.2) — public key
+ * material only, never a secret. `peerHelloReceived` turns true when a sealed
+ * hello from that candidate has been opened: the proof of key possession the
+ * panel requires before it offers Trust. The pin is written only on Trust.
+ */
+export interface PairingListenerInfo {
+  running: boolean;
+  port: number | null;
+  endpoint: string | null;
+  publicKey: string | null;
+  fingerprint: string | null;
+  peerDeviceId: string | null;
+  peerPublicKey: string | null;
+  peerFingerprint: string | null;
+  peerHelloReceived: boolean;
+  /** §11.1: wrong guesses burned on this window's code (wave 2, N3). */
+  offerAttempts: number;
+  /** §11.1: the single-use code has been redeemed, so it is spent (N3). */
+  offerRedeemed: boolean;
+  /**
+   * §9.1: the staged upload's state in this window — `receiving`, `staged`,
+   * `applying`, `applied` or `failed`; `null` until the phone sends a batch.
+   */
+  uploadState: string | null;
+  /** Ops staged so far (or applied, once the state is terminal). */
+  uploadOps: number;
+  /** Of the staged ops, how many the apply inserted as new records. */
+  uploadInserted: number | null;
+  /** Of the staged ops, how many this device already held (§7.2 no-ops). */
+  uploadAlreadyKnown: number | null;
+  /** Why the apply failed, in the apply's own words. */
+  uploadNote: string | null;
+  /**
+   * §6: the staged push's state in this window — `receiving`, `staged`,
+   * `applying`, `applied` or `failed`; `null` until the phone pushes an op.
+   */
+  syncState: string | null;
+  /** Ops the phone pushed: staged so far, or applied once terminal. */
+  syncOps: number;
+  /** `sync-applied`: the highest own seq the phone says it applied (§6.5). */
+  syncApplied: number | null;
+  /** Why the sync apply failed, in the apply's own words. */
+  syncNote: string | null;
+  note: string | null;
+}
+
+/** This device's own pairing facts. The public key and fingerprint are public. */
+export interface PairingLocalInfo {
+  deviceId: string;
+  generation: number;
+  schemaVersion: number;
+  protocolVersion: number;
+  publicKey: string;
+  fingerprint: string;
+}
+
+/** A pin the window is opened with, when the peer has paired before (§11.2). */
+export interface PairingPeerPin {
+  deviceId: string;
+  publicKey: string;
+  generation: number;
+  revoked?: boolean;
+}
+
+/**
+ * The desktop's authoritative facts after the phone's sealed handshake
+ * (§11.6.1). `desktopPublicKey` is the offer's key — the one the ack was
+ * authenticated under — and `generation` is the desktop's data line, which the
+ * phone adopts rather than choosing (Option A, §10.2).
+ */
+export interface PhonePairResult {
+  desktopDeviceId: string;
+  desktopPublicKey: string;
+  desktopFingerprint: string;
+  pairingId: string;
+  generation: number;
+  schemaVersion: number;
+  protocolVersion: number;
+}
+
+/** The parts of a scanned offer the phone's wire step acts on (§11.1). */
+export interface PairingPhoneInput {
+  /** The offer's `host:port` — the only address the client will dial. */
+  endpoint: string;
+  pairingId: string;
+  /** The desktop's long-term public key, hex. */
+  publicKey: string;
+  /** The six digits from the desktop's screen. */
+  code: string;
+}
+
+/**
+ * The pinned desktop a snapshot pull is for (§8.4).
+ *
+ * The endpoint came from the offer; the key, the pairing id and the data line
+ * are the pin, read in Rust out of `sync_peers` — never supplied here. A pull
+ * that names a desktop this phone has not pinned is refused before a socket
+ * exists (§11.2).
+ */
+export interface SnapshotPullInput {
+  endpoint: string;
+  desktopDeviceId: string;
+}
+
+/**
+ * One batch of the §8.4 snapshot, opened by Rust and **not yet validated**:
+ * `ops` and `tombstones` are the desktop's own document, narrowed by the sync
+ * store's validator before a single statement is built. A batch that fails
+ * that validation writes nothing.
+ */
+export interface SnapshotBatchResult {
+  /** The pairing the batch belongs to; the store refuses another (§11.4). */
+  pairingId: string;
+  batch: number;
+  total: number;
+  ops: unknown[];
+  tombstones: unknown[];
+}
+
+/**
+ * The desktop's verdict on this phone's §9.1 upload, as its sealed reply
+ * reported it: `pending` until the desktop panel's apply decides, then
+ * `uploaded` with the counts, or `failed` with the apply's reason.
+ */
+export interface UploadStatusResult {
+  state: string;
+  inserted: number;
+  alreadyKnown: number;
+  message: string | null;
+}
+
+/**
+ * The staged upload the desktop panel applies (§9.1): the pairing it belongs
+ * to and every op the phone committed, as wire documents — unvalidated here,
+ * because validation is the apply's §3.4 step.
+ */
+export interface UploadTakeResult {
+  pairingId: string;
+  ops: unknown[];
+}
+
+/**
+ * What the panel's apply decided (§9.1): either the counts of a committed
+ * transaction (`error: null`), or the failure's reason (counts `null`).
+ */
+export interface UploadOutcomeInput {
+  inserted: number | null;
+  alreadyKnown: number | null;
+  error: string | null;
+}
+
+/**
+ * One batch of the desktop's own operations after `afterSeq` (§6.3), opened by
+ * Rust and **not yet validated**: `ops` are the sender's outbox documents,
+ * which the engine validates before it writes anything (§7.7).
+ */
+export interface SyncBatchResult {
+  pairingId: string;
+  batch: number;
+  total: number;
+  ops: unknown[];
+}
+
+/**
+ * The desktop's verdict on this phone's push (§6, §7): `pending` until its
+ * engine decides, then `applied` with the highest seq it applied, or `failed`
+ * with the engine's own reason.
+ */
+export interface SyncStatusResult {
+  state: string;
+  throughSeq: number;
+  message: string | null;
+}
+
+/** The staged push the desktop panel applies: the operations as documents. */
+export interface SyncTakeResult {
+  ops: unknown[];
+}
+
+/**
+ * What the panel's engine decided about a staged push: the highest seq it
+ * applied, or the refusal's own words — exactly one of the two.
+ */
+export interface SyncOutcomeInput {
+  appliedThrough: number | null;
+  error: string | null;
+}
+
+/**
+ * What the panel asks the listener for when it opens (§11.1, §11.5).
+ * `pairingId` is required: it is the envelope's HKDF salt, so a window cannot
+ * open without one (§11.6.1, N9).
+ */
+export interface PairingOpenInput {
+  pairingId: string;
+  /** The single-use code; `null` opens a window for a pinned peer only. */
+  offerCode: string | null;
+  /** Unix epoch milliseconds, when a code is offered. */
+  offerExpiresAt: number | null;
+  peer: PairingPeerPin | null;
+  lastCounter?: number;
+}
+
 /** The full driver surface — implemented by Tauri IPC and by test mocks. */
 export interface DataDriver {
   query<T extends Queryable>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -302,8 +508,171 @@ export interface DataDriver {
   shareArm(): Promise<string>;
 }
 
+/**
+ * The pairing window's four commands, kept apart from [`DataDriver`] because a
+ * SQL-only test harness has no socket to open: the panel's own
+ * [`PairingTransport`](../lib/sync/pairingPanel.ts) is the narrow contract, and
+ * the production driver is the one object that satisfies both.
+ */
+/**
+ * The pairing identity's state, for the re-pair recovery (§11.2, §11.4; N2).
+ * Reads only — nothing here mints or deletes a key.
+ */
+export interface PairingIdentityStatus {
+  /** Whether a keypair is stored and readable right now. */
+  present: boolean;
+  publicKey: string | null;
+  fingerprint: string | null;
+  /** Missing over an existing pin, or unopenable: the confirmed replacement fixes it. */
+  needsRePair: boolean;
+  /** The stored identity exists but the platform key store can no longer open it. */
+  lost: boolean;
+  /** `sync_state.re_pair_required` as stored. */
+  rePairRequired: boolean;
+  /** Why the identity is unusable, in the words the panel shows. */
+  note: string | null;
+}
+
+export interface PairingDriver {
+  /**
+   * This device's pairing identity and data line — reads only, no socket. The
+   * panel needs the public key and fingerprint before it can mint an offer
+   * (§11.1).
+   */
+  pairingLocal(): Promise<PairingLocalInfo>;
+  /**
+   * Open the LAN pairing window (§11.5). The device id, generation and schema
+   * are read in Rust, never trusted from this call. Refused after a reset
+   * barrier; idempotent while a window is already live.
+   */
+  pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo>;
+  /**
+   * Close the window. Resolves only once the port itself is refused, so the
+   * panel's "closed" state and the socket agree (§11.5). Called on expiry, on
+   * the panel closing, on lock and on app background.
+   */
+  pairingClose(): Promise<PairingListenerInfo>;
+  /** Current window state, including the peer a code-confirmed rendezvous pinned. */
+  pairingStatus(): Promise<PairingListenerInfo>;
+  /**
+   * The identity's state, so the panel can offer the confirmed re-pair instead
+   * of a dead end (§11.2, N2). Never mints anything.
+   */
+  pairingIdentityStatus(): Promise<PairingIdentityStatus>;
+  /**
+   * Replace this device's pairing identity after an explicit confirmation
+   * (§11.4). Deletes only the pairing slot — notes, tasks and the database key
+   * stay — and every peer then pairs again.
+   */
+  pairingIdentityReplace(confirm: boolean): Promise<PairingIdentityStatus>;
+  /**
+   * Pair this phone with the desktop whose code was scanned (§11.1, §11.6.1).
+   * The key stays in Rust and the offer's address is the only one dialled.
+   * Writes nothing: the pin is the caller's `sync_peers` write, made only after
+   * this resolves — i.e. only after the sealed hello proved possession.
+   */
+  pairingPhonePair(input: PairingPhoneInput): Promise<PhonePairResult>;
+  /**
+   * Ask for one batch of the §8.4 snapshot. The sealed exchange runs in Rust,
+   * sealed with the pin's key; this side receives rows and writes nothing.
+   * Batch 0 begins a pull and takes whatever snapshot the desktop holds now.
+   */
+  pairingSnapshotRequest(
+    input: SnapshotPullInput,
+    batch: number,
+  ): Promise<SnapshotBatchResult>;
+  /**
+   * Acknowledge one staged batch. Pure bookkeeping on the desktop (§8.4): the
+   * phone has applied nothing yet, so this changes no local row.
+   */
+  pairingSnapshotApplied(
+    input: SnapshotPullInput,
+    batch: number,
+  ): Promise<void>;
+  /**
+   * Acknowledge the whole snapshot with its counts. The desktop refuses this
+   * unless every batch was acknowledged, which is what makes "adopted" mean
+   * the whole of it rather than its last batch (§8.4).
+   */
+  pairingSnapshotAdopted(
+    input: SnapshotPullInput,
+    rows: number,
+    tombstones: number,
+  ): Promise<void>;
+  /**
+   * Send one batch of this phone's own records to the pinned desktop (§9.1).
+   * The sealed exchange runs in Rust with the pin's key; the desktop only
+   * stages the batch — nothing is applied there until the commit and the
+   * panel's one transaction.
+   */
+  pairingUploadBatch(
+    input: SnapshotPullInput,
+    batch: number,
+    total: number,
+    ops: unknown[],
+  ): Promise<void>;
+  /**
+   * Tell the pinned desktop every upload batch was sent (§9.1). It refuses
+   * unless all of them are staged, so a resolved commit means the desktop
+   * holds the whole upload.
+   */
+  pairingUploadCommit(input: SnapshotPullInput): Promise<void>;
+  /**
+   * Ask for the desktop's verdict on this phone's upload (§9.1). The reply
+   * is sealed and its state is `pending` until the desktop panel's apply
+   * decides — this phone's records are only ever reported uploaded on the
+   * `uploaded` verdict.
+   */
+  pairingUploadStatus(input: SnapshotPullInput): Promise<UploadStatusResult>;
+  /**
+   * Take the staged §9.1 upload for the desktop panel's apply. `null` until
+   * a phone commits a complete upload in this window; taking is once, so
+   * the same staging can never be applied twice (§7.2).
+   */
+  pairingUploadTake(): Promise<UploadTakeResult | null>;
+  /**
+   * Report the panel's apply outcome (§9.1), so the listener can seal the
+   * verdict to the phone. The first outcome stands.
+   */
+  pairingUploadOutcome(input: UploadOutcomeInput): Promise<void>;
+  /**
+   * Send one batch of this phone's operations to the pinned desktop (§6.2).
+   * The desktop stages them; nothing is applied until it commits and its
+   * panel's engine runs.
+   */
+  pairingSyncPush(
+    input: SnapshotPullInput,
+    batch: number,
+    total: number,
+    ops: unknown[],
+  ): Promise<void>;
+  /** Tell the pinned desktop every pushed batch was sent (§6.2). */
+  pairingSyncCommit(input: SnapshotPullInput): Promise<void>;
+  /**
+   * One batch of the pinned desktop's own operations after `afterSeq` (§6.3).
+   * The reply is sealed; a forged batch cannot pass as a fresh one.
+   */
+  pairingSyncPull(
+    input: SnapshotPullInput,
+    batch: number,
+    afterSeq: number,
+  ): Promise<SyncBatchResult>;
+  /** Report that this phone applied the desktop's ops through `throughSeq`
+   * (§6.5). */
+  pairingSyncApplied(
+    input: SnapshotPullInput,
+    throughSeq: number,
+  ): Promise<void>;
+  /** Ask for the desktop's verdict on this phone's push (§6). */
+  pairingSyncStatus(input: SnapshotPullInput): Promise<SyncStatusResult>;
+  /** Take the staged push for the desktop panel's apply — once (§7.2). */
+  pairingSyncTake(): Promise<SyncTakeResult | null>;
+  /** Report the panel's engine outcome, so the listener can seal the verdict. */
+  pairingSyncOutcome(input: SyncOutcomeInput): Promise<void>;
+}
+
 /** The one production driver: Tauri IPC commands. */
-export function createTauriDriver(): DataDriver {
+export function createTauriDriver(): DataDriver & PairingDriver {
   return {
     query: (sql, params) => invoke("db_query", { sql, params }),
     execute: (sql, params, lease) =>
@@ -365,6 +734,42 @@ export function createTauriDriver(): DataDriver {
     shareStop: (forLock) => invoke("share_stop", { forLock: forLock === true }),
     shareStatus: () => invoke("share_status"),
     sharePublish: (snapshotJson) => invoke("share_publish", { snapshotJson }),
+    // Pairing window (§11.5). One command site each, so the IPC surface this
+    // file is pinned against lists every command exactly once.
+    pairingLocal: () => invoke("pairing_local"),
+    pairingOpen: (input) => invoke("pairing_open", { input }),
+    pairingClose: () => invoke("pairing_close"),
+    pairingStatus: () => invoke("pairing_status"),
+    pairingIdentityStatus: () => invoke("pairing_identity_status"),
+    pairingIdentityReplace: (confirm) =>
+      invoke("pairing_identity_replace", { confirm }),
+    pairingPhonePair: (input) => invoke("pairing_phone_pair", { input }),
+    // §8.4's pull — one invoke site each, like every command above.
+    pairingSnapshotRequest: (input, batch) =>
+      invoke("pairing_snapshot_request", { input, batch }),
+    pairingSnapshotApplied: (input, batch) =>
+      invoke("pairing_snapshot_applied", { input, batch }),
+    pairingSnapshotAdopted: (input, rows, tombstones) =>
+      invoke("pairing_snapshot_adopted", { input, rows, tombstones }),
+    // §9.1's upload — the same one-invoke-site discipline, in both directions.
+    pairingUploadBatch: (input, batch, total, ops) =>
+      invoke("pairing_upload_batch", { input, batch, total, ops }),
+    pairingUploadCommit: (input) => invoke("pairing_upload_commit", { input }),
+    pairingUploadStatus: (input) => invoke("pairing_upload_status", { input }),
+    pairingUploadTake: () => invoke("pairing_upload_take"),
+    pairingUploadOutcome: (input) =>
+      invoke("pairing_upload_outcome", { input }),
+    // §6's exchange — the same one-invoke-site discipline, both directions.
+    pairingSyncPush: (input, batch, total, ops) =>
+      invoke("pairing_sync_push", { input, batch, total, ops }),
+    pairingSyncCommit: (input) => invoke("pairing_sync_commit", { input }),
+    pairingSyncPull: (input, batch, afterSeq) =>
+      invoke("pairing_sync_pull", { input, batch, afterSeq }),
+    pairingSyncApplied: (input, throughSeq) =>
+      invoke("pairing_sync_applied", { input, throughSeq }),
+    pairingSyncStatus: (input) => invoke("pairing_sync_status", { input }),
+    pairingSyncTake: () => invoke("pairing_sync_take"),
+    pairingSyncOutcome: (input) => invoke("pairing_sync_outcome", { input }),
   };
 }
 

@@ -92,6 +92,7 @@ function fixture(): ExportData {
     loans: [
       {
         id: 13,
+        uid: null,
         counterparty: "Aung",
         direction: "lent",
         amount_cents: 5000,
@@ -105,6 +106,7 @@ function fixture(): ExportData {
     jobs: [
       {
         id: 14,
+        uid: null,
         title: "Repair",
         shop_id: 4,
         total_cents: 10000,

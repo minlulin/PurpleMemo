@@ -1,0 +1,1921 @@
+/**
+ * Stage 1's apply half — `docs/ANDROID_SYNC_PROTOCOL.md` §4, §5, §7 and §13.2.
+ *
+ * Every test here runs TWO stores over the same real SQLite fixture: A records
+ * with Session 1's repositories, B applies with the engine. "Converges" means
+ * B ends up holding what A holds — same rows, same stamps — which is the only
+ * claim worth making about a merge engine.
+ *
+ * The starting points are always produced by the real repositories (never
+ * hand-written outbox rows) except where a test needs an operation no local
+ * writer produces — a mobile edit of a habit log, an op for a Stage 2 table —
+ * and those say so.
+ */
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { createBudgetRepo } from "../budget.ts";
+import { createBusinessRepo } from "../business.ts";
+import { createHabitsRepo } from "../habits.ts";
+import { createLoansRepo } from "../loans.ts";
+import { createNotesRepo } from "../notes.ts";
+import { createShoppingRepo } from "../shopping.ts";
+import { createTasksRepo } from "../tasks.ts";
+import { createTrashRepo, TRASH_CONFLICT_KIND } from "../trash.ts";
+import { applyOps, type PeerOp } from "./engine.ts";
+import type { Origin, VersionStamp } from "./protocol.ts";
+import {
+  ackStatements,
+  collectTombstonesStatements,
+  readOutbox,
+  readState,
+  readTombstones,
+  registerPeerStatements,
+  snapshotStatements,
+} from "./store.ts";
+import { openSyncStore, type SyncFixture } from "./testSchema.ts";
+
+const DEVICE_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const DEVICE_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+interface Pair {
+  a: SyncFixture;
+  b: SyncFixture;
+}
+
+/**
+ * Two devices, each pinned to the other. The peer rows are not needed for the
+ * merge — they are what the cursor advance writes into (§6.4), so having them
+ * makes the cursor claims below mean something.
+ */
+async function openPair(): Promise<Pair> {
+  const a = openSyncStore(DEVICE_A);
+  const b = openSyncStore(DEVICE_B);
+  await a.driver.batch([
+    ...registerPeerStatements({ deviceId: DEVICE_B, generation: 1 }),
+  ]);
+  await b.driver.batch([
+    ...registerPeerStatements({ deviceId: DEVICE_A, generation: 1 }),
+  ]);
+  return { a, b };
+}
+
+/** A's own device id, as the peer row on B names it. */
+async function deviceOf(store: SyncFixture): Promise<string> {
+  return (await readState(store.driver)).deviceId;
+}
+
+/** Every op this device has recorded, in `seq` order. */
+async function opsOf(store: SyncFixture): Promise<PeerOp[]> {
+  return readOutbox(store.driver);
+}
+
+/**
+ * Apply `source`'s ops to `target`, in seq order, as one batch — the caller's
+ * one transaction (§7.4). `ops` narrows what is sent, which is how a test says
+ * "B's cursor was already past the earlier ones".
+ */
+async function applyFrom(
+  target: SyncFixture,
+  source: SyncFixture,
+  options: { origin?: Origin; ops?: readonly PeerOp[] } = {},
+): Promise<void> {
+  const ops = options.ops ?? (await opsOf(source));
+  const statements = await applyOps(target.driver, {
+    peerId: await deviceOf(source),
+    origin: options.origin ?? "desktop",
+    ops,
+  });
+  await target.driver.batch(statements);
+}
+
+interface NoteRow {
+  id: number;
+  uid: string | null;
+  title: string;
+  content: string;
+  collection_id: number | null;
+}
+
+async function notesIn(store: SyncFixture, uid?: string): Promise<NoteRow[]> {
+  return uid === undefined
+    ? store.driver.query<NoteRow>("SELECT * FROM notes ORDER BY id")
+    : store.driver.query<NoteRow>("SELECT * FROM notes WHERE uid = ?", [uid]);
+}
+
+async function stampOf(
+  store: SyncFixture,
+  table: string,
+  uid: string,
+): Promise<VersionStamp | undefined> {
+  const [row] = await store.driver.query<{
+    counter: number;
+    device_id: string;
+    op_id: string;
+  }>(
+    "SELECT counter, device_id, op_id FROM sync_row_stamps WHERE entity_table = ? AND entity_uid = ?",
+    [table, uid],
+  );
+  return row
+    ? { counter: row.counter, deviceId: row.device_id, opId: row.op_id }
+    : undefined;
+}
+
+async function count(
+  store: SyncFixture,
+  sql: string,
+  params: unknown[] = [],
+): Promise<number> {
+  const [row] = await store.driver.query<{ n: number }>(sql, params);
+  return row?.n ?? 0;
+}
+
+/**
+ * An operation no local writer produces — a phone's edit of a habit log, or an
+ * op for a table the allowlist never carries. Both are wire documents, so they
+ * are written the way the wire writes them (§6.2).
+ */
+function syntheticOp(
+  deviceId: string,
+  seq: number,
+  table: string,
+  uid: string,
+  kind: PeerOp["op"],
+  fields: Record<string, unknown>,
+  counter: number,
+): PeerOp {
+  return {
+    device_id: deviceId,
+    seq,
+    op_id: `${deviceId.slice(0, 8)}-op-${seq}`,
+    entity_table: table,
+    entity_uid: uid,
+    op: kind,
+    base_counter: counter - 1,
+    counter,
+    field_stamps: "{}",
+    payload: JSON.stringify(fields),
+  };
+}
+
+/** A note created on A and applied to B: the shape every merge test starts at. */
+async function sharedNote(pair: Pair): Promise<string> {
+  const notes = createNotesRepo(pair.a.driver);
+  const id = await notes.createNote({ title: "Shared", content: "body" });
+  await applyFrom(pair.b, pair.a);
+  const [row] = await notesIn(pair.a, undefined);
+  assert.ok(row?.uid, "the shared note has a uid");
+  assert.equal(id, row.id);
+  return row.uid;
+}
+
+// ---------------------------------------------------------------------------
+// Task 1 — §4 merge, §5 tombstones, §7 semantics.
+// ---------------------------------------------------------------------------
+
+test("a create and an update arrive intact, stamps and all", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [onB] = await notesIn(pair.b, uid);
+  assert.ok(onB, "the create landed on B");
+  assert.equal(onB.title, "Shared");
+  assert.equal(onB.content, "body");
+
+  const notesA = createNotesRepo(pair.a.driver);
+  const [rowA] = await notesIn(pair.a, uid);
+  assert.ok(rowA);
+  await notesA.updateNote(rowA.id, { content: "body, edited" });
+  await applyFrom(pair.b, pair.a);
+
+  const [updated] = await notesIn(pair.b, uid);
+  assert.ok(updated);
+  assert.equal(
+    updated.content,
+    "body, edited",
+    "the update merged into the row B already held",
+  );
+  assert.equal(updated.title, "Shared");
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM notes"),
+    1,
+    "an update to a known uid is never a second row",
+  );
+  assert.deepEqual(
+    await stampOf(pair.b, "notes", uid),
+    await stampOf(pair.a, "notes", uid),
+    "both devices hold the record under the same stamp",
+  );
+});
+
+test("two devices edit DIFFERENT fields offline and both edits survive", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowB);
+
+  // A changes the title, B the body, neither having seen the other (§4.3).
+  const notesA = createNotesRepo(pair.a.driver);
+  const [rowA] = await notesIn(pair.a, uid);
+  assert.ok(rowA);
+  await notesA.updateNote(rowA.id, { title: "A's title" });
+  const notesB = createNotesRepo(pair.b.driver);
+  await notesB.updateNote(rowB.id, { content: "B's body" });
+
+  await applyFrom(pair.b, pair.a);
+  await applyFrom(pair.a, pair.b);
+
+  for (const [name, store] of [
+    ["A", pair.a],
+    ["B", pair.b],
+  ] as const) {
+    const [row] = await notesIn(store, uid);
+    assert.ok(row, `${name} holds the note`);
+    assert.equal(row.title, "A's title", `${name} kept A's title`);
+    assert.equal(row.content, "B's body", `${name} kept B's body`);
+  }
+  assert.deepEqual(
+    await stampOf(pair.a, "notes", uid),
+    await stampOf(pair.b, "notes", uid),
+    "the merged record carries the same stamp on both sides (§4.2)",
+  );
+});
+
+test("the same field edited on both sides resolves by stamp, deterministically", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowB] = await notesIn(pair.b, uid);
+  const [rowA] = await notesIn(pair.a, uid);
+  assert.ok(rowA && rowB);
+
+  // Both writes take counter 2 (each device saw only the create), so the
+  // device id decides — B's is lexicographically higher (§4.2).
+  await createNotesRepo(pair.a.driver).updateNote(rowA.id, {
+    title: "A wins?",
+  });
+  await createNotesRepo(pair.b.driver).updateNote(rowB.id, {
+    title: "B wins?",
+  });
+  assert.equal(
+    (await stampOf(pair.a, "notes", uid))?.counter,
+    (await stampOf(pair.b, "notes", uid))?.counter,
+    "precondition: the counters tie, so the tie-break is what decides",
+  );
+
+  await applyFrom(pair.b, pair.a);
+  await applyFrom(pair.a, pair.b);
+
+  for (const store of [pair.a, pair.b]) {
+    const [row] = await notesIn(store, uid);
+    assert.equal(
+      row?.title,
+      "B wins?",
+      "the higher device id wins an equal counter",
+    );
+    assert.deepEqual(await stampOf(store, "notes", uid), {
+      counter: 2,
+      deviceId: DEVICE_B,
+      opId: (await stampOf(pair.b, "notes", uid))?.opId,
+    });
+  }
+});
+
+test("a delete that outranks the local edit removes the row on both devices", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowB] = await notesIn(pair.b, uid);
+  const [rowA] = await notesIn(pair.a, uid);
+  assert.ok(rowA && rowB);
+
+  // B edits at counter 2. A edits (2) and then deletes (3), so the delete is
+  // strictly newer than the value B holds.
+  await createNotesRepo(pair.b.driver).updateNote(rowB.id, { content: "B" });
+  await createNotesRepo(pair.a.driver).updateNote(rowA.id, { title: "A" });
+  await createNotesRepo(pair.a.driver).deleteNote(rowA.id);
+
+  await applyFrom(pair.b, pair.a);
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM notes"),
+    0,
+    "§5.3: the newer delete removes the row B was holding",
+  );
+  const [tombstone] = await readTombstones(pair.b.driver);
+  assert.equal(tombstone?.entity_uid, uid);
+
+  // And B's older edit, arriving at A, cannot resurrect what the tombstone
+  // outranks: A keeps the record dead.
+  await applyFrom(pair.a, pair.b, { ops: (await opsOf(pair.b)).slice(0, 1) });
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM notes"),
+    0,
+    "an op the tombstone outranks leaves the record dead",
+  );
+});
+
+test("an edit newer than a remote delete keeps the row and records the losing tombstone", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowA] = await notesIn(pair.a, uid);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowA && rowB);
+
+  // B deletes at counter 2; A edits at 2 and again at 3, so the value A holds
+  // is strictly newer than the delete that arrives.
+  await createNotesRepo(pair.b.driver).deleteNote(rowB.id);
+  const notesA = createNotesRepo(pair.a.driver);
+  await notesA.updateNote(rowA.id, { title: "edited" });
+  await notesA.updateNote(rowA.id, { content: "edited too" });
+
+  await applyFrom(pair.a, pair.b);
+  const [survivor] = await notesIn(pair.a, uid);
+  assert.equal(
+    survivor?.title,
+    "edited",
+    "§5.3: the edit outranks the delete, so the record survives",
+  );
+  const tombstone = (await readTombstones(pair.a.driver)).find(
+    (row) => row.entity_uid === uid,
+  );
+  assert.ok(
+    tombstone,
+    "the delete is still recorded, so the next comparison stays decidable",
+  );
+});
+
+test("applying the same op list twice changes nothing the second time", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowB);
+  await createNotesRepo(pair.b.driver).updateNote(rowB.id, { title: "B" });
+  await createNotesRepo(pair.a.driver).updateNote(
+    (await notesIn(pair.a, uid))[0]?.id ?? 0,
+    { title: "A" },
+  );
+
+  const ops = await opsOf(pair.a);
+  await applyFrom(pair.b, pair.a, { ops });
+  const first = {
+    rows: await notesIn(pair.b),
+    stamp: await stampOf(pair.b, "notes", uid),
+    lamport: (await readState(pair.b.driver)).lamport,
+    cursor: (
+      await pair.b.driver.query<{ cursor_in: number }>(
+        "SELECT cursor_in FROM sync_peers WHERE device_id = ?",
+        [DEVICE_A],
+      )
+    )[0]?.cursor_in,
+  };
+
+  await applyFrom(pair.b, pair.a, { ops });
+  assert.deepEqual(
+    {
+      rows: await notesIn(pair.b),
+      stamp: await stampOf(pair.b, "notes", uid),
+      lamport: (await readState(pair.b.driver)).lamport,
+      cursor: (
+        await pair.b.driver.query<{ cursor_in: number }>(
+          "SELECT cursor_in FROM sync_peers WHERE device_id = ?",
+          [DEVICE_A],
+        )
+      )[0]?.cursor_in,
+    },
+    first,
+    "§7.2: a re-delivered batch is not a data event",
+  );
+});
+
+test("an op for a table outside the allowlist refuses the whole batch and writes nothing", async () => {
+  const pair = await openPair();
+  const notes = createNotesRepo(pair.a.driver);
+  await notes.createNote({ title: "Arrives", content: "" });
+  const valid = await opsOf(pair.a);
+  assert.equal(valid.length, 1);
+
+  // §2.2: a row that never leaves its device. Since Stage 3 every one of the
+  // seventeen synced tables moves, so the refusal has to be aimed at a table
+  // that is not on the allowlist at all.
+  const leaky = syntheticOp(
+    await deviceOf(pair.a),
+    2,
+    "photos",
+    "9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f",
+    "create",
+    { rel_path: "photos/2026/01/x.png" },
+    2,
+  );
+
+  await assert.rejects(
+    applyOps(pair.b.driver, {
+      peerId: await deviceOf(pair.a),
+      origin: "desktop",
+      ops: [...valid, leaky],
+    }),
+    /sync allowlist/,
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM notes"),
+    0,
+    "§7.1: a refusal is a wall — the valid op in the same batch is not applied either",
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM sync_row_stamps"),
+    0,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 — Budget's five tables move under §2.3's authority (§12.2).
+// ---------------------------------------------------------------------------
+
+/** A Budget row on a store, read whole: what the merge actually wrote. */
+interface EntryRow {
+  uid: string | null;
+  amount_cents: number;
+  category_id: number;
+  wallet_id: number;
+  entry_date: string;
+  note: string;
+}
+
+async function entryOn(
+  store: SyncFixture,
+  table: "expense_entries" | "income_entries",
+): Promise<EntryRow[]> {
+  return store.driver.query<EntryRow>(`SELECT * FROM "${table}" ORDER BY id`);
+}
+
+test("a phone's expense entry lands on the desktop with both parents resolved by uid", async () => {
+  const pair = await openPair();
+  const onA = createBudgetRepo(pair.a.driver);
+  const walletId = await onA.createWallet("Cash");
+  const categoryId = await onA.createExpenseCategory("Food");
+  // Wallet and category are desktop-owned: they reach the phone first (§2.3).
+  await applyFrom(pair.b, pair.a);
+
+  const phoneWallet = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Cash'",
+  );
+  const phoneCategory = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM expense_categories WHERE name = 'Food'",
+  );
+  assert.ok(phoneWallet[0] && phoneCategory[0], "the phone holds both parents");
+
+  const onB = createBudgetRepo(pair.b.driver);
+  await onB.createExpenseEntry({
+    amountCents: 1_250,
+    categoryId: phoneCategory[0].id,
+    walletId: phoneWallet[0].id,
+    entryDate: "2026-11-13",
+    note: "lunch",
+  });
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const entries = await entryOn(pair.a, "expense_entries");
+  const entry = entries[0];
+  assert.ok(entry, "the entry landed on the desktop");
+  assert.equal(entries.length, 1);
+  assert.equal(entry.amount_cents, 1_250);
+  assert.equal(entry.note, "lunch");
+  assert.equal(entry.entry_date, "2026-11-13");
+  assert.equal(
+    entry.wallet_id,
+    walletId,
+    "the wallet uid resolved to the desktop's own row",
+  );
+  assert.equal(
+    entry.category_id,
+    categoryId,
+    "and the category uid to its own category row",
+  );
+  assert.deepEqual(
+    await stampOf(pair.a, "expense_entries", entry.uid ?? ""),
+    await stampOf(pair.b, "expense_entries", entry.uid ?? ""),
+    "both devices hold the entry under one stamp",
+  );
+});
+
+test("a desktop-created wallet and category arrive on the phone", async () => {
+  const pair = await openPair();
+  const onA = createBudgetRepo(pair.a.driver);
+  await onA.createWallet("Bank");
+  await onA.createIncomeCategory("Salary");
+  await onA.createExpenseCategory("Food");
+  await applyFrom(pair.b, pair.a);
+
+  for (const [table, name] of [
+    ["wallets", "Bank"],
+    ["income_categories", "Salary"],
+    ["expense_categories", "Food"],
+  ] as const) {
+    assert.equal(
+      await count(
+        pair.b,
+        `SELECT count(*) AS n FROM "${table}" WHERE name = ?`,
+        [name],
+      ),
+      1,
+      `${table} arrived exactly once, under its own uid`,
+    );
+  }
+
+  // The rows the phone received are usable rows, not mirrored labels: they are
+  // what its own entry form reads (decision 4's create path).
+  const [wallet] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Bank'",
+  );
+  const [category] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM expense_categories WHERE name = 'Food'",
+  );
+  assert.ok(wallet && category);
+  const entryId = await createBudgetRepo(pair.b.driver).createExpenseEntry({
+    amountCents: 400,
+    categoryId: category.id,
+    walletId: wallet.id,
+    entryDate: "2026-11-13",
+  });
+  assert.equal(entryId > 0, true);
+});
+
+test("a mobile-origin wallet create is refused and writes nothing", async () => {
+  const pair = await openPair();
+  const phoneId = await deviceOf(pair.b);
+  const op = syntheticOp(
+    phoneId,
+    1,
+    "wallets",
+    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "create",
+    { name: "Phone wallet", created_at: "2026-11-13" },
+    1,
+  );
+
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [op],
+      }),
+    /desktop-owned/,
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM wallets"),
+    0,
+    "§2.3: the phone never writes a wallet, so the desktop never holds one",
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM sync_row_stamps"),
+    0,
+  );
+});
+
+test("a mobile-origin entry edit is refused, and the same edit from the desktop applies", async () => {
+  const pair = await openPair();
+  const onA = createBudgetRepo(pair.a.driver);
+  const walletId = await onA.createWallet("Cash");
+  const categoryId = await onA.createExpenseCategory("Food");
+  const entryId = await onA.createExpenseEntry({
+    amountCents: 1_000,
+    categoryId,
+    walletId,
+    entryDate: "2026-11-13",
+  });
+  const [row] = await entryOn(pair.a, "expense_entries");
+  assert.ok(row?.uid);
+  assert.equal(entryId > 0, true);
+
+  // A correction an append-only table does not take from the phone (§2.3). The
+  // op is written the way the wire writes one, because no phone writer makes it.
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    9,
+    "expense_entries",
+    row.uid,
+    "update",
+    { amount_cents: 900 },
+    10,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [edit],
+      }),
+    /never edits or deletes expense_entries/,
+  );
+  assert.equal(
+    (await entryOn(pair.a, "expense_entries"))[0]?.amount_cents,
+    1_000,
+    "the refused edit wrote nothing",
+  );
+
+  await applyOps(pair.a.driver, {
+    peerId: phoneId,
+    origin: "desktop",
+    ops: [edit],
+  }).then((statements) => pair.a.driver.batch(statements));
+  assert.equal(
+    (await entryOn(pair.a, "expense_entries"))[0]?.amount_cents,
+    900,
+    "§2.3: the desktop is the authority for every synced table, so a correction flows",
+  );
+});
+
+/**
+ * Exit gate ruling 1: the phone's Food and the desktop's Food collide on the
+ * natural key, and the phone's earlier stamp means ITS uid survives — the
+ * create is treated as already held. The desktop's entry, in the same batch,
+ * names the desktop's uid, which is now the loser; the batch's alias resolves
+ * it, so the child still lands on the phone's row. (Before the ruling this test
+ * asserted the re-key: the phone's row took the desktop's uid even though the
+ * phone's stamp won.)
+ */
+test("a same-name create leaves the winning row's uid alone, and its child still resolves", async () => {
+  const pair = await openPair();
+  const onPhone = createBudgetRepo(pair.b.driver);
+  await onPhone.createWallet("Cash");
+  const phoneCategoryId = await onPhone.createExpenseCategory("Food");
+  const [phoneCategory] = await pair.b.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM expense_categories WHERE id = ?",
+    [phoneCategoryId],
+  );
+  assert.ok(phoneCategory?.uid);
+
+  // The desktop minted its own Cash and Food, and an entry naming both.
+  const onDesktop = createBudgetRepo(pair.a.driver);
+  const desktopWalletId = await onDesktop.createWallet("Cash");
+  const desktopCategoryId = await onDesktop.createExpenseCategory("Food");
+  await onDesktop.createExpenseEntry({
+    amountCents: 1_250,
+    categoryId: desktopCategoryId,
+    walletId: desktopWalletId,
+    entryDate: "2026-11-13",
+    note: "lunch",
+  });
+  const [desktopCategory] = await pair.a.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM expense_categories WHERE id = ?",
+    [desktopCategoryId],
+  );
+  assert.ok(desktopCategory?.uid);
+  assert.notEqual(desktopCategory.uid, phoneCategory.uid);
+
+  await applyFrom(pair.b, pair.a);
+
+  const categories = await pair.b.driver.query<{ id: number; uid: string }>(
+    "SELECT id, uid FROM expense_categories",
+  );
+  assert.equal(categories.length, 1, "one Food, not two (§8.4)");
+  assert.equal(
+    categories[0]?.uid,
+    phoneCategory.uid,
+    "the phone's stamp wins, so the phone's uid is the surviving identity",
+  );
+  assert.equal(
+    categories[0]?.id,
+    phoneCategoryId,
+    "and keeps its local id, so its children stay attached",
+  );
+  assert.equal(
+    await count(
+      pair.b,
+      "SELECT count(*) AS n FROM sync_row_stamps WHERE entity_uid = ?",
+      [phoneCategory.uid],
+    ),
+    1,
+    "the record keeps the stamp it held, so a later merge knows what it has",
+  );
+
+  const entries = await pair.b.driver.query<{
+    category_id: number;
+    wallet_id: number;
+  }>("SELECT * FROM expense_entries");
+  assert.equal(
+    entries.length,
+    1,
+    "the entry named the folded parent, so it landed",
+  );
+  assert.equal(
+    entries[0]?.category_id,
+    phoneCategoryId,
+    "its category_uid — the losing uid — resolved to the surviving row",
+  );
+  const [wallet] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets",
+  );
+  assert.equal(entries[0]?.wallet_id, wallet?.id, "and so did its wallet_uid");
+});
+
+/**
+ * Before the exit gate's ruling 1 this was "a fold re-keys the row but never
+ * overwrites a newer local value": the local stamp outranked the incoming
+ * create, the values stood, and the identity STILL folded onto the incoming
+ * uid. The ruling makes that combination impossible — the uid that survives is
+ * the §4 winner's — so the local stamp winning now means the local uid survives
+ * too. Everything else the old test asserted (the value stands, the stamp
+ * carries) is unchanged.
+ */
+test("a fold with the local stamp winning keeps the local uid and the local value", async () => {
+  const pair = await openPair();
+  const phoneUid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  await pair.b.driver.execute(
+    "INSERT INTO expense_categories (uid, name, created_at) VALUES (?, 'Food', '2026-11-09')",
+    [phoneUid],
+  );
+  await pair.b.driver.execute(
+    `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+     VALUES ('expense_categories', ?, 9, 'phone-1', 'phone-1#9', '{}', '2026-11-09T00:00:00.000Z')`,
+    [phoneUid],
+  );
+  const onA = createBudgetRepo(pair.a.driver);
+  await onA.createExpenseCategory("Food");
+  await applyFrom(pair.b, pair.a);
+
+  const rows = await pair.b.driver.query<{
+    uid: string;
+    created_at: string;
+  }>("SELECT * FROM expense_categories");
+  assert.equal(rows.length, 1);
+  assert.equal(
+    rows[0]?.uid,
+    phoneUid,
+    "ruling 1: the local stamp wins, so the local uid is the surviving one",
+  );
+  assert.equal(
+    rows[0]?.created_at,
+    "2026-11-09",
+    "§4: a create does not outrank a newer local write — the value stands",
+  );
+  const [stamp] = await pair.b.driver.query<{ counter: number }>(
+    "SELECT counter FROM sync_row_stamps WHERE entity_table = 'expense_categories'",
+  );
+  assert.equal(
+    stamp?.counter,
+    9,
+    "and its stamp is still the one the row held (§4.2)",
+  );
+});
+
+/** A device's `Work` folder and every note, as the swap scenario checks them. */
+async function workState(store: SyncFixture): Promise<{
+  folder: { id: number; uid: string | null };
+  notes: { title: string; collection_id: number | null }[];
+}> {
+  const [folder] = await store.driver.query<{
+    id: number;
+    uid: string | null;
+  }>("SELECT id, uid FROM collections ORDER BY id");
+  assert.ok(folder, "the folder exists");
+  const notes = await store.driver.query<{
+    title: string;
+    collection_id: number | null;
+  }>("SELECT title, collection_id FROM notes ORDER BY id");
+  return { folder, notes };
+}
+
+/** The uid a just-created row landed on, read back from the table. */
+async function uidOf(
+  store: SyncFixture,
+  table: string,
+  id: number,
+): Promise<string> {
+  const [row] = await store.driver.query<{ uid: string | null }>(
+    `SELECT uid FROM "${table}" WHERE id = ?`,
+    [id],
+  );
+  assert.ok(row?.uid, "the row has a uid");
+  return row.uid;
+}
+
+/**
+ * The swap: both devices create the same folder offline, so each one's create
+ * arrives at the other. Before ruling 1 both sides folded toward the other's
+ * uid and the pair ended up holding SWAPPED identities — the same data under
+ * two different names, still divergent, with a child op naming the losing uid
+ * unresolvable on the peer.
+ *
+ * Both devices compare the same two stamps, so exactly one uid survives and
+ * the loser's side folds onto it. The winner is the higher stamp; here both
+ * creates are counter 1, so §4.2's device-id tie-break decides.
+ */
+test("two offline 'Work' folders converge on the winner's uid, in both directions", async () => {
+  const pair = await openPair();
+  const onA = createNotesRepo(pair.a.driver);
+  const onB = createNotesRepo(pair.b.driver);
+  const collectionA = await onA.createCollection("Work");
+  await onA.createNote({
+    title: "A's plan",
+    content: "",
+    collectionId: collectionA,
+  });
+  const collectionB = await onB.createCollection("Work");
+  await onB.createNote({
+    title: "B's plan",
+    content: "",
+    collectionId: collectionB,
+  });
+  const uidA = await uidOf(pair.a, "collections", collectionA);
+  const uidB = await uidOf(pair.b, "collections", collectionB);
+  // compareStamps: counter first (1 = 1 here), then the device id.
+  assert.ok(DEVICE_A < DEVICE_B, "the fixture's device ids decide this tie");
+  const winner = uidB;
+
+  await applyFrom(pair.b, pair.a);
+  await applyFrom(pair.a, pair.b);
+
+  for (const [side, store] of [
+    ["A", pair.a],
+    ["B", pair.b],
+  ] as const) {
+    assert.equal(
+      await count(store, "SELECT count(*) AS n FROM collections"),
+      1,
+      `${side} holds one folder, not two`,
+    );
+    const { folder, notes } = await workState(store);
+    assert.equal(
+      folder.uid,
+      winner,
+      `${side} converged on the winner's uid, not the other side's`,
+    );
+    assert.equal(notes.length, 2, `${side} holds both notes`);
+    assert.deepEqual(
+      notes.map((note) => note.collection_id),
+      [folder.id, folder.id],
+      `${side} has both notes inside the surviving folder`,
+    );
+    assert.notEqual(uidA, uidB);
+  }
+});
+
+test("the same swap with the stamps reversed converges on the other uid", async () => {
+  const pair = await openPair();
+  // A's clock is ahead, so A's create outranks B's on the counter alone.
+  await pair.a.driver.execute("UPDATE sync_state SET lamport = 5 WHERE id = 1");
+  const onA = createNotesRepo(pair.a.driver);
+  const onB = createNotesRepo(pair.b.driver);
+  const collectionA = await onA.createCollection("Work");
+  await onA.createNote({
+    title: "A's plan",
+    content: "",
+    collectionId: collectionA,
+  });
+  const collectionB = await onB.createCollection("Work");
+  await onB.createNote({
+    title: "B's plan",
+    content: "",
+    collectionId: collectionB,
+  });
+  const uidA = await uidOf(pair.a, "collections", collectionA);
+  const uidB = await uidOf(pair.b, "collections", collectionB);
+
+  await applyFrom(pair.b, pair.a);
+  await applyFrom(pair.a, pair.b);
+
+  for (const store of [pair.a, pair.b]) {
+    const { folder, notes } = await workState(store);
+    assert.equal(
+      folder.uid,
+      uidA,
+      "A's create outranks B's, so A's uid survives",
+    );
+    assert.notEqual(folder.uid, uidB);
+    assert.deepEqual(
+      notes.map((note) => note.collection_id),
+      [folder.id, folder.id],
+      "and both notes still sit inside it",
+    );
+  }
+});
+
+/**
+ * Two `Work` folders made offline, with A's uid losing the tie, and only the
+ * collection creates crossed. Returns B's store already folded, which is the
+ * state an interrupted sync leaves behind.
+ */
+async function foldedFolder(pair: Pair): Promise<{
+  loser: string;
+  winner: string;
+}> {
+  const onA = createNotesRepo(pair.a.driver);
+  const onB = createNotesRepo(pair.b.driver);
+  const collectionA = await onA.createCollection("Work");
+  await onA.createNote({
+    title: "A's plan",
+    content: "",
+    collectionId: collectionA,
+  });
+  const collectionB = await onB.createCollection("Work");
+  await onB.createNote({
+    title: "B's plan",
+    content: "",
+    collectionId: collectionB,
+  });
+  const loser = await uidOf(pair.a, "collections", collectionA);
+  const winner = await uidOf(pair.b, "collections", collectionB);
+
+  // Session 1: the collection creates only. A's note stays in its outbox —
+  // unacknowledged writes are device-local (§10.3), so an interrupted sync is
+  // exactly "the creates crossed, the children did not".
+  await applyFrom(pair.b, pair.a, {
+    ops: (await opsOf(pair.a)).filter(
+      (op) => op.entity_table === "collections",
+    ),
+  });
+  return { loser, winner };
+}
+
+test("a child that arrives after the fold resolves to the winner", async () => {
+  const pair = await openPair();
+  const { loser, winner } = await foldedFolder(pair);
+  assert.equal(
+    await count(
+      pair.b,
+      "SELECT count(*) AS n FROM sync_uid_aliases WHERE entity_table = 'collections' AND loser_uid = ? AND winner_uid = ?",
+      [loser, winner],
+    ),
+    1,
+    "the fold recorded the losing uid (v11)",
+  );
+
+  // Session 2 — a NEW apply, because the batch's own map never survives its
+  // call. That is the restart: only the table can answer now.
+  await applyFrom(pair.b, pair.a, {
+    ops: (await opsOf(pair.a)).filter((op) => op.entity_table === "notes"),
+  });
+  const [note] = await pair.b.driver.query<{ collection_id: number | null }>(
+    "SELECT collection_id FROM notes WHERE title = ?",
+    ["A's plan"],
+  );
+  const { folder } = await workState(pair.b);
+  assert.equal(
+    note?.collection_id,
+    folder.id,
+    "the note naming the loser uid landed in the winner's folder",
+  );
+});
+
+test("an update and a delete naming the loser uid act on the winner row", async () => {
+  const pair = await openPair();
+  const { loser, winner } = await foldedFolder(pair);
+  const peer = await deviceOf(pair.a);
+
+  const rename = syntheticOp(
+    peer,
+    5,
+    "collections",
+    loser,
+    "update",
+    { name: "Work (renamed)" },
+    6,
+  );
+  await pair.b.driver.batch(
+    await applyOps(pair.b.driver, {
+      peerId: peer,
+      origin: "desktop",
+      ops: [rename],
+    }),
+  );
+  const rows = await pair.b.driver.query<{ uid: string; name: string }>(
+    "SELECT uid, name FROM collections",
+  );
+  assert.equal(rows.length, 1, "the edit did not mint a second folder");
+  assert.equal(rows[0]?.uid, winner);
+  assert.equal(
+    rows[0]?.name,
+    "Work (renamed)",
+    "the edit named the loser uid and changed the winner row",
+  );
+
+  const remove = syntheticOp(peer, 6, "collections", loser, "delete", {}, 7);
+  await pair.b.driver.batch(
+    await applyOps(pair.b.driver, {
+      peerId: peer,
+      origin: "desktop",
+      ops: [remove],
+    }),
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM collections"),
+    0,
+    "the delete removed the winner row",
+  );
+  assert.equal(
+    await count(
+      pair.b,
+      "SELECT count(*) AS n FROM sync_tombstones WHERE entity_table = 'collections' AND entity_uid = ?",
+      [winner],
+    ),
+    1,
+    "and the tombstone is the WINNER's, so both devices agree on what died",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 Session 2 — Business/Loans: desktop-owned shops, create-only jobs
+// and loans (§12.2).
+// ---------------------------------------------------------------------------
+
+test("a phone's job arrives on the desktop with its shop resolved by uid", async () => {
+  const pair = await openPair();
+  const shopId = await createBusinessRepo(pair.a.driver).createShop({
+    name: "Alpha",
+  });
+  // A shop is desktop-owned, so it reaches the phone before a job can name it.
+  await applyFrom(pair.b, pair.a);
+  const [phoneShop] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM shops WHERE name = 'Alpha'",
+  );
+  assert.ok(phoneShop);
+
+  const jobId = await createBusinessRepo(pair.b.driver).createJob({
+    title: "Fix roof",
+    shopId: phoneShop.id,
+    totalCents: 50_000,
+    jobDate: "2026-11-13",
+  });
+  assert.equal(jobId > 0, true);
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const jobs = await pair.a.driver.query<{
+    uid: string | null;
+    title: string;
+    shop_id: number | null;
+    total_cents: number;
+    paid_cents: number;
+    status: string;
+  }>("SELECT * FROM jobs");
+  const job = jobs[0];
+  assert.ok(job, "the job landed on the desktop");
+  assert.equal(jobs.length, 1);
+  assert.equal(job.title, "Fix roof");
+  assert.equal(
+    job.shop_id,
+    shopId,
+    "the shop uid resolved to the desktop's own shop row",
+  );
+  assert.equal(job.total_cents, 50_000);
+  assert.equal(job.paid_cents, 0);
+  assert.equal(job.status, "open");
+  assert.deepEqual(
+    await stampOf(pair.a, "jobs", job.uid ?? ""),
+    await stampOf(pair.b, "jobs", job.uid ?? ""),
+  );
+});
+
+test("a desktop job payment reaches the phone, paid amount and income included", async () => {
+  const pair = await openPair();
+  const budgetA = createBudgetRepo(pair.a.driver);
+  await budgetA.createIncomeCategory("Business");
+  const walletId = await budgetA.createWallet("Cash");
+  const businessA = createBusinessRepo(pair.a.driver);
+  const jobId = await businessA.createJob({
+    title: "Fix roof",
+    totalCents: 100_000,
+    jobDate: "2026-11-13",
+  });
+  await applyFrom(pair.b, pair.a);
+  const delivered = (await opsOf(pair.a)).length;
+
+  await businessA.recordJobPayment({
+    jobId,
+    amountCents: 40_000,
+    walletId,
+    date: "2026-11-13",
+  });
+  await applyFrom(pair.b, pair.a, {
+    ops: (await opsOf(pair.a)).slice(delivered),
+  });
+
+  const [onPhone] = await pair.b.driver.query<{
+    paid_cents: number;
+    status: string;
+  }>("SELECT * FROM jobs");
+  assert.ok(onPhone);
+  assert.equal(onPhone.paid_cents, 40_000, "the payment merged into the copy");
+  assert.equal(onPhone.status, "open", "a partial payment keeps the job open");
+
+  const entries = await pair.b.driver.query<{
+    amount_cents: number;
+    category_id: number;
+    wallet_id: number;
+    note: string;
+  }>("SELECT * FROM income_entries");
+  const entry = entries[0];
+  assert.ok(entry, "the receipt travelled with the payment (§6.1)");
+  assert.equal(entry.amount_cents, 40_000);
+  assert.equal(entry.note, "Job: Fix roof");
+  const [phoneWallet] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM wallets WHERE name = 'Cash'",
+  );
+  const [phoneCategory] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM income_categories WHERE name = 'Business'",
+  );
+  assert.equal(entry.wallet_id, phoneWallet?.id);
+  assert.equal(entry.category_id, phoneCategory?.id);
+});
+
+test("a mobile-origin job edit is refused and writes nothing", async () => {
+  const pair = await openPair();
+  const jobId = await createBusinessRepo(pair.a.driver).createJob({
+    title: "Fix roof",
+    totalCents: 10_000,
+    jobDate: "2026-11-13",
+  });
+  const [job] = await pair.a.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM jobs WHERE id = ?",
+    [jobId],
+  );
+  assert.ok(job?.uid);
+
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    3,
+    "jobs",
+    job.uid,
+    "update",
+    { paid_cents: 1_000 },
+    10,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [edit],
+      }),
+    /never updates or deletes jobs/,
+  );
+  const [held] = await pair.a.driver.query<{ paid_cents: number }>(
+    "SELECT paid_cents FROM jobs",
+  );
+  assert.equal(held?.paid_cents, 0, "§2.3: payment fields are desktop-only");
+});
+
+test("a phone's loan arrives on the desktop", async () => {
+  const pair = await openPair();
+  const loanId = await createLoansRepo(pair.b.driver).createLoan({
+    counterparty: "Daw Mya",
+    direction: "borrowed",
+    amountCents: 30_000,
+    dueDate: "2026-12-01",
+  });
+  assert.equal(loanId > 0, true);
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const loans = await pair.a.driver.query<{
+    uid: string | null;
+    counterparty: string;
+    direction: string;
+    amount_cents: number;
+    repaid_cents: number;
+    due_date: string | null;
+  }>("SELECT * FROM loans");
+  const loan = loans[0];
+  assert.ok(loan, "the loan landed on the desktop");
+  assert.equal(loans.length, 1);
+  assert.equal(loan.counterparty, "Daw Mya");
+  assert.equal(loan.direction, "borrowed");
+  assert.equal(loan.amount_cents, 30_000);
+  assert.equal(loan.repaid_cents, 0);
+  assert.equal(loan.due_date, "2026-12-01");
+});
+
+test("a desktop shop reaches the phone while a mobile-origin shop op is refused", async () => {
+  const pair = await openPair();
+  await createBusinessRepo(pair.a.driver).createShop({ name: "Alpha" });
+  await applyFrom(pair.b, pair.a);
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM shops WHERE name = 'Alpha'"),
+    1,
+    "the desktop-owned shop flowed down",
+  );
+
+  const phoneId = await deviceOf(pair.b);
+  const create = syntheticOp(
+    phoneId,
+    2,
+    "shops",
+    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "create",
+    { name: "Phone shop", created_at: "2026-11-13" },
+    5,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [create],
+      }),
+    /desktop-owned/,
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM shops"),
+    1,
+    "only the desktop's own shop exists there",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task 2 — §13.2 conflict copies.
+// ---------------------------------------------------------------------------
+
+/**
+ * B holds a note whose title it edited locally, and A's newer edit of the same
+ * field arrives — so B is the device holding the losing value.
+ *
+ * A's title writes come after a second note's create, which is what gives them
+ * a counter above B's: counters are Lamport, so a device's second op is 3 only
+ * because something took 2.
+ */
+async function losingNoteConflict(pair: Pair): Promise<string> {
+  const uid = await sharedNote(pair);
+  const notesB = createNotesRepo(pair.b.driver);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowB);
+  await notesB.updateNote(rowB.id, { title: "B's copy" });
+
+  const notesA = createNotesRepo(pair.a.driver);
+  await notesA.createNote({ title: "Filler", content: "" });
+  const [rowA] = await notesIn(pair.a, uid);
+  assert.ok(rowA);
+  await notesA.updateNote(rowA.id, { title: "A's newer copy" });
+  return uid;
+}
+
+test("a same-field note conflict applies the winner and leaves one conflict copy", async () => {
+  const pair = await openPair();
+  const uid = await losingNoteConflict(pair);
+  // B's cursor is already past A's first two ops (the create it applied and
+  // the filler note), so only the title write is delivered.
+  const ops = (await opsOf(pair.a)).slice(2);
+  assert.equal(ops.length, 1, "precondition: one title write is delivered");
+
+  await applyFrom(pair.b, pair.a, { ops });
+
+  const [row] = await notesIn(pair.b, uid);
+  assert.equal(
+    row?.title,
+    "A's newer copy",
+    "the winning value is applied on the losing device",
+  );
+  const copies = await pair.b.driver.query<{
+    entity_type: string;
+    snapshot: string;
+  }>("SELECT entity_type, snapshot FROM trash_items");
+  assert.equal(copies.length, 1, "exactly one conflict copy (§13.2)");
+  const copy = copies[0];
+  assert.ok(copy);
+  assert.equal(copy.entity_type, "note");
+  const snapshot = JSON.parse(copy.snapshot) as {
+    entity: { title: string };
+    conflict: {
+      kind: string;
+      label: string;
+      table: string;
+      uid: string;
+      won: { title: string };
+    };
+  };
+  assert.equal(snapshot.conflict.kind, TRASH_CONFLICT_KIND);
+  assert.equal(
+    snapshot.conflict.label,
+    "Conflict copy — kept on this device only",
+  );
+  assert.equal(snapshot.conflict.table, "notes");
+  assert.equal(snapshot.conflict.uid, uid);
+  assert.equal(
+    snapshot.entity.title,
+    "B's copy",
+    "the copy holds the value that lost, as this device had it",
+  );
+  assert.equal(
+    snapshot.conflict.won.title,
+    "A's newer copy",
+    "and it carries the value that won, so the user can compare",
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "the other device never learns the copy existed",
+  );
+});
+
+test("a losing habit-log value merges without archiving anything", async () => {
+  const pair = await openPair();
+  const habits = createHabitsRepo(pair.a.driver);
+  const habitId = await habits.createHabit("Run");
+  await habits.toggleLog(habitId, "2026-11-13");
+  await applyFrom(pair.b, pair.a);
+  const [log] = await pair.b.driver.query<{ uid: string; done: number }>(
+    "SELECT uid, done FROM habit_logs",
+  );
+  assert.ok(log);
+  assert.equal(log.done, 1);
+
+  // No local writer edits a habit log, so the op is synthetic: the phone's
+  // check-in flag arriving from A with a newer stamp.
+  const op = syntheticOp(
+    await deviceOf(pair.a),
+    99,
+    "habit_logs",
+    log.uid,
+    "update",
+    { done: 0 },
+    (await readState(pair.a.driver)).lamport + 5,
+  );
+  await applyFrom(pair.b, pair.a, { ops: [op] });
+
+  const [merged] = await pair.b.driver.query<{ done: number }>(
+    "SELECT done FROM habit_logs WHERE uid = ?",
+    [log.uid],
+  );
+  assert.equal(merged?.done, 0, "the newer value merged in");
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "§13.2: a check-in is not content, so no copy is archived",
+  );
+});
+
+test("a conflict whose batch fails midway leaves neither the winner nor the copy", async () => {
+  const pair = await openPair();
+  const uid = await losingNoteConflict(pair);
+  const ops = (await opsOf(pair.a)).slice(2);
+
+  // A create that passes every check the engine can make and then fails in
+  // SQL: `tasks.repeat` has a CHECK the payload cannot satisfy.
+  const doomed = syntheticOp(
+    await deviceOf(pair.a),
+    98,
+    "tasks",
+    "8f8f8f8f-8f8f-4f8f-8f8f-8f8f8f8f8f8f",
+    "create",
+    { title: "Doomed", repeat: "hourly" },
+    (await readState(pair.a.driver)).lamport + 1,
+  );
+
+  await assert.rejects(
+    applyFrom(pair.b, pair.a, { ops: [...ops, doomed] }),
+    /CHECK|constraint/i,
+  );
+  const [row] = await notesIn(pair.b, uid);
+  assert.equal(
+    row?.title,
+    "B's copy",
+    "the winner was not applied — the batch rolled back whole",
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "and the copy went with it (§5.5: same transaction)",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task 3 — the local writers Session 1 parked.
+// ---------------------------------------------------------------------------
+
+test("a settle records exactly the fields it changed", async () => {
+  const store = openSyncStore(DEVICE_A);
+  const tasks = createTasksRepo(store.driver);
+  const id = await tasks.createReminder({
+    title: "Stand up",
+    remindAt: "2026-11-20T09:00",
+  });
+
+  await tasks.settleReminders([{ id, nextRemindAt: null }]);
+  let ops = (await opsOf(store)).filter(
+    (op) => op.entity_table === "reminders",
+  );
+  assert.deepEqual(
+    JSON.parse(ops.at(-1)?.payload ?? "{}"),
+    { fired: 1 },
+    "a one-shot settle changes only the fired flag",
+  );
+
+  await tasks.settleReminders([{ id, nextRemindAt: "2026-11-21T09:00" }]);
+  ops = (await opsOf(store)).filter((op) => op.entity_table === "reminders");
+  assert.deepEqual(
+    JSON.parse(ops.at(-1)?.payload ?? "{}"),
+    { remind_at: "2026-11-21T09:00", fired: 0 },
+    "a re-arm carries the new time and the cleared flag",
+  );
+
+  await tasks.markReminderFired(id);
+  ops = (await opsOf(store)).filter((op) => op.entity_table === "reminders");
+  assert.deepEqual(JSON.parse(ops.at(-1)?.payload ?? "{}"), { fired: 1 });
+
+  await tasks.rescheduleReminder(id, "2026-11-22T09:00");
+  ops = (await opsOf(store)).filter((op) => op.entity_table === "reminders");
+  assert.deepEqual(JSON.parse(ops.at(-1)?.payload ?? "{}"), {
+    remind_at: "2026-11-22T09:00",
+    fired: 0,
+  });
+});
+
+test("a record, delete and restore round trip reaches the other device", async () => {
+  const pair = await openPair();
+  const notes = createNotesRepo(pair.a.driver);
+  const id = await notes.createNote({ title: "Keep me", content: "body" });
+  const [before] = await notesIn(pair.a, undefined);
+  assert.ok(before?.uid);
+  await notes.deleteNote(id);
+  const [item] = await pair.a.driver.query<{ id: number }>(
+    "SELECT id FROM trash_items",
+  );
+  assert.ok(item);
+  await createTrashRepo(pair.a.driver).restore(item.id);
+
+  const restored = await notesIn(pair.a);
+  assert.equal(restored.length, 1, "A holds the restored row");
+  assert.equal(restored[0]?.uid, before.uid, "under the SAME uid");
+
+  const ops = await opsOf(pair.a);
+  assert.deepEqual(
+    ops.map((op) => op.op),
+    ["create", "delete", "create"],
+    "the restore records a create-kind op of its own",
+  );
+
+  await applyFrom(pair.b, pair.a, { ops });
+  const onB = await notesIn(pair.b, before.uid);
+  assert.equal(
+    onB.length,
+    1,
+    "§5.3: the restore op outranks the tombstone, so B resurrects the row",
+  );
+  assert.equal(onB[0]?.title, "Keep me");
+});
+
+test("an edit that outranks a remote delete does not resurrect a half-row", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [rowA] = await notesIn(pair.a, uid);
+  const [rowB] = await notesIn(pair.b, uid);
+  assert.ok(rowA && rowB);
+
+  // B deletes at counter 2. A, never having seen the delete, edits at 2 and
+  // again at 3 — so its newest write outranks the tombstone B holds.
+  await createNotesRepo(pair.b.driver).deleteNote(rowB.id);
+  const notesA = createNotesRepo(pair.a.driver);
+  await notesA.updateNote(rowA.id, { title: "edited" });
+  await notesA.updateNote(rowA.id, { content: "edited too" });
+
+  await applyFrom(pair.b, pair.a, { ops: (await opsOf(pair.a)).slice(1) });
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM notes"),
+    0,
+    "§5.3: a field-level edit cannot rebuild the row it edits, so the record stays dead",
+  );
+  assert.ok(
+    (await readTombstones(pair.b.driver)).some((row) => row.entity_uid === uid),
+    "and the tombstone still decides the next comparison",
+  );
+});
+
+test("a conflict copy's restore mints a new uid and records that uid", async () => {
+  const pair = await openPair();
+  const uid = await losingNoteConflict(pair);
+  await applyFrom(pair.b, pair.a, { ops: (await opsOf(pair.a)).slice(2) });
+
+  const [copy] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM trash_items",
+  );
+  assert.ok(copy);
+  await createTrashRepo(pair.b.driver).restore(copy.id);
+
+  const restored = await pair.b.driver.query<NoteRow>(
+    "SELECT * FROM notes WHERE uid <> ?",
+    [uid],
+  );
+  const newRow = restored[0];
+  assert.ok(newRow?.uid, "the copy came back as a new record");
+  assert.notEqual(
+    newRow.uid,
+    uid,
+    "§13.2: a conflict copy never resurrects the loser's uid",
+  );
+
+  const ops = (await opsOf(pair.b)).filter((op) => op.entity_table === "notes");
+  const recorded = ops.at(-1);
+  assert.equal(recorded?.op, "create");
+  assert.equal(
+    recorded?.entity_uid,
+    newRow.uid,
+    "the op records the NEW uid, which is what the peer will see",
+  );
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "the copy left the Trash",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// D-1 (full sweep) — the recorder and the authority matrix agree again.
+// ---------------------------------------------------------------------------
+
+test("a phone reminder settle applies on the desktop and the fired state converges", async () => {
+  const pair = await openPair();
+  const tasksPhone = createTasksRepo(pair.b.driver);
+  const id = await tasksPhone.createReminder({
+    title: "Stand up",
+    remindAt: "2026-11-20T09:00",
+  });
+  await tasksPhone.settleReminders([{ id, nextRemindAt: null }]);
+
+  // Before D-1 this batch was refused (§2.3) and the phone's cursor could
+  // never move past it: the settle wedged sync permanently.
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const rows = await pair.a.driver.query<{
+    uid: string;
+    fired: number;
+    created_by_device_id: string | null;
+  }>("SELECT uid, fired, created_by_device_id FROM reminders");
+  assert.equal(rows.length, 1, "the create and its settle both landed");
+  assert.equal(rows[0]?.fired, 1, "§13.1: the creator's settle is the truth");
+  assert.equal(
+    rows[0]?.created_by_device_id,
+    DEVICE_B,
+    "the engine stamps the op's author as the creator",
+  );
+});
+
+test("a phone settling a desktop-created reminder is still refused", async () => {
+  const pair = await openPair();
+  const tasksDesktop = createTasksRepo(pair.a.driver);
+  await tasksDesktop.createReminder({
+    title: "Desktop reminder",
+    remindAt: "2026-11-20T09:00",
+  });
+  // The desktop's reminder reaches the phone, and the phone's delivery filter
+  // means it never arms it — but a settle op naming it must still be refused.
+  await applyFrom(pair.b, pair.a);
+  const [onPhone] = await pair.b.driver.query<{ id: number }>(
+    "SELECT id FROM reminders",
+  );
+  assert.ok(onPhone);
+  const tasksPhone = createTasksRepo(pair.b.driver);
+  await tasksPhone.settleReminders([{ id: onPhone.id, nextRemindAt: null }]);
+
+  await assert.rejects(
+    () => applyFrom(pair.a, pair.b, { origin: "mobile" }),
+    /only the reminders it created \(§13\.1\)/,
+  );
+  const [onDesktop] = await pair.a.driver.query<{ fired: number }>(
+    "SELECT fired FROM reminders",
+  );
+  assert.equal(onDesktop?.fired, 0, "the refused settle wrote nothing");
+});
+
+test("a phone completing a repeating task applies and the rolled due date converges", async () => {
+  const pair = await openPair();
+  const tasksPhone = createTasksRepo(pair.b.driver);
+  const id = await tasksPhone.createTask({
+    title: "Water the plants",
+    dueDate: "2026-11-01",
+    repeat: "weekly",
+  });
+  // §2.1's note: the completion roll IS the completion, and completion is an
+  // action both surfaces take — so `due_date` rides the phone's update.
+  await tasksPhone.completeTask(id, "2026-11-15");
+  await applyFrom(pair.a, pair.b, { origin: "mobile" });
+
+  const rows = await pair.a.driver.query<{ due_date: string; done: number }>(
+    "SELECT due_date, done FROM tasks",
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.due_date, "2026-11-22", "the roll converged");
+  assert.equal(rows[0]?.done, 0, "a repeating task stays open");
+});
+
+test("a phone task update carrying any other field is still refused", async () => {
+  const pair = await openPair();
+  const id = await createTasksRepo(pair.a.driver).createTask({
+    title: "Desktop task",
+    dueDate: "2026-11-20",
+  });
+  const [task] = await pair.a.driver.query<{ uid: string | null }>(
+    "SELECT uid FROM tasks WHERE id = ?",
+    [id],
+  );
+  assert.ok(task?.uid);
+
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    4,
+    "tasks",
+    task.uid,
+    "update",
+    { title: "Phone title" },
+    5,
+  );
+  await assert.rejects(
+    () =>
+      applyOps(pair.a.driver, {
+        peerId: phoneId,
+        origin: "mobile",
+        ops: [edit],
+      }),
+    /cannot change title on tasks/,
+  );
+  const [held] = await pair.a.driver.query<{ title: string }>(
+    "SELECT title FROM tasks",
+  );
+  assert.equal(held?.title, "Desktop task", "no other task field opens up");
+});
+
+// ---------------------------------------------------------------------------
+// SW-07 / D-6 — an op whose parent is gone is dropped WITH a trace.
+// ---------------------------------------------------------------------------
+
+test("a create naming a deleted parent is copied and dropped, and the next op still applies", async () => {
+  const pair = await openPair();
+  // A shopping list, created and then deleted on the desktop — the parent the
+  // phone's queued op still names.
+  const lists = createShoppingRepo(pair.a.driver);
+  const listId = await lists.createList("Groceries");
+  const [known] = await pair.a.driver.query<{ uid: string }>(
+    "SELECT uid FROM shopping_lists WHERE id = ?",
+    [listId],
+  );
+  assert.ok(known?.uid);
+  await applyFrom(pair.b, pair.a);
+  await lists.deleteList(listId);
+  await applyFrom(pair.b, pair.a);
+  assert.equal(
+    await count(pair.b, "SELECT count(*) AS n FROM shopping_lists"),
+    0,
+    "the list is gone on both sides",
+  );
+
+  const phoneId = await deviceOf(pair.b);
+  const doomed = syntheticOp(
+    phoneId,
+    1,
+    "shopping_items",
+    "99999999-9999-4999-8999-999999999999",
+    "create",
+    {
+      text: "milk",
+      done: 0,
+      sort_order: 0,
+      list_uid: known.uid,
+    },
+    4,
+  );
+  const after = syntheticOp(
+    phoneId,
+    2,
+    "tasks",
+    "88888888-8888-4888-8888-888888888888",
+    "create",
+    {
+      title: "Still applies",
+      done: 0,
+      repeat: "none",
+      note: "",
+      created_at: "2026-11-14",
+    },
+    5,
+  );
+
+  // Before D-6 the item's NOT NULL `list_id` failed the whole batch, and every
+  // redelivery of the same two ops failed identically.
+  await applyOps(pair.a.driver, {
+    peerId: phoneId,
+    origin: "mobile",
+    ops: [doomed, after],
+  }).then((statements) => pair.a.driver.batch(statements));
+
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM shopping_items"),
+    0,
+    "the orphaned item is not written",
+  );
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM tasks"),
+    1,
+    "the op after it still applies — the batch proceeds",
+  );
+  const copies = await pair.a.driver.query<{ snapshot: string }>(
+    "SELECT snapshot FROM trash_items",
+  );
+  assert.equal(copies.length, 1, "the write is not silently lost");
+  const snapshot = JSON.parse(copies[0]?.snapshot ?? "{}") as {
+    entity: { text: string; list_id: number | null };
+    conflict: { table: string; label: string };
+  };
+  assert.equal(snapshot.entity.text, "milk", "what the op named is kept");
+  assert.equal(snapshot.entity.list_id, null, "and its missing parent is null");
+  assert.equal(snapshot.conflict.table, "shopping_items");
+  assert.match(snapshot.conflict.label, /parent record is gone/);
+});
+
+// ---------------------------------------------------------------------------
+// §5.3's absent row (SW-03) and §5.4's GC log (D-4).
+// ---------------------------------------------------------------------------
+
+test("an edit to a record the restored desktop lacks is acked and archived (§5.3)", async () => {
+  const pair = await openPair();
+  const id = await createTasksRepo(pair.a.driver).createTask({
+    title: "Ticked off while the desktop was restored",
+    dueDate: "2026-11-20",
+  });
+  const [task] = await pair.a.driver.query<{
+    uid: string;
+    created_by_device_id?: string | null;
+  }>("SELECT uid FROM tasks WHERE id = ?", [id]);
+  assert.ok(task?.uid, "precondition: the task has a uid");
+  const created = (await opsOf(pair.a)).at(-1);
+  assert.ok(created, "precondition: the create is recorded");
+  await applyFrom(pair.b, pair.a);
+
+  // A restore: the desktop's line does not contain this record at all. Its
+  // rows are pre-history, so neither the row nor a tombstone is here.
+  await pair.a.driver.batch([
+    { sql: "DELETE FROM tasks WHERE uid = ?", params: [task.uid] },
+    {
+      sql: "DELETE FROM sync_row_stamps WHERE entity_uid = ?",
+      params: [task.uid],
+    },
+  ]);
+
+  // The phone ticks the task off — a field it may write (§2.3) — and delivers
+  // it to a desktop that no longer holds the record.
+  const phoneId = await deviceOf(pair.b);
+  const edit = syntheticOp(
+    phoneId,
+    2,
+    "tasks",
+    task.uid,
+    "update",
+    { done: 1 },
+    created.counter + 1,
+  );
+  await applyFrom(pair.a, pair.b, { ops: [edit], origin: "mobile" });
+
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM tasks"),
+    0,
+    "an edit cannot rebuild a row from a field list (§5.3)",
+  );
+  const copies = await pair.a.driver.query<{ snapshot: string }>(
+    "SELECT snapshot FROM trash_items",
+  );
+  assert.equal(copies.length, 1, "the acked edit is not silently lost");
+  const snapshot = JSON.parse(copies[0]?.snapshot ?? "{}") as {
+    entity: { done: number };
+    conflict: { table: string; uid: string; label: string };
+  };
+  assert.equal(snapshot.conflict.table, "tasks");
+  assert.equal(snapshot.conflict.uid, task.uid);
+  assert.match(snapshot.conflict.label, /record it edited is gone/);
+  assert.equal(
+    snapshot.entity.done,
+    1,
+    "the fields the op named are recoverable from Trash",
+  );
+
+  // And it was acknowledged: the cursor moved past the op, so it is never
+  // re-delivered.
+  const [peer] = await pair.a.driver.query<{ cursor_in: number }>(
+    "SELECT cursor_in FROM sync_peers WHERE device_id = ?",
+    [phoneId],
+  );
+  assert.equal(peer?.cursor_in, edit.seq, "the op is acked (§7.7)");
+});
+
+test("a create a pruned tombstone outranks stays dead (§5.4, D-4)", async () => {
+  const pair = await openPair();
+  const uid = await sharedNote(pair);
+  const [row] = await notesIn(pair.a, uid);
+  assert.ok(row, "precondition: the desktop holds the note");
+
+  await createNotesRepo(pair.a.driver).deleteNote(row.id);
+  const deletion = (await opsOf(pair.a)).at(-1);
+  assert.ok(deletion, "precondition: the delete is recorded");
+
+  // The phone acknowledges the delete, and the maintenance pass collects the
+  // tombstone: every peer this device knows has it.
+  await pair.a.driver.batch(
+    ackStatements(await deviceOf(pair.b), deletion.seq),
+  );
+  await pair.a.driver.batch(collectTombstonesStatements());
+  assert.equal((await readTombstones(pair.a.driver)).length, 0);
+  assert.equal(
+    await count(pair.a, "SELECT count(*) AS n FROM sync_tombstone_gc_log"),
+    1,
+    "the delete's stamp survives the prune",
+  );
+
+  // A phone that was offline through the delete still delivers an older write.
+  const stale = syntheticOp(
+    await deviceOf(pair.b),
+    900,
+    "notes",
+    uid,
+    "create",
+    {
+      title: "Stale create",
+      content: "",
+      tags: "",
+      collection_uid: null,
+      pinned: 0,
+      archived: 0,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    },
+    deletion.counter - 1,
+  );
+  await applyFrom(pair.a, pair.b, { ops: [stale], origin: "mobile" });
+
+  assert.equal(
+    (await notesIn(pair.a, uid)).length,
+    0,
+    "the pruned delete still outranks the stale create — the row stays dead",
+  );
+  assert.equal(
+    (await readTombstones(pair.a.driver)).length,
+    0,
+    "and the dead create writes no second tombstone",
+  );
+});
+
+test("equal-counter tombstones resolve by the full §4 order on both paths (SW-10)", async () => {
+  const uid = "2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b";
+  const lower = {
+    table: "notes" as const,
+    uid,
+    stamp: { counter: 5, deviceId: DEVICE_A, opId: "a#5" },
+  };
+  const higher = {
+    table: "notes" as const,
+    uid,
+    stamp: { counter: 5, deviceId: DEVICE_B, opId: "b#5" },
+  };
+
+  // The snapshot path, delivered in both orders: the counters are equal, so the
+  // device id decides, and the result cannot depend on arrival order.
+  const snapshotWinner = async (
+    order: readonly (typeof lower)[],
+  ): Promise<string | undefined> => {
+    const store = openSyncStore();
+    await store.driver.batch(snapshotStatements([], order));
+    const [stored] = await readTombstones(store.driver);
+    return stored?.device_id;
+  };
+  assert.equal(await snapshotWinner([lower, higher]), DEVICE_B);
+  assert.equal(await snapshotWinner([higher, lower]), DEVICE_B);
+
+  // The op path, from the same two deletes: the same winner, and the same
+  // stored op id — the two routes must agree field for field.
+  const opWinner = async (
+    order: readonly (typeof lower)[],
+  ): Promise<{ device: string | undefined; op: string | undefined }> => {
+    const store = openSyncStore();
+    for (const device of [DEVICE_A, DEVICE_B]) {
+      await store.driver.batch(
+        registerPeerStatements({ deviceId: device, generation: 1 }),
+      );
+    }
+    let seq = 1;
+    for (const tombstone of order) {
+      const op: PeerOp = {
+        device_id: tombstone.stamp.deviceId,
+        seq,
+        op_id: tombstone.stamp.opId,
+        entity_table: "notes",
+        entity_uid: uid,
+        op: "delete",
+        base_counter: tombstone.stamp.counter - 1,
+        counter: tombstone.stamp.counter,
+        field_stamps: "{}",
+        payload: "{}",
+      };
+      await store.driver.batch(
+        await applyOps(store.driver, {
+          peerId: op.device_id,
+          origin: "desktop",
+          ops: [op],
+        }),
+      );
+      seq += 1;
+    }
+    const [stored] = await readTombstones(store.driver);
+    return { device: stored?.device_id, op: stored?.op_id };
+  };
+  assert.deepEqual(await opWinner([lower, higher]), {
+    device: DEVICE_B,
+    op: "b#5",
+  });
+  assert.deepEqual(await opWinner([higher, lower]), {
+    device: DEVICE_B,
+    op: "b#5",
+  });
+});

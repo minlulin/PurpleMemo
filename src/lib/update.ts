@@ -64,6 +64,15 @@ export function progressPercent(
  * first release is published
  */
 export async function checkForUpdate(): Promise<UpdateHandle | null> {
+  // The updater is a desktop-only surface: it is not registered in the Android
+  // build at all. Say that plainly instead of letting the settings screen
+  // report a raw "plugin not found".
+  const { isAndroidPlatform } = await import("./android-reminders.ts");
+  if (isAndroidPlatform()) {
+    throw new Error(
+      "updates are installed from the desktop build; this phone is updated by installing a new APK",
+    );
+  }
   const { check } = await import("@tauri-apps/plugin-updater");
   const update = await check();
   if (update === null) return null;

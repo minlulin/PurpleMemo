@@ -1,0 +1,826 @@
+/**
+ * The desktop's pairing panel — protocol §11.1, §11.2 and §11.5 (Phase C
+ * Session 6, Q.1).
+ *
+ * The panel is a *state*, not a promise in a comment. Everything it shows comes
+ * from a value produced here:
+ *
+ * - the offer is minted by `pairing.ts` (120 s, single-use, 5 attempts) and its
+ *   code is what the listener actually gates on — the panel does not draw a
+ *   code nobody checks;
+ * - the QR is rendered only while the listener is running and the code is
+ *   live, and its `host:port` is the endpoint the listener really bound;
+ * - expiry, use and lockout close the socket (`settlePairingPanel`) before the
+ *   code disappears from the screen, so "no code after it expires" and "no port
+ *   after the code dies" are one step, not two — and the attempts, redemption
+ *   and port state come from the listener, which is the only place that knows
+ *   them (N3);
+ * - a peer the listener's code-confirmed rendezvous pinned is written to
+ *   `sync_peers` with the store's own statements, so the pin is a row (§11.2)
+ *   and a re-pair is a re-pair (§11.4), never a silent overwrite.
+ *
+ * No socket and no SQL live here: the panel drives the `PairingTransport` the
+ * composition root binds to the one driver, which is what lets the suite run
+ * the whole flow against a mock and the pin against real SQLite.
+ */
+import type {
+  BatchStatement,
+  DataDriver,
+  PairingDriver,
+  PairingIdentityStatus,
+  PairingListenerInfo,
+  PairingLocalInfo,
+  PairingOpenInput,
+  SyncOutcomeInput,
+  SyncTakeResult,
+  UploadOutcomeInput,
+  UploadTakeResult,
+} from "../../data/driver.ts";
+import { applyOps, type PeerOp } from "./engine.ts";
+import { readUploadOps } from "./mobilePairing.ts";
+import {
+  canRePair,
+  createPairingSession,
+  encodeOffer,
+  keyFingerprint,
+  PAIRING_MAX_ATTEMPTS,
+  type PairingOffer,
+  type PairingSession,
+  type PairingSessionState,
+  pairingState,
+  pairingStateMessage,
+  pinStatements,
+  rePairStatements,
+} from "./pairing.ts";
+import type { SyncTable } from "./protocol.ts";
+import {
+  ackStatements,
+  assertSyncTable,
+  discardPendingForPeerStatements,
+  type PeerRow,
+  pendingForPeer,
+  readPeers,
+  uploadStatements,
+} from "./store.ts";
+import { readSyncOps } from "./syncSession.ts";
+
+/** The driver surface the panel uses — one method per real IPC command. */
+export interface PairingTransport {
+  pairingLocal(): Promise<PairingLocalInfo>;
+  pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo>;
+  pairingClose(): Promise<PairingListenerInfo>;
+  pairingStatus(): Promise<PairingListenerInfo>;
+  batch(statements: BatchStatement[]): Promise<void>;
+  peers(): Promise<PeerRow[]>;
+  /** Take the staged §9.1 upload for the apply; `null` when none is ready. */
+  pairingUploadTake(): Promise<UploadTakeResult | null>;
+  /** Report the apply's verdict, for the listener to seal to the phone. */
+  pairingUploadOutcome(input: UploadOutcomeInput): Promise<void>;
+  /**
+   * Of `uids` in `table`, the ones this device already holds — the §9.1
+   * classification the apply counts by. The table is an allowlisted name
+   * from a validated op, never free text.
+   */
+  existingUids(table: SyncTable, uids: readonly string[]): Promise<string[]>;
+  /**
+   * §11.4: this device's own operations that peer has not acknowledged — the
+   * mutations a re-pair would strand. Read by Trust, which refuses while any
+   * exists (the discard act below is the only way past it).
+   */
+  pendingFor(deviceId: string): Promise<number>;
+  /** §11.4's discard act: drop those pending rows and answer how many. */
+  discardPendingFor(deviceId: string): Promise<number>;
+  /**
+   * §6's exchange, which only the production driver has: a panel double that
+   * models the code and the upload but not the ongoing sync simply omits the
+   * trio, and its settle tick applies no push because none can be reported.
+   */
+  sync?: SyncApplyTransport;
+}
+
+/** The three calls one staged-push apply needs, grouped so it can be absent. */
+export interface SyncApplyTransport {
+  /** Take the staged push for the engine; `null` when none is ready. */
+  take(): Promise<SyncTakeResult | null>;
+  /** Report the engine's verdict, for the listener to seal to the phone. */
+  report(input: SyncOutcomeInput): Promise<void>;
+  /**
+   * Apply the phone's operations with `applyOps` — the store's one batch, the
+   * caller's one transaction — and report the highest seq applied.
+   */
+  apply(peerId: string, ops: readonly PeerOp[]): Promise<number>;
+}
+
+export interface PairingPanelState {
+  /** This device's facts as the listener reported them — never re-derived. */
+  local: PairingLocalInfo;
+  session: PairingSession;
+  /** The offer with the endpoint the live listener bound (§11.1). */
+  offer: PairingOffer;
+  listener: PairingListenerInfo;
+  /** The highest own seq the phone's `sync-applied` has been acknowledged at
+   * (§6.5) — kept so the settle tick does not re-ack on every poll. */
+  syncAcked: number;
+}
+
+/**
+ * What the panel may say about the code. `closed` is the state `pairing.ts`
+ * does not have: the session is still live, but the listener has stopped, so
+ * there is nothing reachable to show (N3).
+ */
+export type PanelPhase = PairingSessionState | "closed";
+
+/**
+ * Mint the offer and open the window. The listener comes up *before* any QR is
+ * shown: a rendered code whose port nobody serves would advertise a pairing
+ * that does not exist.
+ */
+export async function openPairingPanel(
+  transport: PairingTransport,
+  now: number = Date.now(),
+): Promise<PairingPanelState> {
+  const local = await transport.pairingLocal();
+  const session = createPairingSession({
+    deviceId: local.deviceId,
+    // The real endpoint only exists once the listener binds; the offer is
+    // completed from the listener's report below, before it is ever rendered.
+    endpoint: "",
+    publicKey: local.publicKey,
+    generation: local.generation,
+    schemaVersion: local.schemaVersion,
+    protocolVersion: local.protocolVersion,
+    now,
+  });
+  const listener = await transport.pairingOpen({
+    pairingId: session.offer.pairingId,
+    offerCode: session.offer.code,
+    offerExpiresAt: session.offer.expiresAt,
+    peer: null,
+    lastCounter: 0,
+  });
+  if (!listener.running) {
+    throw new Error(
+      listener.note ?? "the pairing listener did not start; no code is shown.",
+    );
+  }
+  const endpoint = listener.endpoint;
+  if (endpoint === null || endpoint === "") {
+    // A code with no address is a QR nobody can dial (N7). Close the window
+    // rather than draw a dead code: leaving it bound would serve a port whose
+    // code is not on screen.
+    await transport.pairingClose().catch(() => undefined);
+    throw new Error(
+      "this desktop has no local network address to pair on — connect it to the same network as the phone, then show a fresh code.",
+    );
+  }
+  return {
+    local,
+    session,
+    listener,
+    offer: { ...session.offer, endpoint },
+    syncAcked: 0,
+  };
+}
+
+/** The exact QR payload (§11.1). */
+export function offerPayload(state: PairingPanelState): string {
+  return encodeOffer(state.offer);
+}
+
+export function panelPhase(
+  state: PairingPanelState,
+  now: number = Date.now(),
+): PanelPhase {
+  // While the listener is up it is the authority: its wrong-guess count and its
+  // redemption decide the phase, not a local session Rust never updates (N3).
+  // A stopped listener reports zeros, so the session settle recorded is kept.
+  const session = state.listener.running
+    ? projectSession(state.session, state.listener, now)
+    : state.session;
+  const phase = pairingState(session, now);
+  // The listener closing while the code is still live is its own state (N3):
+  // the digits are not expired, they are unreachable — saying "expired" over
+  // "95 s left" was the contradiction this state removes.
+  if (phase === "active" && !state.listener.running) return "closed";
+  return phase;
+}
+
+/** The one word the code cell shows when there is no live code to show. */
+export function panelPhaseLabel(phase: PanelPhase): string {
+  switch (phase) {
+    case "active":
+      return "";
+    case "expired":
+      return "expired";
+    case "used":
+      return "used";
+    case "locked":
+      return "locked";
+    case "closed":
+      return "closed";
+  }
+}
+
+/**
+ * The reason a phase shows. `closed` is the panel's own state; the rest are
+ * `pairing.ts`'s words, so a refusal never grows a second wording here.
+ */
+export function panelPhaseMessage(phase: PanelPhase): string | null {
+  if (phase === "closed") {
+    return "the pairing listener closed — show a fresh code on the desktop.";
+  }
+  return pairingStateMessage(phase);
+}
+
+export function remainingSeconds(
+  state: PairingPanelState,
+  now: number = Date.now(),
+): number {
+  return Math.max(0, Math.ceil((state.offer.expiresAt - now) / 1000));
+}
+
+/** What the panel may say about the §9.1 upload in this window. */
+export interface PanelUploadView {
+  state: string;
+  ops: number;
+  inserted: number | null;
+  alreadyKnown: number | null;
+  note: string | null;
+}
+
+export interface PairingPanelView {
+  phase: PanelPhase;
+  /** `null` once the code is no longer live — no expired code is ever shown. */
+  code: string | null;
+  /** `null` with the code: the QR is only drawn for a live code. */
+  payload: string | null;
+  remainingSeconds: number;
+  /** The named reason the state gives, in `pairing.ts`'s own words. */
+  reason: string | null;
+  endpoint: string | null;
+  fingerprint: string;
+  peerFingerprint: string | null;
+  listenerRunning: boolean;
+  /** True when no code is live: the panel offers a fresh one instead (N3). */
+  freshCode: boolean;
+  /** The upload's state, once the phone sends one (§9.1). */
+  upload: PanelUploadView | null;
+  /** The ongoing exchange's state, once the phone pushes an op (§6). */
+  sync: PanelSyncView | null;
+  /**
+   * §8.5: the window's own note, when it has one — a record too large to copy
+   * is the case that matters, because it is why adoption cannot proceed.
+   */
+  note: string | null;
+}
+
+/** What the panel says about one staged push, in the facts line's words. */
+export interface PanelSyncView {
+  state: string;
+  ops: number;
+  /** The highest own seq the phone says it applied (§6.5), once reported. */
+  applied: number | null;
+  note: string | null;
+}
+
+/** What the panel may draw, for one instant. */
+export function panelView(
+  state: PairingPanelState,
+  now: number = Date.now(),
+): PairingPanelView {
+  const phase = panelPhase(state, now);
+  const live = phase === "active";
+  return {
+    phase,
+    code: live ? state.offer.code : null,
+    payload: live ? offerPayload(state) : null,
+    remainingSeconds: remainingSeconds(state, now),
+    reason: panelPhaseMessage(phase),
+    endpoint: state.listener.endpoint,
+    fingerprint: state.local.fingerprint,
+    peerFingerprint: state.listener.peerFingerprint,
+    listenerRunning: state.listener.running,
+    freshCode: !live,
+    upload:
+      state.listener.uploadState === null
+        ? null
+        : {
+            state: state.listener.uploadState,
+            ops: state.listener.uploadOps,
+            inserted: state.listener.uploadInserted,
+            alreadyKnown: state.listener.uploadAlreadyKnown,
+            note: state.listener.uploadNote,
+          },
+    sync:
+      state.listener.syncState === null
+        ? null
+        : {
+            state: state.listener.syncState,
+            ops: state.listener.syncOps,
+            applied: state.listener.syncApplied,
+            note: state.listener.syncNote,
+          },
+    note: state.listener.note,
+  };
+}
+
+/**
+ * What the panel shows about this device's pairing identity (wave 1, N2).
+ *
+ * `needed` is deliberately narrower than `rePairRequired`: a key that is
+ * present and readable is never replaced, even when a restore or a previous
+ * replacement means every phone must pair again. Only a key that is gone or
+ * can never be opened again asks for the confirmed replacement — the one path
+ * that mints a new identity (§11.2, §11.4).
+ */
+export interface PairingIdentityRecovery {
+  /** The key itself is unusable: offer the confirmed replacement. */
+  needed: boolean;
+  /** Why, in the backend's words — the same text the command returns. */
+  note: string | null;
+  /** Pairing again is required, whether or not the key was replaced. */
+  rePairRequired: boolean;
+  /** This device's key fingerprint, when it has a usable key. */
+  fingerprint: string | null;
+}
+
+export function identityRecovery(
+  status: PairingIdentityStatus | null,
+): PairingIdentityRecovery {
+  if (status === null) {
+    // Unknown is not lost: a status the backend could not report must not
+    // invite a key replacement.
+    return {
+      needed: false,
+      note: null,
+      rePairRequired: false,
+      fingerprint: null,
+    };
+  }
+  return {
+    needed: status.lost || !status.present,
+    note: status.note,
+    rePairRequired: status.needsRePair,
+    fingerprint: status.fingerprint,
+  };
+}
+
+/**
+ * What the panel needs before it may offer Trust (§11.1, wave 1 N1). `null`
+ * whenever no candidate is staged: then there is nothing to confirm and
+ * nothing to pin — the panel never trusts on its own.
+ */
+export interface PendingConfirmation {
+  /** The candidate the rendezvous staged, as the listener reports it. */
+  peer: { deviceId: string; publicKey: string; fingerprint: string | null };
+  /** This desktop's fingerprint — both screens show both (§11.1). */
+  localFingerprint: string;
+  /** A sealed hello from the candidate has been opened: key possession. */
+  helloReceived: boolean;
+  /** The row Trust would replace, when this `deviceId` already paired (§11.4). */
+  existing: {
+    deviceId: string;
+    displayName: string;
+    fingerprint: string | null;
+  } | null;
+}
+
+/**
+ * The confirmation the panel shows for a staged candidate. A `deviceId` that
+ * already has a row is a re-pair, and says so: the existing phone's name and
+ * pinned fingerprint sit next to the presented one, because Trust replaces
+ * them (§11.4).
+ */
+export function pendingConfirmation(
+  state: PairingPanelState,
+  peers: readonly PeerRow[] = [],
+): PendingConfirmation | null {
+  const { peerDeviceId, peerPublicKey, peerFingerprint, peerHelloReceived } =
+    state.listener;
+  if (peerDeviceId === null || peerPublicKey === null) return null;
+  const existing = peers.find((row) => row.device_id === peerDeviceId);
+  return {
+    peer: {
+      deviceId: peerDeviceId,
+      publicKey: peerPublicKey,
+      fingerprint: peerFingerprint,
+    },
+    localFingerprint: state.local.fingerprint,
+    helloReceived: peerHelloReceived,
+    existing:
+      existing === undefined
+        ? null
+        : {
+            deviceId: existing.device_id,
+            displayName: existing.display_name,
+            fingerprint:
+              existing.public_key === null
+                ? null
+                : keyFingerprint(existing.public_key),
+          },
+  };
+}
+
+/**
+ * One poll of the window: a dead code closes the socket, and a live one reports
+ * whatever the listener has learned. The listener's own close is proven by the
+ * Rust suite (a connect is refused); here the state value and the socket are
+ * kept in step. A tick never pins: the pin is the person's decision.
+ */
+/**
+ * The session the listener's own report implies (N3). Rust owns the code's live
+ * state — it counts the wrong guesses and performs the single redemption — so
+ * those two facts are projected into the session before `pairingState` reads
+ * it. A local counter would have kept a locked-out code on screen forever.
+ */
+export function projectSession(
+  session: PairingSession,
+  listener: PairingListenerInfo,
+  now: number = Date.now(),
+): PairingSession {
+  const attempts = Math.max(
+    0,
+    Math.min(PAIRING_MAX_ATTEMPTS, Math.trunc(listener.offerAttempts)),
+  );
+  return {
+    ...session,
+    failedAttempts: Array.from({ length: attempts }, () => now),
+    // The listener is authoritative in both directions: a window whose code was
+    // never redeemed has no `usedAt`, whatever this session once believed.
+    usedAt: listener.offerRedeemed ? (session.usedAt ?? now) : session.usedAt,
+  };
+}
+
+function uploadErrorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** What one staged-upload apply did — a value, so the order can be tested. */
+export interface UploadApplyOutcome {
+  /** Records taken from the staging (0 when nothing was staged). */
+  staged: number;
+  /** Of them, inserted as new records. */
+  inserted: number;
+  /** Of them, already held here — §7.2 no-ops, counted, never rewritten. */
+  alreadyKnown: number;
+  /** The failure's reason, when the apply did not commit. */
+  error: string | null;
+}
+
+/**
+ * Apply the phone's staged upload (§9.1) — this panel's one writing duty
+ * besides the pin.
+ *
+ * The order is the clause:
+ *
+ * 1. the staging is TAKEN first, so no second tick can start a second apply
+ *    of the same records;
+ * 2. every op is validated (§3.4) before a statement exists — a bad payload
+ *    applies nothing and is reported by name;
+ * 3. the ops whose uid this device already holds are classified
+ *    `alreadyKnown` and never rewritten (§7.2: a repeated upload is a no-op,
+ *    not an overwrite — the desktop's own row keeps its value and stamp);
+ * 4. the rest are written in ONE `batch` — one transaction, parents first —
+ *    with the stamps the phone sent;
+ * 5. the outcome is reported either way, because the phone's verdict is this
+ *    report: counts on success, the failure's own words on failure. An
+ *    apply that threw is never reported as one that succeeded.
+ *
+ * The existence check and the insert are two steps, so a record the person
+ * creates on this desktop in between can turn the insert into a refusal —
+ * which rolls the whole upload back and is reported, never silently merged.
+ * Returns `null` when nothing was staged.
+ */
+export async function applyStagedUpload(
+  transport: PairingTransport,
+  senderDeviceId?: string,
+): Promise<UploadApplyOutcome | null> {
+  const taken = await transport.pairingUploadTake();
+  if (taken === null) return null;
+  try {
+    const read = readUploadOps(taken.ops);
+    if (!read.ok) throw new Error(read.reason);
+    const byTable = new Map<SyncTable, string[]>();
+    for (const op of read.ops) {
+      const uids = byTable.get(op.table) ?? [];
+      uids.push(op.uid);
+      byTable.set(op.table, uids);
+    }
+    const known = new Set<string>();
+    for (const [table, uids] of byTable) {
+      const existing = await transport.existingUids(table, uids);
+      for (const uid of existing) known.add(`${table}\u0000${uid}`);
+    }
+    const fresh = read.ops.filter(
+      (op) => !known.has(`${op.table}\u0000${op.uid}`),
+    );
+    if (fresh.length > 0) {
+      // §13.1: the phone is the sender, so an uploaded reminder with no
+      // creator lands stamped as the phone's.
+      await transport.batch(
+        uploadStatements(fresh, new Date(), senderDeviceId),
+      );
+    }
+    const outcome: UploadApplyOutcome = {
+      staged: read.ops.length,
+      inserted: fresh.length,
+      alreadyKnown: read.ops.length - fresh.length,
+      error: null,
+    };
+    await transport.pairingUploadOutcome({
+      inserted: outcome.inserted,
+      alreadyKnown: outcome.alreadyKnown,
+      error: null,
+    });
+    return outcome;
+  } catch (error) {
+    const message = uploadErrorText(error);
+    await transport
+      .pairingUploadOutcome({
+        inserted: null,
+        alreadyKnown: null,
+        error: message,
+      })
+      .catch(() => undefined);
+    return {
+      staged: taken.ops.length,
+      inserted: 0,
+      alreadyKnown: 0,
+      error: message,
+    };
+  }
+}
+
+/** What one staged-push apply did — a value, so the order can be tested. */
+export interface SyncApplyOutcome {
+  /** Operations taken from the staging (0 when nothing was staged). */
+  staged: number;
+  /** The highest seq the engine applied. */
+  appliedThrough: number;
+  /** The refusal's reason, when the apply did not commit. */
+  error: string | null;
+}
+
+/**
+ * Apply the phone's staged push (§6, §7) — the panel's third writing duty.
+ *
+ * The staging is TAKEN first, so no second tick can apply the same operations;
+ * the documents are narrowed before the engine sees them; the engine merges
+ * in ONE batch (its own reads are against this device's rows); and the outcome
+ * is reported either way, because the phone's verdict is that report. Taking is
+ * once, so a taken-and-failed push is not retried in this window — a new window
+ * is a new push.
+ */
+export async function applyStagedSync(
+  transport: SyncApplyTransport,
+  peerId: string,
+): Promise<SyncApplyOutcome | null> {
+  const taken = await transport.take();
+  if (taken === null) return null;
+  try {
+    const read = readSyncOps(taken.ops);
+    if (!read.ok) throw new Error(read.reason);
+    const appliedThrough = await transport.apply(peerId, read.ops);
+    const outcome: SyncApplyOutcome = {
+      staged: read.ops.length,
+      appliedThrough,
+      error: null,
+    };
+    await transport.report({
+      appliedThrough: outcome.appliedThrough,
+      error: null,
+    });
+    return outcome;
+  } catch (error) {
+    const message = uploadErrorText(error);
+    await transport
+      .report({ appliedThrough: null, error: message })
+      .catch(() => undefined);
+    return { staged: taken.ops.length, appliedThrough: 0, error: message };
+  }
+}
+
+export async function settlePairingPanel(
+  transport: PairingTransport,
+  state: PairingPanelState,
+  now: number = Date.now(),
+): Promise<PairingPanelState> {
+  let current = await transport.pairingStatus();
+  // §9.1: a committed upload is this panel's to apply, and the phone polls
+  // for the verdict — so the apply runs on the tick that first sees the
+  // staging complete, and the state this settle returns is read again after
+  // it, carrying the terminal upload state the person should see.
+  if (current.uploadState === "staged") {
+    await applyStagedUpload(transport, current.peerDeviceId ?? undefined).catch(
+      () => undefined,
+    );
+    current = await transport.pairingStatus().catch(() => current);
+  }
+  // §6: a committed push is this panel's to apply too, and the phone polls for
+  // the verdict — so it runs on the tick that first sees `staged`, exactly
+  // like the upload above.
+  if (
+    current.syncState === "staged" &&
+    current.peerDeviceId !== null &&
+    transport.sync !== undefined
+  ) {
+    await applyStagedSync(transport.sync, current.peerDeviceId).catch(
+      () => undefined,
+    );
+    current = await transport.pairingStatus().catch(() => current);
+  }
+  // …and the phone's `sync-applied` becomes this device's acknowledgement of
+  // its own outbox (§6.5). Recorded once per position: `ackStatements` is
+  // idempotent, but re-running it every tick would be a write per second.
+  let syncAcked = state.syncAcked;
+  if (
+    current.syncApplied !== null &&
+    current.syncApplied > syncAcked &&
+    current.peerDeviceId !== null
+  ) {
+    await transport
+      .batch(ackStatements(current.peerDeviceId, current.syncApplied))
+      .catch(() => undefined);
+    syncAcked = current.syncApplied;
+  }
+  // The listener's code state comes first: a lockout on the wire or a phone's
+  // redemption must close the socket on this tick, not when the 120 s timer
+  // happens to run out — and the panel must learn it on the same tick (N3).
+  const session = projectSession(state.session, current, now);
+  const next = { ...state, session, listener: current, syncAcked };
+  const phase = pairingState(session, now);
+  // §8.4: the phone can only dial the endpoint this window bound, and the
+  // sealed hello, the person's Trust and the snapshot pull all need that same
+  // port. A redeemed code therefore keeps the window open while a phone is
+  // staged behind it — the code is spent, the channel is not. Its own lifetime
+  // still ends it: an expired window closes even mid-pull, a locked one closes,
+  // and so does a used one that staged nothing.
+  const servingThePhone =
+    phase === "used" &&
+    current.peerDeviceId !== null &&
+    now < session.offer.expiresAt;
+  if (phase !== "active" && !servingThePhone && current.running) {
+    return { ...next, listener: await transport.pairingClose() };
+  }
+  return next;
+}
+
+/** Close the window for any reason — panel close, lock, app background. */
+export function closePairingPanel(
+  transport: PairingTransport,
+): Promise<PairingListenerInfo> {
+  return transport.pairingClose();
+}
+
+export interface PinWrite {
+  peer: {
+    deviceId: string;
+    publicKey: string;
+    fingerprint: string | null;
+  };
+  /** True when the peer had paired before and this is a §11.4 re-pair. */
+  repinned: boolean;
+}
+
+/**
+ * The Trust action: store the pin the window's code staged (§11.2). Returns
+ * `null` while nobody has been staged.
+ *
+ * This is the only pairing write to `sync_peers`, and it runs only when the
+ * person presses Trust — never from a poll tick (§11.1, wave 1 N1). It throws
+ * while the candidate has not proved key possession with a sealed hello: until
+ * then the key is only something a stranger presented, and the six-digit code
+ * must never be the thing that grants trust.
+ *
+ * A peer that already has a row is re-paired through `rePairStatements` — new
+ * pairing id, both cursors zeroed, old acks dropped (§11.4) — instead of a
+ * silent update that would leave cursors pointing at another pairing's history.
+ */
+export async function pinAdmittedPeer(
+  transport: PairingTransport,
+  state: PairingPanelState,
+): Promise<PinWrite | null> {
+  const listener = await transport.pairingStatus();
+  const deviceId = listener.peerDeviceId;
+  const publicKey = listener.peerPublicKey;
+  if (deviceId === null || publicKey === null) return null;
+  if (!listener.peerHelloReceived) {
+    throw new Error(
+      "waiting for the phone's hello — key possession is not proven yet, so nothing is pinned.",
+    );
+  }
+  const existing = (await transport.peers()).find(
+    (row) => row.device_id === deviceId,
+  );
+  // §11.4: a re-pair zeroes the cursors and drops the old pairing's acks, so
+  // any operation this desktop has not delivered to that phone would be
+  // stranded by it. Trust refuses while that is true — the discard act, and
+  // only it, is how the person gets past this.
+  if (existing !== undefined) {
+    const verdict = canRePair(await transport.pendingFor(deviceId), false);
+    if (!verdict.ok) throw new Error(verdict.message);
+  }
+  const peer = { deviceId, publicKey, generation: state.local.generation };
+  const statements = existing
+    ? // §11.4: a re-pair is a new pairing, not a new phone — the name the
+      // person gave it is carried over, so re-pairing never erases a label.
+      rePairStatements({
+        ...peer,
+        pairingId: state.offer.pairingId,
+        displayName: existing.display_name,
+      })
+    : pinStatements({ ...peer, pairingId: state.offer.pairingId });
+  await transport.batch(statements);
+  return {
+    peer: { deviceId, publicKey, fingerprint: listener.peerFingerprint },
+    repinned: existing !== undefined,
+  };
+}
+
+/**
+ * §11.4's discard act, as one call: drop the pending operations for a re-pair
+ * the person has explicitly chosen to abandon. Answers how many were dropped;
+ * zero when there was nothing to drop, so the control is harmless when pressed
+ * twice.
+ *
+ * Nothing here trusts the phone — discarding is one act, Trust is another.
+ */
+export async function discardPendingOutbox(
+  transport: PairingTransport,
+  deviceId: string,
+): Promise<number> {
+  if ((await transport.pendingFor(deviceId)) === 0) return 0;
+  return transport.discardPendingFor(deviceId);
+}
+
+/** Bind the panel to the one production driver (`data/app.ts`). */
+export function createPairingRepo(driver: DataDriver & PairingDriver) {
+  const transport: PairingTransport = {
+    pairingLocal: () => driver.pairingLocal(),
+    pairingOpen: (input) => driver.pairingOpen(input),
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: () => driver.pairingStatus(),
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    pendingFor: (deviceId) => pendingForPeer(driver, deviceId),
+    discardPendingFor: async (deviceId) => {
+      const pending = await pendingForPeer(driver, deviceId);
+      await driver.batch(discardPendingForPeerStatements(deviceId));
+      return pending;
+    },
+    pairingUploadTake: () => driver.pairingUploadTake(),
+    pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
+    sync: {
+      take: () => driver.pairingSyncTake(),
+      report: (input) => driver.pairingSyncOutcome(input),
+      apply: async (peerId, ops) => {
+        // The engine reads this device's rows and stamps through the driver,
+        // and the batch it returns carries the cursor advance (§6.4) — one
+        // transaction, the caller's.
+        const statements = await applyOps(driver, {
+          peerId,
+          origin: "mobile",
+          ops,
+        });
+        await driver.batch(statements);
+        return ops.reduce((highest, op) => Math.max(highest, op.seq), 0);
+      },
+    },
+    existingUids: async (table, uids) => {
+      // The table is an allowlisted name from a validated op (§3.4 ran
+      // first); the uids are bound parameters, chunked under SQLite's limit.
+      assertSyncTable(table);
+      const found: string[] = [];
+      for (let at = 0; at < uids.length; at += 500) {
+        const chunk = uids.slice(at, at + 500);
+        const placeholders = chunk.map(() => "?").join(", ");
+        const rows = await driver.query<{ uid: string }>(
+          `SELECT uid FROM "${table}" WHERE uid IN (${placeholders})`,
+          [...chunk],
+        );
+        for (const row of rows) found.push(row.uid);
+      }
+      return found;
+    },
+  };
+  return {
+    open: (now?: number) => openPairingPanel(transport, now),
+    close: () => closePairingPanel(transport),
+    settle: (state: PairingPanelState, now?: number) =>
+      settlePairingPanel(transport, state, now),
+    applyUpload: async () =>
+      applyStagedUpload(
+        transport,
+        (await transport.pairingStatus()).peerDeviceId ?? undefined,
+      ),
+    pin: (state: PairingPanelState) => pinAdmittedPeer(transport, state),
+    pendingFor: (deviceId: string) => transport.pendingFor(deviceId),
+    discard: (deviceId: string) => discardPendingOutbox(transport, deviceId),
+    local: () => driver.pairingLocal(),
+    status: () => driver.pairingStatus(),
+    peers: () => readPeers(driver),
+    identity: () => driver.pairingIdentityStatus(),
+    replaceIdentity: (confirm: boolean) =>
+      driver.pairingIdentityReplace(confirm),
+  };
+}

@@ -1,0 +1,1147 @@
+/**
+ * The desktop pairing panel, tested where it is decided.
+ *
+ * No stubbed "paired" flag: the panel opens through the driver's real IPC
+ * shape (the mock mirrors the Rust refusals), the QR is parsed back through
+ * `parseOffer`, and the pin is written with the store's statements into a real
+ * SQLite database built from the shipped v8 DDL.
+ */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
+import type {
+  BatchStatement,
+  DataDriver,
+  PairingListenerInfo,
+  PairingLocalInfo,
+  PairingOpenInput,
+  UploadOutcomeInput,
+  UploadTakeResult,
+} from "../../data/driver.ts";
+import { createMockDriver } from "../../data/mock-driver.ts";
+import {
+  keyFingerprint,
+  PAIRING_CODE_LIFETIME_MS,
+  PAIRING_MAX_ATTEMPTS,
+  type PairingOffer,
+  parseOffer,
+  pinStatements,
+} from "./pairing.ts";
+import {
+  applyStagedUpload,
+  closePairingPanel,
+  discardPendingOutbox,
+  identityRecovery,
+  openPairingPanel,
+  type PairingPanelState,
+  type PairingTransport,
+  panelPhaseLabel,
+  panelView,
+  pendingConfirmation,
+  pinAdmittedPeer,
+  settlePairingPanel,
+} from "./pairingPanel.ts";
+import {
+  discardPendingForPeerStatements,
+  pendingForPeer,
+  readPeers,
+  type SnapshotOp,
+} from "./store.ts";
+
+const SCHEMA_RS = readFileSync(
+  new URL("../../../src-tauri/src/schema.rs", import.meta.url),
+  "utf8",
+);
+
+function syncDdl(): string {
+  const match = /pub const MIGRATION_7_8: &str = r#"([\s\S]*?)"#;/.exec(
+    SCHEMA_RS,
+  );
+  if (match?.[1] === undefined) {
+    throw new Error("MIGRATION_7_8 not found in schema.rs");
+  }
+  return match[1];
+}
+
+const DDL = syncDdl();
+
+/** The v9 row-stamp DDL, sliced from the shipped baseline like store.test.ts. */
+function rowStampDdl(): string {
+  const match =
+    /-- v9: the stamp of the value[\s\S]*?CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps\(entity_uid\);/.exec(
+      SCHEMA_RS,
+    );
+  if (match?.[0] === undefined) {
+    throw new Error("sync_row_stamps DDL not found in schema.rs");
+  }
+  return match[0];
+}
+
+/** Only the pre-v8 table the migration's ALTER touches. */
+const REMINDERS = `
+CREATE TABLE reminders (
+  id INTEGER PRIMARY KEY, uid TEXT, title TEXT NOT NULL, remind_at TEXT NOT NULL,
+  repeat TEXT NOT NULL DEFAULT 'none', note TEXT NOT NULL DEFAULT '',
+  fired INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);`;
+
+/** The app tables the §9.1 apply writes (the columns its statements touch). */
+const UPLOAD_FIXTURE = `
+CREATE TABLE collections (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+);
+CREATE TABLE notes (
+  id INTEGER PRIMARY KEY, uid TEXT, title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '',
+  collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
+  pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE wallets (
+  id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);`;
+
+const DESKTOP_DEVICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const PHONE_DEVICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const DESKTOP_KEY =
+  "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
+const PHONE_KEY = "0f1e2d3c4b5a69788796a5b4c3d2e1f0".repeat(2);
+/** A key presented for an already-pinned device id — the collision case. */
+const OTHER_PHONE_KEY = "aa".repeat(32);
+const PHONE_FINGERPRINT = "0F1E 2D3C 4B5A 6978 8796 A5B4";
+
+const LOCAL: PairingLocalInfo = {
+  deviceId: DESKTOP_DEVICE,
+  generation: 1,
+  schemaVersion: 8,
+  protocolVersion: 1,
+  publicKey: DESKTOP_KEY,
+  fingerprint: "7B4E 909B BE7F FE44 C465 A220",
+};
+
+function listener(
+  over: Partial<PairingListenerInfo> = {},
+): PairingListenerInfo {
+  return {
+    running: true,
+    port: 8788,
+    endpoint: "192.168.1.5:8788",
+    publicKey: DESKTOP_KEY,
+    fingerprint: LOCAL.fingerprint,
+    peerDeviceId: null,
+    peerPublicKey: null,
+    peerFingerprint: null,
+    peerHelloReceived: false,
+    offerAttempts: 0,
+    offerRedeemed: false,
+    uploadState: null,
+    uploadOps: 0,
+    uploadInserted: null,
+    uploadAlreadyKnown: null,
+    uploadNote: null,
+    syncState: null,
+    syncOps: 0,
+    syncApplied: null,
+    syncNote: null,
+    note: null,
+    ...over,
+  };
+}
+
+function transportFor(
+  driver: ReturnType<typeof createMockDriver>,
+  peers: Awaited<ReturnType<typeof readPeers>> = [],
+): PairingTransport {
+  return {
+    pairingLocal: () => driver.pairingLocal(),
+    pairingOpen: (input) => driver.pairingOpen(input),
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: () => driver.pairingStatus(),
+    batch: (statements) => driver.batch(statements),
+    peers: async () => peers,
+    pendingFor: async () => 0,
+    discardPendingFor: async () => 0,
+    pairingUploadTake: () => driver.pairingUploadTake(),
+    pairingUploadOutcome: (input) => driver.pairingUploadOutcome(input),
+    // The mock driver holds no rows; the apply's own tests bring a real DB.
+    existingUids: async () => [],
+  };
+}
+
+/** The §9.1 transport surface with nothing staged, for tests that never upload. */
+function noUpload(): Pick<
+  PairingTransport,
+  | "pairingUploadTake"
+  | "pairingUploadOutcome"
+  | "existingUids"
+  | "pendingFor"
+  | "discardPendingFor"
+> {
+  return {
+    pairingUploadTake: async () => null,
+    pairingUploadOutcome: async () => undefined,
+    existingUids: async () => [],
+    pendingFor: async () => 0,
+    discardPendingFor: async () => 0,
+  };
+}
+
+test("the panel opens the real listener before it shows a code", async () => {
+  const driver = createMockDriver();
+  const transport = transportFor(driver);
+  const now = Date.now();
+  const state = await openPairingPanel(transport, now);
+
+  assert.equal(state.listener.running, true);
+  assert.equal(state.listener.fingerprint, LOCAL.fingerprint);
+  assert.equal(state.offer.endpoint, "192.168.1.5:8788");
+  assert.equal(state.offer.publicKey, DESKTOP_KEY);
+  assert.equal(state.session.offer.expiresAt, now + PAIRING_CODE_LIFETIME_MS);
+
+  // The code the listener gates on is the code in the QR — not a second one.
+  const opened = driver.callsTo("pairingOpen")[0];
+  assert.ok(opened !== undefined, "the window must be opened once");
+  const [input] = opened.args as [PairingOpenInput];
+  assert.equal(input.offerCode, state.offer.code);
+  assert.equal(input.offerExpiresAt, state.offer.expiresAt);
+  assert.equal(input.pairingId, state.offer.pairingId);
+
+  const view = panelView(state, now);
+  assert.equal(view.code, state.offer.code);
+  assert.ok(view.payload !== null);
+  const parsed = parseOffer(view.payload ?? "");
+  assert.ok(parsed.ok);
+  assert.equal(parsed.offer.pairingId, state.offer.pairingId);
+  assert.equal(parsed.offer.code, state.offer.code);
+  assert.equal(parsed.offer.endpoint, "192.168.1.5:8788");
+});
+
+test("expiry closes the socket before the code leaves the screen", async () => {
+  const driver = createMockDriver();
+  const transport = transportFor(driver);
+  const now = Date.now();
+  const state = await openPairingPanel(transport, now);
+
+  // Live: nothing is closed.
+  const live = await settlePairingPanel(transport, state, now + 1_000);
+  assert.equal(live.listener.running, true);
+  assert.equal(driver.callsTo("pairingClose").length, 0);
+
+  const dead = panelView(state, state.offer.expiresAt);
+  assert.equal(dead.code, null, "no code is shown after it expires");
+  assert.equal(dead.payload, null, "and no QR either");
+  assert.match(dead.reason ?? "", /expired/);
+
+  const settled = await settlePairingPanel(
+    transport,
+    state,
+    state.offer.expiresAt,
+  );
+  assert.equal(settled.listener.running, false);
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+});
+
+function openDb(): { db: DatabaseSync; driver: DataDriver } {
+  const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec(REMINDERS);
+  db.exec(DDL);
+  // The §9.1 apply's ground: the app tables it inserts into, the v9 stamp
+  // table, and the uid indexes the real schema carries.
+  db.exec(UPLOAD_FIXTURE);
+  db.exec(rowStampDdl());
+  // v11: the fold's alias table, which an apply resolves uids against.
+  {
+    const match = /pub const MIGRATION_10_11: &str = r#"([\s\S]*?)"#;/.exec(
+      readFileSync(
+        new URL("../../../src-tauri/src/schema.rs", import.meta.url),
+        "utf8",
+      ),
+    );
+    if (match?.[1] === undefined) {
+      throw new Error("MIGRATION_10_11 not found in schema.rs");
+    }
+    db.exec(match[1]);
+  }
+  for (const table of ["collections", "notes", "wallets"]) {
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_uid ON ${table}(uid)`,
+    );
+  }
+  const run = (sql: string, params: unknown[] = []): void => {
+    db.prepare(sql).run(...(params as never[]));
+  };
+  const driver = {
+    query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> =>
+      db.prepare(sql).all(...(params as never[])) as T[],
+    execute: async (sql: string, params: unknown[] = []): Promise<void> => {
+      run(sql, params);
+    },
+    async batch(statements: BatchStatement[]): Promise<void> {
+      db.exec("BEGIN");
+      try {
+        for (const statement of statements) {
+          run(statement.sql, statement.params ?? []);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+  } as unknown as DataDriver;
+  return { db, driver };
+}
+
+function panelState(pairingId: string): PairingPanelState {
+  const now = Date.now();
+  const offer: PairingOffer = {
+    version: 1,
+    pairingId,
+    deviceId: DESKTOP_DEVICE,
+    endpoint: "192.168.1.5:8788",
+    publicKey: DESKTOP_KEY,
+    generation: 1,
+    protocolVersion: 1,
+    schemaVersion: 8,
+    code: "123456",
+    createdAt: now,
+    expiresAt: now + PAIRING_CODE_LIFETIME_MS,
+  };
+  return {
+    local: LOCAL,
+    session: { offer, failedAttempts: [], usedAt: null },
+    offer,
+    listener: listener(),
+    syncAcked: 0,
+  };
+}
+
+test("the code's peer becomes one sync_peers row, and a re-pair resets cursors", async () => {
+  const { db, driver } = openDb();
+  const admitted = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    // Trust is only offered after a sealed hello proved possession (N1).
+    peerHelloReceived: true,
+  });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => admitted,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => admitted,
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    ...noUpload(),
+  };
+
+  const write = await pinAdmittedPeer(transport, panelState("pair-1"));
+  assert.ok(write !== null);
+  assert.equal(write.repinned, false);
+  assert.equal(write.peer.fingerprint, "0F1E 2D3C 4B5A 6978 8796 A5B4");
+
+  const first = db
+    .prepare(
+      "SELECT device_id, pairing_id, public_key, generation FROM sync_peers",
+    )
+    .get() as {
+    device_id: string;
+    pairing_id: string;
+    public_key: string;
+    generation: number;
+  };
+  assert.equal(first.device_id, PHONE_DEVICE);
+  assert.equal(first.pairing_id, "pair-1");
+  assert.equal(first.public_key, PHONE_KEY);
+  assert.equal(first.generation, 1);
+
+  db.prepare(
+    "UPDATE sync_peers SET cursor_in = 7, cursor_out = 9, display_name = ?",
+  ).run("Sam's phone");
+  const again = await pinAdmittedPeer(transport, panelState("pair-2"));
+  assert.ok(again?.repinned, "a peer that paired before is re-paired (§11.4)");
+  const second = db
+    .prepare(
+      "SELECT pairing_id, cursor_in, cursor_out, display_name FROM sync_peers",
+    )
+    .get() as {
+    pairing_id: string;
+    cursor_in: number;
+    cursor_out: number;
+    display_name: string;
+  };
+  assert.equal(second.pairing_id, "pair-2");
+  assert.equal(second.cursor_in, 0);
+  assert.equal(second.cursor_out, 0);
+  assert.equal(
+    second.display_name,
+    "Sam's phone",
+    "re-pairing a known phone keeps the name it was given (N10)",
+  );
+});
+
+test("a record too large to copy is the panel's stated reason, in the backend's words (§8.5)", () => {
+  const note =
+    'a notes record f0000000-0000-4000-8000-000000000001 "Giant note" is 40120 bytes, over the 30592 bytes one copied batch can carry (§8.5)';
+  const view = panelView(
+    { ...panelState("pair-1"), listener: listener({ note }) },
+    Date.now(),
+  );
+  assert.equal(
+    view.note,
+    note,
+    "the panel says why adoption cannot proceed, not just that it did not",
+  );
+  assert.equal(
+    panelView(panelState("pair-1"), Date.now()).note,
+    null,
+    "a window with nothing to say shows nothing",
+  );
+});
+
+test("Trust refuses while the desktop still owes the phone changes, and the discard act is its own press", async () => {
+  const { db, driver } = openDb();
+  const admitted = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => admitted,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => admitted,
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    ...noUpload(),
+    pendingFor: (deviceId) => pendingForPeer(driver, deviceId),
+    discardPendingFor: async (deviceId) => {
+      const pending = await pendingForPeer(driver, deviceId);
+      await driver.batch(discardPendingForPeerStatements(deviceId));
+      return pending;
+    },
+  };
+
+  // The first pairing, and then two of this desktop's own operations that the
+  // phone has never acknowledged.
+  await pinAdmittedPeer(transport, panelState("pair-1"));
+  const insertOutbox = db.prepare(
+    `INSERT INTO sync_outbox
+       (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+     VALUES (?, ?, ?, 'notes', ?, 'create', 0, ?, '{}', '{"title":"x"}', '2026-11-15')`,
+  );
+  insertOutbox.run(DESKTOP_DEVICE, 1, "op-1", "note-1", 1);
+  insertOutbox.run(DESKTOP_DEVICE, 2, "op-2", "note-2", 2);
+
+  await assert.rejects(
+    () => pinAdmittedPeer(transport, panelState("pair-2")),
+    /2 change\(s\) have not been delivered yet/,
+  );
+  const untouched = db
+    .prepare("SELECT pairing_id, cursor_out FROM sync_peers")
+    .get() as { pairing_id: string; cursor_out: number };
+  assert.equal(
+    untouched.pairing_id,
+    "pair-1",
+    "a refused Trust changed nothing",
+  );
+  assert.equal(untouched.cursor_out, 0);
+
+  // §11.4: discarding is the button's OWN act, so it is a separate call.
+  assert.equal(
+    await discardPendingOutbox(transport, PHONE_DEVICE),
+    2,
+    "it drops exactly the undelivered rows",
+  );
+  const left = db.prepare("SELECT count(*) AS n FROM sync_outbox").get() as {
+    n: number;
+  };
+  assert.equal(left.n, 0);
+
+  const write = await pinAdmittedPeer(transport, panelState("pair-2"));
+  assert.equal(write?.repinned, true, "Trust now proceeds (§11.4)");
+  const repinned = db.prepare("SELECT pairing_id FROM sync_peers").get() as {
+    pairing_id: string;
+  };
+  assert.equal(repinned.pairing_id, "pair-2");
+});
+
+test("nothing is pinned until the listener reports an admitted peer", async () => {
+  const { db, driver } = openDb();
+  const quiet: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => listener(),
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => listener(),
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    ...noUpload(),
+  };
+  assert.equal(await pinAdmittedPeer(quiet, panelState("pair-1")), null);
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 0);
+});
+
+test("the poll tick never pins a staged candidate", async () => {
+  const { db, driver } = openDb();
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  let writes = 0;
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => staged,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => staged,
+    batch: async (statements) => {
+      writes += 1;
+      await driver.batch(statements);
+    },
+    peers: () => readPeers(driver),
+    ...noUpload(),
+  };
+
+  const now = Date.now();
+  const state = await openPairingPanel(transport, now);
+  const settled = await settlePairingPanel(transport, state, now + 2_000);
+  assert.equal(
+    settled.listener.peerDeviceId,
+    PHONE_DEVICE,
+    "the panel sees the candidate",
+  );
+  assert.equal(writes, 0, "a tick is not a Trust");
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 0, "nothing was pinned by the clock");
+});
+
+test("Trust pins the staged peer once; Reject closes without pinning", async () => {
+  const { db, driver } = openDb();
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  let writes = 0;
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => staged,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => staged,
+    batch: async (statements) => {
+      writes += 1;
+      await driver.batch(statements);
+    },
+    peers: () => readPeers(driver),
+    ...noUpload(),
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: staged,
+  };
+
+  const written = await pinAdmittedPeer(transport, state);
+  assert.ok(written !== null);
+  assert.equal(written.peer.deviceId, PHONE_DEVICE);
+  assert.equal(writes, 1, "Trust writes the pin exactly once");
+
+  // Reject is the window closing: no write at all, and no row for a peer the
+  // person never trusted.
+  const rejected = await closePairingPanel(transport);
+  assert.equal(rejected.running, false);
+  assert.equal(writes, 1);
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 1);
+});
+
+test("Trust is withheld until a sealed hello proves key possession", async () => {
+  const { db, driver } = openDb();
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: false,
+  });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => staged,
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => staged,
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    ...noUpload(),
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: staged,
+  };
+
+  const pending = pendingConfirmation(state);
+  assert.ok(pending !== null);
+  assert.equal(pending.helloReceived, false);
+
+  await assert.rejects(() => pinAdmittedPeer(transport, state), /hello/);
+  const row = db.prepare("SELECT count(*) AS n FROM sync_peers").get() as {
+    n: number;
+  };
+  assert.equal(row.n, 0, "an unproven key is never pinned");
+});
+
+test("a lost key offers the confirmed replacement, a working key never does", () => {
+  const base = {
+    present: false,
+    publicKey: null,
+    fingerprint: null,
+    needsRePair: true,
+    lost: false,
+    rePairRequired: true,
+    note: "this device's pairing key is missing from the platform key store",
+  } as const;
+
+  const missing = identityRecovery({ ...base });
+  assert.equal(missing.needed, true, "a missing key is why opening fails");
+  assert.match(missing.note ?? "", /pairing key is missing/);
+
+  const lost = identityRecovery({ ...base, lost: true });
+  assert.equal(lost.needed, true, "an unopenable key is just as unusable");
+
+  const healthy = identityRecovery({
+    ...base,
+    present: true,
+    publicKey:
+      "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    fingerprint: "7B4E 909B BE7F FE44 C465 A220",
+    needsRePair: false,
+    rePairRequired: false,
+    note: null,
+  });
+  assert.equal(
+    healthy.needed,
+    false,
+    "a readable key is never replaced behind the person's back (§11.2)",
+  );
+  assert.equal(healthy.fingerprint, "7B4E 909B BE7F FE44 C465 A220");
+
+  const rePairOnly = identityRecovery({
+    ...base,
+    present: true,
+    needsRePair: true,
+    note: null,
+  });
+  assert.equal(
+    rePairOnly.needed,
+    false,
+    "needing a re-pair is not a reason to replace the key",
+  );
+  assert.equal(rePairOnly.rePairRequired, true);
+
+  assert.equal(
+    identityRecovery(null).needed,
+    false,
+    "an unknown status invites nothing",
+  );
+});
+
+test("the panel replaces the identity only through the two-step confirmation", () => {
+  const panel = readFileSync(
+    new URL("../../components/PairingPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /const recovery = identityRecovery\(identity\)/);
+  assert.match(panel, /\{recovery\.needed \?/);
+  assert.match(
+    panel,
+    /<ConfirmButton[\s\S]{0,300}?onConfirm=\{replaceIdentity\}/,
+    "the replacement is behind the app's one confirmation pattern",
+  );
+  assert.equal(
+    (panel.match(/pairingRepo\.replaceIdentity\(/g) ?? []).length,
+    1,
+    "one replacement call site",
+  );
+  assert.match(panel, /pairingRepo\.replaceIdentity\(true\)/);
+  assert.doesNotMatch(
+    panel,
+    /onClick=\{\(\) => void replaceIdentity\(\)\}/,
+    "no one-click replacement path",
+  );
+});
+
+test("the panel prints the offer so a camera-less phone can paste it", () => {
+  const panel = readFileSync(
+    new URL("../../components/PairingPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  // The QR is not a carrier a camera-less phone can read: the same string has
+  // to be on screen, selectable, and copyable (§11.1 manual entry).
+  assert.match(panel, /pairing-offer-text/, "the offer string is rendered");
+  assert.match(panel, /Copy pairing string/, "and it can be copied");
+  assert.match(
+    panel,
+    /navigator\.clipboard\.writeText\(text\)/,
+    "copy uses the platform clipboard",
+  );
+  assert.match(
+    panel,
+    /selectNodeContents\(node\)/,
+    "a refused clipboard selects the string instead of claiming a copy",
+  );
+});
+
+test("a deviceId collision shows the existing phone and its fingerprint", async () => {
+  const { driver } = openDb();
+  await driver.batch(
+    pinStatements({
+      deviceId: PHONE_DEVICE,
+      generation: 1,
+      pairingId: "pair-0",
+      publicKey: PHONE_KEY,
+      displayName: "Sam's phone",
+    }),
+  );
+  const peers = await readPeers(driver);
+  const staged = listener({
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: OTHER_PHONE_KEY,
+    peerFingerprint: keyFingerprint(OTHER_PHONE_KEY),
+    peerHelloReceived: false,
+  });
+
+  const pending = pendingConfirmation(
+    { ...panelState("pair-1"), listener: staged },
+    peers,
+  );
+  assert.ok(pending !== null);
+  assert.equal(pending.localFingerprint, LOCAL.fingerprint);
+  assert.equal(pending.peer.fingerprint, keyFingerprint(OTHER_PHONE_KEY));
+  assert.equal(pending.existing?.displayName, "Sam's phone");
+  assert.equal(pending.existing?.fingerprint, keyFingerprint(PHONE_KEY));
+  assert.notEqual(
+    pending.peer.fingerprint,
+    pending.existing?.fingerprint,
+    "the presented key and the pinned one are shown side by side",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// N3: the panel tells the truth about the listener's code state.
+// ---------------------------------------------------------------------------
+
+test("a code locked out on the wire closes the socket and never renders as live", async () => {
+  const driver = createMockDriver();
+  const locked = listener({ offerAttempts: PAIRING_MAX_ATTEMPTS });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => locked,
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: async () => locked,
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+    ...noUpload(),
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: locked,
+  };
+
+  const view = panelView(state);
+  assert.equal(view.phase, "locked", "the listener's count is the state");
+  assert.equal(view.code, null, "a locked code is never shown as live");
+  assert.equal(view.payload, null, "and neither is its QR");
+  assert.equal(view.freshCode, true);
+  assert.match(view.reason ?? "", /too many wrong codes/);
+
+  const settled = await settlePairingPanel(transport, state);
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+  assert.equal(settled.listener.running, false, "the socket is closed");
+  assert.equal(panelView(settled).phase, "locked");
+});
+
+test("a redeemed code is spent on screen while the window keeps serving", async () => {
+  const driver = createMockDriver();
+  const redeemed = listener({
+    offerRedeemed: true,
+    peerDeviceId: PHONE_DEVICE,
+    peerPublicKey: PHONE_KEY,
+    peerFingerprint: PHONE_FINGERPRINT,
+    peerHelloReceived: true,
+  });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => redeemed,
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: async () => redeemed,
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+    ...noUpload(),
+  };
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: redeemed,
+  };
+
+  const view = panelView(state);
+  assert.equal(view.phase, "used");
+  assert.equal(view.code, null, "the spent digits are hidden");
+  assert.equal(view.payload, null, "and the spent QR with them");
+  assert.match(view.reason ?? "", /already used/);
+
+  // §8.4: the phone can only dial this window's port, so the window outlives
+  // the redemption — closing it here is what made every pull unreachable.
+  const settled = await settlePairingPanel(transport, state);
+  assert.equal(driver.callsTo("pairingClose").length, 0);
+  assert.equal(settled.listener.running, true);
+  assert.equal(settled.listener.endpoint, "192.168.1.5:8788");
+  assert.equal(panelView(settled).phase, "used");
+
+  // …and Trust is reachable while it serves: the staged phone is still there.
+  const pending = pendingConfirmation(settled);
+  assert.ok(pending !== null, "the staged phone is offered for Trust");
+  assert.equal(pending.helloReceived, true);
+
+  // The code's own lifetime still ends the window.
+  const expired = await settlePairingPanel(
+    transport,
+    settled,
+    state.offer.expiresAt,
+  );
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+  assert.equal(expired.listener.running, false);
+});
+
+test("a redeemed code that staged no phone closes the window", async () => {
+  const driver = createMockDriver();
+  const redeemed = listener({ offerRedeemed: true });
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => redeemed,
+    pairingClose: () => driver.pairingClose(),
+    pairingStatus: async () => redeemed,
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+    ...noUpload(),
+  };
+
+  await settlePairingPanel(transport, {
+    ...panelState("pair-1"),
+    listener: redeemed,
+  });
+  assert.equal(driver.callsTo("pairingClose").length, 1);
+});
+
+test("a listener that stopped while the code is live is closed, never expired", () => {
+  const state: PairingPanelState = {
+    ...panelState("pair-1"),
+    listener: listener({ running: false, endpoint: null }),
+  };
+  const view = panelView(state);
+  assert.equal(view.phase, "closed");
+  assert.equal(view.code, null);
+  assert.equal(view.payload, null);
+  assert.equal(view.freshCode, true, "the panel offers a fresh code");
+  assert.doesNotMatch(view.reason ?? "", /expired/);
+  assert.equal(
+    view.reason,
+    "the pairing listener closed — show a fresh code on the desktop.",
+  );
+  assert.equal(panelPhaseLabel("closed"), "closed");
+});
+
+test("expiry hides the code even when the listener still reports running", () => {
+  const state = panelState("pair-1");
+  const view = panelView(state, state.offer.expiresAt);
+  assert.equal(view.phase, "expired");
+  assert.equal(view.code, null);
+  assert.equal(view.payload, null);
+  assert.equal(view.freshCode, true);
+});
+
+test("no QR is drawn when the listener has no LAN address", async () => {
+  const driver = createMockDriver();
+  let closed = 0;
+  const transport: PairingTransport = {
+    pairingLocal: () => driver.pairingLocal(),
+    pairingOpen: async () => listener({ endpoint: null }),
+    pairingClose: async () => {
+      closed += 1;
+      return driver.pairingClose();
+    },
+    pairingStatus: () => driver.pairingStatus(),
+    batch: (statements) => driver.batch(statements),
+    peers: async () => [],
+    ...noUpload(),
+  };
+  await assert.rejects(() => openPairingPanel(transport), /network address/);
+  assert.equal(closed, 1, "the addressless window is closed, not left serving");
+});
+
+// ---------------------------------------------------------------------------
+// N4: nothing may keep a port open behind a screen that is gone.
+// ---------------------------------------------------------------------------
+
+test("an open that lands after unmount leaves no port behind", () => {
+  const panel = readFileSync(
+    new URL("../../components/PairingPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /unmountedRef\.current = true/);
+  assert.match(
+    panel,
+    /if \(unmountedRef\.current\) \{[\s\S]{0,200}?pairingRepo\.close\(\)/,
+    "a late open closes the listener instead of setting state",
+  );
+});
+
+test("a filtered-away pairing section unmounts the panel", () => {
+  const settings = readFileSync(
+    new URL("../../pages/SettingsPage.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(settings, /\{shows\("pairing"\) \? <PairingPanel \/> : null\}/);
+});
+
+test("the lock teardown closes the pairing port through the retried stop", () => {
+  const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
+  assert.match(
+    app,
+    /stopSharing: \(\) =>\s*Promise\.all\(\[shareRepo\.stopForLock\(\), pairingRepo\.close\(\)\]\)/,
+    "a failed pairing close is retried and reported, not swallowed",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// §9.1's desktop apply: staged by the listener, decided here, in one batch.
+// ---------------------------------------------------------------------------
+
+const KNOWN_NOTE = "33333333-3333-4333-8333-333333333333";
+const PHONE_COLLECTION = "44444444-4444-4444-8444-444444444444";
+const PHONE_WALLET = "55555555-5555-4555-8555-555555555555";
+const PHONE_NOTE = "66666666-6666-4666-8666-666666666666";
+const PHONE_WALLET_2 = "77777777-7777-4777-8777-777777777777";
+
+function uploadOp(
+  table: SnapshotOp["table"],
+  uid: string,
+  counter: number,
+  fields: Record<string, unknown>,
+): SnapshotOp {
+  return {
+    table,
+    uid,
+    stamp: { counter, deviceId: PHONE_DEVICE, opId: "op-phone" },
+    fields,
+  };
+}
+
+function uploadTransport(
+  driver: DataDriver,
+  staged: UploadTakeResult | null,
+): { transport: PairingTransport; outcomes: UploadOutcomeInput[] } {
+  const outcomes: UploadOutcomeInput[] = [];
+  const transport: PairingTransport = {
+    pairingLocal: async () => LOCAL,
+    pairingOpen: async () => listener(),
+    pairingClose: async () => listener({ running: false }),
+    pairingStatus: async () => listener(),
+    batch: (statements) => driver.batch(statements),
+    peers: () => readPeers(driver),
+    pendingFor: async () => 0,
+    discardPendingFor: async () => 0,
+    pairingUploadTake: async () => staged,
+    pairingUploadOutcome: async (input) => {
+      outcomes.push(input);
+    },
+    existingUids: async (table, uids) => {
+      if (uids.length === 0) return [];
+      const marks = uids.map(() => "?").join(", ");
+      const rows = await driver.query<{ uid: string }>(
+        `SELECT uid FROM "${table}" WHERE uid IN (${marks})`,
+        [...uids],
+      );
+      return rows.map((row) => row.uid);
+    },
+  };
+  return { transport, outcomes };
+}
+
+test("a staged upload lands fresh rows and leaves known rows untouched", async () => {
+  const { db, driver } = openDb();
+  db.prepare(
+    "INSERT INTO notes (uid, title, content, created_at, updated_at) VALUES (?, 'Desktop version', '', 't', 't')",
+  ).run(KNOWN_NOTE);
+  db.prepare(
+    "INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at) VALUES ('notes', ?, 5, ?, 'op-desktop', '{}', 't')",
+  ).run(KNOWN_NOTE, DESKTOP_DEVICE);
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      // The phone's copy of a row the desktop already holds — even with a
+      // newer stamp, §7.2 makes it a no-op in v1, never a rewrite.
+      uploadOp("notes", KNOWN_NOTE, 9, {
+        title: "Phone rewrite",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+      }),
+      uploadOp("collections", PHONE_COLLECTION, 2, {
+        name: "Phone ideas",
+        created_at: "t",
+      }),
+      uploadOp("notes", PHONE_NOTE, 3, {
+        title: "Phone note",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+        collection_uid: PHONE_COLLECTION,
+      }),
+      uploadOp("wallets", PHONE_WALLET, 1, {
+        name: "Phone cash",
+        created_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  const applied = await applyStagedUpload(transport);
+  assert.deepEqual(applied, {
+    staged: 4,
+    inserted: 3,
+    alreadyKnown: 1,
+    error: null,
+  });
+  assert.deepEqual(outcomes, [{ inserted: 3, alreadyKnown: 1, error: null }]);
+
+  const known = db
+    .prepare("SELECT title FROM notes WHERE uid = ?")
+    .get(KNOWN_NOTE) as { title: string };
+  assert.equal(known.title, "Desktop version");
+  const knownStamp = db
+    .prepare(
+      "SELECT counter FROM sync_row_stamps WHERE entity_table = 'notes' AND entity_uid = ?",
+    )
+    .get(KNOWN_NOTE) as { counter: number };
+  assert.equal(knownStamp.counter, 5, "a known row's stamp is not rewritten");
+  const fresh = db
+    .prepare("SELECT collection_id FROM notes WHERE uid = ?")
+    .get(PHONE_NOTE) as { collection_id: number };
+  const parent = db
+    .prepare("SELECT id FROM collections WHERE uid = ?")
+    .get(PHONE_COLLECTION) as { id: number };
+  assert.equal(fresh.collection_id, parent.id);
+});
+
+test("an upload that fails validation writes nothing and says why", async () => {
+  const { db, driver } = openDb();
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      uploadOp("notes", PHONE_NOTE, 1, {
+        title: "Valid note",
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+      }),
+      uploadOp("gallery" as SnapshotOp["table"], PHONE_WALLET, 1, {
+        name: "Not synced",
+        created_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  const applied = await applyStagedUpload(transport);
+  assert.equal(applied?.inserted, 0);
+  assert.match(applied?.error ?? "", /not on the sync allowlist/);
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0]?.inserted, null);
+  assert.match(outcomes[0]?.error ?? "", /not on the sync allowlist/);
+  const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
+    n: number;
+  };
+  assert.equal(landed.n, 0, "validation precedes every write");
+});
+
+test("a database refusal rolls the upload back and reaches the phone", async () => {
+  const { db, driver } = openDb();
+  // A row the schema itself refuses: `notes.title` is NOT NULL. A natural-key
+  // collision is no longer a refusal (§8.4 folds it), so the rollback has to be
+  // proven on a write the database really rejects.
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      uploadOp("wallets", PHONE_WALLET_2, 1, {
+        name: "Uploaded wallet",
+        created_at: "t",
+      }),
+      uploadOp("notes", PHONE_NOTE, 1, {
+        title: null,
+        content: "",
+        created_at: "t",
+        updated_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  const applied = await applyStagedUpload(transport);
+  assert.match(applied?.error ?? "", /NOT NULL constraint failed/);
+  assert.match(outcomes[0]?.error ?? "", /NOT NULL constraint failed/);
+  const landed = db.prepare("SELECT count(*) AS n FROM notes").get() as {
+    n: number;
+  };
+  assert.equal(landed.n, 0, "the refused upload leaves nothing behind");
+  const wallets = db.prepare("SELECT count(*) AS n FROM wallets").get() as {
+    n: number;
+  };
+  assert.equal(
+    wallets.n,
+    0,
+    "and the row before the refusal is rolled back with it",
+  );
+});
+
+test("the settle tick applies a staged upload and the view reports it", async () => {
+  const { db, driver } = openDb();
+  const staged: UploadTakeResult = {
+    pairingId: "pair-1",
+    ops: [
+      uploadOp("wallets", PHONE_WALLET, 1, {
+        name: "Settled cash",
+        created_at: "t",
+      }),
+    ],
+  };
+  const { transport, outcomes } = uploadTransport(driver, staged);
+  let statusCalls = 0;
+  transport.pairingStatus = async () => {
+    statusCalls += 1;
+    return statusCalls === 1
+      ? listener({ uploadState: "staged", uploadOps: 1 })
+      : listener({
+          uploadState: "applied",
+          uploadOps: 1,
+          uploadInserted: 1,
+          uploadAlreadyKnown: 0,
+        });
+  };
+  const now = Date.now();
+  const state = await openPairingPanel(transport, now);
+  const settled = await settlePairingPanel(transport, state, now);
+  assert.equal(settled.listener.uploadState, "applied");
+  assert.deepEqual(outcomes, [{ inserted: 1, alreadyKnown: 0, error: null }]);
+  const landed = db
+    .prepare("SELECT name FROM wallets WHERE uid = ?")
+    .get(PHONE_WALLET) as { name: string } | undefined;
+  assert.equal(landed?.name, "Settled cash");
+  assert.equal(panelView(settled, now).upload?.inserted, 1);
+});

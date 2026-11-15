@@ -6,12 +6,20 @@ import {
   LINKABLE_TYPES,
 } from "./entityLinks.ts";
 import { createKeyedMutex } from "./mutex.ts";
+import {
+  isSyncTable,
+  type Origin,
+  type SyncTable,
+  writeAllowed,
+} from "./sync/protocol.ts";
+import { LOCAL_FOREIGN_KEYS, outboxStatements } from "./sync/store.ts";
 import type {
   LinkRow,
   PhotoRefRow,
   TrashEntityType,
   TrashItemRow,
 } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 // The row types live in types.ts with every other table's (docs/AUDIT.md
 // SCHEMA-02); these re-exports keep the call sites that already import them
@@ -22,10 +30,52 @@ export const TRASH_RETENTION_DAYS = 30;
 export const TRASH_MAX_ITEMS = 1_000;
 export const TRASH_SNAPSHOT_VERSION = 1;
 
+/**
+ * §13.2's conflict marker: the `snapshot.conflict.kind` a conflict copy carries
+ * and an ordinary Trash item does not.
+ *
+ * It is what the restore path branches on. An ordinary Trash item comes back as
+ * the same record under the same uid; a conflict copy comes back as a NEW
+ * record under a NEW uid, because the losing value never resurrects the uid the
+ * winner now owns.
+ */
+export const TRASH_CONFLICT_KIND = "conflict_loser";
+
+/** Every type the `trash_items.entity_type` CHECK names (schema v10). */
+const TRASH_ENTITY_TYPES: readonly TrashEntityType[] = [
+  "note",
+  "task",
+  "contact",
+  "memory",
+  "journal_entry",
+  "shopping_list",
+  "shopping_item",
+];
+
 interface InboxReference {
   id: number;
   converted_type: string;
   converted_id: number;
+}
+
+/**
+ * The §13.2 marker a conflict copy carries inside its snapshot.
+ *
+ * `won` is the winning record's field values, stored so the Trash page can show
+ * the copy beside what actually won — the user's decision to keep the copy is
+ * informed, not blind. Nothing here is a live link: the copy is device-local
+ * and never syncs (§2.2, §13.2).
+ */
+export interface TrashConflictCopy {
+  kind: "conflict_loser";
+  /** §13.2's sentence, shown verbatim beside the copy. */
+  label: string;
+  /** The sync table the losing value came from. */
+  table: string;
+  /** The uid the loser held. A restore never reuses it. */
+  uid: string;
+  /** The winning record's field values. */
+  won: Row;
 }
 
 interface TrashSnapshot {
@@ -37,10 +87,17 @@ interface TrashSnapshot {
   photoRefs: PhotoRefRow[];
   links: LinkRow[];
   inboxRefs: InboxReference[];
+  /** Set only on a conflict copy; absent on every ordinary Trash item. */
+  conflict?: TrashConflictCopy;
 }
 
 export interface TrashListItem extends TrashItemRow {
   title: string;
+  /**
+   * §13.2: for a conflict copy, its label and the winning value's title; null
+   * for an ordinary Trash item.
+   */
+  conflict: { label: string; won: string } | null;
 }
 
 const TABLES: Record<TrashEntityType, string> = {
@@ -49,11 +106,18 @@ const TABLES: Record<TrashEntityType, string> = {
   contact: "contacts",
   memory: "memories",
   journal_entry: "journal_entries",
+  shopping_list: "shopping_lists",
+  shopping_item: "shopping_items",
 };
 
 const COLUMNS: Record<TrashEntityType, string[]> = {
   note: [
     "id",
+    // Identity travels with the snapshot, so a restore brings the record back
+    // as the same record instead of a copy (UID contract). Snapshots written
+    // before schema v7 have no `uid`; restore mints one for those instead of
+    // rejecting a Trash item the user can see on screen.
+    "uid",
     "title",
     "content",
     "tags",
@@ -63,10 +127,24 @@ const COLUMNS: Record<TrashEntityType, string[]> = {
     "created_at",
     "updated_at",
   ],
-  task: ["id", "title", "due_date", "done", "repeat", "note", "created_at"],
+  task: [
+    "id",
+    "uid",
+    "title",
+    "due_date",
+    "done",
+    "repeat",
+    "note",
+    "created_at",
+  ],
   contact: ["id", "name", "address", "birthday", "notes", "created_at"],
   memory: ["id", "title", "memory_date", "note", "created_at"],
   journal_entry: ["id", "entry_date", "content", "created_at", "updated_at"],
+  // §13.2's two: a conflict copy stores the row whole, uid included, so the
+  // ordinary restore path could rebuild it — the copy's own restore mints a
+  // new uid on purpose (see `restoreUnlocked`).
+  shopping_list: ["id", "uid", "name", "created_at"],
+  shopping_item: ["id", "uid", "list_id", "text", "done", "sort_order"],
 };
 
 const CONTACT_CHANNEL_COLUMNS = [
@@ -109,6 +187,16 @@ export const TRASH_CHILD_COLUMNS = {
   photo_refs: PHOTO_REF_COLUMNS,
   links: LINK_COLUMNS,
 } as const;
+
+/**
+ * A Trash row that is not a §13.2 conflict copy — the only kind that owns an
+ * entity id in the ordinary sense.
+ *
+ * A conflict copy is stamped with the id of the row it lost to, and that row is
+ * still live. Every query that asks "is this id claimed by Trash?" has to skip
+ * those copies, or a live row would read as trashed.
+ */
+const NOT_A_CONFLICT_COPY = "json_extract(snapshot, '$.conflict') IS NULL";
 
 function jsonObjectSql(alias: string, columns: string[]): string {
   return `json_object(${columns.map((column) => `'${column}', ${alias}.${column}`).join(", ")})`;
@@ -219,15 +307,49 @@ function asSnapshot(raw: string): TrashSnapshot {
       throw new Error("This Trash item is incomplete and cannot be restored.");
     }
   }
+  const conflict = (value as { conflict?: unknown }).conflict;
+  if (conflict !== undefined && !isConflictCopy(conflict)) {
+    throw new Error(
+      "This Trash item has a corrupt conflict marker and cannot be restored.",
+    );
+  }
   return snapshot;
 }
 
-function snapshotTitle(type: TrashEntityType, snapshot: TrashSnapshot): string {
-  const entity = snapshot.entity;
-  if (type === "journal_entry")
+/** The §13.2 marker's shape, checked once so both read paths agree. */
+function isConflictCopy(value: unknown): value is TrashConflictCopy {
+  if (typeof value !== "object" || value === null) return false;
+  const copy = value as Record<string, unknown>;
+  return (
+    copy.kind === TRASH_CONFLICT_KIND &&
+    typeof copy.label === "string" &&
+    typeof copy.table === "string" &&
+    typeof copy.uid === "string" &&
+    typeof copy.won === "object" &&
+    copy.won !== null &&
+    !Array.isArray(copy.won)
+  );
+}
+
+/**
+ * The one text a row shows for an entity of this type: a title, a contact's or
+ * list's name, an item's text, or a journal entry's date.
+ */
+function entityLabel(type: TrashEntityType, entity: Row): string {
+  if (type === "journal_entry") {
     return `Journal entry · ${String(entity.entry_date ?? "unknown date")}`;
-  const name = type === "contact" ? entity.name : entity.title;
+  }
+  const name =
+    type === "contact" || type === "shopping_list"
+      ? entity.name
+      : type === "shopping_item"
+        ? entity.text
+        : entity.title;
   return typeof name === "string" && name.trim() ? name : `Untitled ${type}`;
+}
+
+function snapshotTitle(type: TrashEntityType, snapshot: TrashSnapshot): string {
+  return entityLabel(type, snapshot.entity);
 }
 
 function linkType(type: TrashEntityType): type is "note" | "task" | "contact" {
@@ -244,13 +366,7 @@ export function validateTrashPayload(
   rows: unknown[],
   context: TrashPayloadContext = {},
 ): void {
-  const allowed = new Set<TrashEntityType>([
-    "note",
-    "task",
-    "contact",
-    "memory",
-    "journal_entry",
-  ]);
+  const allowed = new Set<TrashEntityType>(TRASH_ENTITY_TYPES);
   const trashEntities = new Set<string>();
   for (const candidate of rows) {
     if (
@@ -292,7 +408,9 @@ export function validateTrashPayload(
     const snapshot = asSnapshot(row.snapshot);
     if (
       Number(snapshot.entity.id) !== entityId ||
-      COLUMNS[type].some((column) => !(column in snapshot.entity))
+      COLUMNS[type].some(
+        (column) => column !== "uid" && !(column in snapshot.entity),
+      )
     ) {
       throw new Error("Backup contains an incomplete Trash snapshot.");
     }
@@ -403,7 +521,32 @@ function insertStatement(
   };
 }
 
-export function createTrashRepo(driver: DataDriver) {
+/**
+ * §2.3's rule for the op a restore implies.
+ *
+ * A restore is a create BY THIS DEVICE — the row comes back under its old uid
+ * with this device's own fresh stamp — so it may record only where this
+ * device's origin may create on that table. A refusal does not refuse the
+ * restore: the row returns locally either way, it simply records nothing,
+ * because the peer would refuse the op and the batch carrying it would fail
+ * whole (§7.7). Notes, Tasks and both Shopping tables are two-way, so today
+ * every Trash type records from either device; the rule is what keeps that
+ * true if a desktop-owned table ever becomes trashable.
+ */
+export function restoreOpAllowed(table: SyncTable, origin: Origin): boolean {
+  return writeAllowed(table, "create", origin).allowed;
+}
+
+/**
+ * `origin` is this device's side of a pairing (§2.3), supplied by the caller —
+ * `data/app.ts` resolves it from the platform once, at composition. The
+ * default is the desktop's because the Trash is a desktop surface (the phone
+ * has none), so a library default and a test fixture describe the same device.
+ */
+export function createTrashRepo(
+  driver: DataDriver,
+  origin: Origin = "desktop",
+) {
   // One repository-level mutex for the whole trash lifecycle (J3). Every
   // multi-await mutation shares the key "trash" because they share
   // invariants, not rows: `App.tsx` fires a detached `purge()` the moment
@@ -454,9 +597,19 @@ export function createTrashRepo(driver: DataDriver) {
     });
   }
 
+  /**
+   * Move a row into Trash.
+   *
+   * `extraStatements` are appended to the SAME batch, last: sync's delete op
+   * and its tombstone (§5.1) have to commit with the row's removal (§6.1), and
+   * a caller that wrote them in a second transaction would break that promise
+   * the moment a batch failed in between. The caller reads the uid first; the
+   * trash statements here address the row by its local id, as ever.
+   */
   async function trashEntityUnlocked(
     type: TrashEntityType,
     id: number,
+    extraStatements: readonly BatchStatement[] = [],
   ): Promise<void> {
     const table = TABLES[type];
     const snapshotId = crypto.randomUUID();
@@ -486,6 +639,7 @@ export function createTrashRepo(driver: DataDriver) {
       sql: `DELETE FROM ${table} WHERE id = ? AND ${snapshotGuard}`,
       params: [id, snapshotId],
     });
+    statements.push(...extraStatements);
     await driver.batch(statements);
     try {
       await purgeUnlocked();
@@ -499,10 +653,65 @@ export function createTrashRepo(driver: DataDriver) {
       "SELECT * FROM trash_items ORDER BY deleted_at DESC, id DESC",
     );
     validateTrashPayload(rows);
-    return rows.map((row) => ({
-      ...row,
-      title: snapshotTitle(row.entity_type, asSnapshot(row.snapshot)),
-    }));
+    return rows.map((row) => {
+      const snapshot = asSnapshot(row.snapshot);
+      return {
+        ...row,
+        title: snapshotTitle(row.entity_type, snapshot),
+        // §13.2: the copy is shown with its label and the value that won, so
+        // the user compares them instead of guessing which one is live.
+        conflict: snapshot.conflict
+          ? {
+              label: snapshot.conflict.label,
+              won: entityLabel(row.entity_type, snapshot.conflict.won),
+            }
+          : null,
+      };
+    });
+  }
+
+  /**
+   * §6.2's payload for a restored row: its columns, with every foreign key
+   * named by uid instead of by this device's row number (§3.4, §8.4).
+   *
+   * A Trash type that is not a sync table (a contact, a memory, a journal
+   * entry) produces nothing: those tables never leave this device (§2.2).
+   */
+  async function restoreOpStatements(
+    type: TrashEntityType,
+    restored: Row,
+  ): Promise<BatchStatement[]> {
+    const table = TABLES[type];
+    if (!isSyncTable(table)) return [];
+    // §2.3: only an origin allowed to create on this table may record the
+    // resurrection. The restore itself is unaffected — this returns no
+    // statements, and the row is already in the caller's batch.
+    if (!restoreOpAllowed(table, origin)) return [];
+    const uid = restored.uid;
+    if (typeof uid !== "string" || uid.length === 0) return [];
+    const foreignKeys = LOCAL_FOREIGN_KEYS[table as SyncTable] ?? {};
+    const fields: Record<string, unknown> = {};
+    for (const column of COLUMNS[type]) {
+      if (column === "id" || column === "uid") continue;
+      const parent = foreignKeys[column];
+      const value = restored[column];
+      if (parent !== undefined) {
+        fields[`${column.slice(0, -"_id".length)}_uid`] =
+          value === null || value === undefined
+            ? null
+            : ((
+                await driver.query<{ uid: string | null }>(
+                  `SELECT uid FROM "${parent}" WHERE id = ?`,
+                  [value],
+                )
+              )[0]?.uid ?? null);
+        continue;
+      }
+      fields[column] = value ?? null;
+    }
+    return outboxStatements([
+      { table: table as SyncTable, uid, kind: "create", fields },
+    ]);
   }
 
   async function restoreUnlocked(trashId: number): Promise<void> {
@@ -513,6 +722,9 @@ export function createTrashRepo(driver: DataDriver) {
     if (!item) throw new Error("That Trash item no longer exists.");
     validateTrashPayload([item]);
     const snapshot = asSnapshot(item.snapshot);
+    // §13.2: a conflict copy is restored differently from an ordinary Trash
+    // item, and the marker is the only thing that says which one this is.
+    const conflict = snapshot.conflict !== undefined;
     const type = item.entity_type;
     const columns = COLUMNS[type];
     const sourceId = item.entity_id;
@@ -524,6 +736,16 @@ export function createTrashRepo(driver: DataDriver) {
     if (rootId === undefined)
       throw new Error("Could not allocate a restore ID.");
     const restored: Row = { ...snapshot.entity, id: rootId };
+    if (conflict) {
+      // §13.2: restoring a conflict copy creates a NEW record with a NEW uid.
+      // The loser's snapshot still names the uid the winner now owns, so
+      // reusing it would collide with the winner and resurrect a value the
+      // merge already decided against. From here on it is an ordinary record
+      // that syncs as new.
+      restored.uid = newUid();
+    } else if (columns.includes("uid") && restored.uid === undefined) {
+      restored.uid = newUid();
+    }
     if (type === "note" && restored.collection_id !== null) {
       const collections = await driver.query<{ id: number }>(
         "SELECT id FROM collections WHERE id = ?",
@@ -616,7 +838,9 @@ export function createTrashRepo(driver: DataDriver) {
       }
     }
 
-    if (sourceId !== rootId) {
+    // A conflict copy carries no Inbox references (its snapshot is built with
+    // empty child arrays), and nothing it holds may be re-pointed.
+    if (!conflict && sourceId !== rootId) {
       for (const ref of snapshot.inboxRefs) {
         statements.push({
           sql: "UPDATE inbox_items SET converted_id = ? WHERE id = ? AND converted_type = ? AND converted_id = ?",
@@ -656,7 +880,7 @@ export function createTrashRepo(driver: DataDriver) {
       // id was reused and the live row is an unrelated item that must not
       // receive this relationship.
       const [other] = await driver.query<{ id: number }>(
-        `SELECT id FROM ${otherTable} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM trash_items WHERE entity_type = ? AND entity_id = ?)`,
+        `SELECT id FROM ${otherTable} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM trash_items WHERE entity_type = ? AND entity_id = ? AND ${NOT_A_CONFLICT_COPY})`,
         [otherId, otherType, otherId],
       );
       if (other) {
@@ -677,7 +901,7 @@ export function createTrashRepo(driver: DataDriver) {
       }
 
       const [otherTrash] = await driver.query<TrashItemRow>(
-        "SELECT * FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ? ORDER BY id DESC LIMIT 1",
+        `SELECT * FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ? AND ${NOT_A_CONFLICT_COPY} ORDER BY id DESC LIMIT 1`,
         [otherType, otherId, trashId],
       );
       if (otherTrash) {
@@ -728,9 +952,14 @@ export function createTrashRepo(driver: DataDriver) {
     // snapshots (higher trash id) describe whatever reused the number and are
     // left alone. Rewrite the old pairings to the restored id, or the later
     // restore of that endpoint would attach the relationship to the reuse.
-    if (rootId !== sourceId) {
+    // M1's remapping is about the entity that MOVED: it rewrites older
+    // snapshots that still pair the old id with the restored one. A conflict
+    // copy never moved — `sourceId` still belongs to the winner, which was not
+    // restored — so rewriting those pairings would point them at a new record
+    // the relationship never described.
+    if (!conflict && rootId !== sourceId) {
       const otherClaims = await driver.query<{ id: number }>(
-        "SELECT id FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ?",
+        `SELECT id FROM trash_items WHERE entity_type = ? AND entity_id = ? AND id <> ? AND ${NOT_A_CONFLICT_COPY}`,
         [type, sourceId, trashId],
       );
       if (!otherClaims.length) {
@@ -769,6 +998,14 @@ export function createTrashRepo(driver: DataDriver) {
         }
       }
     }
+
+    // §5.3/§6.1: a restore is a resurrection, and it records as one — a
+    // create-kind op under the SAME uid whose fresh stamp outranks the
+    // tombstone the delete left, so a peer that applied the delete brings the
+    // record back instead of keeping it dead. A conflict copy came back under
+    // a NEW uid above, so it records that new record's create (§13.2).
+    // Purge records nothing: the delete was recorded when the row was trashed.
+    statements.push(...(await restoreOpStatements(type, restored)));
 
     statements.push({
       sql: "DELETE FROM trash_items WHERE id = ?",
@@ -882,8 +1119,14 @@ export function createTrashRepo(driver: DataDriver) {
 
   // The exported surface takes the lock; see the mutex's comment above.
   return {
-    trashEntity: (type: TrashEntityType, id: number) =>
-      mutex.withLock("trash", () => trashEntityUnlocked(type, id)),
+    trashEntity: (
+      type: TrashEntityType,
+      id: number,
+      extraStatements: readonly BatchStatement[] = [],
+    ) =>
+      mutex.withLock("trash", () =>
+        trashEntityUnlocked(type, id, extraStatements),
+      ),
     list,
     restore: (trashId: number) =>
       mutex.withLock("trash", () => restoreUnlocked(trashId)),

@@ -20,12 +20,16 @@ function argsOf(driver: MockDriver, method: keyof DataDriver): unknown[] {
   return call.args;
 }
 
+/** The uid a job row carries in the payment tests, so its op can be asserted. */
+const JOB_UID = "11111111-1111-4111-8111-111111111111";
+
 test("recordJobPayment: partial payment keeps the job open and records income (cash basis)", async () => {
   const driver = createMockDriver({
     results: [
       [
         {
           id: 1,
+          uid: JOB_UID,
           title: "Fix roof",
           total_cents: 100_000,
           paid_cents: 0,
@@ -47,20 +51,31 @@ test("recordJobPayment: partial payment keeps the job open and records income (c
     sql: string;
     params: unknown[];
   }[];
-  assert.equal(batch.length, 2, "job update + income entry on every receipt");
   const jobUpdate = at(batch, 0, "batch");
   assert.match(jobUpdate.sql, /UPDATE jobs SET paid_cents = \?, status = \?/);
   assert.deepEqual(jobUpdate.params, [40_000, "open", 1]);
   const income = at(batch, 1, "batch");
   assert.match(income.sql, /INSERT INTO income_entries/);
-  assert.deepEqual(income.params, [
+  // Minted at creation, so the uid is checked by shape only.
+  assert.match(String(income.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(income.params.slice(1), [
     40_000,
     4,
     2,
     "2026-10-10",
     "Job: Fix roof",
-    income.params[5],
+    income.params[6],
   ]);
+  // §6.1: the payment's own fields and the booked income each record.
+  const ops = batch.filter((statement) =>
+    /INSERT INTO sync_outbox/.test(statement.sql),
+  );
+  assert.equal(ops.length, 2, "one job update op + one entry create op");
+  assert.deepEqual(
+    JSON.parse(String(ops[0]?.params[6])),
+    { paid_cents: 40_000, status: "open" },
+    "the op names exactly the fields the payment wrote",
+  );
 });
 
 test("recordJobPayment: paid in full -> status paid + Business income entry", async () => {
@@ -69,6 +84,7 @@ test("recordJobPayment: paid in full -> status paid + Business income entry", as
       [
         {
           id: 1,
+          uid: JOB_UID,
           title: "Fix roof",
           total_cents: 100_000,
           paid_cents: 60_000,
@@ -90,17 +106,17 @@ test("recordJobPayment: paid in full -> status paid + Business income entry", as
     sql: string;
     params: unknown[];
   }[];
-  assert.equal(batch.length, 2);
   assert.deepEqual(at(batch, 0, "batch").params, [100_000, "paid", 1]);
   const incomeInsert = at(batch, 1, "batch");
   assert.match(incomeInsert.sql, /INSERT INTO income_entries/);
-  assert.deepEqual(incomeInsert.params, [
+  assert.match(String(incomeInsert.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(incomeInsert.params.slice(1), [
     40_000,
     4,
     2,
     "2026-10-10",
     "Job: Fix roof",
-    incomeInsert.params[5],
+    incomeInsert.params[6],
   ]);
 });
 
@@ -133,7 +149,7 @@ test("recordJobPayment: overpayment is clamped — outstanding never negative", 
   }[];
   assert.deepEqual(at(batch, 0, "batch").params, [10_000, "paid", 1]);
   assert.equal(
-    at(batch, 1, "batch").params[0],
+    at(batch, 1, "batch").params[1],
     2_000,
     "income counts only the cash that arrived",
   );
@@ -252,17 +268,17 @@ test("markPayablePaid creates the expense entry", async () => {
     sql: string;
     params: unknown[];
   }[];
-  assert.equal(batch.length, 2);
   assert.match(at(batch, 0, "batch").sql, /UPDATE payables SET paid = 1/);
   const expenseInsert = at(batch, 1, "batch");
   assert.match(expenseInsert.sql, /INSERT INTO expense_entries/);
-  assert.deepEqual(expenseInsert.params, [
+  assert.match(String(expenseInsert.params[0]), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(expenseInsert.params.slice(1), [
     80_000,
     7,
     1,
     "2026-10-10",
     "Wood",
-    expenseInsert.params[5],
+    expenseInsert.params[6],
   ]);
 });
 
@@ -291,8 +307,9 @@ test("recordJobPayment: concurrent double-submit creates only one income entry",
   };
   const paidJob = { ...openJob, paid_cents: 100_000, status: "paid" };
   const driver = createMockDriver({
-    // call 1: getJob -> open; businessCategoryId; call 2: getJob -> paid
-    results: [[openJob], [{ id: 9 }], [paidJob]],
+    // call 1: getJob -> open; businessCategoryId; the two parent-uid reads;
+    // call 2: getJob -> paid (so the second submit applies nothing)
+    results: [[openJob], [{ id: 9 }], [], [], [paidJob]],
   });
   const business = createBusinessRepo(driver);
   const pay = {
@@ -310,17 +327,17 @@ test("recordJobPayment: concurrent double-submit creates only one income entry",
   const batches = driver.callsTo("batch");
   assert.equal(batches.length, 1);
   const statements = batches[0]?.args[0] as { sql: string }[];
-  assert.equal(statements.length, 2); // UPDATE + one income INSERT
   const incomeInserts = statements.filter((s) =>
     /INSERT INTO income_entries/.test(s.sql),
   );
-  assert.equal(incomeInserts.length, 1);
+  assert.equal(incomeInserts.length, 1, "UPDATE + exactly one income INSERT");
 });
 
 test("shopReceivableRows joins totals onto shops; deleted shop's total survives under a label", () => {
   const shops = [
     {
       id: 1,
+      uid: null,
       name: "Alpha",
       phone: "",
       address: "",
@@ -329,6 +346,7 @@ test("shopReceivableRows joins totals onto shops; deleted shop's total survives 
     },
     {
       id: 2,
+      uid: null,
       name: "Beta",
       phone: "",
       address: "",
@@ -398,6 +416,7 @@ test("shopReceivableRows: jobs without a shop group under 'No shop', not an orph
   const shops = [
     {
       id: 1,
+      uid: null,
       name: "Alpha",
       phone: "",
       address: "",
@@ -446,20 +465,32 @@ test("updateJob: writes only the provided fields", async () => {
   const driver = createMockDriver();
   const business = createBusinessRepo(driver);
   await business.updateJob(4, { title: "Fix inverter", warrantyDays: 30 });
-  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
+  const update = at(
+    argsOf(driver, "batch")[0] as { sql: string; params: unknown[] }[],
+    0,
+    "batch",
+  );
   assert.match(
-    sql,
+    update.sql,
     /UPDATE jobs SET title = \?, warranty_days = \? WHERE id = \?/,
   );
-  assert.deepEqual(params, ["Fix inverter", 30, 4]);
+  assert.deepEqual(update.params, ["Fix inverter", 30, 4]);
 });
 
 test("updateJob: an explicit null clears a nullable column", async () => {
   const driver = createMockDriver();
   await createBusinessRepo(driver).updateJob(4, { warrantyDays: null });
-  const [sql, params] = argsOf(driver, "execute") as [string, unknown[]];
-  assert.match(sql, /warranty_days = \?/);
-  assert.deepEqual(params, [null, 4], "null clears; undefined would leave it");
+  const update = at(
+    argsOf(driver, "batch")[0] as { sql: string; params: unknown[] }[],
+    0,
+    "batch",
+  );
+  assert.match(update.sql, /warranty_days = \?/);
+  assert.deepEqual(
+    update.params,
+    [null, 4],
+    "null clears; undefined would leave it",
+  );
 });
 
 test("updateJob: changing the total re-derives status from what is paid", async () => {
@@ -480,19 +511,27 @@ test("updateJob: changing the total re-derives status from what is paid", async 
   };
   const raises = createMockDriver({ results: [[open]] });
   await createBusinessRepo(raises).updateJob(4, { totalCents: 200_000 });
-  const [sql, params] = argsOf(raises, "execute") as [string, unknown[]];
-  assert.match(sql, /total_cents = \?/);
-  assert.match(sql, /status = \?/);
+  const raiseUpdate = at(
+    argsOf(raises, "batch")[0] as { sql: string; params: unknown[] }[],
+    0,
+    "batch",
+  );
+  assert.match(raiseUpdate.sql, /total_cents = \?/);
+  assert.match(raiseUpdate.sql, /status = \?/);
   assert.deepEqual(
-    params,
+    raiseUpdate.params,
     [200_000, "open", 4],
     "raising the total reopens it",
   );
 
   const lowers = createMockDriver({ results: [[open]] });
   await createBusinessRepo(lowers).updateJob(4, { totalCents: 100_000 });
-  const [, lowerParams] = argsOf(lowers, "execute") as [string, unknown[]];
-  assert.deepEqual(lowerParams, [100_000, "paid", 4]);
+  const lowerUpdate = at(
+    argsOf(lowers, "batch")[0] as { sql: string; params: unknown[] }[],
+    0,
+    "batch",
+  );
+  assert.deepEqual(lowerUpdate.params, [100_000, "paid", 4]);
 });
 
 test("updateJob: the total may not drop below what is already paid", async () => {
@@ -718,8 +757,10 @@ test("deletePayable: queues behind an in-flight markPayablePaid on the payable:<
   release();
   await Promise.all([marking, deletion]);
   assert.deepEqual(
-    base.calls.map((call) => call.method),
-    ["query", "batch", "execute"],
+    base.calls
+      .map((call) => call.method)
+      .filter((method) => method !== "query"),
+    ["batch", "execute"],
     "the mark reads, batches its paid+expense write, and only then the delete runs",
   );
   const statements = at(base.callsTo("batch"), 0, "batch").args[0] as {

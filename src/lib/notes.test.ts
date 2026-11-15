@@ -15,6 +15,7 @@ import type {
 import { createMockDriver } from "../data/mock-driver.ts";
 import { at, first } from "../test-utils.ts";
 import { createNotesRepo, EXCERPT_MAX_CHARS, noteExcerpt } from "./notes.ts";
+import { applySyncStorage } from "./sync/testSchema.ts";
 
 test("the repo forwards the collection filter to the FTS search (P2-13)", async () => {
   // The page cannot be unit-tested here, so the seam it relies on is pinned
@@ -257,9 +258,10 @@ test("every cut offset in a mixed-script body lands on a cluster boundary (K11)"
 // + FK enforcement), so it carries its own small driver like the other suites.
 
 const COLLECTION_FIXTURE = `
-CREATE TABLE collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE collections (id INTEGER PRIMARY KEY, uid TEXT, name TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE notes (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
+  uid       TEXT,
   tags TEXT NOT NULL DEFAULT '',
   collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
   pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
@@ -297,6 +299,9 @@ function sqliteDriver(): DataDriver & { db: DatabaseSync } {
   // The production connection runs with this on (`db.rs`); the SET NULL path
   // being pinned here depends on it.
   db.exec("PRAGMA foreign_keys = ON");
+  // Every mutating repository method now commits its sync op in the same
+  // batch (§6.1), so the sync tables have to exist as they do in the app.
+  applySyncStorage(db);
   return {
     db,
     async query<T extends Queryable>(sql: string, params: unknown[] = []) {

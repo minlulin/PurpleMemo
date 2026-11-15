@@ -1,9 +1,11 @@
 # Purple Memo
 
-Personal offline notebook and life/money manager — desktop-only (Tauri),
-fully offline, encrypted local database.
+Personal offline notebook and life/money manager — a desktop app (Tauri)
+with an Android companion, fully offline, encrypted local database.
 
-One person, by design — no accounts, no sync, no cloud.
+One person, by design — no accounts, no cloud. The phone and the desktop
+sync directly with each other over the same local network; nothing transits
+a server.
 
 Built and released by hand: [Development](#development) below covers the local
 toolchain, and [`docs/RELEASE.md`](docs/RELEASE.md) is the release procedure.
@@ -13,7 +15,9 @@ toolchain, and [`docs/RELEASE.md`](docs/RELEASE.md) is the release procedure.
 Windows 10/11 (x64) is the supported platform: it is what is built, signed,
 released and validated. Linux and macOS are best-effort — the codebase keeps
 its env fallbacks portable (`APPDATA`, `HOME`, `XDG_DATA_HOME`), but nothing
-is release-tested there and no artifact is published for them.
+is release-tested there and no artifact is published for them. An Android
+companion (arm64-v8a, Android 8.0 and up) is in development alongside the
+desktop app — see `docs/ANDROID_DESIGN.md`.
 
 ## Backups
 

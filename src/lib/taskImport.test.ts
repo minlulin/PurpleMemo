@@ -20,10 +20,12 @@ import {
   TASK_CSV_ALIASES,
   type TaskInsert,
 } from "./taskImport.ts";
+import { isUid } from "./uid.ts";
 
 const SQLITE_FIXTURE = `
 CREATE TABLE tasks (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   due_date   TEXT,
   done       INTEGER NOT NULL DEFAULT 0,
@@ -279,9 +281,10 @@ test("insertTasks writes every row in one batch with the full column set", async
   const insert = first(statements, "statements");
   assert.match(
     insert.sql,
-    /INSERT INTO tasks \(title, due_date, done, repeat, note, created_at\)/,
+    /INSERT INTO tasks \(title, due_date, done, repeat, note, created_at, uid\)/,
   );
-  assert.deepEqual(insert.params, [
+  const params = insert.params ?? [];
+  assert.deepEqual(params.slice(0, 6), [
     "Call shop",
     "2026-11-01",
     0,
@@ -289,6 +292,8 @@ test("insertTasks writes every row in one batch with the full column set", async
     "",
     todayLocal(),
   ]);
+  // Imported rows are created here, so they carry a minted identity too.
+  assert.ok(isUid(params[6]), "an imported task must get a uuid v4");
   assert.deepEqual(driver.callsTo("execute"), []);
 });
 

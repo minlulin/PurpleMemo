@@ -59,10 +59,11 @@ test("updateLoan writes only the provided fields (no NULL wipe)", async () => {
   await loans.updateLoan(5, { note: "called" });
   const call = driver.lastCall();
   assert.ok(call);
-  assert.equal(call.method, "execute");
-  const [sql, params] = call.args as [string, unknown[]];
-  assert.match(sql, /UPDATE loans SET note = \? WHERE id = \?/);
-  assert.deepEqual(params, ["called", 5]);
+  assert.equal(call.method, "batch");
+  const [update] = call.args[0] as { sql: string; params: unknown[] }[];
+  assert.ok(update);
+  assert.match(update.sql, /UPDATE loans SET note = \? WHERE id = \?/);
+  assert.deepEqual(update.params, ["called", 5]);
 });
 
 test("updateLoan with explicit null clears a nullable field", async () => {
@@ -71,9 +72,10 @@ test("updateLoan with explicit null clears a nullable field", async () => {
   await loans.updateLoan(5, { dueDate: null });
   const call = driver.lastCall();
   assert.ok(call);
-  const [sql, params] = call.args as [string, unknown[]];
-  assert.match(sql, /UPDATE loans SET due_date = \? WHERE id = \?/);
-  assert.deepEqual(params, [null, 5]);
+  const [update] = call.args[0] as { sql: string; params: unknown[] }[];
+  assert.ok(update);
+  assert.match(update.sql, /UPDATE loans SET due_date = \? WHERE id = \?/);
+  assert.deepEqual(update.params, [null, 5]);
 });
 
 test("updateLoan with no fields writes nothing", async () => {
@@ -134,8 +136,10 @@ test("updateLoan: raising the amount above what is repaid is fine", async () => 
   };
   const driver = createMockDriver({ results: [[row]] });
   await createLoansRepo(driver).updateLoan(5, { amountCents: 200_000 });
-  const call = driver.callsTo("execute")[0];
+  const call = driver.callsTo("batch")[0];
   assert.ok(call);
-  assert.match(call.args[0] as string, /UPDATE loans SET amount_cents = \?/);
-  assert.deepEqual(call.args[1], [200_000, 5]);
+  const [update] = call.args[0] as { sql: string; params: unknown[] }[];
+  assert.ok(update);
+  assert.match(update.sql, /UPDATE loans SET amount_cents = \?/);
+  assert.deepEqual(update.params, [200_000, 5]);
 });

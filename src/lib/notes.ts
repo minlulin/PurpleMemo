@@ -4,6 +4,12 @@
 import type { DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import { LIST_CONTENT_CHARS, searchNotes } from "./search.ts";
+import {
+  deleteStatements,
+  outboxStatements,
+  readRowId,
+  readRowUid,
+} from "./sync/store.ts";
 import { createTrashRepo } from "./trash.ts";
 import type {
   CollectionRow,
@@ -11,6 +17,7 @@ import type {
   NoteRow,
   NoteTitleRow,
 } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 export interface NoteInput {
   title: string;
@@ -195,6 +202,35 @@ function noteListQuery(
   };
 }
 
+/**
+ * A note's boolean flags are writes like any other: the row changes, so an op
+ * records it in the same batch (§6.1). One column per call, so the op's
+ * payload names exactly the field the user flipped.
+ */
+async function writeNoteFlag(
+  driver: DataDriver,
+  id: number,
+  column: "pinned" | "archived",
+  value: number,
+): Promise<void> {
+  const uid = await readRowUid(driver, "notes", id);
+  await driver.batch([
+    { sql: `UPDATE notes SET ${column} = ? WHERE id = ?`, params: [value, id] },
+    ...outboxStatements(
+      uid
+        ? [
+            {
+              table: "notes" as const,
+              uid,
+              kind: "update",
+              fields: { [column]: value },
+            },
+          ]
+        : [],
+    ),
+  ]);
+}
+
 export function createNotesRepo(
   driver: DataDriver,
   trash = createTrashRepo(driver),
@@ -217,14 +253,47 @@ export function createNotesRepo(
      * in the same batch — that fires the FTS maintenance trigger.
      */
     async createCollection(name: string): Promise<number> {
-      const r = await driver.execute(
-        "INSERT INTO collections (name, created_at) VALUES (?, ?)",
-        [name, todayLocal()],
-      );
-      return r.lastInsertRowid;
+      const created = todayLocal();
+      const uid = newUid();
+      // §6.1: the row and its op commit together, so the insert commits through
+      // a batch and the id is read back under the uid this device minted.
+      await driver.batch([
+        {
+          sql: "INSERT INTO collections (name, created_at, uid) VALUES (?, ?, ?)",
+          params: [name, created, uid],
+        },
+        ...outboxStatements([
+          {
+            table: "collections",
+            uid,
+            kind: "create",
+            fields: { name, created_at: created },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "collections", uid);
     },
 
     async deleteCollection(id: number): Promise<void> {
+      const uid = await readRowUid(driver, "collections", id);
+      // The notes filed here lose their link in this same batch, so each of
+      // them is a note mutation travelling with its own op — a peer that only
+      // heard about the delete would keep pointing at a collection that is gone.
+      const unfiled = await driver.query<{ uid: string | null }>(
+        "SELECT uid FROM notes WHERE collection_id = ? ORDER BY id",
+        [id],
+      );
+      const relinked = unfiled
+        .map((row) => row.uid)
+        .filter((note: string | null): note is string =>
+          Boolean(note && note.length > 0),
+        )
+        .map((note) => ({
+          table: "notes" as const,
+          uid: note,
+          kind: "update" as const,
+          fields: { collection_uid: null },
+        }));
       // One batch, notes first: clearing membership via the FK's
       // ON DELETE SET NULL is an FK action, which does NOT fire the notes
       // UPDATE trigger — deleting alone left the collection's name in
@@ -237,6 +306,9 @@ export function createNotesRepo(
           params: [id],
         },
         { sql: "DELETE FROM collections WHERE id = ?", params: [id] },
+        ...outboxStatements(relinked),
+        // §5.2: the collection itself was deleted, so it leaves a tombstone.
+        ...deleteStatements(uid ? [{ table: "collections", uid }] : []),
       ]);
     },
 
@@ -277,67 +349,127 @@ export function createNotesRepo(
 
     async createNote(input: NoteInput): Promise<number> {
       const today = todayLocal();
-      const r = await driver.execute(
-        `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
-        [
-          input.title,
-          input.content,
-          (input.tags ?? []).join(","),
-          input.collectionId ?? null,
-          today,
-          today,
-        ],
-      );
-      return r.lastInsertRowid;
+      // The uid is minted here, on the client that creates the record, so this
+      // note is sync-ready before the app has ever paired.
+      const uid = newUid();
+      const tags = (input.tags ?? []).join(",");
+      const collectionId = input.collectionId ?? null;
+      // The op names the parent by UID: a local `collection_id` would mean a
+      // different collection on the peer (§3.4, §8.4).
+      const collectionUid =
+        collectionId === null
+          ? null
+          : ((await readRowUid(driver, "collections", collectionId)) ?? null);
+      await driver.batch([
+        {
+          sql: `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at, uid)
+             VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?)`,
+          params: [
+            input.title,
+            input.content,
+            tags,
+            collectionId,
+            today,
+            today,
+            uid,
+          ],
+        },
+        ...outboxStatements([
+          {
+            table: "notes",
+            uid,
+            kind: "create",
+            fields: {
+              title: input.title,
+              content: input.content,
+              tags,
+              collection_uid: collectionUid,
+              pinned: 0,
+              archived: 0,
+              created_at: today,
+              updated_at: today,
+            },
+          },
+        ]),
+      ]);
+      return readRowId(driver, "notes", uid);
     },
 
     async updateNote(id: number, fields: Partial<NoteInput>): Promise<void> {
       const sets: string[] = [];
       const params: unknown[] = [];
+      // The op's payload is the same set of fields, in the row's own spelling:
+      // the wire maps `collection_id` to the parent's uid at upload time
+      // (`LOCAL_FOREIGN_KEYS`), which is the transport's job, not the write's.
+      const changed: Record<string, unknown> = {};
       if (fields.title !== undefined) {
         sets.push("title = ?");
         params.push(fields.title);
+        changed.title = fields.title;
       }
       if (fields.content !== undefined) {
         sets.push("content = ?");
         params.push(fields.content);
+        changed.content = fields.content;
       }
       if (fields.tags !== undefined) {
+        const tags = fields.tags.join(",");
         sets.push("tags = ?");
-        params.push(fields.tags.join(","));
+        params.push(tags);
+        changed.tags = tags;
       }
       if (fields.collectionId !== undefined) {
         sets.push("collection_id = ?");
         params.push(fields.collectionId);
+        // The payload names the parent by uid, like the create above.
+        changed.collection_uid =
+          fields.collectionId === null
+            ? null
+            : ((await readRowUid(driver, "collections", fields.collectionId)) ??
+              null);
       }
       if (sets.length === 0) return;
+      const updated = todayLocal();
       sets.push("updated_at = ?");
-      params.push(todayLocal());
+      params.push(updated);
+      changed.updated_at = updated;
       params.push(id);
-      await driver.execute(
-        `UPDATE notes SET ${sets.join(", ")} WHERE id = ?`,
-        params,
-      );
+      const uid = await readRowUid(driver, "notes", id);
+      await driver.batch([
+        { sql: `UPDATE notes SET ${sets.join(", ")} WHERE id = ?`, params },
+        ...outboxStatements(
+          uid
+            ? [
+                {
+                  table: "notes" as const,
+                  uid,
+                  kind: "update",
+                  fields: changed,
+                },
+              ]
+            : [],
+        ),
+      ]);
     },
 
     async setPinned(id: number, pinned: boolean): Promise<void> {
-      await driver.execute("UPDATE notes SET pinned = ? WHERE id = ?", [
-        pinned ? 1 : 0,
-        id,
-      ]);
+      await writeNoteFlag(driver, id, "pinned", pinned ? 1 : 0);
     },
 
     async setArchived(id: number, archived: boolean): Promise<void> {
-      await driver.execute("UPDATE notes SET archived = ? WHERE id = ?", [
-        archived ? 1 : 0,
-        id,
-      ]);
+      await writeNoteFlag(driver, id, "archived", archived ? 1 : 0);
     },
 
     /** Move the note and its relationship/photo references into Trash. */
     async deleteNote(id: number): Promise<void> {
-      await trash.trashEntity("note", id);
+      // §5: the tombstone rides in the trash batch itself, so the row, its
+      // snapshot and its tombstone are one transaction.
+      const uid = await readRowUid(driver, "notes", id);
+      await trash.trashEntity(
+        "note",
+        id,
+        uid ? deleteStatements([{ table: "notes", uid }]) : [],
+      );
     },
 
     /**

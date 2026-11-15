@@ -1,9 +1,17 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 32 tables at `PRAGMA user_version = 6`: 31 regular tables + the
+//! 39 tables at `PRAGMA user_version = 10`: 38 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
-//! shadow tables are FTS internals, not part of the 31).
+//! shadow tables are FTS internals, not part of the 38).
+//!
+//! Seven of the 38 are device-local sync storage (`sync_*`): the six from
+//! [`MIGRATION_7_8`] that hold the durable outbox, tombstones, peer cursors and
+//! the device identity of docs/ANDROID_SYNC_PROTOCOL.md §1.2/§5/§6/§10, plus
+//! [`migration_8_9`]'s `sync_row_stamps` — the §4.2 stamp of the value each row
+//! currently holds, which a snapshot must carry so §4's merge has an input.
+//! They are deliberately absent from `BACKUP_TABLES`: §10.3 forbids device
+//! state travelling with user data.
 //!
 //! **Migrations are forward-only and sequential.** `db::init_schema` reads
 //! `user_version`, applies every step from there to [`SCHEMA_VERSION`] in
@@ -18,7 +26,9 @@
 //! land on the current version in one step — a test asserts the two agree.
 
 /// The schema version this build expects and stamps.
-pub const SCHEMA_VERSION: i64 = 6;
+use std::sync::OnceLock;
+
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -192,20 +202,366 @@ CREATE TABLE inbox_items (
 CREATE INDEX idx_inbox_items_status ON inbox_items(status, id);
 "#;
 
+/// Cross-device identity for the 17 synced tables
+/// (docs/ANDROID_DESIGN.md, "Cross-device UID contract").
+///
+/// Each row gets a UUID v4 the client that creates it mints locally, so an
+/// offline phone and a desktop can both create records without coordination
+/// and pair later without renumbering anything.
+///
+/// The column is added as NULLABLE, then backfilled, then given a UNIQUE
+/// index. It is NOT `NOT NULL` like the contract asks, for one concrete
+/// reason: SQLite refuses `ALTER TABLE ... ADD COLUMN` with UNIQUE, and it
+/// refuses NOT NULL without a default — so the faithful shape needs the
+/// 12-step table rebuild for all 17 tables, and a DROP TABLE on a parent
+/// (`shopping_lists`, `habits`, `collections`) fires its children's
+/// ON DELETE CASCADE the moment it runs. Rebuilding them to gain a constraint
+/// would delete the data it was meant to protect. NULL is therefore permitted
+/// by the schema and forbidden by the repositories: every create path supplies
+/// a uid, and `uid.test.ts` / the repo tests pin it. The unique index still
+/// gives what sync identity actually needs — no two rows share a uid.
+///
+/// The seeded wallets and categories are records too, so the baseline mints
+/// their uids as well rather than leaving the five defaults NULL forever.
+pub const UID_V4_SQL: &str = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))";
+
+/// Schema v7, built from [`UID_TABLES`] so the table list and the DDL cannot
+/// drift: three statements per table — add the column (NULLABLE, see the note
+/// above), backfill every existing row with its own v4, then make duplicates
+/// impossible.
+///
+/// Built once and cached (`OnceLock`, not `LazyLock`: the crate pins an MSRV
+/// older than 1.80). Returned as `&'static str` because that is what
+/// `db::migration_step` hands to the migration runner.
+pub fn migration_6_7() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| {
+        UID_TABLES
+            .iter()
+            .map(|table| {
+                format!(
+                    "ALTER TABLE {table} ADD COLUMN uid TEXT;\n\
+                     UPDATE {table} SET uid = {UID_V4_SQL} WHERE uid IS NULL;\n\
+                     CREATE UNIQUE INDEX idx_{table}_uid ON {table}(uid);"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    })
+}
+
+/// The 17 tables that carry a cross-device UID (the narrow sync core).
+///
+/// One list, not three copies: `MIGRATION_6_7`, the baseline's unique indexes
+/// and the database tests that build pre-v7 fixtures all describe the same 17
+/// tables, and a table missing from one of them would only show up as a sync
+/// bug months later.
+pub const UID_TABLES: [&str; 17] = [
+    "collections",
+    "notes",
+    "tasks",
+    "reminders",
+    "wallets",
+    "income_categories",
+    "expense_categories",
+    "income_entries",
+    "expense_entries",
+    "shops",
+    "jobs",
+    "loans",
+    "habits",
+    "habit_logs",
+    "shopping_lists",
+    "shopping_items",
+    "vault_items",
+];
+
+/// Sync storage (docs/ANDROID_SYNC_PROTOCOL.md §1.2 device identity, §4.2
+/// Lamport counter, §5 tombstones, §6.1–§6.2 durable outbox, §6.4–§6.5 per-peer
+/// cursors and acks, §10 generation).
+///
+/// Every table here is DEVICE-LOCAL: it never enters a backup payload and is
+/// never replicated (§10.3). That is why the six tables are absent from
+/// `BACKUP_TABLES` while still being real tables of this schema.
+///
+/// The shape follows the clauses rather than the screens:
+///
+/// * `sync_state` is the one-row identity/clock row. `device_id` is minted once
+///   per install by the same UUID expression as every synced row; a key-loss
+///   wipe deletes the whole database, so the next boot is a first run and mints
+///   a NEW id — a re-pair, never a reused identity (§1.2). `last_seq` is
+///   durable separately from `sync_outbox` so pruning the outbox can never
+///   rewind the operation sequence (§1.3).
+/// * `sync_outbox` is one row per mutation, written in the SAME transaction as
+///   the mutation (§6.1). `counter` is the Lamport stamp; `field_stamps` the
+///   per-field stamps of §4.3; `payload` the field values.
+/// * `sync_outbox_delivery` records which peer acknowledged which row — the
+///   evidence §6.5 prunes on.
+/// * `sync_tombstones` + `sync_tombstone_acks` are §5: a delete survives until
+///   every known peer has acked it (§5.4). A cascaded child gets its OWN
+///   tombstone (§5.2); the FK cascade must never be the only record.
+/// * `sync_peers` holds the per-peer cursors (§6.4), the generation the peer
+///   paired at (§10.2) and the revocation mark (§11.3).
+///
+/// `reminders.created_by_device_id` is the flagged §13.1 marker: nullable, and
+/// nothing reads it until MinLulin decides who owns a reminder definition.
+pub const MIGRATION_7_8: &str = r#"
+CREATE TABLE sync_state (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id        TEXT NOT NULL CHECK (length(device_id) = 36),
+  data_generation  INTEGER NOT NULL DEFAULT 1 CHECK (data_generation > 0),
+  lamport          INTEGER NOT NULL DEFAULT 0 CHECK (lamport >= 0),
+  last_seq         INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+  re_pair_required INTEGER NOT NULL DEFAULT 0 CHECK (re_pair_required IN (0, 1)),
+  updated_at       TEXT NOT NULL
+);
+
+CREATE TABLE sync_outbox (
+  id           INTEGER PRIMARY KEY,
+  device_id    TEXT NOT NULL,
+  seq          INTEGER NOT NULL CHECK (seq > 0),
+  op_id        TEXT NOT NULL UNIQUE,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  op           TEXT NOT NULL CHECK (op IN ('create', 'update', 'toggle', 'delete')),
+  base_counter INTEGER NOT NULL DEFAULT 0 CHECK (base_counter >= 0),
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  field_stamps TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(field_stamps)),
+  payload      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload)),
+  created_at   TEXT NOT NULL,
+  UNIQUE (device_id, seq)
+);
+
+CREATE INDEX idx_sync_outbox_seq ON sync_outbox(seq);
+CREATE INDEX idx_sync_outbox_entity ON sync_outbox(entity_table, entity_uid);
+
+CREATE TABLE sync_outbox_delivery (
+  outbox_id INTEGER NOT NULL REFERENCES sync_outbox(id) ON DELETE CASCADE,
+  peer_id   TEXT NOT NULL,
+  acked_at  TEXT NOT NULL,
+  PRIMARY KEY (outbox_id, peer_id)
+);
+
+CREATE TABLE sync_tombstones (
+  id           INTEGER PRIMARY KEY,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  deleted_at   TEXT NOT NULL,
+  UNIQUE (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstones_entity ON sync_tombstones(entity_table, entity_uid);
+
+CREATE TABLE sync_tombstone_acks (
+  tombstone_id INTEGER NOT NULL REFERENCES sync_tombstones(id) ON DELETE CASCADE,
+  peer_id      TEXT NOT NULL,
+  acked_at     TEXT NOT NULL,
+  PRIMARY KEY (tombstone_id, peer_id)
+);
+
+CREATE TABLE sync_peers (
+  device_id    TEXT PRIMARY KEY,
+  pairing_id   TEXT,
+  display_name TEXT NOT NULL DEFAULT '',
+  public_key   TEXT,
+  generation   INTEGER NOT NULL,
+  cursor_in    INTEGER NOT NULL DEFAULT 0 CHECK (cursor_in >= 0),
+  cursor_out   INTEGER NOT NULL DEFAULT 0 CHECK (cursor_out >= 0),
+  revoked_at   TEXT,
+  created_at   TEXT NOT NULL
+);
+
+ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;
+
+INSERT INTO sync_state (id, device_id, data_generation, lamport, last_seq, re_pair_required, updated_at)
+SELECT 1, lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))), 1, 0, 0, 0, strftime('%Y-%m-%d', 'now', 'localtime')
+WHERE NOT EXISTS (SELECT 1 FROM sync_state);
+"#;
+
+/// The six device-local sync tables, in dependency order (parents first).
+///
+/// One list for the database tests: the fixtures that build a pre-v8 database
+/// strip exactly these, and the migrated-structure test compares exactly these.
+/// A name missing from it would leave a table behind in a fixture and only
+/// surface as a migration collision.
+#[cfg(test)]
+pub const SYNC_STORAGE_TABLES: [&str; 9] = [
+    "sync_state",
+    "sync_outbox",
+    "sync_outbox_delivery",
+    "sync_tombstones",
+    "sync_tombstone_acks",
+    "sync_peers",
+    "sync_row_stamps",
+    "sync_uid_aliases",
+    "sync_tombstone_gc_log",
+];
+
 /// The full baseline DDL + seed data. Applied inside a single transaction by
 /// `db::init_schema`, which then stamps `user_version`.
+/// Schema v8 → v9: `sync_row_stamps`, the stamp of the value each row holds.
+///
+/// §8.4's snapshot must be a read of the 17 tables "plus their tombstones", and
+/// §9.5 merges a shared UID by comparing stamps — but the entity tables never
+/// carried one: `sync_outbox` holds the stamps of *operations* and is pruned
+/// once every live peer acks (§6.5), so a row delivered months ago has no
+/// stamp left to send. This table is that missing durable copy: one row per
+/// entity, written in the same batch as the mutation
+/// (`store.ts::outboxStatements`) and backfilled here.
+///
+/// The backfill stamps every row that exists at migration time with this
+/// device's current Lamport counter and `migration-8-9` as the operation id.
+/// That is the honest reading: before this version the database has no
+/// per-row history, so "as of v9" is the oldest stamp it can claim — and it is
+/// older than any edit written afterwards. A row with no stamp row at all (a
+/// fresh install's seeded wallets, say) reads as counter 0, which is the same
+/// statement: pre-history.
+pub fn migration_8_9() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| {
+        let backfill = UID_TABLES
+            .iter()
+            .map(|table| {
+                format!(
+                    "INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)\n\
+                     SELECT '{table}', uid,\n\
+                            (SELECT lamport FROM sync_state WHERE id = 1),\n\
+                            (SELECT device_id FROM sync_state WHERE id = 1),\n\
+                            'migration-8-9', '{{}}',\n\
+                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\n\
+                     FROM {table} WHERE uid IS NOT NULL\n\
+                     ON CONFLICT(entity_table, entity_uid) DO NOTHING;"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        format!(
+            "CREATE TABLE sync_row_stamps (\n\
+  entity_table TEXT NOT NULL,\n\
+  entity_uid   TEXT NOT NULL,\n\
+  counter      INTEGER NOT NULL CHECK (counter >= 0),\n\
+  device_id    TEXT NOT NULL,\n\
+  op_id        TEXT NOT NULL,\n\
+  field_stamps TEXT NOT NULL DEFAULT '{{}}' CHECK (json_valid(field_stamps)),\n\
+  updated_at   TEXT NOT NULL,\n\
+  PRIMARY KEY (entity_table, entity_uid)\n\
+);\n\n\
+CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps(entity_uid);\n\n\
+{backfill}"
+        )
+    })
+}
+
+/// Schema v9 → v10: `trash_items` learns the shopping types (§13.2).
+///
+/// §9.5/§13.2 archive the losing side of a conflict for the mutable entities,
+/// and Shopping is one of them — but `trash_items.entity_type` was pinned to
+/// the five types of `MIGRATION_3_4`, so a note or task conflict loser had
+/// somewhere to land and a shopping one did not.
+///
+/// SQLite cannot widen a CHECK constraint in place, so this is the established
+/// table rebuild: the old table steps aside under a temporary name, the
+/// replacement is created with the widened CHECK under the real name, every
+/// row is copied across, the old table is dropped, and both indexes are
+/// recreated. Nothing else about the row shape changes, and the ids, snapshots
+/// and timestamps travel unchanged — a Trash item written before v10 restores
+/// exactly as it did.
+pub const MIGRATION_9_10: &str = r#"
+-- The old table steps aside under a temporary name so the replacement can be
+-- created with the name it must keep: SQLite records a renamed table's DDL
+-- with a quoted name, and a migrated table that no longer matches the
+-- baseline textually would fail the structure test for a cosmetic reason.
+DROP INDEX idx_trash_items_entity;
+DROP INDEX idx_trash_items_deleted;
+
+ALTER TABLE trash_items RENAME TO trash_items_v9;
+
+CREATE TABLE trash_items (
+  id             INTEGER PRIMARY KEY,
+  entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry', 'shopping_list', 'shopping_item')),
+  entity_id      INTEGER NOT NULL CHECK (entity_id > 0),
+  snapshot       TEXT NOT NULL CHECK (json_valid(snapshot)),
+  deleted_at     TEXT NOT NULL,
+  created_at     TEXT NOT NULL
+);
+
+INSERT INTO trash_items (id, entity_type, entity_id, snapshot, deleted_at, created_at)
+  SELECT id, entity_type, entity_id, snapshot, deleted_at, created_at FROM trash_items_v9;
+
+DROP TABLE trash_items_v9;
+
+CREATE INDEX idx_trash_items_entity ON trash_items(entity_type, entity_id);
+CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);
+"#;
+
+/// Schema v10 → v11: `sync_uid_aliases`, the uid a fold retired.
+///
+/// Exit gate ruling 1: the surviving uid of a same-name fold is the §4 winner's,
+/// so one side's uid becomes history — but the other device may still have ops
+/// queued under it (a note inside that folder, an edit, a delete). This table is
+/// the mapping per table, so a loser uid resolves to the winner instead of
+/// writing a second row, adopting nothing, or deleting the wrong record.
+///
+/// Device-local, like the rest of the sync storage (§10.3): it never enters a
+/// backup payload, and `applyBackup`'s new-line discipline clears it with the
+/// stamps and tombstones.
+pub const MIGRATION_10_11: &str = r#"
+CREATE TABLE sync_uid_aliases (
+  entity_table TEXT NOT NULL,
+  loser_uid    TEXT NOT NULL,
+  winner_uid   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, loser_uid),
+  CHECK (loser_uid != winner_uid)
+);
+
+CREATE INDEX idx_sync_uid_aliases_winner ON sync_uid_aliases(winner_uid);
+"#;
+
+/// Schema v11 → v12: `sync_tombstone_gc_log`, the delete a GC pruned.
+///
+/// §5.4 lets the collector drop a tombstone once every live peer acknowledged
+/// it — but "every peer we know" is not "every peer that will ever exist", and a
+/// create op stamped at or below that delete can still arrive afterwards (a
+/// phone that was offline through the delete, or a stale redelivery). Before
+/// this table the only record of the delete went with the tombstone, so the
+/// stale create resurrected a row the user had deleted.
+///
+/// The log is device-local bookkeeping like the stamps and aliases (§10.3): it
+/// never enters a backup payload, and the restore discipline clears it with
+/// them. One row per uid, stamp-sized, replaced only by a later prune of the
+/// same record — it is never pruned itself in this wave.
+pub const MIGRATION_11_12: &str = r#"
+CREATE TABLE sync_tombstone_gc_log (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  pruned_at    TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstone_gc_log_uid ON sync_tombstone_gc_log(entity_uid);
+"#;
+
 pub const BASELINE_SQL: &str = r#"
 -- ============================================================
 -- Notes & collections
 -- ============================================================
 CREATE TABLE collections (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE notes (
   id            INTEGER PRIMARY KEY,
+  uid           TEXT,
   title         TEXT NOT NULL DEFAULT '',
   content       TEXT NOT NULL DEFAULT '',
   tags          TEXT NOT NULL DEFAULT '',
@@ -313,24 +669,28 @@ CREATE TABLE journal_entries (
 -- ============================================================
 CREATE TABLE wallets (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE income_categories (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE expense_categories (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE income_entries (
   id           INTEGER PRIMARY KEY,
+  uid          TEXT,
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
   category_id  INTEGER NOT NULL REFERENCES income_categories(id),
   wallet_id    INTEGER NOT NULL REFERENCES wallets(id),
@@ -341,6 +701,7 @@ CREATE TABLE income_entries (
 
 CREATE TABLE expense_entries (
   id           INTEGER PRIMARY KEY,
+  uid          TEXT,
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
   category_id  INTEGER NOT NULL REFERENCES expense_categories(id),
   wallet_id    INTEGER NOT NULL REFERENCES wallets(id),
@@ -374,6 +735,7 @@ CREATE TABLE recurring_payments (
 -- ============================================================
 CREATE TABLE shops (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL,
   phone      TEXT NOT NULL DEFAULT '',
   address    TEXT NOT NULL DEFAULT '',
@@ -383,6 +745,7 @@ CREATE TABLE shops (
 
 CREATE TABLE jobs (
   id            INTEGER PRIMARY KEY,
+  uid           TEXT,
   title         TEXT NOT NULL,
   shop_id       INTEGER REFERENCES shops(id),
   total_cents   INTEGER NOT NULL CHECK (total_cents > 0),
@@ -410,6 +773,7 @@ CREATE TABLE payables (
 -- ============================================================
 CREATE TABLE loans (
   id           INTEGER PRIMARY KEY,
+  uid          TEXT,
   counterparty TEXT NOT NULL,
   direction    TEXT NOT NULL CHECK (direction IN ('lent', 'borrowed')),
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
@@ -424,12 +788,14 @@ CREATE TABLE loans (
 -- ============================================================
 CREATE TABLE shopping_lists (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE shopping_items (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   list_id    INTEGER NOT NULL REFERENCES shopping_lists(id) ON DELETE CASCADE,
   text       TEXT NOT NULL,
   done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
@@ -441,12 +807,14 @@ CREATE TABLE shopping_items (
 -- ============================================================
 CREATE TABLE habits (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   name       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE habit_logs (
   id       INTEGER PRIMARY KEY,
+  uid      TEXT,
   habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
   log_date TEXT NOT NULL,
   done     INTEGER NOT NULL DEFAULT 1 CHECK (done IN (0, 1)),
@@ -455,6 +823,7 @@ CREATE TABLE habit_logs (
 
 CREATE TABLE tasks (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   due_date   TEXT,
   done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
@@ -465,6 +834,7 @@ CREATE TABLE tasks (
 
 CREATE TABLE reminders (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   remind_at  TEXT NOT NULL,
   repeat     TEXT NOT NULL DEFAULT 'none' CHECK (repeat IN ('none', 'daily', 'weekly', 'monthly')),
@@ -533,6 +903,7 @@ CREATE TABLE photo_refs (
 -- ============================================================
 CREATE TABLE vault_items (
   id         INTEGER PRIMARY KEY,
+  uid        TEXT,
   title      TEXT NOT NULL,
   ciphertext TEXT NOT NULL,
   salt       TEXT NOT NULL,
@@ -549,7 +920,7 @@ CREATE TABLE vault_items (
 -- ============================================================
 CREATE TABLE trash_items (
   id             INTEGER PRIMARY KEY,
-  entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry')),
+  entity_type    TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'contact', 'memory', 'journal_entry', 'shopping_list', 'shopping_item')),
   entity_id      INTEGER NOT NULL CHECK (entity_id > 0),
   snapshot       TEXT NOT NULL CHECK (json_valid(snapshot)),
   deleted_at     TEXT NOT NULL,
@@ -599,6 +970,154 @@ CREATE INDEX idx_jobs_shop ON jobs(shop_id);
 CREATE INDEX idx_payables_paid_due ON payables(paid, due_date);
 CREATE INDEX idx_shopping_order ON shopping_items(list_id, sort_order);
 
+
+-- Cross-device identity (docs/ANDROID_DESIGN.md, UID contract). One UUID v4
+-- per synced row, minted by the client that creates it; NULL only for rows a
+-- test fixture inserted without one, which is why the column is nullable
+-- rather than NOT NULL — SQLite cannot add a NOT NULL column to a populated
+-- table without rebuilding it (see MIGRATION_6_7).
+CREATE UNIQUE INDEX idx_collections_uid ON collections(uid);
+CREATE UNIQUE INDEX idx_notes_uid ON notes(uid);
+CREATE UNIQUE INDEX idx_tasks_uid ON tasks(uid);
+CREATE UNIQUE INDEX idx_reminders_uid ON reminders(uid);
+CREATE UNIQUE INDEX idx_wallets_uid ON wallets(uid);
+CREATE UNIQUE INDEX idx_income_categories_uid ON income_categories(uid);
+CREATE UNIQUE INDEX idx_expense_categories_uid ON expense_categories(uid);
+CREATE UNIQUE INDEX idx_income_entries_uid ON income_entries(uid);
+CREATE UNIQUE INDEX idx_expense_entries_uid ON expense_entries(uid);
+CREATE UNIQUE INDEX idx_shops_uid ON shops(uid);
+CREATE UNIQUE INDEX idx_jobs_uid ON jobs(uid);
+CREATE UNIQUE INDEX idx_loans_uid ON loans(uid);
+CREATE UNIQUE INDEX idx_habits_uid ON habits(uid);
+CREATE UNIQUE INDEX idx_habit_logs_uid ON habit_logs(uid);
+CREATE UNIQUE INDEX idx_shopping_lists_uid ON shopping_lists(uid);
+CREATE UNIQUE INDEX idx_shopping_items_uid ON shopping_items(uid);
+CREATE UNIQUE INDEX idx_vault_items_uid ON vault_items(uid);
+
+-- ============================================================
+-- Sync storage — see MIGRATION_7_8 for why each column exists. Repeated
+-- rather than shared because BASELINE_SQL is one raw string; a test asserts
+-- the migrated structure matches this one.
+-- ============================================================
+CREATE TABLE sync_state (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id        TEXT NOT NULL CHECK (length(device_id) = 36),
+  data_generation  INTEGER NOT NULL DEFAULT 1 CHECK (data_generation > 0),
+  lamport          INTEGER NOT NULL DEFAULT 0 CHECK (lamport >= 0),
+  last_seq         INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+  re_pair_required INTEGER NOT NULL DEFAULT 0 CHECK (re_pair_required IN (0, 1)),
+  updated_at       TEXT NOT NULL
+);
+
+CREATE TABLE sync_outbox (
+  id           INTEGER PRIMARY KEY,
+  device_id    TEXT NOT NULL,
+  seq          INTEGER NOT NULL CHECK (seq > 0),
+  op_id        TEXT NOT NULL UNIQUE,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  op           TEXT NOT NULL CHECK (op IN ('create', 'update', 'toggle', 'delete')),
+  base_counter INTEGER NOT NULL DEFAULT 0 CHECK (base_counter >= 0),
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  field_stamps TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(field_stamps)),
+  payload      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload)),
+  created_at   TEXT NOT NULL,
+  UNIQUE (device_id, seq)
+);
+
+CREATE INDEX idx_sync_outbox_seq ON sync_outbox(seq);
+CREATE INDEX idx_sync_outbox_entity ON sync_outbox(entity_table, entity_uid);
+
+CREATE TABLE sync_outbox_delivery (
+  outbox_id INTEGER NOT NULL REFERENCES sync_outbox(id) ON DELETE CASCADE,
+  peer_id   TEXT NOT NULL,
+  acked_at  TEXT NOT NULL,
+  PRIMARY KEY (outbox_id, peer_id)
+);
+
+CREATE TABLE sync_tombstones (
+  id           INTEGER PRIMARY KEY,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter > 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  deleted_at   TEXT NOT NULL,
+  UNIQUE (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstones_entity ON sync_tombstones(entity_table, entity_uid);
+
+CREATE TABLE sync_tombstone_acks (
+  tombstone_id INTEGER NOT NULL REFERENCES sync_tombstones(id) ON DELETE CASCADE,
+  peer_id      TEXT NOT NULL,
+  acked_at     TEXT NOT NULL,
+  PRIMARY KEY (tombstone_id, peer_id)
+);
+
+CREATE TABLE sync_peers (
+  device_id    TEXT PRIMARY KEY,
+  pairing_id   TEXT,
+  display_name TEXT NOT NULL DEFAULT '',
+  public_key   TEXT,
+  generation   INTEGER NOT NULL,
+  cursor_in    INTEGER NOT NULL DEFAULT 0 CHECK (cursor_in >= 0),
+  cursor_out   INTEGER NOT NULL DEFAULT 0 CHECK (cursor_out >= 0),
+  revoked_at   TEXT,
+  created_at   TEXT NOT NULL
+);
+
+-- v9: the stamp of the value a row currently holds (§4.2). `sync_outbox`
+-- carries the stamps of operations and is pruned once every peer acks (§6.5),
+-- so a snapshot needs this durable per-row copy. Counter 0 means pre-history:
+-- the row predates any stamp this database can claim.
+CREATE TABLE sync_row_stamps (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  field_stamps TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(field_stamps)),
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_row_stamps_uid ON sync_row_stamps(entity_uid);
+
+-- v11: the uid a same-name fold retired, and the uid that survived it
+-- (MIGRATION_10_11 carries the reasoning).
+CREATE TABLE sync_uid_aliases (
+  entity_table TEXT NOT NULL,
+  loser_uid    TEXT NOT NULL,
+  winner_uid   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, loser_uid),
+  CHECK (loser_uid != winner_uid)
+);
+
+CREATE INDEX idx_sync_uid_aliases_winner ON sync_uid_aliases(winner_uid);
+
+-- v12: the delete a §5.4 GC pruned, so a stale create cannot resurrect the
+-- row it deleted (MIGRATION_11_12 carries the reasoning).
+CREATE TABLE sync_tombstone_gc_log (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  pruned_at    TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
+);
+
+CREATE INDEX idx_sync_tombstone_gc_log_uid ON sync_tombstone_gc_log(entity_uid);
+
+-- The flagged §13.1 marker: nullable and unread until that decision is made.
+ALTER TABLE reminders ADD COLUMN created_by_device_id TEXT;
+
+INSERT INTO sync_state (id, device_id, data_generation, lamport, last_seq, re_pair_required, updated_at)
+SELECT 1, lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))), 1, 0, 0, 0, strftime('%Y-%m-%d', 'now', 'localtime')
+WHERE NOT EXISTS (SELECT 1 FROM sync_state);
+
 -- ============================================================
 -- Seed data : default wallets + seeded categories. One-time
 -- baseline seeds only — user deletions stick, nothing re-seeds later.
@@ -624,4 +1143,10 @@ INSERT INTO income_categories (name, created_at) VALUES
   ('Salary',   strftime('%Y-%m-%d', 'now', 'localtime')),
   ('Gift',     strftime('%Y-%m-%d', 'now', 'localtime')),
   ('Other',    strftime('%Y-%m-%d', 'now', 'localtime'));
+
+-- Seeded rows are records: give them the identity every synced row carries
+-- (the same UUID v4 expression MIGRATION_6_7 backfills with).
+UPDATE wallets SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
+UPDATE expense_categories SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
+UPDATE income_categories SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random() % 4)), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
 "#;

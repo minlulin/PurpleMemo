@@ -1,9 +1,25 @@
 mod commands;
 mod db;
+// Public because the pairing envelope is the one piece of the sync boundary
+// that both halves of the wire format are tested against (see the module doc).
+pub mod envelope;
+mod external_links;
 mod file_write;
+mod key_store;
 mod lifecycle;
 mod navigation;
+// Public for the same reason as `envelope`: the pairing identity and the
+// listener are the sync boundary both halves speak, and their API is proved by
+// tests before any UI drives it. Deliberately **not** exposed as Tauri commands
+// yet — the QR panel (Session 6) adds those together with the screen that asks
+// the user to open the window, because an openable LAN port with no consent
+// step would be worse than no port at all.
+mod pairing_client;
+pub mod pairing_key;
+pub mod pairing_listener;
+pub mod pairing_snapshot;
 mod photos;
+mod reminders;
 mod reset;
 mod safety_copy;
 mod schema;
@@ -14,9 +30,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+// Tray icons and menus are desktop-only in Tauri 2 (`cfg(desktop)`), so a
+// mobile build must not name them at all.
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
+#[cfg(desktop)]
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
+// Only the desktop close-to-tray watcher reads window events.
+#[cfg(desktop)]
 use tauri::WindowEvent;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -87,23 +109,35 @@ fn retire_watchdog() {
     WATCHDOG_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // MUST stay first. A second launch is turned away before this app
-        // reaches `setup` — and therefore before `boot` — which is what keeps
-        // two copies from racing the database. That race was not cosmetic:
-        // both could reach `load_or_mint_db_key` while the database file did
-        // not yet exist, both would mint a different key, and the loser's
-        // `set_password` would overwrite the only credential-store slot with a
-        // key that cannot open the database the winner just created.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            focus_main_window(app);
-        }))
+    let builder = tauri::Builder::default();
+    // MUST stay first. A second launch is turned away before this app
+    // reaches `setup` — and therefore before `boot` — which is what keeps
+    // two copies from racing the database. That race was not cosmetic:
+    // both could reach `load_or_mint_db_key` while the database file did
+    // not yet exist, both would mint a different key, and the loser's
+    // `set_password` would overwrite the only credential-store slot with a
+    // key that cannot open the database the winner just created.
+    // Desktop only: there is no "second instance" on Android, where the OS
+    // owns app lifetime. Gated rather than removed, so the desktop order the
+    // `single_instance_is_registered_before_setup` pin protects is unchanged.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        focus_main_window(app);
+    }));
+    // Desktop-only surfaces, gated at registration: a phone sideloads its APK
+    // and opens links through the system browser, so the mobile build must not
+    // expose an updater or an opener command at all. Gating here (not only in
+    // the UI) is what keeps the surface from leaking into the webview.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         // Cancels any navigation away from the app's own origin;
         // external links go to the system browser instead (MarkdownLink).
         .plugin(navigation::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -144,15 +178,66 @@ pub fn run() {
             commands::share_stop,
             commands::share_status,
             commands::share_publish,
+            commands::pairing_local,
+            commands::pairing_open,
+            commands::pairing_close,
+            commands::pairing_status,
+            commands::pairing_identity_status,
+            commands::pairing_identity_replace,
+            commands::pairing_phone_pair,
+            commands::pairing_snapshot_request,
+            commands::pairing_snapshot_applied,
+            commands::pairing_snapshot_adopted,
+            commands::pairing_upload_batch,
+            commands::pairing_upload_commit,
+            commands::pairing_upload_status,
+            commands::pairing_upload_take,
+            commands::pairing_upload_outcome,
+            commands::pairing_sync_push,
+            commands::pairing_sync_commit,
+            commands::pairing_sync_pull,
+            commands::pairing_sync_applied,
+            commands::pairing_sync_status,
+            commands::pairing_sync_take,
+            commands::pairing_sync_outcome,
             commands::factory_reset,
             commands::app_restart,
+            external_links::open_external_url,
+            reminders::reminder_sync,
+            reminders::reminder_exact_state,
+            reminders::reminder_open_exact_alarm_settings,
+            reminders::clipboard_copy_sensitive,
+            reminders::clipboard_probe_read,
+            reminders::keystore_backing,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| report_run_failure(&e.to_string()));
 }
 
+/// Boot-time check of `Slot::PairingIdentity` (§11.2, wave 1 N2).
+///
+/// A missing identity over an existing pin, or a stored one the platform can no
+/// longer open, records `sync_state.re_pair_required` so the confirmed re-pair
+/// is offered. A fresh install is left alone — its identity is minted on first
+/// pairing — and an unreachable key store is retryable, so neither writes
+/// anything. No branch here mints a replacement over a pin.
+fn surface_pairing_identity_loss(conn: &rusqlite::Connection) {
+    let Ok(history) = commands::pairing_history(conn) else {
+        return;
+    };
+    if let Err(crate::pairing_key::PairingKeyError::MissingWithPeers(_))
+    | Err(crate::pairing_key::PairingKeyError::Lost(_)) = crate::pairing_key::inspect(history)
+    {
+        if let Err(error) = commands::mark_re_pair_required(conn) {
+            // The flag could not be written, but the next pairing call still
+            // fails closed the same way; only the prompt would be late.
+            eprintln!("purple-memo: {error}");
+        }
+    }
+}
+
 /// Encrypted DB core (P1) — everything the app needs before the frontend can use
-/// it: app-data dir -> keyring key (mint-once) -> SQLCipher open with
+/// it: app-data dir -> platform key-store key (mint-once) -> SQLCipher open with
 /// verify-before-use -> baseline schema -> managed state.
 ///
 /// Takes an `AppHandle` rather than the `App` so the same work can be re-run
@@ -211,7 +296,12 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     // uncommitted, which is what makes removing it (rather than stranding it
     // without its key) the safe move.
     let database_preexisted = db::db_file_exists(&db_path);
-    let key = db::load_or_mint_db_key(&db_path)?;
+    let key = match db::load_or_mint_db_key(&db_path) {
+        Ok(key) => key,
+        // Fail-closed handling of a lost key happens before anything is
+        // opened, so no data is ever decrypted with the wrong key.
+        Err(failure) => return Err(handle_key_load_failure(&data_dir, failure)),
+    };
     // A key this process minted is only correct if the database it opens with
     // it verifies. If the very first run fails anyway, undo what the attempt
     // created and then take the key back out — in that order (E9): discarding
@@ -252,6 +342,11 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
             return Err(e.into());
         }
     };
+    // §11.2 (N2): the pairing identity is checked at boot for the same reason
+    // the database key is — a lost secret must surface with its own recovery
+    // path, not as a bare error the first time the pairing panel is opened.
+    // Nothing is minted and no data is touched: notes and tasks stay readable.
+    surface_pairing_identity_loss(&conn);
     app.manage(db::AppState {
         // `Some` until factory reset takes it; every DB command fails closed
         // with `db::DB_CLOSED_MESSAGE` once it is `None`.
@@ -268,8 +363,71 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     app.manage(lifecycle.clone());
     // LAN sharing starts OFF — it is opt-in per session and must never be
     // re-enabled silently by a restart.
-    app.manage(share::ShareState::with_lifecycle(lifecycle));
+    app.manage(share::ShareState::with_lifecycle(lifecycle.clone()));
+    // §11.5: the pairing window is a network listener too, and it consults the
+    // SAME barrier — a private one would be two states pretending to be one.
+    // Like sharing it starts closed: no port exists until pairing opens one.
+    app.manage(pairing_listener::PairingListenerState::with_lifecycle(
+        lifecycle,
+    ));
     Ok(())
+}
+
+/// What `boot` must do about a failed key load, on this platform.
+///
+/// Desktop: nothing — the caller reports it, and the boot-failure dialog
+/// decides (Retry, or restore an exported key file).
+///
+/// Android: a lost Keystore key is unrecoverable, and the design decision is
+/// fail closed → wipe the mobile copy → re-pair from desktop. The wipe runs
+/// through the same factory-reset engine Settings uses, so it removes exactly
+/// the owned surface (database files, photos, safety copies, logs, and the
+/// wrapped key plus its Keystore entry) and reports each component.
+#[cfg(not(target_os = "android"))]
+fn handle_key_load_failure(
+    _data_dir: &std::path::Path,
+    failure: db::KeyLoadError,
+) -> db::KeyLoadError {
+    failure
+}
+
+#[cfg(target_os = "android")]
+fn handle_key_load_failure(
+    data_dir: &std::path::Path,
+    failure: db::KeyLoadError,
+) -> db::KeyLoadError {
+    if !failure.is_key_lost() {
+        return failure;
+    }
+    eprintln!("purple-memo: {}", failure.message());
+    // No LAN server and no open connection exist this early in boot, so those
+    // two seams are already-absent/no-op.
+    let outcome = reset::run_factory_reset(
+        reset::fault_injection(),
+        || Ok(false),
+        || Ok(()),
+        data_dir,
+        db::delete_db_key,
+    );
+    if outcome.complete {
+        // The phone's armed reminders and delivery records live outside the
+        // database the engine just wiped; forget them too (Android only,
+        // best-effort — see reminders.rs).
+        reminders::clear_reminder_state_after_reset();
+    }
+    let detail = if outcome.complete {
+        "the phone's local copy has been wiped; pairing with the desktop app is required to \
+         use Purple Memo on this device again"
+            .to_string()
+    } else {
+        format!(
+            "wiping the phone's local copy was blocked ({}); nothing further was touched, so no \
+             copy can be opened until this is fixed — free whatever is holding those files and \
+             try again",
+            reset::blocked_summary(&outcome)
+        )
+    };
+    db::KeyLoadError::KeyLost(format!("{}. {detail}", failure.message()))
 }
 
 /// Debug-only fault injection: `kind` (every attempt fails) or `kind:N` (the
@@ -552,6 +710,7 @@ const CLOSE_TO_TRAY_KEY: &str = "close_to_tray";
 /// Show the window from, so hiding on close would strand an invisible process.
 /// If the tray cannot be built, close keeps today's behaviour (it quits) and
 /// the reason goes to stderr.
+#[cfg(desktop)]
 fn start_session_chrome(app: &tauri::AppHandle) {
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     if INSTALLED.load(Ordering::SeqCst) {
@@ -565,9 +724,15 @@ fn start_session_chrome(app: &tauri::AppHandle) {
     INSTALLED.store(true, Ordering::SeqCst);
 }
 
+/// Mobile has no tray and no close-to-tray: Android owns the app's lifetime
+/// (task switcher, back gesture), so there is no session chrome to install.
+#[cfg(mobile)]
+fn start_session_chrome(_app: &tauri::AppHandle) {}
+
 /// The tray icon: the existing app icon and exactly two menu items —
 /// "Show Purple Memo" (restore the window) and "Quit" (full exit). No new
 /// artwork, no other actions (plan §B.2.3 / §B.2.5).
+#[cfg(desktop)]
 fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
     let icon = app
         .default_window_icon()
@@ -599,6 +764,7 @@ fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
 /// Close-to-tray (plan §B.2.1): while the toggle says so, closing the main
 /// window hides it instead of destroying it, so the process — and the
 /// reminder poll with it — keeps running.
+#[cfg(desktop)]
 fn watch_close_to_tray(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
@@ -608,6 +774,15 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             if close_to_tray_enabled(&handle) {
                 api.prevent_close();
+                // §11.5: hiding may not fire `visibilitychange` on every desktop
+                // WebView, so closing the window is the pairing port's stop as
+                // well. The lock path (not an ordinary stop) raises the epoch,
+                // so a window that was still opening cannot bind behind the
+                // hidden app either (N4).
+                if let Some(pairing) = handle.try_state::<pairing_listener::PairingListenerState>()
+                {
+                    let _ = pairing.stop_for_lock();
+                }
                 if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = window.hide();
                 }
@@ -624,6 +799,7 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
 /// "on": the default is to keep the process alive, and the paths that could
 /// not read the setting are exactly the paths where quitting silently would be
 /// the worst surprise.
+#[cfg(desktop)]
 fn close_to_tray_enabled(app: &tauri::AppHandle) -> bool {
     let Some(state) = app.try_state::<db::AppState>() else {
         return true;
@@ -680,6 +856,9 @@ fn focus_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
     };
+    // `unminimize` is desktop-only; raising the window is all a mobile second
+    // launch can ask for.
+    #[cfg(desktop)]
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
@@ -871,7 +1050,7 @@ fn format_timestamp_utc(secs: u64) -> String {
 /// App-data dir without a running app. The remembered value wins once `boot`
 /// has resolved it; the environment fallback exists only for the paths that
 /// run before that (or after it failed).
-fn dirs_next_to_db() -> Option<std::path::PathBuf> {
+pub(crate) fn dirs_next_to_db() -> Option<std::path::PathBuf> {
     if let Some(dir) = DATA_DIR.get() {
         return Some(dir.clone());
     }

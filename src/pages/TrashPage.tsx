@@ -21,6 +21,8 @@ const TYPE_LABELS: Record<TrashListItem["entity_type"], MessageKey> = {
   contact: "trash.type.contact",
   memory: "trash.type.memory",
   journal_entry: "trash.type.journalEntry",
+  shopping_list: "trash.type.shoppingList",
+  shopping_item: "trash.type.shoppingItem",
 };
 
 export default function TrashPage() {
@@ -120,12 +122,20 @@ export default function TrashPage() {
             <li key={item.id} className="budget-row">
               <div className="row-main">
                 <p className="row-title">{item.title}</p>
-                <span className="row-sub">
+                {/* §13.2: a conflict copy says so, and shows the value that
+                    won beside it, so the user compares before restoring. */}
+                {item.conflict && (
+                  <p className="row-sub">
+                    {item.conflict.label} ·{" "}
+                    {t("trash.conflictWon", { value: item.conflict.won })}
+                  </p>
+                )}
+                <p className="row-sub">
                   {t("trash.deletedAt", {
                     type: t(TYPE_LABELS[item.entity_type]),
                     date: formatDateTime(locale, item.deleted_at),
                   })}
-                </span>
+                </p>
               </div>
               <span className="row-actions">
                 <button

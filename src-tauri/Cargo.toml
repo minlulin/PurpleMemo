@@ -17,13 +17,21 @@ tauri-build = { version = "2", features = [] }
 # `tray-icon` is opt-in in Tauri 2 (not a default feature): it gates
 # `tauri::tray` itself. One-line manifest change for the close-to-tray plan.
 tauri = { version = "2.12.3", features = ["tray-icon"] }
-tauri-plugin-updater = "2.13.3"
 tauri-plugin-notification = "2.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
-keyring = "4.2.0"
 sha2 = "0.11.0"
+# Pairing envelope (Phase C Session 5, docs/ANDROID_SYNC_PROTOCOL.md §11.6.1):
+# X25519 key agreement and XChaCha20-Poly1305. Published primitives only — the
+# protocol fixes what is encrypted and which key authenticates it, never how a
+# primitive is built.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+# HKDF-SHA256 (RFC 5869) combines the ephemeral and static agreements into the
+# envelope key (§11.6.1). Already a transitive pin in `Cargo.lock` (0.13.0), so
+# this declares an existing version rather than adding a crate.
+hkdf = "0.13.0"
 # Only for O_NOFOLLOW / O_EXCL on the key-file temp write (review P3-5). Already
 # in the tree as a transitive dependency, so this declares an existing pin
 # rather than adding one.
@@ -31,10 +39,43 @@ libc = "0.2"
 getrandom = "0.4.3"
 tiny_http = "0.12.0"
 tauri-plugin-dialog = "2.8.2"
+
+# Desktop only: the OS credential store (`keyring`) has no Android backend -
+# its default implementation refuses that target outright - so on mobile the
+# database key is wrapped by the Android Keystore instead
+# (`src/key_store/android.rs`). Target-gated rather than feature-gated, so the
+# Android build cannot link or call it at all.
+#
+# The three plugins are here for the same reason: registration is already
+# `cfg(desktop)`-gated in `lib.rs`, so on Android they were compiled into the
+# library (the updater dragging reqwest and rustls with it) and never used.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = "4.2.0"
+tauri-plugin-updater = "2.13.3"
 tauri-plugin-opener = "2.7.2"
 # One running copy per user. Registered FIRST in `run` - a second
 # launch must be turned away before anything touches the database.
 tauri-plugin-single-instance = "2.5.4"
+
+# Android only: the platform seam talks to the Android Keystore through JNI.
+# Both crates are already in the dependency graph (transitively, through
+# Tauri's own Android stack), so this declares existing pins rather than
+# adding new ones.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+ndk-context = "0.1.1"
+
+# Windows only: `GetAdaptersAddresses` is how the pairing offer finds a LAN
+# address when the machine has no default route (N7, `share::lan_ip`).
+# `windows-sys` is already pinned in `Cargo.lock` through Tauri, so this
+# declares an existing version rather than adding a crate to download.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
 
 [profile.release]
 codegen-units = 1
@@ -42,3 +83,12 @@ lto = true
 opt-level = "s"
 strip = true
 panic = "abort"
+
+# rustc ICE workaround, UNVERIFIED (no release build has completed yet):
+# rustc 1.95.0 crashes compiling icu_locale_core under opt-level = "s" with
+# panic = "abort" (the Android release build, 2026-11-07). Building that one
+# package at opt-level 3 is the candidate workaround from the 2026-11-13
+# Android review; the other lead is rust-lang/rust #157148 (re-run with
+# --message-format short). Confirm or remove this at the first release build.
+[profile.release.package.icu_locale_core]
+opt-level = 3
