@@ -12,14 +12,41 @@ export function toCents(major: number): number {
 const AMOUNT_INPUT = /^\d+(?:\.\d{1,2})?$/;
 
 /**
+ * Largest amount this app records, in cents (10 trillion major units).
+ *
+ * A ceiling is not cosmetic (audit A3). Cents cross IPC as a JSON number and
+ * become a SQLite value in `src-tauri/src/db.rs`: an exact integer binds as
+ * `INTEGER`, while anything a double cannot represent exactly binds as `REAL`.
+ * Past 2^53 − 1 cents (~9.007 × 10^15) there is no such thing as an exact cent
+ * in JavaScript, so the value would be stored as a float and every `SUM`,
+ * comparison and CSV export over that column would drift.
+ *
+ * 10^15 is deliberate: comfortably below 2^53 − 1 so the multiply-and-add that
+ * produces the cents is exact, and so far past any real balance in a personal
+ * money app that the refusal only ever fires on a typo, a paste, or a crafted
+ * payload.
+ */
+export const MAX_AMOUNT_CENTS = 1_000_000_000_000_000;
+
+/**
  * Parse user-typed major-unit input ("1,234.56") to integer cents at the
  * display edge. Accepts optional thousands commas and up to two
- * decimals; anything else (empty, negative, malformed) is `null`.
+ * decimals; anything else (empty, negative, malformed, or above
+ * {@link MAX_AMOUNT_CENTS}) is `null` — the same invalid-input answer every
+ * form already renders as its normal "enter an amount" error.
+ *
+ * The arithmetic is exact by construction: the digits are split and combined as
+ * `BigInt` cents, so no double ever multiplies the amount. `Number(x) * 100`
+ * used to lose cents for large inputs (and return a non-safe integer for
+ * `"9007199254740993"`, which SQLite then stored as `REAL`).
  */
 export function parseMMK(raw: string): number | null {
   const normalized = raw.trim().replace(/,/g, "");
   if (!AMOUNT_INPUT.test(normalized)) return null;
-  return Math.round(Number(normalized) * 100);
+  const [units = "", fraction = ""] = normalized.split(".");
+  const cents = BigInt(units) * 100n + BigInt(fraction.padEnd(2, "0"));
+  if (cents > BigInt(MAX_AMOUNT_CENTS)) return null;
+  return Number(cents);
 }
 
 /** Integer cents -> major units (number, for further logic — not display). */

@@ -1919,3 +1919,50 @@ test("equal-counter tombstones resolve by the full §4 order on both paths (SW-1
     op: "b#5",
   });
 });
+
+test("a peer's cents field must be a whole number, refused before any statement (A3)", async () => {
+  // A cents column is integer by contract, and the engine binds payload values
+  // straight into SQL: a fraction would become a SQLite REAL and every SUM over
+  // that column would drift. This is the boundary a phone (or a crafted batch)
+  // reaches, so the rule belongs here and not only in the desktop form.
+  const { b } = await openPair();
+  const create = (amount: unknown): PeerOp => ({
+    device_id: DEVICE_A,
+    seq: 1,
+    op_id: "a#1",
+    entity_table: "income_entries",
+    entity_uid: "00000000-0000-4000-8000-000000000001",
+    op: "create",
+    base_counter: 0,
+    counter: 1,
+    field_stamps: "{}",
+    payload: JSON.stringify({
+      amount_cents: amount,
+      entry_date: "2026-10-01",
+    }),
+  });
+
+  for (const amount of [1.5, Number.MAX_SAFE_INTEGER + 2]) {
+    await assert.rejects(
+      () =>
+        applyOps(b.driver, {
+          peerId: DEVICE_A,
+          origin: "mobile",
+          ops: [create(amount)],
+        }),
+      /not a whole number of cents/,
+      `${amount} must be refused`,
+    );
+  }
+
+  // Whole cents are still accepted — the rule rejects precision, not values.
+  // Asserted on the statements the engine builds rather than on a committed
+  // row: the create names a category this fixture does not hold, so the batch
+  // would fail its NOT NULL for reasons that have nothing to do with cents.
+  const statements = await applyOps(b.driver, {
+    peerId: DEVICE_A,
+    origin: "mobile",
+    ops: [create(1000)],
+  });
+  assert.ok(statements.length > 0, "whole cents still produce statements");
+});

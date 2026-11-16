@@ -6,6 +6,7 @@ import {
   formatMMK,
   fromCents,
   isPartialAmount,
+  MAX_AMOUNT_CENTS,
   outstandingCents,
   parseMMK,
   toCents,
@@ -70,6 +71,46 @@ test("parseMMK parses user amount input to integer cents (edge)", () => {
   assert.equal(parseMMK("-5"), null);
   assert.equal(parseMMK("1.2.3"), null);
   assert.equal(parseMMK("1.505"), null);
+});
+
+test("parseMMK is exact and bounded: cents are always safe integers (A3)", () => {
+  // The ceiling itself is representable and exact, and so is everything under
+  // it — including values where `Number(x) * 100` used to drift.
+  assert.ok(Number.isSafeInteger(MAX_AMOUNT_CENTS));
+  assert.equal(parseMMK("10000000000000"), MAX_AMOUNT_CENTS);
+  assert.equal(parseMMK("10000000000000.00"), MAX_AMOUNT_CENTS);
+  assert.equal(parseMMK("9999999999999.99"), 999_999_999_999_999);
+  assert.equal(parseMMK("1234567890.12"), 123_456_789_012);
+
+  // One cent over the ceiling is refused — the same `null` the UI already
+  // renders as its normal invalid-amount error, not a new error path.
+  assert.equal(parseMMK("10000000000000.01"), null);
+  assert.equal(parseMMK("99999999999999999999"), null);
+
+  // The regression this exists for: this input used to return
+  // 900719925474099200 — an unsafe integer that `db.rs` bound as SQLite REAL.
+  assert.equal(parseMMK("9007199254740993"), null);
+
+  // The contract, stated as a property: whatever this function returns is a
+  // safe integer, so no caller can forward a float to the database.
+  for (const raw of [
+    "0",
+    "0.01",
+    "1",
+    "1,234.56",
+    "9999999999999.99",
+    "10000000000000",
+    "9007199254740991",
+    "9007199254740993",
+    "12345678901234567",
+    "99999999999999999999",
+  ]) {
+    const cents = parseMMK(raw);
+    assert.ok(
+      cents === null || Number.isSafeInteger(cents),
+      `${raw} produced a non-safe integer: ${cents}`,
+    );
+  }
 });
 
 test("isPartialAmount lets a half-typed amount through (no error mid-edit)", () => {

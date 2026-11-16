@@ -365,6 +365,21 @@ function validate(op: PeerOp, request: ApplyRequest): void {
   if (!verdict.allowed)
     throw new Error(`${name} was refused: ${verdict.reason}`);
   for (const field of fields) destinationOf(table, field, op);
+  // A cents column is whole by contract (audit A3). A payload number that is not
+  // a safe integer — `1.5`, or 9×10^17 which already lost precision when the
+  // JSON was parsed — would bind as a SQLite REAL and silently corrupt every
+  // SUM, comparison and export over that column, so it is refused here, before
+  // a statement is built and before anything is written.
+  for (const [field, value] of Object.entries(rowFieldsOf(op))) {
+    if (!field.endsWith("_cents") || value === null || value === undefined) {
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      throw new Error(
+        `${name} sends ${table}.${field} as ${JSON.stringify(value)}, which is not a whole number of cents (§3.4).`,
+      );
+    }
+  }
   if (table === "vault_items") {
     // §4.4: a vault row is aggregate-atomic. A write naming only part of the
     // sealed triple could not land a row anyone can decrypt, so it is refused
