@@ -25,68 +25,56 @@ artifacts.
 ```bash
 rustup component add clippy rustfmt
 git config core.hooksPath .githooks       # the pre-push gate
-npm run tauri -- signer generate -w .keys/updater.key   # it asks for a password
 ```
 
-Choose a **non-empty password** when the CLI asks for one. The key file says
-`untrusted comment: rsign encrypted secret key` either way, so the header proves
-nothing; the password is the only thing standing between a copied key file and a
-signed update. `npm run check:signing-key` probes exactly that and fails the gate
-when the key opens with an empty password.
+The keypair is not part of this step: it already exists, and it is never
+regenerated — see [Signing key custody](#signing-key-custody).
 
 - The private key stays on this machine. `.keys/` is gitignored; it is never
-  committed, never uploaded, and never put in a hosted secret store. See
-  [Signing key custody](#signing-key-custody) for what that has to mean in
-  practice.
+  committed, never uploaded, and never put in a hosted secret store.
 - The matching **public** key already sits in
-  `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`. Replacing the keypair
-  means replacing that value too — a mismatched pair fails signature
-  verification on every user's machine.
+  `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`, key id
+  `1F508CEF1FD1C297`. Every installed copy verifies updates against the pubkey
+  compiled into its own binary, which is why that value is not replaceable while
+  installs in the field exist.
 
 ## Signing key custody
 
 The updater accepts an update if and only if it is signed by the key whose
 public half is in `tauri.conf.json` → `plugins.updater.pubkey`, with
 `requireSignedVersion: true` binding the signature to the version. That one file
-is the project's entire update supply chain: whoever can read it can ship a build
-that every install accepts and runs.
+is the project's entire update supply chain: whoever can sign with it can ship a
+build that every install accepts and runs.
 
-Rules:
+The position, decided by the owner on 2026-11-16:
 
-- **The password is not optional.** An empty password means the key is
-  decryptable by anyone who obtains the file — including any copy of this folder,
-  any machine backup, any disk image, and any synced directory `.keys/` was ever
-  inside. The header says `rsign encrypted secret key` no matter what password
-  was used, so the header is not evidence of anything.
-- **Prove it, do not assume it.** `npm run check:signing-key` signs a throwaway
-  file in a temp directory with an empty password: success means the key is
-  unprotected and the gate fails, and the CLI's refusal is the pass. It runs as
-  part of `npm run verify` and skips cleanly where there is no key to protect.
-- **Treat any copy as exposure.** If the tree (or its backup) has left this
-  machine — a tarball, a cloud-synced folder, a support bundle, another
-  developer's checkout — rotate.
-- **Never put the password in the repository, a `.env`, a shell alias, a hosted
-  secret, or a chat.** Type it at the prompt in step 4, or read it from the
-  operator's secret manager into `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
-
-### Rotating the signing key
-
-A rotated key cannot verify updates signed with the old one, and the pubkey an
-installed copy checks is the one compiled into its binary. Rotation is therefore
-a two-release operation:
-
-1. Generate the new pair with a password:
-   `npm run tauri -- signer generate -w .keys/updater.key.new`.
-2. Put the **new** public half into `tauri.conf.json` →
-   `plugins.updater.pubkey`, and bump the version.
-3. Sign **that** release with the **OLD** key, publish it, and let the installed
-   base update to it. Those builds now carry the new pubkey.
-4. From the next release on, sign with the **new** key. Run step 8 of
-   "Per release" on an install that came up through step 3 before announcing
-   anything.
-5. Retire the old pair. It can no longer ship anything to updated installs — but
-   an install that never took step 3 still trusts it, which is why step 3 comes
-   first.
+- **The trusted keypair is passwordless, and that is the accepted state.** It is
+  key id `1F508CEF1FD1C297`. (The comment line in `tauri.conf.json` prints
+  `1F508CEF1FD5C297`; a minisign comment is untrusted metadata and that one
+  carries a one-nibble typo — the key bytes are what every install verifies.) No
+  property of the app depends on this key having a password, and the gate does
+  not ask for one.
+- **A password is not an available option on this pair.** The pinned Tauri
+  signer has only `generate` and `sign`: it cannot re-encrypt an existing key.
+  Adding a password therefore means a *new pair*, and a new pair cannot sign for
+  installs in the field, whose binaries verify against the pubkey they were built
+  with. The choice is this passwordless pair or broken updates; the owner chose
+  this pair.
+- **Custody is the protection.** The private half stays on the owner's PC, in
+  `.keys/` (gitignored). It is never committed, never copied to another machine,
+  never placed in a synced or shared folder, never attached to a support bundle
+  or a chat, and never regenerated. Because the pair cannot be replaced without
+  breaking every installed copy, custody is the whole of the protection rather
+  than a first layer of it.
+- **The gate checks the property that matters.** `npm run check:signing-key`
+  reads `plugins.updater.pubkey`, signs a throwaway file in a temp directory with
+  an empty password, and **fails** when the key that signs is not that pair — or
+  when `.keys/updater.key.pub` is present and names another key. A swapped or
+  regenerated key at the release path would pass every other gate step and break
+  only at install time, which is the failure this check exists for. It
+  **reports** the password state — passwordless by decision, or refusing an empty
+  password — and never blocks on it, and it skips cleanly where there is no key
+  to check.
 
 ## Per release
 
@@ -108,10 +96,6 @@ a two-release operation:
 
    ```bash
    export TAURI_SIGNING_PRIVATE_KEY="$(cat .keys/updater.key)"
-   # The key is password-protected. Read the password without echoing it or
-   # leaving it in shell history — never paste it into a command line.
-   read -rsp 'Signing key password: ' TAURI_SIGNING_PRIVATE_KEY_PASSWORD && echo
-   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
    ```
 
    The variable holds the **key itself, not its path**. Tauri base64-decodes
@@ -121,12 +105,13 @@ a two-release operation:
 
    ```powershell
    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content .keys/updater.key -Raw).Trim()
-   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Read-Host 'Signing key password'
    ```
 
-   A missing or wrong password fails the build the same way a missing key does
-   (see below), which is why the probe is part of the gate rather than a step
-   remembered on release day.
+   No password variable is set or typed: the trusted pair is passwordless by the
+   owner's decision (see [Signing key custody](#signing-key-custody)), so there is
+   no password to remember — or to lose — on release day. What protects this step
+   is the gate's proof that `.keys/updater.key` is the pair the shipped pubkey
+   names.
 
    Without the key the build still produces both installers, then fails at the
    end with `A public key has been found, but no private key` and writes **no
