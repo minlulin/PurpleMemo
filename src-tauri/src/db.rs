@@ -1037,14 +1037,22 @@ fn leading_keywords(sql: &str, n: usize) -> Vec<String> {
 /// `unwrap_or_default`, and neither `KEY` nor `REKEY` matched — so the one
 /// statement that must never run was the one spelling the guard did not
 /// recognise, while SQLite happily executed it.
-fn pragma_name_of(sql: &str) -> Option<String> {
+fn pragma_name_of(sql: &str) -> Option<(String, String)> {
     let rest = strip_leading_noise(sql)?;
     let rest = strip_keyword(rest, "PRAGMA")?;
-    let name: String = rest
-        .trim_start()
+    let trimmed = rest.trim_start();
+    let name: String = trimmed
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '"' | '[' | ']' | '`'))
         .collect();
+    // Whatever follows the name — `= OFF`, `(notes)`, nothing. Kept so a caller
+    // can tell a read from a write: `PRAGMA user_version` is a fact, `PRAGMA
+    // user_version = 0` is a lie the migration runner would believe.
+    let args = trimmed
+        .get(name.len()..)
+        .unwrap_or("")
+        .trim_start()
+        .to_string();
     // Take the part after any schema prefix, then drop whichever quoting form
     // wrapped it: `main.[rekey]` -> `[rekey]` -> `rekey`. Repeated, because the
     // trim has to see through a nested spelling too — `["rekey"]` is not valid
@@ -1067,7 +1075,7 @@ fn pragma_name_of(sql: &str) -> Option<String> {
     if name.is_empty() {
         None
     } else {
-        Some(name.to_ascii_uppercase())
+        Some((name.to_ascii_uppercase(), args))
     }
 }
 
@@ -1112,19 +1120,47 @@ fn strip_keyword<'a>(sql: &'a str, keyword: &str) -> Option<&'a str> {
 /// flag's back — silently breaking the atomicity the feature layer relies on.
 const TXN_CONTROL: [&str; 6] = ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"];
 
-/// Refuse statements that escape the app's data model or break the
-/// connection contract.
+/// Statements the renderer may run, by leading keyword (audit A5).
+///
+/// An **allowlist**, not the denylist this used to be. The docstring below
+/// promised that a TypeSQL bug cannot destroy data or escape the file, while
+/// `DROP TABLE notes` and `VACUUM INTO '<any path>'` both ran — the two
+/// statements that do exactly those two things. Every statement the guarded
+/// layer issues (the TypeSQL repositories and `backup.ts`) starts with one of
+/// these; schema DDL is not in the vocabulary on purpose, because the migration
+/// runner applies it over the raw connection (`execute_batch`), never here.
+const ALLOWED_KEYWORDS: [&str; 5] = ["SELECT", "INSERT", "UPDATE", "DELETE", "WITH"];
+
+/// The only pragmas the renderer may name (audit A5).
+///
+/// `journal_mode`, `synchronous`, `writable_schema`, `auto_vacuum` and every
+/// `cipher_*` tunable were reachable and are not rejected for tidiness: they
+/// change how the file is written or encrypted, which is the difference between
+/// a TypeSQL bug and a database nobody can open. These three are the app's whole
+/// pragma vocabulary — `foreign_keys` (the backup import toggles it), plus the
+/// two schema facts the mobile diagnostics screen reads.
+const ALLOWED_PRAGMAS: [&str; 3] = ["FOREIGN_KEYS", "FOREIGN_KEY_CHECK", "USER_VERSION"];
+
+/// Refuse statements outside the vocabulary the renderer is allowed to use.
 ///
 /// This is defence in depth, not a sandbox: the delivery plan already
 /// establishes that the renderer is trusted (it can run arbitrary SQL and
 /// read the DB key).
 /// What it buys is that a bug in the TypeSQL layer — which builds some
-/// statements by interpolating a validated identifier — cannot escalate into
-/// destroying data or escaping the file.
+/// statements by interpolating a validated identifier — cannot escalate beyond
+/// the app's own vocabulary: no schema destruction (`DROP`, `ALTER`), no file
+/// escape (`ATTACH`, `VACUUM INTO`), no change to how the file is encrypted or
+/// synced (`PRAGMA key/rekey`, `journal_mode`, `synchronous`, `cipher_*`).
+/// A wrong `DELETE` is still a wrong `DELETE` — deleting records *is* the
+/// vocabulary — but it cannot become a wrong `DROP TABLE`.
 ///
-/// Every app statement starts with SELECT/INSERT/UPDATE/DELETE/WITH or is
-/// `PRAGMA foreign_keys` (the backup import toggles it), so the app's real
-/// vocabulary never reaches a rejection.
+/// That is now a property of the check rather than an aspiration: a statement is
+/// allowed only if its leading keyword is SELECT/INSERT/UPDATE/DELETE/WITH or it
+/// is one of [`ALLOWED_PRAGMAS`], so everything above is refused by not being on
+/// the list, not by being remembered (audit A5).
+///
+/// Fails closed on the unknown: an empty or unreadable statement, and a `PRAGMA`
+/// whose name the scanner cannot parse, are refused rather than allowed.
 fn reject_dangerous_statement(sql: &str) -> Result<(), String> {
     let keywords = leading_keywords(sql, 1);
     let first = keywords.first().map(String::as_str).unwrap_or("");
@@ -1157,7 +1193,7 @@ fn reject_dangerous_statement(sql: &str) -> Result<(), String> {
     // unparseable is refused: a spelling this scanner has never seen must not
     // be the spelling that gets through.
     if first == "PRAGMA" {
-        let name = pragma_name_of(sql)
+        let (name, args) = pragma_name_of(sql)
             .ok_or_else(|| "PRAGMA could not be identified and is not allowed here".to_string())?;
         if name == "KEY" || name == "REKEY" {
             return Err(
@@ -1166,6 +1202,31 @@ fn reject_dangerous_statement(sql: &str) -> Result<(), String> {
                     .to_string(),
             );
         }
+        if !ALLOWED_PRAGMAS.contains(&name.as_str()) {
+            return Err(format!(
+                "PRAGMA {name} is not allowed here: only foreign_keys, \
+                 foreign_key_check and user_version may be named by the renderer"
+            ));
+        }
+        // `user_version` is a fact about the file, not a knob. Writing it makes
+        // the stored version disagree with the tables underneath, and the next
+        // launch re-runs (or skips) migrations on that lie — the migration
+        // runner is the only writer, over the raw connection.
+        if name == "USER_VERSION" && (args.starts_with('=') || args.starts_with('(')) {
+            return Err(
+                "PRAGMA user_version is read-only here: the migration runner owns it".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    if first.is_empty() {
+        return Err("this statement could not be identified and is not allowed here".to_string());
+    }
+    if !ALLOWED_KEYWORDS.contains(&first) {
+        return Err(format!(
+            "{first} statements are not allowed here: only SELECT, INSERT, UPDATE, \
+             DELETE, WITH and the three allowed pragmas reach this database"
+        ));
     }
     Ok(())
 }
@@ -4376,6 +4437,92 @@ mod tests {
     }
 
     #[test]
+    fn ddl_and_file_escape_statements_are_refused() {
+        // The docstring promises a TypeSQL bug "cannot escalate into destroying
+        // data or escaping the file". Before the allowlist both of the first two
+        // below ran: `DROP TABLE` destroyed a table, `VACUUM INTO '<path>'`
+        // wrote a complete copy of the database to a caller-chosen path — the
+        // two outcomes the guard exists to prevent (audit A5).
+        for smuggled in [
+            "DROP TABLE notes",
+            "drop table if exists notes",
+            "DROP INDEX idx_notes_browse",
+            "DROP VIEW v",
+            "ALTER TABLE notes RENAME TO gone",
+            "ALTER TABLE notes ADD COLUMN evil TEXT",
+            "ALTER TABLE notes DROP COLUMN content",
+            "CREATE TABLE evil (x)",
+            "CREATE VIRTUAL TABLE docs USING fts5(title)",
+            "CREATE INDEX evil ON notes(title)",
+            "VACUUM",
+            "VACUUM INTO '/tmp/leak.db'",
+            "vACuum   inTO  'leak.db'",
+            "REPLACE INTO settings(key, value) VALUES ('k', 'v')",
+            "EXPLAIN QUERY PLAN SELECT 1",
+            // The prefix must not hide the statement.
+            "  -- tidy up\n  DROP TABLE notes",
+            "/*c*/ALTER TABLE notes DROP COLUMN content",
+            "/* multi\nline */ VACUUM INTO 'x.db'",
+            // A statement the scanner cannot even identify fails closed, like an
+            // unparseable pragma.
+            "",
+            "   \n\t",
+            "-- only a comment\n",
+        ] {
+            let err = reject_dangerous_statement(smuggled)
+                .expect_err("DDL and file escape must be refused");
+            assert!(err.contains("not allowed here"), "{smuggled:?} gave: {err}");
+        }
+    }
+
+    #[test]
+    fn connection_contract_pragmas_are_refused() {
+        // `writable_schema` lets a statement rewrite the schema table itself;
+        // `journal_mode`/`synchronous` trade durability away; `auto_vacuum`
+        // rewrites the file; under SQLCipher `cipher_*` changes decryption, so a
+        // wrong value is an unopenable database. None of them is in the app's
+        // vocabulary, and all of them used to reach SQLite (audit A5).
+        for smuggled in [
+            "PRAGMA writable_schema = ON",
+            "PRAGMA journal_mode = OFF",
+            "PRAGMA journal_mode = DELETE",
+            "PRAGMA synchronous = OFF",
+            "PRAGMA auto_vacuum = 0",
+            "PRAGMA cipher_page_size = 1024",
+            "PRAGMA cipher_default_kdf_iter = 1",
+            "PRAGMA query_only = ON",
+            "PRAGMA temp_store = MEMORY",
+            "PRAGMA page_size = 65536",
+            "  pragma [writable_schema] = 1",
+            "-- c\nPRAGMA synchronous = OFF",
+        ] {
+            let err = reject_dangerous_statement(smuggled)
+                .expect_err("connection-contract pragmas must be refused");
+            assert!(
+                err.contains("is not allowed here"),
+                "{smuggled:?} gave: {err}"
+            );
+        }
+
+        // `user_version` may be READ — the mobile diagnostics screen does — but
+        // writing it would make the stored schema version a lie the migration
+        // runner believes on the next launch.
+        for smuggled in [
+            "PRAGMA user_version = 0",
+            "PRAGMA user_version = 12",
+            "PRAGMA user_version(0)",
+            "pragma main.user_version = 0",
+        ] {
+            let err = reject_dangerous_statement(smuggled)
+                .expect_err("user_version is read-only from the renderer");
+            assert!(
+                err.contains("user_version is read-only"),
+                "{smuggled:?} gave: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn the_guard_allows_every_statement_the_app_actually_issues() {
         // A guard that broke real SQL would be worse than none. This is the
         // app's whole vocabulary, including the only pragma the frontend uses
@@ -4391,7 +4538,21 @@ mod tests {
             // backup.ts toggles these around the import.
             "PRAGMA foreign_keys = OFF",
             "PRAGMA foreign_keys = ON",
+            // Backup import (`from pragma_foreign_key_check`) and mobile
+            // diagnostics (`PRAGMA user_version`) read these.
+            "PRAGMA foreign_keys",
+            "PRAGMA foreign_key_check",
+            "PRAGMA foreign_key_check(notes)",
             "PRAGMA user_version",
+            // The write shapes the repositories emit, so the allowlist cannot
+            // quietly narrow below them.
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            "INSERT INTO notes_fts(notes_fts) VALUES ('rebuild')",
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT * FROM t",
+            "DELETE FROM notes WHERE id = ? RETURNING id",
+            "UPDATE OR REPLACE settings SET value = ? WHERE key = ?",
+            "select 1",
             // Comments are legal prefix on a legitimate statement.
             "-- pick the newest\nSELECT * FROM notes ORDER BY created_at DESC",
             "/* filtered */ DELETE FROM drafts WHERE id = ?",
@@ -4587,12 +4748,10 @@ mod tests {
             "no fragment of the statement may leak: {prep}"
         );
 
-        execute(
-            &conn,
-            "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
-            &[],
-        )
-        .expect("create the table");
+        // Fixture DDL over the raw connection, like the migration runner: the
+        // guarded `execute` no longer admits `CREATE` (audit A5).
+        conn.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+            .expect("create the table");
         let exec = execute(&conn, "INSERT INTO kv (k, v) VALUES ('a', NULL)", &[])
             .expect_err("NULL violates NOT NULL");
         assert!(
