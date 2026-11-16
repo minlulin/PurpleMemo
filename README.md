@@ -21,8 +21,12 @@ desktop app — see `docs/ANDROID_DESIGN.md`.
 
 ## Backups
 
-Settings → Backup exports every table and photo into one archive, saved
-wherever you choose.
+Settings → Backup exports every data table and the photo library into one
+archive, saved wherever you choose. Not literally *every* table: the search
+index is rebuilt from your notes on restore, and this installation's own
+bookkeeping — the app PIN, its security question, and the sync state (device
+identity, outbox, cursors, tombstones) — stays behind, because it describes
+this machine rather than your data.
 
 - **Unencrypted** (`.zip`) is the default and has not changed.
 - **Password-protected** (`.pmbk`) seals that archive in a versioned
