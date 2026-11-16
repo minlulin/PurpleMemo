@@ -304,6 +304,8 @@ export const en = {
   "mobile.settings.pairRefresh": "Scan again",
   "mobile.settings.rePairPending":
     "This desktop is already paired. {count} change(s) on this phone have not been sent yet — pairing again starts a new pairing with them still unsent, so sync first if you want to keep them.",
+  "mobile.settings.pairMergeWarning":
+    "Existing data on this phone will be kept and merged. For a clean start, cancel and reset the app first (Settings → Reset Purple Memo).",
   "pairing.pendingChanges":
     "This desktop still holds {count} change(s) this phone has not received. Re-pairing now would strand them: sync first, or discard them deliberately.",
   "pairing.discardPending": "Discard those changes",
@@ -1300,6 +1302,8 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pairRefresh": "ထပ်စကင်ဖတ်ရန်",
   "mobile.settings.rePairPending":
     "ဤကွန်ပျူတာနှင့် တွဲချိတ်ပြီးသား ဖြစ်သည်။ ဤဖုန်းမှ ပြောင်းလဲမှု {count} ခု မပို့ရသေးပါ — ထပ်တွဲပါက ထိုပြောင်းလဲမှုများ မပို့ရဘဲ တွဲချိတ်မှု အသစ် စတင်မည် ဖြစ်သည်။ ထိန်းထားလိုပါက အရင် sync လုပ်ပါ။",
+  "mobile.settings.pairMergeWarning":
+    "ဤဖုန်းတွင် ရှိနေသော လက်ရှိဒေတာများကို ထိန်းသိမ်းထားပြီး ပေါင်းစပ်ပါမည်။ အသစ်စတင်လိုပါက အရင်ဆုံး ပယ်ဖျက်ပြီး အက်ပ်ကို ရိစတေ့ပြုပါ (ဆက်တင်များ → Purple Memo ကို ရိစတေ့ပြုရန်)။",
   "pairing.pendingChanges":
     "ဤကွန်ပျူတာတွင် ဤဖုန်း မရရှိသေးသော ပြောင်းလဲမှု {count} ခု ကျန်ရှိနေသည်။ ယခု ပြန်တွဲပါက ၎င်းတို့ ပျက်စီးမည် — အရင် sync လုပ်ပါ၊ သို့မဟုတ် တမင်ဖျက်ပါ။",
   "pairing.discardPending": "ထိုပြောင်းလဲမှုများကို ဖျက်မည်",

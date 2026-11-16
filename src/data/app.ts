@@ -26,6 +26,7 @@ import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
 import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
+import { holdsLocalData } from "../lib/sync/pairingWarning.ts";
 import type { Origin } from "../lib/sync/protocol.ts";
 import { readOwnDeviceId } from "../lib/sync/reminderDelivery.ts";
 import { createSyncRepo } from "../lib/sync/syncSession.ts";
@@ -145,6 +146,17 @@ export const syncRepo = createSyncRepo(driver);
  */
 export function localDeviceId(): Promise<string> {
   return readOwnDeviceId(driver);
+}
+
+/**
+ * Whether this phone holds records of its own — the third fact behind the line
+ * the pairing card shows before Trust (F1 Task 2). Bound here for the same
+ * reason as every other read: the component never holds the driver, and the
+ * question itself is answered in `lib/sync/pairingWarning.ts`, where a fresh
+ * install's shipped seeds are subtracted instead of counted.
+ */
+export function phoneHoldsLocalData(): Promise<boolean> {
+  return holdsLocalData(driver);
 }
 
 export function searchWorkspace(input: string, options?: SearchOptions) {

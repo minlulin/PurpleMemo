@@ -10,7 +10,11 @@
  * card words a success as a pairing only because that command resolved.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { mobilePairingRepo, syncRepo } from "../data/app.ts";
+import {
+  mobilePairingRepo,
+  phoneHoldsLocalData,
+  syncRepo,
+} from "../data/app.ts";
 import type { PhonePairResult } from "../data/driver.ts";
 import {
   isBareCode,
@@ -24,6 +28,7 @@ import {
   type PairingSession,
   parseOffer,
 } from "../lib/sync/pairing.ts";
+import { warnBeforeTrust } from "../lib/sync/pairingWarning.ts";
 import type { PeerRow, SnapshotOp } from "../lib/sync/store.ts";
 import type { SyncOutcome } from "../lib/sync/syncSession.ts";
 import { useT } from "./useTranslation.ts";
@@ -73,6 +78,13 @@ export function MobilePairingCard() {
   // only inside a fresh pairing session.
   const [pins, setPins] = useState<PeerRow[]>([]);
   /**
+   * Whether this phone holds records of its own (F1 Task 2). Read once, like
+   * the pins: it is a property of the installation, not of one offer, and it
+   * is the fact that decides whether a DIFFERENT desktop gets a line before
+   * Trust. A fresh install answers false — its shipped seeds are not data.
+   */
+  const [holdsLocalData, setHoldsLocalData] = useState(false);
+  /**
    * §11.4: what a re-pair would leave unsent. The card cannot block the press
    * — the pin write needs no acknowledgement — so it says the number plainly
    * before the person confirms.
@@ -107,10 +119,38 @@ export function MobilePairingCard() {
     };
   }, []);
 
+  // The same one-shot read for the warning's other fact: does this phone have
+  // anything of its own to keep and merge? A failure answers false, so a card
+  // that could not count still pairs — the line is advisory, never a gate.
+  useEffect(() => {
+    let live = true;
+    void phoneHoldsLocalData()
+      .then((holds) => {
+        if (live) setHoldsLocalData(holds);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
   const offerDesktopId = offer?.deviceId ?? null;
   const alreadyPaired =
     offerDesktopId !== null &&
     pins.some((row) => row.device_id === offerDesktopId);
+
+  /**
+   * The line before Trust (F1 Task 2): a desktop this phone does NOT pin,
+   * offered while this phone still holds records. Pairing keeps them and
+   * merges them, so a person who wanted a clean start has to reset first —
+   * which is exactly what the line says. A matching identity shows nothing
+   * (nothing changes on a re-pair), and neither does a phone with no data.
+   */
+  const mergeWarning = warnBeforeTrust({
+    offerDeviceId: offerDesktopId,
+    pinnedDeviceIds: pins.map((row) => row.device_id),
+    holdsLocalData,
+  });
 
   // A re-pair starts a new pairing with this phone's own unsent changes still
   // in the outbox, so the count is read before Confirm is offered (§11.4).
@@ -468,6 +508,14 @@ export function MobilePairingCard() {
           {alreadyPaired && rePairPending !== null && rePairPending > 0 ? (
             <p className="mobile-note" role="status">
               {t("mobile.settings.rePairPending", { count: rePairPending })}
+            </p>
+          ) : null}
+          {/* The one plain line before Trust (F1 Task 2) — a warning, not a
+              refusal: it says what pairing will do with the records already
+              on this phone, and where to go instead for a clean start. */}
+          {mergeWarning ? (
+            <p className="alert alert-warn" role="status">
+              {t("mobile.settings.pairMergeWarning")}
             </p>
           ) : null}
           <button
