@@ -287,45 +287,42 @@ export const en = {
   "mobile.settings.themeDark": "Dark",
   "mobile.settings.themeLight": "Light",
   "mobile.settings.syncHeading": "Sync",
-  "mobile.settings.syncOff":
-    "Off. This phone is local-only: nothing leaves it, and there is no account to sync with yet.",
+  "mobile.settings.syncOff": "Off — this phone is local-only until it pairs.",
   "mobile.settings.pairHeading": "Pairing",
   "mobile.settings.pairBody":
-    "Pair with the desktop on this network. Scanning its QR is the primary way; typing its six-digit code is the fallback.",
+    "Scan the desktop's QR to pair. The six-digit code is the fallback.",
   "mobile.settings.pairScan": "Scan the desktop's QR",
   "mobile.settings.pairScanning": "Scanning…",
   "mobile.settings.pairCameraOff":
-    "This build cannot reach a camera here. Pair without a camera by pasting the desktop's pairing string below — press “Copy pairing string” beside the desktop's QR.",
+    "No camera available here. Paste the desktop's pairing string below instead.",
   "mobile.settings.pairNoOffer":
-    "Scan the desktop's QR, or paste the whole purplememo-pair:// string shown with it. The six digits alone do not say which desktop to pair with.",
+    "Scan the QR, or paste the whole purplememo-pair:// string shown with it. The six digits alone are not enough.",
   "mobile.settings.pairPasteLabel": "Pairing string from the desktop",
   "mobile.settings.pairPasteAction": "Use this pairing string",
   "mobile.settings.pairDigitsOnly":
-    "Those are the six digits, which say which window to pair with but not which desktop. Paste the whole purplememo-pair:// string shown with the desktop's QR.",
+    "Those are only the six digits. Paste the whole purplememo-pair:// string from the desktop.",
   "mobile.settings.pairEndpoint": "Desktop endpoint: {endpoint}",
   "mobile.settings.pairDesktopKey": "Desktop key fingerprint: {fingerprint}",
   "mobile.settings.pairTypeLabel": "Six-digit code",
   "mobile.settings.pairConfirm": "Confirm code",
   "mobile.settings.pairConfirmed":
-    "Code confirmed. Compare the fingerprints on both screens before you trust the desktop.",
-  "mobile.settings.pairWireMissing":
-    "The desktop has not paired this phone: a phone cannot send its key until its sealed pairing client is built. Nothing was paired in this step.",
+    "Code confirmed. Compare the fingerprints on both screens before trusting.",
   "mobile.settings.pairRefresh": "Scan again",
   "mobile.settings.rePairPending":
-    "This desktop is already paired. {count} change(s) on this phone have not been sent yet — pairing again starts a new pairing with them still unsent, so sync first if you want to keep them.",
+    "Already paired with this desktop. {count} change(s) are still unsent — sync first to keep them.",
   "mobile.settings.pairMergeWarning":
-    "Existing data on this phone will be kept and merged. For a clean start, cancel and reset the app first (Settings → Reset Purple Memo).",
+    "This phone's data will be kept and merged. For a clean start, cancel and reset first (Settings → Reset Purple Memo).",
   "pairing.pendingChanges":
-    "This desktop still holds {count} change(s) this phone has not received. Re-pairing now would strand them: sync first, or discard them deliberately.",
+    "This desktop holds {count} change(s) this phone has not received. Sync first, or discard them.",
   "pairing.discardPending": "Discard those changes",
   "pairing.discardPendingWhat": "the {count} undelivered change(s)",
   "pairing.discarded":
     "Discarded {count} undelivered change(s). Trust can proceed.",
   "mobile.settings.pullHeading": "Copy from the desktop",
   "mobile.settings.pullBody":
-    "This copies the desktop's records to this phone in one step: either the whole snapshot arrives or none of it does. Nothing is deleted on either device.",
+    "Copies the desktop's records to this phone. Nothing is deleted on either device.",
   "mobile.settings.pullMissing":
-    "Records you created on this phone are not sent by this step. The upload below sends them, and nothing leaves this phone until you press it.",
+    "Records created on this phone are not sent by this step — the upload below sends them.",
   "mobile.settings.pullStart": "Copy records from the desktop",
   "mobile.settings.pullProgress": "Batch {batch} of {total}…",
   "mobile.settings.pullDone":
@@ -336,7 +333,7 @@ export const en = {
     "A record on the other device is too large to copy:",
   "mobile.settings.uploadHeading": "Send to the desktop",
   "mobile.settings.uploadBody":
-    "Send the records you created on this phone to the desktop. Records it already has are left exactly as they are, and nothing is deleted on either device.",
+    "Sends this phone's records to the desktop. Nothing is deleted on either device.",
   "mobile.settings.uploadStart": "Send records to the desktop",
   "mobile.settings.uploadProgress": "Batch {batch} of {total}…",
   "mobile.settings.uploadDone":
@@ -346,7 +343,7 @@ export const en = {
   "mobile.settings.uploadFailed":
     "Nothing was sent. Your records stay on this phone — try again.",
   "mobile.settings.syncBody":
-    "Send the changes you made here and bring the desktop's changes back. Both sides are merged, so an edit either side made is kept.",
+    "Exchanges changes with the desktop. Both sides are merged, so edits from either side are kept.",
   "mobile.settings.syncStart": "Sync now",
   "mobile.settings.syncProgress": "Syncing…",
   "mobile.settings.syncDone":
@@ -354,10 +351,9 @@ export const en = {
   "mobile.settings.syncNothing":
     "Already up to date — nothing was sent or received.",
   "mobile.settings.syncUnconfirmed":
-    "The desktop did not confirm in time. Your changes stay on this phone — sync again when both devices are on the same network.",
+    "The desktop did not confirm in time. Your changes stay on this phone — sync again on the same network.",
   "mobile.settings.syncFailed": "The sync stopped:",
-  "mobile.settings.syncNeedsCode":
-    "Scan the desktop's pairing code to sync: this phone knows the desktop but not how to reach it right now.",
+  "mobile.settings.syncNeedsCode": "Scan the desktop's pairing code to sync.",
   "mobile.settings.permissionsHeading": "Permissions",
   "mobile.settings.notifications": "Notifications",
   "mobile.settings.notificationsOn":
@@ -1293,45 +1289,42 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.themeDark": "အမှောင်",
   "mobile.settings.themeLight": "အလင်း",
   "mobile.settings.syncHeading": "စန့် (Sync)",
-  "mobile.settings.syncOff":
-    "ပိတ်ထားသည်။ ဤဖုန်းသည် ဒေသတွင်းသာ ဖြစ်သည် — မည်သည့်အရာမှ ပြင်ပသို့ မထွက်ပါ၊ စန့်လုပ်ရန် အကောင့်လည်း မရှိသေးပါ။",
+  "mobile.settings.syncOff": "ပိတ်ထားသည် — မတွဲချိတ်ရသေးသရွေ့ ဤဖုန်းသည် ဒေသတွင်းသာ ဖြစ်သည်။",
   "mobile.settings.pairHeading": "တွဲချိတ်ခြင်း",
   "mobile.settings.pairBody":
-    "ဤကွန်ရက်ရှိ ကွန်ပျူတာနှင့် တွဲချိတ်ပါ။ ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ခြင်းက အဓိကနည်းလမ်းဖြစ်ပြီး ဂဏန်းခြောက်လုံးကုဒ် ရိုက်ထည့်ခြင်းက အရန်နည်းလမ်း ဖြစ်သည်။",
+    "တွဲချိတ်ရန် ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ။ ဂဏန်းခြောက်လုံးကုဒ်က အရန်နည်းလမ်း ဖြစ်သည်။",
   "mobile.settings.pairScan": "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ရန်",
   "mobile.settings.pairScanning": "စကင်ဖတ်နေသည်…",
   "mobile.settings.pairCameraOff":
-    "ဤတည်ဆောက်မှုတွင် ကင်မရာ မရနိုင်ပါ။ ကင်မရာမပါဘဲ တွဲချိတ်ရန် ကွန်ပျူတာ၏ တွဲချိတ်စာသားကို အောက်တွင် ကူးထည့်ပါ — ကွန်ပျူတာ၏ QR ဘေးရှိ “Copy pairing string” ကို နှိပ်ပါ။",
+    "ဤနေရာတွင် ကင်မရာ မရနိုင်ပါ။ ကွန်ပျူတာ၏ တွဲချိတ်စာသားကို အောက်တွင် ကူးထည့်ပါ။",
   "mobile.settings.pairNoOffer":
-    "ကွန်ပျူတာ၏ QR ကို စကင်ဖတ်ပါ သို့မဟုတ် ၎င်းနှင့်အတူ ပြသထားသော purplememo-pair:// စာသားတစ်ခုလုံးကို အောက်တွင် ကူးထည့်ပါ။ ဂဏန်းခြောက်လုံးတည်းဖြင့် မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မသိနိုင်ပါ။",
+    "QR ကို စကင်ဖတ်ပါ သို့မဟုတ် purplememo-pair:// စာသားတစ်ခုလုံးကို ကူးထည့်ပါ။ ဂဏန်းခြောက်လုံးတည်းဖြင့် မလုံလောက်ပါ။",
   "mobile.settings.pairPasteLabel": "ကွန်ပျူတာမှ တွဲချိတ်စာသား",
   "mobile.settings.pairPasteAction": "ဤစာသားကို အသုံးပြုရန်",
   "mobile.settings.pairDigitsOnly":
-    "၎င်းသည် ဂဏန်းခြောက်လုံးသာ ဖြစ်သည် — မည်သည့်တွဲချိတ်ပြတင်းနှင့် တွဲမည်ကို ပြသော်လည်း မည်သည့်ကွန်ပျူတာနှင့် တွဲမည်ကို မပြနိုင်ပါ။ ကွန်ပျူတာ၏ QR နှင့်အတူ ပြသထားသော purplememo-pair:// စာသားတစ်ခုလုံးကို ကူးထည့်ပါ။",
+    "၎င်းသည် ဂဏန်းခြောက်လုံးသာ ဖြစ်သည်။ ကွန်ပျူတာမှ purplememo-pair:// စာသားတစ်ခုလုံးကို ကူးထည့်ပါ။",
   "mobile.settings.pairEndpoint": "ကွန်ပျူတာ လိပ်စာ — {endpoint}",
   "mobile.settings.pairDesktopKey": "ကွန်ပျူတာ ကီး လက်ဗွေ — {fingerprint}",
   "mobile.settings.pairTypeLabel": "ဂဏန်းခြောက်လုံးကုဒ်",
   "mobile.settings.pairConfirm": "ကုဒ် အတည်ပြုရန်",
   "mobile.settings.pairConfirmed":
     "ကုဒ် အတည်ပြုပြီးပါပြီ။ မယုံကြည်မီ စက်နှစ်ခု၏ လက်ဗွေများကို နှိုင်းယှဉ်ပါ။",
-  "mobile.settings.pairWireMissing":
-    "ကွန်ပျူတာက ဤဖုန်းကို မတွဲရသေးပါ — ဖုန်း၏ လုံခြုံသော တွဲချိတ်ပို့ချက် (sealed pairing client) ကို မတည်ဆောက်ရသေးပါ။ ဤအဆင့်တွင် ဘာမှ မတွဲချိတ်ရသေးပါ။",
   "mobile.settings.pairRefresh": "ထပ်စကင်ဖတ်ရန်",
   "mobile.settings.rePairPending":
-    "ဤကွန်ပျူတာနှင့် တွဲချိတ်ပြီးသား ဖြစ်သည်။ ဤဖုန်းမှ ပြောင်းလဲမှု {count} ခု မပို့ရသေးပါ — ထပ်တွဲပါက ထိုပြောင်းလဲမှုများ မပို့ရဘဲ တွဲချိတ်မှု အသစ် စတင်မည် ဖြစ်သည်။ ထိန်းထားလိုပါက အရင် sync လုပ်ပါ။",
+    "ဤကွန်ပျူတာနှင့် တွဲချိတ်ပြီးသား ဖြစ်သည်။ ပြောင်းလဲမှု {count} ခု မပို့ရသေးပါ — ထိန်းထားလိုပါက အရင် sync လုပ်ပါ။",
   "mobile.settings.pairMergeWarning":
-    "ဤဖုန်းတွင် ရှိနေသော လက်ရှိဒေတာများကို ထိန်းသိမ်းထားပြီး ပေါင်းစပ်ပါမည်။ အသစ်စတင်လိုပါက အရင်ဆုံး ပယ်ဖျက်ပြီး အက်ပ်ကို ရိစတေ့ပြုပါ (ဆက်တင်များ → Purple Memo ကို ရိစတေ့ပြုရန်)။",
+    "ဤဖုန်းရှိ ဒေတာကို ထိန်းပြီး ပေါင်းစပ်မည်။ အသစ်စလိုပါက ပယ်ဖျက်ပြီး အရင် ရိစတေ့ပြုပါ (ဆက်တင်များ → Purple Memo ရိစတေ့)။",
   "pairing.pendingChanges":
-    "ဤကွန်ပျူတာတွင် ဤဖုန်း မရရှိသေးသော ပြောင်းလဲမှု {count} ခု ကျန်ရှိနေသည်။ ယခု ပြန်တွဲပါက ၎င်းတို့ ပျက်စီးမည် — အရင် sync လုပ်ပါ၊ သို့မဟုတ် တမင်ဖျက်ပါ။",
+    "ဤကွန်ပျူတာတွင် ဖုန်း မရသေးသော ပြောင်းလဲမှု {count} ခု ရှိသည်။ အရင် sync လုပ်ပါ၊ သို့မဟုတ် ဖျက်ပါ။",
   "pairing.discardPending": "ထိုပြောင်းလဲမှုများကို ဖျက်မည်",
   "pairing.discardPendingWhat": "မပို့ရသေးသော ပြောင်းလဲမှု {count} ခု",
   "pairing.discarded":
     "မပို့ရသေးသော ပြောင်းလဲမှု {count} ခုကို ဖျက်လိုက်ပါပြီ။ Trust ဆက်လုပ်နိုင်ပါပြီ။",
   "mobile.settings.pullHeading": "ကွန်ပျူတာမှ ကူးယူရန်",
   "mobile.settings.pullBody":
-    "ကွန်ပျူတာရှိ မှတ်တမ်းများကို ဤဖုန်းသို့ တစ်ဆင့်တည်းဖြင့် ကူးယူပါသည်။ အစုအစည်းတစ်ခုလုံး ရောက်လာမည်၊ သို့မဟုတ် တစ်ခုမျှ မရောက်ပါ။ မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",
+    "ကွန်ပျူတာ၏ မှတ်တမ်းများကို ဤဖုန်းသို့ ကူးယူပါသည်။ မည်သည့်စက်မှ ဘာမျှ မဖျက်ပါ။",
   "mobile.settings.pullMissing":
-    "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများကို ဤအဆင့်ဖြင့် မပို့ပါ။ အောက်ပါ တင်ပို့မှုက ၎င်းတို့ကို ပို့ပေးမည်ဖြစ်ပြီး သင် မနှိပ်မချင်း ဤဖုန်းမှ ဘာမျှ ထွက်သွားမည် မဟုတ်ပါ။",
+    "ဤဖုန်းတွင် ဖန်တီးထားသော မှတ်တမ်းများကို ဤအဆင့်ဖြင့် မပို့ပါ — အောက်ပါ တင်ပို့မှုက ပို့ပေးမည်။",
   "mobile.settings.pullStart": "ကွန်ပျူတာမှ မှတ်တမ်းများ ကူးယူရန်",
   "mobile.settings.pullProgress": "အစုအစည်း {batch} / {total}…",
   "mobile.settings.pullDone":
@@ -1341,7 +1334,7 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pullTooLarge": "အခြားစက်ရှိ မှတ်တမ်းတစ်ခုသည် ကူးယူရန် အလွန်ကြီးနေသည် —",
   "mobile.settings.uploadHeading": "ကွန်ပျူတာသို့ ပို့ရန်",
   "mobile.settings.uploadBody":
-    "ဤဖုန်းတွင် သင်ဖန်တီးထားသော မှတ်တမ်းများကို ကွန်ပျူတာသို့ ပို့ပါသည်။ ကွန်ပျူတာတွင် ရှိပြီးသား မှတ်တမ်းများကို ရှိသည့်အတိုင်း ထားမည်ဖြစ်ပြီး မည်သည့်စက်မှ မည်သည့်အရာကိုမျှ ဖျက်ပစ်မည် မဟုတ်ပါ။",
+    "ဤဖုန်း၏ မှတ်တမ်းများကို ကွန်ပျူတာသို့ ပို့ပါသည်။ မည်သည့်စက်မှ ဘာမျှ မဖျက်ပါ။",
   "mobile.settings.uploadStart": "မှတ်တမ်းများကို ကွန်ပျူတာသို့ ပို့ရန်",
   "mobile.settings.uploadProgress": "အစုအစည်း {batch} / {total}…",
   "mobile.settings.uploadDone":
@@ -1351,7 +1344,7 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.uploadFailed":
     "ဘာမျှ မပို့ရသေးပါ။ သင့်မှတ်တမ်းများ ဤဖုန်းတွင် ကျန်ရှိပါသည် — ထပ်ကြိုးစားပါ။",
   "mobile.settings.syncBody":
-    "ဤဖုန်းတွင် သင်ပြောင်းခဲ့သည်များကို ပို့ပြီး ကွန်ပျူတာမှ ပြောင်းချက်များကို ပြန်ယူပါသည်။ နှစ်ဖက်စလုံး ပေါင်းစပ်သောကြောင့် မည်သည့်ဖက်မှ ပြင်ချက်မဆို ကျန်ရှိပါသည်။",
+    "ကွန်ပျူတာနှင့် ပြောင်းချက်များ လဲလှယ်ပါသည်။ နှစ်ဖက်စလုံး ပေါင်းစပ်သောကြောင့် မည်သည့်ဖက်မှ ပြင်ချက်မဆို ကျန်ရှိပါသည်။",
   "mobile.settings.syncStart": "ယခု ထပ်တူပြုရန်",
   "mobile.settings.syncProgress": "ထပ်တူပြုနေသည်…",
   "mobile.settings.syncDone":
@@ -1359,10 +1352,9 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.syncNothing":
     "အပ်ဒိတ်ဖြစ်ပြီးသားပါ — ပို့စရာလည်း မရှိ၊ လက်ခံစရာလည်း မရှိပါ။",
   "mobile.settings.syncUnconfirmed":
-    "ကွန်ပျူတာက အချိန်မီ အတည်မပြုနိုင်ပါ။ သင့်ပြောင်းချက်များ ဤဖုန်းတွင် ကျန်ရှိပါသည် — စက်နှစ်လုံး တူညီသော ကွန်ရက်တွင် ရှိစဉ် ထပ်မံ ထပ်တူပြုပါ။",
+    "ကွန်ပျူတာက အချိန်မီ အတည်မပြုနိုင်ပါ။ သင့်ပြောင်းချက်များ ဤဖုန်းတွင် ကျန်ရှိပါသည် — တူညီသော ကွန်ရက်တွင် ထပ်မံ ထပ်တူပြုပါ။",
   "mobile.settings.syncFailed": "ထပ်တူပြုခြင်း ရပ်တန့်ခဲ့သည်:",
-  "mobile.settings.syncNeedsCode":
-    "ထပ်တူပြုရန် ကွန်ပျူတာ၏ တွဲချိတ်ကုဒ်ကို စကန်ပါ — ဤဖုန်းက ကွန်ပျူတာကို သိသော်လည်း ယခု ဆက်သွယ်နည်း မသိပါ။",
+  "mobile.settings.syncNeedsCode": "ထပ်တူပြုရန် ကွန်ပျူတာ၏ တွဲချိတ်ကုဒ်ကို စကင်ဖတ်ပါ။",
   "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
   "mobile.settings.notifications": "အသိပေးချက်များ",
   "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",

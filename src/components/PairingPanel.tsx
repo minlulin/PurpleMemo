@@ -292,9 +292,7 @@ export function PairingPanel() {
   return (
     <div className="pairing-panel">
       <p className="muted">
-        Pairing listens on your local network only while this panel is open. The
-        port closes on expiry, on lock, and when Purple Memo goes to the
-        background.
+        Listens on your local network only while this panel is open.
       </p>
       {error !== null ? (
         <p className="pairing-error" role="alert">
@@ -316,9 +314,7 @@ export function PairingPanel() {
             </p>
           ) : null}
           <p className="muted">
-            Replacing it mints a new pairing key. Your notes, tasks and photos
-            stay on this device; every paired phone has to pair again, with its
-            fingerprints compared as before.
+            Your data stays on this device. Every paired phone must pair again.
           </p>
           <div className="pairing-actions">
             <ConfirmButton
@@ -334,8 +330,7 @@ export function PairingPanel() {
       ) : null}
       {recovery.rePairRequired && !recovery.needed ? (
         <p className="muted" role="status">
-          Pairing again is required: a phone that paired before must pair again
-          with a fresh code on this desktop.
+          A phone that paired before must pair again with a fresh code.
         </p>
       ) : null}
 
@@ -360,8 +355,7 @@ export function PairingPanel() {
                 <QrCode payload={view.payload} />
                 <figcaption>
                   <p className="muted">
-                    No camera on the phone? Paste this string into its pairing
-                    card — it is the same offer the QR carries.
+                    No camera? Paste this string on the phone instead.
                   </p>
                   <code className="pairing-offer-text" ref={offerTextRef}>
                     {view.payload}
@@ -494,7 +488,7 @@ export function PairingPanel() {
               </dl>
               {pending.helloReceived ? null : (
                 <p className="muted" role="status">
-                  Waiting for the phone's hello — key possession not yet proven.
+                  Waiting for the phone…
                 </p>
               )}
               {/* §11.4: a re-pair zeroes the cursors, so anything this
@@ -547,10 +541,8 @@ export function PairingPanel() {
           ) : null}
 
           <p className="muted">
-            Compare these fingerprints with the ones on the phone before you
-            trust the pairing. Nothing is paired until you press Trust; a wrong
-            code costs one of five attempts, and the code dies after two
-            minutes.
+            Compare the fingerprints on both screens before trusting. Nothing
+            pairs until you press Trust.
           </p>
           {view.phase !== "active" && view.reason !== null ? (
             <p className="pairing-error" role="alert">
