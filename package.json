@@ -11,7 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "verify": "node scripts/check-hooks.mjs && node scripts/check-versions.mjs && npm run lint && npm run token-lint && npm run dead-code && npm run typecheck && npm run test && npm run test:rust && npm run clippy && npm run fmt:check && npm run build",
+    "verify": "node scripts/check-hooks.mjs && node scripts/check-signing-key.mjs && node scripts/check-versions.mjs && npm run lint && npm run token-lint && npm run dead-code && npm run typecheck && npm run test && npm run test:rust && npm run clippy && npm run fmt:check && npm run build",
     "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --write .",
     "token-lint": "node scripts/token-lint.mjs",
@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"src/**/*.test.ts\"",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "check:signing-key": "node scripts/check-signing-key.mjs",
     "check:android": "cargo check --target aarch64-linux-android --manifest-path src-tauri/Cargo.toml",
     "clippy": "cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"

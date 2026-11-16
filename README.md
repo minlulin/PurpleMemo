@@ -85,7 +85,8 @@ It only warns and exits 0 where there is nothing to arm: outside a git checkout
 (a source tarball, a packaged copy) or with no `git` on `PATH`.
 
 `npm run verify` =
-`node scripts/check-hooks.mjs` → `node scripts/check-versions.mjs` →
+`node scripts/check-hooks.mjs` → `node scripts/check-signing-key.mjs` →
+`node scripts/check-versions.mjs` →
 `biome check --error-on-warnings .` → token lint → dead-code lint →
 `tsc --noEmit` →
 `node --test "src/**/*.test.ts"` →
