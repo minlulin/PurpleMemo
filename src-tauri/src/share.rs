@@ -15,7 +15,7 @@
 
 use std::io::Cursor;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -93,10 +93,74 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// hang behind a stalled LAN socket.
 const MAX_WORKERS: usize = 4;
 
-/// Whether a request may be handed to a worker. Pure, so the saturation rule
-/// is testable without a socket.
-fn has_capacity(active: usize) -> bool {
-    active < MAX_WORKERS
+/// How long a worker may hold its slot before the loop takes it back.
+///
+/// A response here is a page or a ~10 KB snapshot, so a healthy phone finishes in
+/// well under a second; ten seconds means the socket is not moving. The write
+/// itself cannot be timed out — `tiny_http` owns the accepted socket — so the
+/// slot is what expires: the worker is detached, left to finish or hang, and the
+/// slot comes back (audit A8).
+const WORKER_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Ceiling on worker threads, including expired ones still blocked in `respond`.
+/// Without it the deadline would trade a frozen share for unbounded threads.
+///
+/// A worker claims its count in-thread ([`LiveSlot`]), so a just-spawned worker
+/// can lag; only `MAX_WORKERS` spawns can be in flight at once, which bounds how
+/// far the real count can exceed this. It can never leak: the release is a
+/// `Drop`, so a panic unwinds through it like any other exit.
+const MAX_LIVE_WORKERS: usize = 16;
+
+/// Whether a request may be handed to a worker: a free slot **and** room under
+/// the thread cap. `live` counts workers that still exist anywhere in the pool —
+/// attached, finished but unswept, or detached past their deadline. Pure, so the
+/// rule is testable without a socket.
+fn admits(slots: usize, live: usize) -> bool {
+    slots < MAX_WORKERS && live < MAX_LIVE_WORKERS
+}
+
+/// A worker's claim on one `live` count, released by `Drop`.
+///
+/// `Drop` runs while unwinding too, so a panic in `handle` gives the count back
+/// like any other exit. A manual decrement after the call missed that path, and
+/// enough panicking requests would have turned the share into a silent refusal
+/// again (audit A8).
+struct LiveSlot(Arc<AtomicUsize>);
+
+impl LiveSlot {
+    /// Claims a slot. Called inside the worker thread, so a spawn that never ran
+    /// one never counted.
+    fn take(live: &Arc<AtomicUsize>) -> Self {
+        live.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(live))
+    }
+}
+
+impl Drop for LiveSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// One busy worker: its thread, and when it took its slot.
+struct Worker {
+    join: JoinHandle<()>,
+    started: Instant,
+}
+
+/// Sweep the worker list and give back the slots whose deadline has passed.
+///
+/// Dropping a `Worker` drops its `JoinHandle`, which detaches the thread rather
+/// than joining it — it may still be blocked in `respond`, and no such write may
+/// hold the accept loop. `now` is a parameter so the rule is testable without
+/// waiting ten seconds.
+fn reap_workers(workers: &mut Vec<Worker>, now: Instant) {
+    workers.retain(|worker| {
+        if worker.join.is_finished() {
+            return false;
+        }
+        now.saturating_duration_since(worker.started) < WORKER_DEADLINE
+    });
 }
 
 /// State of the share server as the UI sees it
@@ -844,15 +908,17 @@ fn javascript(body: &str) -> Response<Cursor<Vec<u8>>> {
 /// falls through to the 503 path rather than serving the user's data.
 fn serve(server: Server, snapshot: Arc<Mutex<Option<StoredSnapshot>>>, shared: Arc<Shared>) {
     let mut consecutive_errors = 0u32;
-    let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    let mut workers: Vec<Worker> = Vec::new();
+    // Worker threads that have claimed a slot (see `admits`, `LiveSlot`).
+    let live = Arc::new(AtomicUsize::new(0));
     while !shared.stop.load(Ordering::SeqCst) {
-        // Finished workers leave the list; a stalled one stays and keeps its
-        // slot, which is what bounds concurrent stalled clients.
-        workers.retain(|worker| !worker.is_finished());
+        // Finished workers leave the list, and a slot held past the deadline is
+        // taken back: four clients that never read must not freeze the share.
+        reap_workers(&mut workers, Instant::now());
         match server.recv_timeout(POLL_INTERVAL) {
             Ok(Some(request)) => {
                 consecutive_errors = 0;
-                if !has_capacity(workers.len()) {
+                if !admits(workers.len(), live.load(Ordering::SeqCst)) {
                     // Every slot is held by a client that is slow to read.
                     // Dropping the connection closes it immediately; answering
                     // here would put this loop behind the same slow write it
@@ -861,14 +927,21 @@ fn serve(server: Server, snapshot: Arc<Mutex<Option<StoredSnapshot>>>, shared: A
                     continue;
                 }
                 let worker_snapshot = Arc::clone(&snapshot);
+                let worker_live = Arc::clone(&live);
                 let spawned = thread::Builder::new()
                     .name("purple-memo-share-worker".to_string())
-                    .spawn(move || handle(request, &worker_snapshot));
-                // On `Err` there is no thread to track: the request was dropped
-                // with the closure, so the client sees a closed connection
-                // rather than a stuck one.
+                    .spawn(move || {
+                        let _slot = LiveSlot::take(&worker_live);
+                        handle(request, &worker_snapshot);
+                    });
+                // On `Err` the request went with the closure: the client sees a
+                // closed connection rather than a stuck one, and no slot was
+                // ever claimed.
                 if let Ok(join) = spawned {
-                    workers.push(join);
+                    workers.push(Worker {
+                        join,
+                        started: Instant::now(),
+                    });
                 }
             }
             Ok(None) => consecutive_errors = 0,
@@ -1058,10 +1131,109 @@ mod tests {
     #[test]
     fn the_worker_pool_is_bounded_and_admits_up_to_the_cap() {
         // Other half: a hard cap, so a flood cannot mint threads.
-        assert!(has_capacity(0));
-        assert!(has_capacity(MAX_WORKERS - 1));
-        assert!(!has_capacity(MAX_WORKERS), "the cap is exclusive");
-        assert!(!has_capacity(MAX_WORKERS + 1));
+        assert!(admits(0, 0));
+        assert!(admits(MAX_WORKERS - 1, 0));
+        assert!(!admits(MAX_WORKERS, 0), "the cap is exclusive");
+        assert!(!admits(MAX_WORKERS + 1, 0));
+    }
+
+    #[test]
+    fn a_stalled_worker_gives_its_slot_back_at_the_deadline() {
+        // A8: a worker owns `respond`, so a client that connects and never
+        // reads blocks it. Four of those used to hold every slot for the life
+        // of the listener, and every later request was dropped at accept time
+        // with nothing said. The slot now expires, and the thread is detached
+        // rather than joined — detaching is what keeps the accept loop free.
+        let (stalled_tx, stalled_rx) = mpsc::channel::<()>();
+        let stalled = thread::spawn(move || {
+            let _ = stalled_rx.recv();
+        });
+        let (boundary_tx, boundary_rx) = mpsc::channel::<()>();
+        let boundary = thread::spawn(move || {
+            let _ = boundary_rx.recv();
+        });
+        let (fresh_tx, fresh_rx) = mpsc::channel::<()>();
+        let fresh = thread::spawn(move || {
+            let _ = fresh_rx.recv();
+        });
+
+        let now = Instant::now();
+        let mut workers = vec![
+            Worker {
+                join: stalled,
+                started: now - WORKER_DEADLINE - Duration::from_millis(1),
+            },
+            // Exactly at the deadline counts as expired: the rule is `<`, so
+            // a slot can never be held for the deadline and a poll longer.
+            Worker {
+                join: boundary,
+                started: now - WORKER_DEADLINE,
+            },
+            Worker {
+                join: fresh,
+                started: now,
+            },
+        ];
+        reap_workers(&mut workers, now);
+
+        assert_eq!(
+            workers.len(),
+            1,
+            "an expired slot is taken back; a fresh one is not"
+        );
+        assert!(
+            admits(workers.len(), 0),
+            "the freed slots are what let the next request be answered"
+        );
+
+        // Both expired threads still exist — a detach is not a kill — which is
+        // exactly why the second half of `admits` exists.
+        drop(stalled_tx);
+        drop(boundary_tx);
+        drop(fresh_tx);
+    }
+
+    #[test]
+    fn a_panicking_worker_hands_its_live_slot_back() {
+        // A8's error path: decrementing after `handle` leaked one count per
+        // panicking request, and at the cap the share would silently refuse every
+        // later one. The release is a `Drop`, which unwinding runs too.
+        let live = Arc::new(AtomicUsize::new(0));
+        let worker_live = Arc::clone(&live);
+        let panicked = thread::spawn(move || {
+            let _slot = LiveSlot::take(&worker_live);
+            assert_eq!(
+                worker_live.load(Ordering::SeqCst),
+                1,
+                "the worker owns exactly one count while it runs"
+            );
+            panic!("a request path panicked");
+        });
+
+        assert!(
+            panicked.join().is_err(),
+            "the worker must really have unwound for this to test anything"
+        );
+        assert_eq!(
+            live.load(Ordering::SeqCst),
+            0,
+            "unwinding must release the count, not leak it"
+        );
+        // The consequence, stated as the property the cap cares about: after a
+        // panic the pool still admits work.
+        assert!(admits(0, live.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn admission_needs_a_free_slot_and_room_under_the_thread_cap() {
+        // A stalled client can recycle slots forever — its slot expires every ten
+        // seconds, a new worker starts, the old one is still in `respond`. The
+        // live cap is the half that stops that becoming an unbounded thread count.
+        assert!(admits(0, MAX_LIVE_WORKERS - 1));
+        assert!(
+            !admits(0, MAX_LIVE_WORKERS),
+            "a free slot does not excuse more threads than the cap"
+        );
     }
 
     #[test]
