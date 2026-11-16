@@ -38,3 +38,8 @@ Thumbs.db
 
 # MSVC build artifacts
 ossl_static.pdb
+
+# Audit reports live outside the tree, like the review documents removed in
+# aa8a6cf and f6b2ba3 ("archived as mementos outside"). The fixes are the
+# commits; the report itself is a memento.
+/audit_report.md
