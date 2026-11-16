@@ -51,15 +51,6 @@ CREATE TABLE contact_tags (
 );
 `;
 
-const OFF_SHARE = {
-  running: false,
-  url: null,
-  key: null,
-  port: null,
-  publishedAt: null,
-  note: null,
-};
-
 /** A `DataDriver` over real SQLite, with the same batch atomicity as Rust. */
 function sqliteDriver(): DataDriver & { db: DatabaseSync } {
   const db = new DatabaseSync(":memory:");
@@ -113,21 +104,6 @@ function sqliteDriver(): DataDriver & { db: DatabaseSync } {
     async saveDbKeyFile() {},
     async safetyBackupCopy() {
       throw new Error("no safety copy in this test driver");
-    },
-    async shareStart() {
-      return OFF_SHARE;
-    },
-    async shareStop() {
-      return OFF_SHARE;
-    },
-    async shareStatus() {
-      return OFF_SHARE;
-    },
-    async sharePublish() {
-      return OFF_SHARE;
-    },
-    async shareArm() {
-      return "";
     },
   };
 }

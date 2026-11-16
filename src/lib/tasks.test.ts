@@ -21,15 +21,6 @@ import {
 } from "./tasks.ts";
 import type { TaskRow } from "./types.ts";
 
-const OFF_SHARE = {
-  running: false,
-  url: null,
-  key: null,
-  port: null,
-  publishedAt: null,
-  note: null,
-};
-
 const SQLITE_TASKS_FIXTURE = `
 CREATE TABLE tasks (
   id         INTEGER PRIMARY KEY,
@@ -99,21 +90,6 @@ function sqliteDriver(): DataDriver & { db: DatabaseSync } {
     async saveDbKeyFile() {},
     async safetyBackupCopy() {
       throw new Error("no safety copy in this test driver");
-    },
-    async shareStart() {
-      return OFF_SHARE;
-    },
-    async shareStop() {
-      return OFF_SHARE;
-    },
-    async shareStatus() {
-      return OFF_SHARE;
-    },
-    async sharePublish() {
-      return OFF_SHARE;
-    },
-    async shareArm() {
-      return "";
     },
   };
 }

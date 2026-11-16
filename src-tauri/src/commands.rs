@@ -5,18 +5,15 @@
 //! `backup_save_file` (write the backup archive to a file the user chose),
 //! `backup_safety_copy` (open the import exclusion window and take the copy),
 //! `backup_import_begin`/`backup_import_end` (claim and release the window's
-//! lease), plus the P5 share controls — `share_arm`, `share_start`, `share_stop`,
-//! `share_status`, `share_publish`. The share commands touch no SQL: they
-//! only control the listener and the snapshot bytes the desktop published.
-//! The reset engine adds `factory_reset` (which reports per-component
+//! lease). The reset engine adds `factory_reset` (which reports per-component
 //! outcomes) and `app_restart` (a thin wrapper over Tauri's restart, called by
 //! the frontend only after a complete reset).
 //!
 //! Every WRITER — DB execute/batch/manual-txn, photo save/thumb/delete and the
 //! safety copy — first passes through the [`crate::lifecycle`] barrier and
 //! holds a ticket for its duration (E1/E5); `factory_reset` raises that
-//! barrier and drains the tickets before it deletes anything, and share
-//! start/arm/publish consult it too (E2). `db_query` and the photo reads are
+//! barrier and drains the tickets before it deletes anything, and the
+//! pairing listener consults it too (E2). `db_query` and the photo reads are
 //! not writers and do not admit.
 //!
 //! Every command serializes through the single mutex-protected connection
@@ -51,7 +48,6 @@ use crate::pairing_listener::{
     PROTOCOL_VERSION,
 };
 use crate::photos;
-use crate::share::{ShareInfo, ShareState};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -124,7 +120,8 @@ fn lease_from_header(request: &Request<'_>) -> CmdResult<Option<u64>> {
 /// lock this guard wraps, and only factory reset (through
 /// `db::close_connection_for_reset`, same lock) can take it — so [`Deref`]
 /// cannot observe a `None` while the guard lives. That is the same
-/// "checked above, under the lock" shape `share::status` already relies on.
+/// "checked above, under the lock" shape the pairing listener's status
+/// read relies on.
 pub(crate) struct ConnGuard<'a>(MutexGuard<'a, Option<Connection>>);
 
 impl Deref for ConnGuard<'_> {
@@ -461,7 +458,7 @@ pub fn db_key_save(path: String) -> CmdResult<()> {
 
 /// Desktop-role commands refuse on mobile. The handler list is shared
 /// across platforms, so without this the phone's webview could invoke the
-/// desktop's parts — start the LAN share server, host a pairing window,
+/// desktop's parts — host a pairing window, export the database key —
 /// export the database key — none of which exist in the phone's role
 /// (docs/ANDROID_DESIGN.md). The refusal lives at the command boundary,
 /// not in the UI, so no page needs to know it is there.
@@ -652,78 +649,13 @@ pub async fn export_save_file(request: Request<'_>) -> CmdResult<()> {
     .map_err(|e| format!("export save task failed: {e}"))?
 }
 
-/// Record that the user confirmed the LAN-share consent prompt, and return a
-/// one-shot token for [`share_start`].
-///
-/// Issuing a token is not consent — only starting the server consumes it, and
-/// only once. Splitting it out means the bare `share_start` call, which is what
-/// an accident or a stray invocation looks like, no longer opens a listener on
-/// its own.
-#[tauri::command]
-pub fn share_arm(state: State<'_, ShareState>) -> CmdResult<String> {
-    state.arm()
-}
-
-/// Turn on the read-only LAN share: binds a fresh port, mints a pairing
-/// code and serves the last published snapshot. Idempotent while running.
-///
-/// Requires the token from [`share_arm`]; see the refusal in
-/// [`ShareState::start`]. Every start and stop is recorded in `share.log`
-/// beside the database.
-///
-/// `rename_all` is what lets the Rust-side name stay snake_case while the JS
-/// driver sends `consentToken` — the IPC contract is camelCase, same as the
-/// `rowsAffected`/`lastInsertRowid` fields on [`db::ExecuteOutcome`].
-#[tauri::command(rename_all = "camelCase")]
-pub fn share_start(state: State<'_, ShareState>, consent_token: String) -> CmdResult<ShareInfo> {
-    refuse_mobile_role()?;
-    state.start(&consent_token)
-}
-
-/// Turn the LAN share off and close the listener. Idempotent.
-///
-/// `for_lock` is the lock path (D2a): the shell passes it when the session
-/// locks, which additionally revokes an armed consent token and supersedes
-/// one an in-flight `share_start` has already spent, so no listener can come
-/// up behind the lock screen. Leaving it off is the ordinary stop, whose
-/// token semantics a Rust test pins — stopping is not a reason to make the
-/// user confirm a prompt they may still have on screen.
-///
-/// `rename_all` keeps the Rust name snake_case while the driver sends
-/// `forLock`, same as `consentToken` on [`share_start`].
-#[tauri::command(rename_all = "camelCase")]
-pub fn share_stop(state: State<'_, ShareState>, for_lock: Option<bool>) -> CmdResult<ShareInfo> {
-    refuse_mobile_role()?;
-    if for_lock.unwrap_or(false) {
-        state.stop_for_lock()
-    } else {
-        state.stop()
-    }
-}
-
-/// Current share state — also reports a server that stopped unexpectedly.
-#[tauri::command]
-pub fn share_status(state: State<'_, ShareState>) -> CmdResult<ShareInfo> {
-    refuse_mobile_role()?;
-    state.status()
-}
-
-/// Publish a fresh snapshot payload (built by `src/lib/share.ts`) for the
-/// LAN server to serve. The payload is validated, never executed, and the
-/// share path has no DB or filesystem access at all.
-#[tauri::command]
-pub fn share_publish(state: State<'_, ShareState>, snapshot_json: String) -> CmdResult<ShareInfo> {
-    refuse_mobile_role()?;
-    state.publish(&snapshot_json)
-}
-
 /// Factory reset: remove every piece of PurpleMemo-owned local
 /// state and report each component's outcome.
 ///
 /// This is the engine, not the policy: the frontend gates it behind an
 /// explicit permanent-destruction acknowledgement (Wave 2), and restarts the
-/// app only when the outcome says `complete`. The engine stops the LAN share
-/// first, checkpoints the WAL and takes the managed connection (from then on
+/// app only when the outcome says `complete`. The engine stops the pairing
+/// listener first, checkpoints the WAL and takes the managed connection (from then on
 /// every DB command fails closed with `db::DB_CLOSED_MESSAGE`), deletes the
 /// database files, the photo tree, the safety-copy tree and the logs, and
 /// deletes the credential-store key **last** — never orphaning a live
@@ -739,9 +671,6 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
     let handle = app.clone();
     let outcome =
         tauri::async_runtime::spawn_blocking(move || -> CmdResult<crate::reset::ResetOutcome> {
-            let share = handle
-                .try_state::<ShareState>()
-                .ok_or_else(|| "share state is not available — restart the app".to_string())?;
             let pairing = handle
                 .try_state::<crate::pairing_listener::PairingListenerState>()
                 .ok_or_else(|| {
@@ -771,13 +700,9 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             let outcome = crate::reset::run_factory_reset(
                 crate::reset::fault_injection(),
                 || {
-                    // §11.5 for both listeners before anything is deleted: the
-                    // share server and the pairing window must be gone before
-                    // the database they serve is. One component reports both,
-                    // because "nothing is listening" is the property.
-                    let share_removed = share.stop_for_reset()?;
-                    let pairing_removed = pairing.stop_for_reset()?;
-                    Ok(share_removed || pairing_removed)
+                    // §11.5 before anything is deleted: the pairing window
+                    // must be gone before the database it serves is.
+                    pairing.stop_for_reset()
                 },
                 || db::close_connection_for_reset(&db_state),
                 &db_state.data_dir,

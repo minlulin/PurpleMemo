@@ -20,8 +20,6 @@ a serde type error proves the command is registered without running it.
 | `backup_save_file` / `export_save_file` | no headers | reached the command (`missing x-…-path header`) |
 | `backup_safety_copy` | wrong `label` type | registered |
 | `backup_import_begin` / `backup_import_end` | no args / lease | window opened and closed cleanly (lease 1) |
-| `share_arm` | during that import window | correctly refused (`an import is replacing this app's data`) |
-| `share_status` / `share_publish` | read / wrong type | `{running:false,…}` / registered |
 | `factory_reset`, `app_restart` | not invoked | destructive; **not** probed from the shell |
 | `reminder_sync` | `rows: []` then real rows | `{exact, delivered, scheduled, inexact}` |
 | `reminder_exact_state` | no args | `"exact"` / `"inexact"` both observed |
@@ -29,6 +27,11 @@ a serde type error proves the command is registered without running it.
 | `clipboard_copy_sensitive` | test value | `30000` (delay ms) |
 | `clipboard_probe_read` | no args | debug-only; returned the copied value |
 | `plugin:notification|is_permission_granted` | no args | `true` |
+
+The LAN share commands (`share_arm` / `share_start` / `share_stop` /
+`share_status` / `share_publish`, probed above at the time) were removed
+on 2026-11-16 with the share itself — pairing is the only device-exchange
+surface now.
 
 Unknown commands behave as expected: `this_command_does_not_exist` →
 `Command … not found`, which is what makes the absences below meaningful.

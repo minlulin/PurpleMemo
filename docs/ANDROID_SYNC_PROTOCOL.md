@@ -915,8 +915,8 @@ is a sealed envelope: a fresh ephemeral X25519 keypair per message, combined
 with the pinned long-term agreement through HKDF-SHA256, then
 XChaCha20-Poly1305 with a per-message 24-byte nonce and the message header as
 associated data. **Libraries:** `@noble/curves` (X25519) and
-`@noble/ciphers` 2.4.0 (XChaCha20-Poly1305, already a dependency and already
-vendored for the share page) in the webviews; `x25519-dalek` and
+`@noble/ciphers` 2.4.0 (XChaCha20-Poly1305, already a dependency)
+in the webviews; `x25519-dalek` and
 `chacha20poly1305` on the desktop listener’s Rust side; `qrcode` 1.5.4 to render
 the offer and `jsqr` 1.4.0 to scan it.
 

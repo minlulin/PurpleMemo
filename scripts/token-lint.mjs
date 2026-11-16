@@ -7,10 +7,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
-// `src-tauri/share` holds the phone page and the modules it loads, embedded
-// into the binary and served over the LAN. It is a second copy of the app's
-// look with no build step of its own, so it belongs under the same rule.
-const SCAN_ROOTS = ["src", "src-tauri/share"];
+const SCAN_ROOTS = ["src"];
 // tokens.css holds the design values; tokens.test.ts asserts on those
 // exact values — both belong to the token domain.
 const EXEMPT_FILES = new Set([

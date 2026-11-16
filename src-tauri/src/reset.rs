@@ -8,13 +8,15 @@
 //!
 //! The surface:
 //!
-//! * `share_stop` — the in-memory LAN server and its consent token,
+//! * `listeners_stop` — the pairing listener, stopped before anything
+//!   it serves is deleted,
 //! * `database` — the WAL checkpoint, the managed connection, then
 //!   `purple-memo.db` and its `-wal`/`-shm` siblings,
 //! * `photos` — the whole `photos/` tree (originals and `.thumb.jpg`
 //!   derivatives),
 //! * `backups` — the whole `backups/` safety-copy tree,
-//! * `logs` — `key-export.log`, `share.log`, `boot-error.log`,
+//! * `logs` — `key-export.log`, `share.log` (the removed LAN share's
+//!   leftover), `boot-error.log`,
 //! * `keyring_key` — the OS credential-store key, deleted **last**.
 //!
 //! A durable marker file (E3) brackets the whole run: `mark_reset_started`
@@ -28,7 +30,7 @@
 //!
 //! 1. **Key last.** The credential-store key is deleted only after the
 //!    database files are confirmed gone — never orphan a live database from
-//!    its key. A `share_stop` or `database` failure therefore aborts the
+//!    its key. A `listeners_stop` or `database` failure therefore aborts the
 //!    whole run: the remaining components are reported as `not_attempted`
 //!    and nothing after the failure is touched. A photos/backups/logs failure
 //!    does *not* abort: the database is already gone at that point, and
@@ -37,8 +39,8 @@
 //!    The restart's first-run boot owns all of that, and a reset that created
 //!    anything could pair a new key with an old database.
 //!
-//! Everything fallible arrives as a seam — the filesystem root, the share
-//! stop, the connection close, the keyring delete — so the tests inject
+//! Everything fallible arrives as a seam — the filesystem root, the
+//! listener stop, the connection close, the keyring delete — so the tests inject
 //! failures directly without touching a real keyring, a real
 //! listener, or the environment. Debug builds can additionally force
 //! per-component failures with `PURPLE_MEMO_RESET_FAIL=database,photos` for
@@ -54,12 +56,12 @@ use crate::db::db_file_paths;
 use crate::safety_copy::{PHOTOS_DIR, SAFETY_DIR};
 
 /// One component of PurpleMemo-owned state, in the order the reset removes
-/// them. Serialized snake_case — `share_stop`, `database`, … — which is the
+/// them. Serialized snake_case — `listeners_stop`, `database`, … — which is the
 /// IPC contract `src/data/driver.ts` mirrors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResetComponent {
-    ShareStop,
+    ListenersStop,
     Database,
     Photos,
     Backups,
@@ -68,10 +70,10 @@ pub enum ResetComponent {
 }
 
 /// Every component, in removal order. The key is last on purpose (invariant
-/// 1 above); share stop is first because nothing may be deleted while a
-/// server could still be serving it.
+/// 1 above); the listener stop is first because nothing may be deleted while
+/// a listener could still be serving it.
 pub const RESET_COMPONENTS: [ResetComponent; 6] = [
-    ResetComponent::ShareStop,
+    ResetComponent::ListenersStop,
     ResetComponent::Database,
     ResetComponent::Photos,
     ResetComponent::Backups,
@@ -83,7 +85,7 @@ impl ResetComponent {
     /// The wire name, also used in human-readable details.
     fn as_str(self) -> &'static str {
         match self {
-            Self::ShareStop => "share_stop",
+            Self::ListenersStop => "listeners_stop",
             Self::Database => "database",
             Self::Photos => "photos",
             Self::Backups => "backups",
@@ -102,11 +104,11 @@ impl ResetComponent {
     }
 
     /// Whether this component's failure stops everything after it. Only the
-    /// two components guarding invariant 1 abort: a share that will not stop
-    /// must not be deleted behind, and a database that will not go must never
-    /// be separated from its key.
+    /// two components guarding invariant 1 abort: a listener that will not
+    /// stop must not be deleted behind, and a database that will not go must
+    /// never be separated from its key.
     fn aborts_on_failure(self) -> bool {
-        matches!(self, Self::ShareStop | Self::Database)
+        matches!(self, Self::ListenersStop | Self::Database)
     }
 }
 
@@ -330,18 +332,18 @@ pub fn blocked_summary(outcome: &ResetOutcome) -> String {
 /// * `fail` — fault injection; a failing component is reported `failed`
 ///   without its work being done (debug builds wire the env-var switch,
 ///   tests wire their own);
-/// * `stop_share` — stop the LAN server and clear its consent token;
+/// * `stop_listeners` — stop the pairing listener;
 ///   `Ok(true)` = something was removed, `Ok(false)` = already absent;
 /// * `close_db` — checkpoint the WAL and take the managed connection, so no
 ///   open handle survives into file deletion (fail-closed afterwards);
 /// * `data_dir` — the filesystem root; every path below is derived from it,
 ///   so tests point it at a temp dir;
 /// * `delete_key` — delete the OS credential-store key; same bool contract
-///   as `stop_share`, and called **only** after the database files are
+///   as `stop_listeners`, and called **only** after the database files are
 ///   confirmed gone.
 pub fn run_factory_reset(
     mut fail: impl FnMut(ResetComponent) -> bool,
-    mut stop_share: impl FnMut() -> Result<bool, String>,
+    mut stop_listeners: impl FnMut() -> Result<bool, String>,
     mut close_db: impl FnMut() -> Result<(), String>,
     data_dir: &Path,
     mut delete_key: impl FnMut() -> Result<bool, String>,
@@ -371,7 +373,7 @@ pub fn run_factory_reset(
             continue;
         }
         let component_outcome = match component {
-            ResetComponent::ShareStop => match stop_share() {
+            ResetComponent::ListenersStop => match stop_listeners() {
                 Ok(true) => outcome(component, ResetStatus::Removed, None),
                 Ok(false) => outcome(component, ResetStatus::AlreadyAbsent, None),
                 Err(e) => {
@@ -612,7 +614,7 @@ mod tests {
     #[test]
     fn every_component_already_absent_still_reports_complete() {
         let dir = TempDir::new("absent");
-        // Nothing planted; the share was never started; the key is gone.
+        // Nothing planted; no listener was ever started; the key is gone.
         let outcome = run_factory_reset(|_| false, || Ok(false), || Ok(()), &dir.0, || Ok(false));
 
         assert!(outcome.complete, "already absent is success: {outcome:?}");
@@ -730,14 +732,14 @@ mod tests {
     }
 
     #[test]
-    fn an_injected_share_stop_failure_touches_nothing_and_skips_every_later_component() {
-        let dir = TempDir::new("share-fail");
+    fn an_injected_listeners_stop_failure_touches_nothing_and_skips_every_later_component() {
+        let dir = TempDir::new("listeners-fail");
         seed(&dir.0);
         let keyring_called = Cell::new(false);
         let close_called = Cell::new(false);
 
         let outcome = run_factory_reset(
-            |c| c == ResetComponent::ShareStop,
+            |c| c == ResetComponent::ListenersStop,
             || Ok(true),
             || {
                 close_called.set(true);
@@ -752,18 +754,18 @@ mod tests {
 
         assert!(!outcome.complete);
         assert_eq!(
-            status_of(&outcome, ResetComponent::ShareStop),
+            status_of(&outcome, ResetComponent::ListenersStop),
             ResetStatus::Failed
         );
         assert!(
-            detail_of(&outcome, ResetComponent::ShareStop).contains("fault injection"),
+            detail_of(&outcome, ResetComponent::ListenersStop).contains("fault injection"),
             "the detail must say why it failed"
         );
         for skipped in RESET_COMPONENTS.iter().skip(1) {
             assert_eq!(
                 status_of(&outcome, *skipped),
                 ResetStatus::NotAttempted,
-                "{skipped} must not run after a share-stop failure"
+                "{skipped} must not run after a listener-stop failure"
             );
         }
         assert!(!close_called.get(), "the connection must not be touched");
@@ -774,12 +776,12 @@ mod tests {
     }
 
     #[test]
-    fn a_real_share_stop_error_aborts_exactly_like_an_injected_one() {
-        let dir = TempDir::new("share-err");
+    fn a_real_listeners_stop_error_aborts_exactly_like_an_injected_one() {
+        let dir = TempDir::new("listeners-err");
         seed(&dir.0);
         let outcome = run_factory_reset(
             |_| false,
-            || Err("share thread refused to stop".to_string()),
+            || Err("listener refused to stop".to_string()),
             || Ok(()),
             &dir.0,
             || Ok(true),
@@ -787,8 +789,8 @@ mod tests {
 
         assert!(!outcome.complete);
         assert_eq!(
-            detail_of(&outcome, ResetComponent::ShareStop),
-            "share thread refused to stop"
+            detail_of(&outcome, ResetComponent::ListenersStop),
+            "listener refused to stop"
         );
         for skipped in RESET_COMPONENTS.iter().skip(1) {
             assert_eq!(
@@ -843,7 +845,7 @@ mod tests {
             !keyring_called.get(),
             "never orphan a live database from its key"
         );
-        // Everything after the share stop is still on disk.
+        // Everything after the listener stop is still on disk.
         assert!(db_file_paths(&dir.0).iter().all(|p| p.exists()));
         assert!(dir.0.join("photos/2026/10/abc.jpg").exists());
         assert!(dir
@@ -1034,7 +1036,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "share_stop",
+                "listeners_stop",
                 "database",
                 "photos",
                 "backups",
@@ -1060,7 +1062,7 @@ mod tests {
         assert!(json["components"][5]["detail"].is_string());
 
         let aborted = run_factory_reset(
-            |c| c == ResetComponent::ShareStop,
+            |c| c == ResetComponent::ListenersStop,
             || Ok(true),
             || Ok(()),
             Path::new("/nonexistent"),
@@ -1081,8 +1083,8 @@ mod tests {
             vec![ResetComponent::Database, ResetComponent::Photos]
         );
         assert_eq!(
-            parse_reset_fail_spec(" share_stop "),
-            vec![ResetComponent::ShareStop]
+            parse_reset_fail_spec(" listeners_stop "),
+            vec![ResetComponent::ListenersStop]
         );
         assert_eq!(
             parse_reset_fail_spec("nope,logs"),

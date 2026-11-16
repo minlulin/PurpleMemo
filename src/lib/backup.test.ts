@@ -1649,15 +1649,6 @@ function shippedSchemaVersion(): number {
   return Number(match[1]);
 }
 
-const OFF_SHARE = {
-  running: false,
-  url: null,
-  key: null,
-  port: null,
-  publishedAt: null,
-  note: null,
-};
-
 function importDriver(): DataDriver & { db: DatabaseSync } {
   const db = new DatabaseSync(":memory:");
   db.exec(baselineSql());
@@ -1716,23 +1707,8 @@ function importDriver(): DataDriver & { db: DatabaseSync } {
     async saveBackupFile() {},
     async saveExportFile() {},
     async saveDbKeyFile() {},
-    async shareStart() {
-      return OFF_SHARE;
-    },
-    async shareStop() {
-      return OFF_SHARE;
-    },
-    async shareStatus() {
-      return OFF_SHARE;
-    },
-    async sharePublish() {
-      return OFF_SHARE;
-    },
     async safetyBackupCopy() {
       throw new Error("no safety copy in this test driver");
-    },
-    async shareArm() {
-      return "";
     },
   };
 }

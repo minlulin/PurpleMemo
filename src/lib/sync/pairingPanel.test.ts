@@ -917,7 +917,7 @@ test("the lock teardown closes the pairing port through the retried stop", () =>
   const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
   assert.match(
     app,
-    /stopSharing: \(\) =>\s*Promise\.all\(\[shareRepo\.stopForLock\(\), pairingRepo\.close\(\)\]\)/,
+    /stopListeners: \(\) =>\s*pairingRepo\.close\(\)/,
     "a failed pairing close is retried and reported, not swallowed",
   );
 });

@@ -53,7 +53,6 @@ import {
   localDeviceId,
   pairingRepo,
   settingsRepo,
-  shareRepo,
   tasksRepo,
   trashRepo,
   vaultRepo,
@@ -85,7 +84,6 @@ import type { ResetAttempt } from "./lib/reset.ts";
 import { specFor } from "./lib/searchContract.ts";
 import {
   createReminderTicker,
-  createShareTicker,
   lockSession,
   type ReminderMessages,
 } from "./lib/session.ts";
@@ -337,38 +335,6 @@ function useReminderPoll(
   }, [setNotifyNote, enabled, onFired, messages, permissionDeniedNote]);
 }
 
-/**
- * Keeps the LAN snapshot current (P5). It lives in the app shell — not in
- * SettingsPage — so navigating away never freezes what the phone sees, and it
- * pauses while locked exactly like the reminder poll. The desktop stays
- * the only writer: this only re-reads rows and re-publishes them.
- *
- * A server that stopped unexpectedly is surfaced
- * through the same in-app note channel as notifications. That edge, and the
- * best-effort rules, are in `createShareTicker` (`lib/session.ts`).
- */
-function useSharePublisher(
-  setNotifyNote: (note: string | null) => void,
-  enabled: boolean,
-): void {
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    const tick = createShareTicker({
-      status: () => shareRepo.status(),
-      publish: () => shareRepo.publishSnapshot(),
-      onNote: setNotifyNote,
-      isCancelled: () => cancelled,
-    });
-    void tick();
-    const timer = setInterval(() => void tick(), 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [setNotifyNote, enabled]);
-}
-
 interface BootState {
   ready: boolean;
   /** Set when the settings read itself failed — distinct from "no PIN set". */
@@ -458,19 +424,19 @@ function AppShell() {
   );
   const [notifyNote, setNotifyNote] = useState<string | null>(null);
   /**
-   * A synchronous mirror of `unlocked`. The LAN teardown scheduled by
+   * A synchronous mirror of `unlocked`. The listener teardown scheduled by
    * `lockNow` runs detached in the background — through locks, unlocks and
    * re-renders — so it cannot learn that the shell moved on from React state;
    * it reads this ref instead (H4).
    */
   const unlockedRef = useRef(false);
   /**
-   * Generation counter for the LAN teardown: every lock takes the current
-   * number, so a retry loop still sleeping from an earlier lock is recognised
-   * as stale the moment a newer one starts, instead of waking up and stopping
-   * a share that was started after it (H4).
+   * Generation counter for the listener teardown: every lock takes the
+   * current number, so a retry loop still sleeping from an earlier lock is
+   * recognised as stale the moment a newer one starts, instead of waking up
+   * and closing a pairing window that was opened after it (H4).
    */
-  const shareStopEpoch = useRef(0);
+  const listenerStopEpoch = useRef(0);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [shortcutRows, setShortcutRows] = useState<
     { keys: string; label: string }[]
@@ -512,7 +478,7 @@ function AppShell() {
     [t, plural],
   );
   const notificationsBlocked = t("shell.notificationsBlocked");
-  const shareStopFailed = t("shell.shareStopFailed");
+  const listenerStopFailed = t("shell.listenerStopFailed");
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureText, setCaptureText] = useState("");
   const [captureError, setCaptureError] = useState<string | null>(null);
@@ -703,48 +669,44 @@ function AppShell() {
 
   /**
    * Lock now: drops the vault keys too (auto-lock bounds) and ends
-   * any active LAN session. The rules live in `lockSession`, which
+   * the pairing window. The rules live in `lockSession`, which
    * is tested — including that the shell locks even if a step fails.
    */
   const lockNow = useCallback(() => {
-    const epoch = shareStopEpoch.current + 1;
-    shareStopEpoch.current = epoch;
+    const epoch = listenerStopEpoch.current + 1;
+    listenerStopEpoch.current = epoch;
     lockSession({
       lockVault: () => vaultRepo.lockVault(),
-      // The lock's stop, not an ordinary one (D2a): it revokes a consent
-      // token the user armed before locking and supersedes one an in-flight
-      // start has already spent, so no listener can bind a moment after the
-      // shell decided sharing ends here.
-      // §11.5: locking ends the pairing window too, and `pairing_close`
+      // §11.5: locking ends the pairing window, and `pairing_close`
       // resolves only once the port is refused — so the lock screen is never
-      // raised over a socket that still accepts a phone. A close that fails is
-      // retried and reported by the same teardown that reports a failed share
-      // stop, instead of being swallowed (N4).
-      stopSharing: () =>
-        Promise.all([shareRepo.stopForLock(), pairingRepo.close()]),
+      // raised over a socket that still accepts a phone. A close that fails
+      // is retried and reported by the teardown instead of being swallowed
+      // (N4).
+      stopListeners: () => pairingRepo.close(),
       onLocked: () => {
         unlockedRef.current = false;
         setUnlocked(false);
       },
-      // A listener that survived every retry is still publishing to the LAN,
-      // and the status poller is paused while locked. `notifyNote` renders only
+      // A listener that survived every retry still accepts a phone,
+      // and the shell is locked. `notifyNote` renders only
       // on the Dashboard and Tasks pages — never on the lock screen where this
       // lands — so it is ALSO raised as a toast: `ToastProvider` wraps the
       // whole shell, including the lock screen, and says it out loud the moment
       // it happens. The note stays behind for the unlocked workspace.
-      onShareStopFailed: () => {
-        setNotifyNote(shareStopFailed);
-        toast.error(shareStopFailed);
+      onListenerStopFailed: () => {
+        setNotifyNote(listenerStopFailed);
+        toast.error(listenerStopFailed);
       },
-      // This teardown belongs to this lock. Once the shell unlocks — or a newer
-      // lock supersedes it — it retires silently: a retry still sleeping from
-      // the previous session must never wake up and stop a LAN share the user
-      // has just started (H4). Only the attempt already in flight (bounded by
-      // `SHARE_STOP_TIMEOUT_MS`) can still land after the flip.
+      // This teardown belongs to this lock. Once the shell unlocks — or a
+      // newer lock supersedes it — it retires silently: a retry still
+      // sleeping from the previous session must never wake up and close a
+      // pairing window the user has just opened (H4). Only the attempt
+      // already in flight (bounded by `LISTENER_STOP_TIMEOUT_MS`) can still
+      // land after the flip.
       isCancelled: () =>
-        unlockedRef.current || shareStopEpoch.current !== epoch,
+        unlockedRef.current || listenerStopEpoch.current !== epoch,
     });
-  }, [shareStopFailed, toast]);
+  }, [listenerStopFailed, toast]);
 
   // §11.5: app background ends the pairing window, exactly like the lock. The
   // webview reports a hidden document when the window is minimised or the phone
@@ -846,7 +808,6 @@ function AppShell() {
     reminderMessages,
     notificationsBlocked,
   );
-  useSharePublisher(setNotifyNote, workspaceLive);
 
   // The overlay lists shortcuts by reading `data-shortcut` off the controls
   // themselves, so the help can never drift from what the app actually binds.

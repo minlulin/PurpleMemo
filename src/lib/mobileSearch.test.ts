@@ -42,49 +42,6 @@ function recordingDriver(): DataDriver & { statements: string[] } {
     async safetyBackupCopy() {
       return "";
     },
-    async shareStart() {
-      return {
-        running: false,
-        url: null,
-        key: null,
-        port: null,
-        publishedAt: null,
-        note: null,
-      };
-    },
-    async shareStop() {
-      return {
-        running: false,
-        url: null,
-        key: null,
-        port: null,
-        publishedAt: null,
-        note: null,
-      };
-    },
-    async shareStatus() {
-      return {
-        running: false,
-        url: null,
-        key: null,
-        port: null,
-        publishedAt: null,
-        note: null,
-      };
-    },
-    async sharePublish() {
-      return {
-        running: false,
-        url: null,
-        key: null,
-        port: null,
-        publishedAt: null,
-        note: null,
-      };
-    },
-    async shareArm() {
-      return "";
-    },
   };
   return driver;
 }

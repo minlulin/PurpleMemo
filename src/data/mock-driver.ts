@@ -3,8 +3,7 @@
 // repository tests can assert the exact SQL/params a feature generates.
 //
 // It also mirrors the Rust backend's refusal behaviour (J4, audit batch 9):
-// the import exclusion window (`lifecycle.rs`), one-shot share consent and
-// snapshot validation (`share.rs`), the manual-transaction flag
+// the import exclusion window (`lifecycle.rs`), the manual-transaction flag
 // (`commands.rs`), and content-addressed photo paths (`photos.rs`, D1-1).
 // A caller that works against this mock works against those refusals —
 // the mock is where they are unit-testable at all.
@@ -23,7 +22,6 @@ import type {
   PairingPhoneInput,
   PhonePairResult,
   Queryable,
-  ShareInfo,
   SnapshotBatchResult,
   SnapshotPullInput,
   SyncBatchResult,
@@ -41,13 +39,6 @@ const IMPORT_BLOCKED =
 
 /** `lifecycle.rs` `end_import` — a lease the window does not hold cannot close it. */
 const NO_IMPORT_WINDOW = "no import window is open for that lease";
-
-/** `share.rs` NO_CONSENT. */
-const NO_CONSENT =
-  "sharing must be confirmed first: call share_arm, then share_start with the token it returns";
-
-/** `share.rs` MAX_SNAPSHOT_BYTES — the ceiling `parse_snapshot` enforces. */
-const MAX_SNAPSHOT_BYTES = 512 * 1024;
 
 /** The one desktop this mock knows how to be pinned to (§11.2). */
 const MOCK_DESKTOP_DEVICE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -125,46 +116,6 @@ function validateRelPath(relPath: string): void {
     throw invalid();
 }
 
-/**
- * `share.rs` `parse_snapshot`: the envelope a snapshot must have before it
- * is exposed on the LAN. Returns the `generatedAt` stamp a publish records.
- */
-function parseSnapshot(json: string): { generatedAt: string } {
-  if (json.length > MAX_SNAPSHOT_BYTES) {
-    throw new Error(
-      `snapshot is larger than the ${MAX_SNAPSHOT_BYTES} byte limit`,
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch (e) {
-    throw new Error(
-      `snapshot is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("snapshot must be a JSON object");
-  }
-  const object = parsed as Record<string, unknown>;
-  if (typeof object.version !== "number" || !Number.isInteger(object.version)) {
-    throw new Error("snapshot is missing its numeric version");
-  }
-  if (object.version !== 1) {
-    throw new Error("unsupported encrypted snapshot version");
-  }
-  if (typeof object.generatedAt !== "string") {
-    throw new Error("snapshot is missing its generatedAt string");
-  }
-  for (const field of ["nonce", "ciphertext"]) {
-    const value = object[field];
-    if (typeof value !== "string" || value.length === 0) {
-      throw new Error(`encrypted snapshot is missing ${field}`);
-    }
-  }
-  return { generatedAt: object.generatedAt };
-}
-
 export interface MockDriver extends DataDriver, PairingDriver {
   calls: RecordedCall[];
   callsTo(method: keyof DataDriver | keyof PairingDriver): RecordedCall[];
@@ -176,15 +127,6 @@ export interface MockDriver extends DataDriver, PairingDriver {
 export function createMockDriver(script: MockScript = {}): MockDriver {
   const calls: RecordedCall[] = [];
   let lastRowid = 0;
-  // Share state for tests: off until start is called, exactly like Rust
-  let share: ShareInfo = {
-    running: false,
-    url: null,
-    key: null,
-    port: null,
-    publishedAt: null,
-    note: null,
-  };
   // Pairing window state for tests: closed until `pairingOpen` (§11.5), and no
   // pin until a rendezvous reports one.
   const stoppedPairing = (): PairingListenerInfo => ({
@@ -358,15 +300,6 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
 
   // -- Manual transaction flag (commands.rs txn_open) -----------------------
   let txnOpen = false;
-
-  // -- One-shot share consent (share.rs take_consent) ----------------------
-  // Armed stores the token; EVERY start attempt burns it — matched or not,
-  // so probing for a valid token costs an arming per guess instead of
-  // yielding an oracle. An ordinary stop leaves an armed token alive; a
-  // lock's stop revokes it (D2a).
-  let armedToken: string | null = null;
-  // Distinct per arming, so a test can tell a fresh consent from a spent one.
-  let armCounter = 0;
 
   // -- Thumbnails keyed by SOURCE path (J4) --------------------------------
   // Per-key, so one photo's delete cannot clear another photo's thumbnail.
@@ -547,51 +480,6 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       // write (`lifecycle.rs` `end_import`).
       if (importLease !== lease) throw new Error(NO_IMPORT_WINDOW);
       importLease = 0;
-    },
-    async shareStart(consentToken: string): Promise<ShareInfo> {
-      record("shareStart", [consentToken]);
-      // Mirrors Rust `take_consent`: the armed token is burned on EVERY
-      // attempt, matched or not, and a start without a matching fresh token
-      // binds nothing.
-      const armed = armedToken;
-      armedToken = null;
-      if (armed === null || armed !== consentToken) throw new Error(NO_CONSENT);
-      share = {
-        running: true,
-        url: `http://192.168.1.5:8765/#key=${"ab".repeat(32)}`,
-        key: "ab".repeat(32),
-        port: 8765,
-        publishedAt: share.publishedAt,
-        note: null,
-      };
-      return { ...share };
-    },
-    async shareArm(): Promise<string> {
-      record("shareArm", []);
-      armCounter += 1;
-      armedToken = `consent-${armCounter}`;
-      return armedToken;
-    },
-    async shareStop(forLock?: boolean): Promise<ShareInfo> {
-      // Recorded as the flag the caller actually meant, so a test can tell a
-      // lock's stop from an ordinary one without knowing about `undefined`.
-      record("shareStop", [forLock === true]);
-      // `stop_for_lock` (D2a) revokes the armed token; an ordinary stop
-      // retires the listener and leaves consent alone.
-      if (forLock === true) armedToken = null;
-      share = {
-        running: false,
-        url: null,
-        key: null,
-        port: null,
-        publishedAt: null,
-        note: null,
-      };
-      return { ...share };
-    },
-    async shareStatus(): Promise<ShareInfo> {
-      record("shareStatus", []);
-      return { ...share };
     },
     async pairingLocal(): Promise<PairingLocalInfo> {
       record("pairingLocal", []);
@@ -974,25 +862,6 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
         sync.outcome = applied ?? failure;
         projectSync();
       }
-    },
-    async sharePublish(snapshotJson: string): Promise<ShareInfo> {
-      record("sharePublish", [snapshotJson]);
-      // Validated even when not running (`share.rs` `publish`): a malformed
-      // envelope is a refusal, not the off-sharing no-op.
-      const snapshot = parseSnapshot(snapshotJson);
-      if (!share.running) {
-        // Stopped: nothing is stored and nothing is stamped.
-        return {
-          running: false,
-          url: null,
-          key: null,
-          port: null,
-          publishedAt: null,
-          note: null,
-        };
-      }
-      share = { ...share, publishedAt: snapshot.generatedAt };
-      return { ...share };
     },
     callsTo(method: keyof DataDriver | keyof PairingDriver): RecordedCall[] {
       return calls.filter((c) => c.method === method);

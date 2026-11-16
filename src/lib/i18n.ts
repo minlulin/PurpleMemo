@@ -77,8 +77,8 @@ export const en = {
     "{error} Purple Memo will ask you to restart before the next lock.",
   "shell.notificationsBlocked":
     "Notifications are blocked — due reminders stay listed in Tasks.",
-  "shell.shareStopFailed":
-    "A phone link did not stop — turn sharing off in Settings, Backup & share, and close the pairing panel.",
+  "shell.listenerStopFailed":
+    "The pairing window did not close — open the pairing panel and close it.",
 
   "nav.dashboard": "Dashboard",
   "nav.inbox": "Inbox",
@@ -841,7 +841,7 @@ export const en = {
   "reset.errorTitle": "The factory reset could not run",
   "reset.errorBody":
     "The reset attempt failed before a full report could be produced. Nothing can be assumed about what was removed — the session is over either way: the database connection is closed, so retry the reset or close Purple Memo and start it yourself.",
-  "reset.component.shareStop": "LAN sharing",
+  "reset.component.listenersStop": "Pairing listener",
   "reset.component.database": "Encrypted database",
   "reset.component.photos": "Photos",
   "reset.component.backups": "Backup copies the app made",
@@ -1089,8 +1089,7 @@ export const my: Record<MessageKey, string> = {
     "{error} နောက်တစ်ကြိမ် သော့ခတ်မီ Purple Memo က ပြန်လည်စတင်ရန် တောင်းဆိုပါမည်။",
   "shell.notificationsBlocked":
     "အသိပေးချက်များ ပိတ်ထားသည် — ရောက်ရှိနေသော သတိပေးချက်များကို လုပ်ငန်းများတွင် စာရင်းပြထားဆဲဖြစ်သည်။",
-  "shell.shareStopFailed":
-    "ဖုန်းချိတ်ဆက်မှု မရပ်တန့်နိုင်ပါ — ဆက်တင်များ (Backup & share) တွင် မျှဝေခြင်းကို ပိတ်ပြီး တွဲချိတ်အကန့်ကို ပိတ်ပါ။",
+  "shell.listenerStopFailed": "တွဲချိတ်ဝင်းဒိုး မရပ်တန့်နိုင်ပါ — တွဲချိတ်အကန့်ကို ဖွင့်ပြီး ပြန်ပိတ်ပါ။",
 
   "nav.dashboard": "ဒက်ရှ်ဘုတ်",
   "nav.inbox": "ဝင်စာ",
@@ -1839,7 +1838,7 @@ export const my: Record<MessageKey, string> = {
   "reset.errorTitle": "ဖက်တိုရီ ရိစတေ့ မလုပ်ဆောင်နိုင်ပါ",
   "reset.errorBody":
     "ရိစတေ့ ကြိုးစားမှု မအောင်မြင်ပါ။ အဘယ်အရာ ဖျက်ခဲ့သည်ကို မည်သို့မျှ မယူဆရပါ — မည်သို့ဖြစ်စေ ဤအသုံးပြုချိန် ပြီးဆုံးပါပြီ — ဒေတာဘေ့စ် ချိတ်ဆက်မှု ပိတ်ထားသဖြင့် ရိစတေ့ကို ထပ်စမ်းပါ သို့မဟုတ် Purple Memo ကို ပိတ်ပြီး ကိုယ်တိုင် ပြန်ဖွင့်ပါ။",
-  "reset.component.shareStop": "LAN မျှဝေခြင်း",
+  "reset.component.listenersStop": "တွဲချိတ် ဝင်းဒိုး",
   "reset.component.database": "ကုဒ်ဝှက်ထားသော ဒေတာဘေ့စ်",
   "reset.component.photos": "ဓာတ်ပုံများ",
   "reset.component.backups": "အက်ပ်၏ အရန်မိတ္တူများ",

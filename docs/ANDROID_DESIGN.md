@@ -90,7 +90,7 @@ Conflict rule: different records/fields → auto-merge; same field →
 **last-write-wins, no prompt**; the losing version is written to trash
 **before** overwriting. Requires per-record `updated_at` + a per-side
 last-successful-sync watermark; device authentication via the pairing secret
-is mandatory (write access, unlike the read-only LAN share).
+is mandatory (this is write access, not a read-only view).
 
 ## 6. Phases (revised per the design review — gated, no mocks with real data)
 

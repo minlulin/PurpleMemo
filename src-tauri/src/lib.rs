@@ -23,7 +23,6 @@ mod reminders;
 mod reset;
 mod safety_copy;
 mod schema;
-mod share;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -69,7 +68,9 @@ const APP_DIR_NAME: &str = "com.minlulin.purplememo";
 /// written next to the database.
 const KEY_EXPORT_LOG: &str = "key-export.log";
 
-/// Audit log of every LAN-share disclosure, written next to the database.
+/// The removed LAN share's audit log. Nothing writes it any more; the
+/// name stays so factory reset keeps deleting the leftover file on
+/// installs that still have one.
 const SHARE_LOG: &str = "share.log";
 
 /// The boot-failure log next to the database. Part of the
@@ -173,11 +174,6 @@ pub fn run() {
             commands::backup_import_begin,
             commands::backup_import_end,
             commands::export_save_file,
-            commands::share_arm,
-            commands::share_start,
-            commands::share_stop,
-            commands::share_status,
-            commands::share_publish,
             commands::pairing_local,
             commands::pairing_open,
             commands::pairing_close,
@@ -356,15 +352,12 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
         data_dir,
     });
     // One lifecycle barrier for the whole process (E1/E2/E5): managed as a
-    // shared Arc so the share state consults the same instance the DB/photo
+    // shared Arc so the pairing state consults the same instance the DB/photo
     // commands admit through and `factory_reset` raises. Re-managed together
     // on the retry path, like `AppState` above, so the pairing cannot skew.
     let lifecycle = Arc::new(lifecycle::Lifecycle::new());
     app.manage(lifecycle.clone());
-    // LAN sharing starts OFF — it is opt-in per session and must never be
-    // re-enabled silently by a restart.
-    app.manage(share::ShareState::with_lifecycle(lifecycle.clone()));
-    // §11.5: the pairing window is a network listener too, and it consults the
+    // §11.5: the pairing window is a network listener, and it consults the
     // SAME barrier — a private one would be two states pretending to be one.
     // Like sharing it starts closed: no port exists until pairing opens one.
     app.manage(pairing_listener::PairingListenerState::with_lifecycle(
@@ -400,7 +393,7 @@ fn handle_key_load_failure(
         return failure;
     }
     eprintln!("purple-memo: {}", failure.message());
-    // No LAN server and no open connection exist this early in boot, so those
+    // No listener and no open connection exist this early in boot, so those
     // two seams are already-absent/no-op.
     let outcome = reset::run_factory_reset(
         reset::fault_injection(),
@@ -999,16 +992,6 @@ pub(crate) fn note_key_retained(retained: &str, destination: &str) {
         KEY_EXPORT_LOG,
         &db::key_export_retained_audit_line(retained, destination),
     );
-}
-
-/// Append one LAN-share disclosure to `share.log`.
-///
-/// Starting the share server puts a read-only view of the user's money and
-/// notes on the local network. The user finds out by looking in Settings; this
-/// is how they find out *afterwards*, including if the machine was not theirs
-/// at the time. The encryption key is never recorded — see [`share::ShareEvent`].
-pub(crate) fn note_share_event(event: share::ShareEvent) {
-    append_audit_line(SHARE_LOG, &event.audit_line());
 }
 
 /// RFC 3339 in UTC. Hand-rolled rather than pulling in a date crate for one

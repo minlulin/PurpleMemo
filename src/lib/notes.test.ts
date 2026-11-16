@@ -284,15 +284,6 @@ CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
 END;
 `;
 
-const OFF_SHARE = {
-  running: false,
-  url: null,
-  key: null,
-  port: null,
-  publishedAt: null,
-  note: null,
-};
-
 function sqliteDriver(): DataDriver & { db: DatabaseSync } {
   const db = new DatabaseSync(":memory:");
   db.exec(COLLECTION_FIXTURE);
@@ -349,23 +340,8 @@ function sqliteDriver(): DataDriver & { db: DatabaseSync } {
     async saveBackupFile() {},
     async saveExportFile() {},
     async saveDbKeyFile() {},
-    async shareStart() {
-      return OFF_SHARE;
-    },
-    async shareStop() {
-      return OFF_SHARE;
-    },
-    async shareStatus() {
-      return OFF_SHARE;
-    },
-    async sharePublish() {
-      return OFF_SHARE;
-    },
     async safetyBackupCopy() {
       throw new Error("no safety copy in this test driver");
-    },
-    async shareArm() {
-      return "";
     },
   };
 }

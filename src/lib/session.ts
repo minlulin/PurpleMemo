@@ -1,10 +1,10 @@
-// The app shell's session coordination — locking, the LAN publisher
-// and the reminder poll — extracted from `AppShell` so the rules
-// can be tested.
+// The app shell's session coordination — locking and the reminder
+// poll — extracted from `AppShell` so the rules can be tested.
 //
 // `node --test` runs modules, not components: anything that lives inside
 // `App.tsx` is unreachable for the suite, which is how the fix
-// ("locking ends sharing") came to have no regression test at all. These are
+// ("locking ends the pairing window") came to have no regression test at
+// all. These are
 // pure functions over injected ports; the component keeps the React concerns —
 // state, effects, timers, event listeners — and nothing else.
 //
@@ -19,8 +19,8 @@ import type { ReminderRow } from "./types.ts";
 export interface LockPorts {
   /** Drop the vault key cache — in-memory keys only. */
   lockVault: () => void;
-  /** Tear the LAN listener down. */
-  stopSharing: () => Promise<unknown>;
+  /** Tear the network listener down — the pairing window (§11.5). */
+  stopListeners: () => Promise<unknown>;
   /** Flip the shell to locked. */
   onLocked: () => void;
   /**
@@ -28,13 +28,13 @@ export interface LockPorts {
    * stopped. Optional because a caller with nowhere to show it
    * should not have to invent a handler.
    */
-  onShareStopFailed?: (error: unknown) => void;
+  onListenerStopFailed?: (error: unknown) => void;
   /**
    * Take the background teardown back. The retry schedule runs detached for up
    * to a minute, far past the lock that started it, so the shell uses this to
    * retire an outlived teardown: once the shell unlocks (or a newer lock
-   * supersedes it), the loop stops instead of waking up later and stopping a
-   * LAN share the user has since started.
+   * supersedes it), the loop stops instead of waking up later and closing
+   * a pairing window the user has since opened.
    */
   isCancelled?: () => boolean;
   /** Delay before each retry, in order; the first attempt is immediate. */
@@ -46,18 +46,18 @@ export interface LockPorts {
 }
 
 /**
- * How hard the lock tries to stop the LAN listener before giving up.
+ * How hard the lock tries to stop the network listener before giving up.
  *
  * Roughly a minute of background attempts. The lock screen never waits on any
  * of this — it is scheduled and forgotten — but a stop that fails once (a busy
  * worker, a client mid-write) or hangs (a listener joined on a stalled socket)
  * gets another chance, and the last failure is the only one reported.
  */
-export const SHARE_STOP_RETRY_DELAYS_MS = [
+export const LISTENER_STOP_RETRY_DELAYS_MS = [
   250, 1_000, 3_000, 5_000, 10_000, 30_000,
 ];
 /** A stop that has not answered in this long is treated as a failed attempt. */
-export const SHARE_STOP_TIMEOUT_MS = 5_000;
+export const LISTENER_STOP_TIMEOUT_MS = 5_000;
 
 /**
  * Race `work` against a timer, and always clear the timer: a pending 5 s
@@ -82,23 +82,24 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * Stop sharing, retrying with backoff, and report the last failure once.
+ * Stop the listener, retrying with backoff, and report the last failure
+ * once.
  *
  * Returns whether the listener is known to be down. Exported because this is
- * the rule the audit found missing: the old teardown swallowed the result, and
- * the status poller is paused while locked, so a listener that failed to stop
- * kept serving the dashboard with nothing on screen to say so.
+ * the rule the audit found missing: the old teardown swallowed the result,
+ * so a pairing window that failed to close kept accepting a phone with
+ * nothing on screen to say so.
  *
  * `isCancelled` lets the caller that scheduled the teardown take it back
  * (H4). This loop runs detached across unlock — its backoff is measured in
  * tens of seconds — so without an abort a retry still sleeping from an earlier
- * lock can wake up and tear down a share that was started after it. A
+ * lock can wake up and close a pairing window that was opened after it. A
  * cancelled teardown returns `false` — *not known to be down*, rather than
- * "stopped" — and stays silent: the owner that cancelled it has taken share
- * state over and decides what, if anything, the user is told.
+ * "stopped" — and stays silent: the owner that cancelled it has taken the
+ * listener's state over and decides what, if anything, the user is told.
  */
-export async function stopSharingWithRetry(
-  stopSharing: () => Promise<unknown>,
+export async function stopListenersWithRetry(
+  stopListeners: () => Promise<unknown>,
   opts: {
     retryDelaysMs?: readonly number[];
     stopTimeoutMs?: number;
@@ -107,17 +108,17 @@ export async function stopSharingWithRetry(
     isCancelled?: () => boolean;
   } = {},
 ): Promise<boolean> {
-  const delays = opts.retryDelaysMs ?? SHARE_STOP_RETRY_DELAYS_MS;
-  const timeoutMs = opts.stopTimeoutMs ?? SHARE_STOP_TIMEOUT_MS;
+  const delays = opts.retryDelaysMs ?? LISTENER_STOP_RETRY_DELAYS_MS;
+  const timeoutMs = opts.stopTimeoutMs ?? LISTENER_STOP_TIMEOUT_MS;
   const wait =
     opts.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  let lastError: unknown = new Error("sharing was never stopped");
+  let lastError: unknown = new Error("the listener was never stopped");
   const cancelled = () => opts.isCancelled?.() === true;
   // One immediate attempt, then one per configured delay.
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     if (cancelled()) return false;
     try {
-      await withTimeout(stopSharing(), timeoutMs);
+      await withTimeout(stopListeners(), timeoutMs);
       return true;
     } catch (error) {
       lastError = error;
@@ -126,7 +127,7 @@ export async function stopSharingWithRetry(
     if (delay !== undefined) {
       // Checked before backing off, not only after: a 30 s sleep spent on a
       // teardown nobody is waiting for is 30 s in which the next attempt can
-      // land on a freshly started share.
+      // land on a freshly opened pairing window.
       if (cancelled()) return false;
       await wait(delay);
     }
@@ -143,21 +144,21 @@ export async function stopSharingWithRetry(
 /**
  * Lock now. Four rules, each pinned by a test:
  *
- * 1. **Locking ends sharing**. The phone link must die with the
- *    session: a lock that leaves the LAN server running keeps publishing the
- *    dashboard to the network for as long as the app stays open, which is the
- *    opposite of what the lock screen promises.
+ * 1. **Locking ends the pairing window** (§11.5). The phone link must
+ *    die with the session: a lock that leaves the pairing listener
+ *    running keeps accepting a phone for as long as the app stays open,
+ *    which is the opposite of what the lock screen promises.
  * 2. **The shell always ends up locked**, whatever the earlier steps do.
  *    Failing open is the one outcome this must never have.
  * 3. **The teardown is best-effort, but not silent.** The lock screen never
  *    waits on the network listener; the stop runs in the background with a
  *    short retry schedule and a per-attempt timeout, and only after every
- *    attempt fails does `onShareStopFailed` run. A listener that
+ *    attempt fails does `onListenerStopFailed` run. A listener that
  *    did not stop is a serving confidentiality problem, not a cosmetic one.
  * 4. **The teardown belongs to this lock.** Its retries run detached for up to
  *    a minute, so `isCancelled` is how the shell retires one that has been
- *    outlived — by an unlock, or by a newer lock — before it can stop a share
- *    that was started after it.
+ *    outlived — by an unlock, or by a newer lock — before it can close a
+ *    pairing window that was opened after it.
  */
 export function lockSession(ports: LockPorts): void {
   try {
@@ -169,83 +170,18 @@ export function lockSession(ports: LockPorts): void {
   try {
     ports.onLocked();
   } catch {
-    // The UI state is the caller's business — sharing still stops below.
+    // The UI state is the caller's business — the listener still stops below.
   }
-  // Scheduled, never awaited: a hung `share_stop` must not freeze the lock
-  // screen. `stopSharingWithRetry` absorbs a synchronous throw as a rejected
+  // Scheduled, never awaited: a hung listener close must not freeze the lock
+  // screen. `stopListenersWithRetry` absorbs a synchronous throw as a rejected
   // attempt just like a rejected promise.
-  void stopSharingWithRetry(ports.stopSharing, {
+  void stopListenersWithRetry(ports.stopListeners, {
     retryDelaysMs: ports.retryDelaysMs,
     stopTimeoutMs: ports.stopTimeoutMs,
     wait: ports.wait,
-    onFailed: ports.onShareStopFailed,
+    onFailed: ports.onListenerStopFailed,
     isCancelled: ports.isCancelled,
   });
-}
-
-/** The slice of a share status the publisher cares about (structurally `ShareInfo`). */
-export interface ShareStatusLike {
-  running: boolean;
-  note?: string | null;
-}
-
-/** Ports for one LAN publisher tick. */
-export interface ShareTickPorts {
-  status: () => Promise<ShareStatusLike>;
-  publish: () => Promise<unknown>;
-  /** The in-app note channel, shared with the reminder poll. */
-  onNote: (note: string) => void;
-  /**
-   * True once the shell unmounted or locked — see {@link lockSession}, whose
-   * first rule is that locking ends the session's other work too. The shell
-   * flips this the moment it locks, so a tick already in flight stops before
-   * it publishes: the status poller is paused while locked because a publish
-   * over the lock screen would keep feeding the phone.
-   */
-  isCancelled: () => boolean;
-}
-
-/**
- * One tick of the LAN publisher (P5): re-read the rows the phone sees and
- * publish them, and surface a server that stopped unexpectedly through the
- * note channel.
- *
- * The note is raised on the running → stopped edge only. `running: false` is
- * the normal state of an app nobody is sharing from, so surfacing it on every
- * tick would turn a security notice into permanent background noise — and
- * after the first one it would say nothing.
- *
- * Best-effort by design: the database is the source of truth, so neither a
- * failed status read nor a failed publish may break the app. A failed publish
- * deliberately does not read as "stopped": the server is still running, and
- * the next tick tries again.
- */
-export function createShareTicker(ports: ShareTickPorts): () => Promise<void> {
-  let wasRunning = false;
-  let inFlight = false;
-  return async () => {
-    // Ticks never stack, same rule as the reminder poll: if a slow
-    // `status()` or `publish()` is still awaited, the next interval fire is a
-    // no-op, so a newer tick can never read `wasRunning` mid-flight of an
-    // older one and raise a spurious stop note on the wrong tick.
-    if (inFlight) return;
-    inFlight = true;
-    try {
-      const info = await ports.status();
-      if (ports.isCancelled()) return;
-      if (!info.running) {
-        if (wasRunning && info.note) ports.onNote(info.note);
-        wasRunning = false;
-        return;
-      }
-      wasRunning = true;
-      await ports.publish();
-    } catch {
-      // See above — the poll must never break the app.
-    } finally {
-      inFlight = false;
-    }
-  };
 }
 
 /**

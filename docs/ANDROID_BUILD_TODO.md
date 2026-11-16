@@ -538,7 +538,7 @@ longer holds the phase open.
   Keystore backing **TEE**. The desktop panel minted a live window: code
   `846404` at `117 s left`, a rendered QR, and "Listening on
   `100.96.0.19:52608`". **Where it stopped:** that endpoint is the
-  **CloudflareWARP** adapter's address — `share::lan_ip()` prefers
+  **CloudflareWARP** adapter's address — `lan_ip()` (then in `share.rs`, now `pairing_listener.rs`) prefers
   `default_route_ip()`, the source address a UDP connect to 192.0.2.1:80 picks,
   so a VPN tunnel's default route wins over the LAN — and the phone cannot
   reach it (`nc -w 3 100.96.0.19 52608` → `nc: Timeout`). The real LAN address

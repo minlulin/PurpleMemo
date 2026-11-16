@@ -27,10 +27,8 @@
  * Deliberately not failing:
  *  - paths that escape the repository (`../..`), which are not ours to resolve;
  *  - links with a scheme (`https:`, `mailto:`) or a bare anchor (`#section`), and
- *    anything inside a URL: `…/tauri-docs/…/plugin/updater.mdx` and the NIST
- *    link in the vendored AES copy are upstream addresses, not paths here;
- *  - `src-tauri/share/_crypto/` is a byte-for-byte copy of `@noble/ciphers`
- *    (enforced by `check-versions.mjs`), so its comments belong to upstream;
+ *    anything inside a URL: `…/tauri-docs/…/plugin/updater.mdx` is an
+ *    upstream address, not a path here;
  *  - `docs/…` tokens containing `*`, `<`, `{` or `$`, which are globs or
  *    templates rather than references.
  *
@@ -179,11 +177,9 @@ const problems = [];
 let checked = 0;
 
 const DOCS_TOKEN = /(^|[\s"'`(<{[*,])(docs\/[A-Za-z0-9._/-]+)/g;
-// Upstream links are addresses, not references: `…/updater.mdx` is on GitHub,
-// and the vendored crypto comments cite NIST. Blank them before matching.
+// Upstream links are addresses, not references: `…/updater.mdx` is on
+// GitHub. Blank them before matching.
 const URL = /\b[a-z][a-z0-9+.-]*:\/\/\S+|\bwww\.\S+/gi;
-// A byte-for-byte vendored dependency, kept in step by `check-versions.mjs`.
-const VENDORED = "src-tauri/share/_crypto/";
 const MD_LINK = /\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*(?:"[^"]*")?\)/g;
 const MD_LINK_DEF = /^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)/gm;
 const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -192,7 +188,6 @@ for (const file of files) {
   const dot = file.lastIndexOf(".");
   const extension = dot === -1 ? "" : file.slice(dot).toLowerCase();
   const markdown = extension === ".md";
-  if (file.startsWith(VENDORED)) continue;
   if (!markdown && !COMMENT_ONLY.has(extension) && !WHOLE_TEXT.has(extension)) {
     continue;
   }

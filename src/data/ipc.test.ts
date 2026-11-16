@@ -44,7 +44,7 @@ function invokedCommands(): string[] {
 
 test("every command the driver invokes is registered in Rust", () => {
   const commands = invokedCommands();
-  // The exact surface: 23 commands, plus `factory_reset` and
+  // The exact surface: the core commands, plus `factory_reset` and
   // `app_restart`, plus the import-lease pair (`backup_import_begin` /
   // `backup_import_end`, E5), plus the pairing window's four (`pairing_local`,
   // `pairing_open`, `pairing_close`, `pairing_status`, §11.5), plus the re-pair
@@ -55,13 +55,13 @@ test("every command the driver invokes is registered in Rust", () => {
   // `_commit`/`_status` phone-side, `pairing_upload_take`/`_outcome`
   // panel-side, §9.6), plus the §6 exchange's seven (`pairing_sync_push`,
   // `_commit`/`_pull`/`_applied`/`_status` phone-side, `pairing_sync_take`/
-  // `_outcome` panel-side) — 47.
+  // `_outcome` panel-side) — 42.
   // Bump deliberately, with the change that adds the command —
   // the count is what catches a command dropped from BOTH sides at once.
   assert.equal(
     commands.length,
-    47,
-    `expected the full 47-command surface, got ${commands.length}`,
+    42,
+    `expected the full 42-command surface, got ${commands.length}`,
   );
   for (const command of commands) {
     assert.ok(
@@ -481,56 +481,6 @@ test("the key export is one-way: a path goes out, nothing comes back", () => {
   assert.match(
     driverSrc,
     /saveDbKeyFile: \(path\) => invoke\("db_key_save", \{ path \}\)/,
-  );
-});
-
-test("the LAN share cannot be started without a consent token", () => {
-  // `share_start` used to be one bare call that bound 0.0.0.0 and
-  // put a read-only view of the user's notes and balances on the network. Rust
-  // now refuses it without a one-shot token from `share_arm`, and the token has
-  // to travel as `consentToken` — camelCase, via the command's `rename_all`.
-  assert.match(
-    commandsSrc,
-    /pub fn share_arm\(state: State<'_, ShareState>\) -> CmdResult<String>/,
-    "share_arm must exist and issue a token",
-  );
-  assert.match(
-    commandsSrc,
-    /#\[tauri::command\(rename_all = "camelCase"\)\]\s*pub fn share_start\(state: State<'_, ShareState>, consent_token: String\)/,
-    "share_start must take a snake_case arg exposed as consentToken",
-  );
-  assert.match(
-    driverSrc,
-    /shareArm: \(\) => invoke\("share_arm"\)/,
-    "the driver must arm consent",
-  );
-  assert.match(
-    driverSrc,
-    /shareStart: \(consentToken\) =>\s*invoke\("share_start", \{ consentToken \}\)/,
-    "share_start must receive the token",
-  );
-});
-
-test("share_stop carries the lock flag, and only the lock path sets it (D2a)", () => {
-  // The lock's stop is a different stop: it revokes an armed consent token
-  // and supersedes one an in-flight `share_start` has already spent, so no
-  // listener can bind behind the lock screen. An ordinary stop must NOT do
-  // that — a Rust test pins that a token survives it — so the distinction has
-  // to survive the IPC boundary intact, in both directions.
-  assert.match(
-    commandsSrc,
-    /#\[tauri::command\(rename_all = "camelCase"\)\]\s*pub fn share_stop\(state: State<'_, ShareState>, for_lock: Option<bool>\)/,
-    "share_stop must take for_lock and expose it camelCase",
-  );
-  assert.match(
-    commandsSrc,
-    /if for_lock\.unwrap_or\(false\)\s*\{\s*state\.stop_for_lock\(\)/,
-    "the flag must reach ShareState::stop_for_lock, not be ignored",
-  );
-  assert.match(
-    driverSrc,
-    /shareStop: \(forLock\) => invoke\("share_stop", \{ forLock: forLock === true \}\)/,
-    "the driver sends the flag the caller meant, through one invoke site",
   );
 });
 

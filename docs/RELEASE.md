@@ -315,7 +315,7 @@ The position, decided by the owner on 2026-11-16:
   by a source test in `lib.rs`).
 - **Release builds abort on panic** (`panic = "abort"` in the release
   profile): the process dies instead of unwinding. The mutex poison-recovery
-  paths in `commands.rs`, `share.rs` and `photos.rs` therefore serve dev and
+  paths in `commands.rs` and `photos.rs` therefore serve dev and
   test builds, where unwinding happens — in a release build a poisoned mutex
   cannot be observed, because the app has already aborted.
 
@@ -323,11 +323,12 @@ The position, decided by the owner on 2026-11-16:
 
 Settings → Danger zone → Factory reset removes every piece of
 PurpleMemo-owned local state on this machine. The engine (`src-tauri/src/reset.rs`)
-stops the LAN share and burns its consent token, closes the database
+stops the pairing listener, closes the database
 connection (after which every DB command fails closed), deletes the
 SQLCipher database with its `-wal`/`-shm` siblings, the `photos/` tree, the
 app-made safety copies under `backups/`, the three logs (`key-export.log`,
-`share.log`, `boot-error.log`), and the database encryption key from the
+`share.log` — the removed LAN share's leftover, `boot-error.log`), and the
+database encryption key from the
 Windows credential store last. The UI reports "reset complete" only when
 every component was removed or already absent; a partial run lists exactly
 what was left and offers a retry (the engine is safe to re-run).

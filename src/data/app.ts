@@ -22,7 +22,6 @@ import { mobileSearch } from "../lib/mobileSearch.ts";
 import { databaseBytes } from "../lib/mobileSettings.ts";
 import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
-import { createShareRepo } from "../lib/share.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
 import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
@@ -113,23 +112,6 @@ export const settingsRepo = createSettingsRepo(driver);
 export const backupRepo = createBackupRepo(driver, {
   onBeforeImport: () => vaultRepo.lockVault(),
 });
-/**
- * The share repo receives the singletons above instead of rebuilding them
- * (J5): `createShareRepo` used to construct seven more domain repos — and
- * through them four more `trashRepo`s and two more `KeyedMutex`es — over
- * the same driver, so any per-instance state would have split across two
- * copies the moment it appeared.
- */
-export const shareRepo = createShareRepo(driver, {
-  budget: budgetRepo,
-  business: businessRepo,
-  tasks: tasksRepo,
-  habits: habitsRepo,
-  memories: memoriesRepo,
-  contacts: contactsRepo,
-  notes: notesRepo,
-});
-
 /**
  * The pairing panel's repo: the real listener plus the store's own pin
  * statements, over the one driver. The panel never touches IPC itself.

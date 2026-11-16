@@ -504,20 +504,6 @@ const GUARDS: {
   },
   {
     page: "SettingsPage.tsx",
-    handler: "startShare",
-    busy: "savingRef.current",
-    cleared: "savingRef.current = false",
-    raised: "savingRef.current = true",
-  },
-  {
-    page: "SettingsPage.tsx",
-    handler: "stopShare",
-    busy: "savingRef.current",
-    cleared: "savingRef.current = false",
-    raised: "savingRef.current = true",
-  },
-  {
-    page: "SettingsPage.tsx",
     handler: "checkUpdates",
     busy: "savingRef.current",
     cleared: "savingRef.current = false",

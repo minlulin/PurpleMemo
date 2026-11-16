@@ -98,7 +98,7 @@ export const RESET_COMPONENT_LABEL_KEYS: Record<
   ResetComponentName,
   MessageKey
 > = {
-  share_stop: "reset.component.shareStop",
+  listeners_stop: "reset.component.listenersStop",
   database: "reset.component.database",
   photos: "reset.component.photos",
   backups: "reset.component.backups",

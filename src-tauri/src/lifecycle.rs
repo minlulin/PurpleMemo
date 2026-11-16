@@ -24,12 +24,13 @@
 //! *phase* check and for the fs/photo workers that the connection lock never
 //! covered.
 //!
-//! The share server consults the same state through
-//! [`Lifecycle::ensure_share_allowed`] (E2): `start` fails fast before
-//! spending its consent token, `start_on` re-checks under the server lock —
-//! the one place a reset's `stop_for_reset` also serializes — so no start can
-//! bind after the stop barrier, and `arm`/`publish` refuse during a reset or
-//! import instead of arming a token or a snapshot nobody may serve.
+//! The pairing listener consults the same state through
+//! [`Lifecycle::ensure_listener_allowed`] (E2): opening the window fails
+//! fast outside the normal phase, and the check is re-done under the
+//! listener lock — the one place a reset's `stop_for_reset` also
+//! serializes — so no window can bind after the stop barrier, and an
+//! open refuses during a reset or import instead of serving a snapshot
+//! nobody may serve.
 
 use std::sync::{Condvar, Mutex, MutexGuard};
 
@@ -234,12 +235,11 @@ impl Lifecycle {
         }
     }
 
-    /// The share server may start/arm/publish only in `Phase::Normal` (E2):
-    /// during an import the frontend has stopped sharing and must not be
-    /// re-opened from underneath it, and during a reset a listener or a
-    /// staged snapshot that came alive after `stop_for_reset` would serve an
-    /// erased app — and re-create `share.log` after log deletion.
-    pub fn ensure_share_allowed(&self) -> Result<(), String> {
+    /// A network listener may open only in `Phase::Normal` (E2): during
+    /// an import the frontend has closed the pairing window and it must
+    /// not be re-opened from underneath it, and during a reset a listener
+    /// that came alive after `stop_for_reset` would serve an erased app.
+    pub fn ensure_listener_allowed(&self) -> Result<(), String> {
         match self.lock().phase {
             Phase::Normal => Ok(()),
             Phase::Importing => Err(IMPORT_BLOCKED.to_string()),
@@ -387,23 +387,23 @@ mod tests {
     }
 
     #[test]
-    fn share_is_refused_outside_normal_but_stays_usable_in_normal() {
+    fn listener_is_refused_outside_normal_but_stays_usable_in_normal() {
         let lc = Lifecycle::new();
-        lc.ensure_share_allowed().expect("Normal shares");
+        lc.ensure_listener_allowed().expect("Normal opens");
 
         let lease = lc.begin_import().expect("open");
         assert_eq!(
-            lc.ensure_share_allowed()
+            lc.ensure_listener_allowed()
                 .expect_err("no listener mid-import"),
             IMPORT_BLOCKED
         );
         lc.end_import(lease).expect("close");
-        lc.ensure_share_allowed()
-            .expect("shares again after the import");
+        lc.ensure_listener_allowed()
+            .expect("opens again after the import");
 
         lc.raise_reset();
         assert_eq!(
-            lc.ensure_share_allowed()
+            lc.ensure_listener_allowed()
                 .expect_err("no listener after reset"),
             RESET_BLOCKED
         );

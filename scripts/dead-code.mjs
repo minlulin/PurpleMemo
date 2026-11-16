@@ -45,7 +45,7 @@ const DECL_ROOTS = ["src"];
 const DECL_EXTENSIONS = new Set([".ts", ".tsx"]);
 
 /** Everything whose text can count as a reference. */
-const REFERENCE_ROOTS = ["src", "scripts", "src-tauri/share"];
+const REFERENCE_ROOTS = ["src", "scripts"];
 const REFERENCE_FILES = ["vite.config.ts", "index.html"];
 const REFERENCE_EXTENSIONS = new Set([".ts", ".tsx", ".mjs", ".js", ".html"]);
 

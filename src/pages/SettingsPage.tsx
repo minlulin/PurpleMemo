@@ -24,8 +24,8 @@ import {
 import { PairingPanel } from "../components/PairingPanel.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, useT } from "../components/useTranslation.ts";
-import { backupRepo, settingsRepo, shareRepo } from "../data/app.ts";
-import { factoryReset, type ShareInfo } from "../data/driver.ts";
+import { backupRepo, settingsRepo } from "../data/app.ts";
+import { factoryReset } from "../data/driver.ts";
 import {
   AUTO_LOCK_CHOICES,
   classifyPin,
@@ -92,7 +92,6 @@ const SETTINGS_SECTIONS = [
   { id: "vault", label: "Vault" },
   { id: "key-export", label: "Key export" },
   { id: "backup", label: "Backup" },
-  { id: "share", label: "Share" },
   { id: "pairing", label: "Pairing" },
   { id: "updates", label: "Updates" },
   { id: "about", label: "About" },
@@ -137,7 +136,6 @@ const SETTINGS_ALIASES: Record<string, string[]> = {
   vault: ["secret", "password", "encrypt", "aes"],
   "key-export": ["key", "backup key", "encryption", "master"],
   backup: ["restore", "import", "export", "zip", "archive", "recovery"],
-  share: ["lan", "network", "phone", "link"],
   pairing: ["qr", "code", "phone", "sync", "pair", "fingerprint"],
   updates: ["update", "version", "release", "download", "upgrade"],
   about: ["version", "info", "offline", "open source"],
@@ -340,8 +338,8 @@ export default function SettingsPage(p: SettingsPageProps) {
 
   /**
    * The pinned double-submit guard, shared by every
-   * async action on this page — export, import, key export, share
-   * start/stop, update check/install. One flag is enough because
+   * async action on this page — export, import, key export,
+   * update check/install. One flag is enough because
    * `shows(section)` means only one section is mounted at a time, so two
    * guarded handlers can never be in flight together; the per-handler
    * busy states stay for the buttons, this ref is what refuses the second
@@ -500,10 +498,7 @@ export default function SettingsPage(p: SettingsPageProps) {
     setImportBusy(true);
     setError(null);
     try {
-      // Sharing must stop BEFORE the data is replaced: the listener would
-      // otherwise keep serving the pre-import snapshot to the phone
-      await shareRepo.stop();
-      // And before anything is deleted, copy what is about to be gone.
+      // Before anything is deleted, copy what is about to be gone.
       // This throws on failure, which leaves `pending` in place and the
       // data untouched — an import with no undo is the thing being removed
       // here, so a copy that could not be taken cancels the import.
@@ -570,113 +565,6 @@ export default function SettingsPage(p: SettingsPageProps) {
     } finally {
       savingRef.current = false;
       setKeyBusy(false);
-    }
-  };
-
-  // -- Same-network read-only share (P5) ------------------------------------
-  const [shareState, setShareState] = useState<ShareInfo | null>(null);
-  const [shareBusy, setShareBusy] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
-  const [shareAck, setShareAck] = useState(false);
-
-  /** Last status this page rendered, for the "is this news?" check below. */
-  const lastShareRef = useRef<ShareInfo | null>(null);
-
-  // The app shell keeps re-publishing while sharing; this mirrors the state
-  // here (including a server that stopped unexpectedly).
-  useEffect(() => {
-    let cancelled = false;
-    const sync = async () => {
-      try {
-        const info = await shareRepo.status();
-        if (cancelled) return;
-        const prev = lastShareRef.current;
-        lastShareRef.current = info;
-        const unchanged =
-          prev !== null &&
-          prev.running === info.running &&
-          prev.url === info.url &&
-          prev.port === info.port &&
-          prev.note === info.note &&
-          prev.publishedAt === info.publishedAt;
-        // A poll that repeats itself is not news. Re-rendering four times a
-        // minute also wiped the "Copied" confirmation for a link that never
-        // changed; only a genuinely different state
-        // (or a different link) resets it.
-        if (unchanged) return;
-        setShareState(info);
-        if (prev === null || prev.url !== info.url) setShareCopied(false);
-      } catch {
-        // Keep the last known state — the buttons report real errors.
-      }
-    };
-    void sync();
-    const timer = setInterval(() => void sync(), 15_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
-
-  /**
-   * Turn the LAN share on.
-   *
-   * `shareRepo.start` arms and starts in one call, and Rust refuses to bind a
-   * listener without the consent token that call obtains — so the gate is
-   * enforced on the backend, not merely drawn on screen. What this function owns
-   * is making sure the user actually reads what they are agreeing to before the
-   * token is minted.
-   */
-  const startShare = async () => {
-    if (savingRef.current) return;
-    setError(null);
-    setShareCopied(false);
-    if (!shareAck) {
-      setError(
-        "Tick the acknowledgement first — anyone with the share link can decrypt the snapshot.",
-      );
-      return;
-    }
-    savingRef.current = true;
-    setShareBusy(true);
-    try {
-      setShareState(await shareRepo.start());
-      // Publish at once so the phone has data before the shell's next tick.
-      setShareState(await shareRepo.publishSnapshot());
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      savingRef.current = false;
-      setShareBusy(false);
-    }
-  };
-
-  const stopShare = async () => {
-    if (savingRef.current) return;
-    setError(null);
-    setShareCopied(false);
-    savingRef.current = true;
-    setShareBusy(true);
-    try {
-      setShareState(await shareRepo.stop());
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      savingRef.current = false;
-      setShareBusy(false);
-    }
-  };
-
-  const copyShareLink = async () => {
-    const url = shareState?.url;
-    if (!url) return;
-    setError("");
-    setShareCopied(false);
-    try {
-      await navigator.clipboard.writeText(url);
-      setShareCopied(true);
-    } catch {
-      setError("Copy failed — select the link text and copy it manually.");
     }
   };
 
@@ -782,7 +670,7 @@ export default function SettingsPage(p: SettingsPageProps) {
     resettingRef.current = true;
     setResetting(true);
     try {
-      // The engine stops the share, closes the DB connection (after which
+      // The engine stops the listener, closes the DB connection (after which
       // every DB command fails closed), deletes the files, and deletes the
       // keyring key last. Either way the session is over — the shell's
       // terminal screen takes it from here.
@@ -1211,92 +1099,6 @@ export default function SettingsPage(p: SettingsPageProps) {
             </div>
           </div>
         )}
-      </section>
-
-      <section
-        className="settings-section"
-        id="settings-share"
-        hidden={!shows("share")}
-      >
-        <div className="dash-card-head">
-          <h3 className="settings-heading">Share to this network</h3>
-          <span
-            className={shareState?.running ? "badge badge-success" : "badge"}
-          >
-            {shareState?.running ? "Live on LAN" : "Off"}
-          </span>
-        </div>
-        <p className="muted">Use sharing only on a trusted private network.</p>
-        {shareState?.running && (
-          <p className="alert alert-note" role="status">
-            Sharing is live. Locking Purple Memo stops this sharing session and
-            invalidates its link.
-          </p>
-        )}
-        {shareState?.running ? (
-          <div className="side-form">
-            <label>
-              Open this encrypted link on the phone
-              <input
-                className="input"
-                readOnly
-                value={shareState.url ?? ""}
-                onFocus={(e) => e.target.select()}
-              />
-            </label>
-            <p className="muted">
-              Key stays in the link fragment · port {shareState.port ?? "?"}
-              {shareState.publishedAt !== null
-                ? ` · last snapshot ${shareState.publishedAt.replace("T", " ")}`
-                : " · waiting for the first snapshot…"}
-            </p>
-            <div className="editor-row">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => void copyShareLink()}
-              >
-                {shareCopied ? "Copied" : "Copy link"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={shareBusy}
-                onClick={() => void stopShare()}
-              >
-                {shareBusy ? "Stopping…" : "Stop sharing"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="side-form">
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                checked={shareAck}
-                onChange={(e) => setShareAck(e.target.checked)}
-              />
-              I understand — anyone with this link can decrypt my snapshot, and
-              HTTP does not authenticate the desktop.
-            </label>
-            <div className="editor-row">
-              <button
-                type="button"
-                className={`btn btn-primary${shareBusy ? " btn-loading" : ""}`}
-                disabled={shareBusy}
-                onClick={() => void startShare()}
-              >
-                {shareBusy && <IconSpinner />}
-                {shareBusy ? "Starting…" : "Start sharing"}
-              </button>
-            </div>
-          </div>
-        )}
-        {shareState !== null &&
-          !shareState.running &&
-          shareState.note !== null && (
-            <p className="alert alert-note">{shareState.note}</p>
-          )}
       </section>
 
       <section

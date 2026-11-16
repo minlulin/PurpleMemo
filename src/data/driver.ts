@@ -119,23 +119,6 @@ export interface BatchStatement {
 }
 
 /**
- * State of the read-only LAN share (P5). `url` is the full link the
- * phone opens — it carries the encryption key in its fragment, and is null whenever sharing
- * is off. `publishedAt` is the `generatedAt` of the last published snapshot.
- */
-export interface ShareInfo {
-  running: boolean;
-  url: string | null;
-  /** AES-256-GCM key, also carried only in the URL fragment. */
-  key: string | null;
-  /** Bound TCP port (shown so the user can allow it through a firewall). */
-  port: number | null;
-  publishedAt: string | null;
-  /** Set only when sharing stopped on its own. */
-  note: string | null;
-}
-
-/**
  * The pairing window's state (§11.5). `endpoint` is the `host:port` the offer's
  * QR carries. `peerPublicKey`/`peerFingerprint` appear once a code-confirmed
  * rendezvous **staged** a candidate in THIS window (§11.1, §11.2) — public key
@@ -485,27 +468,6 @@ export interface DataDriver {
    * it can never open the door for someone else's write.
    */
   endImportLease?(lease: number): Promise<void>;
-  /** Start the LAN snapshot server. Idempotent while running. */
-  shareStart(consentToken: string): Promise<ShareInfo>;
-  /**
-   * Stop the LAN listener. Idempotent.
-   *
-   * `forLock` is the lock path (D2a): it additionally revokes an armed
-   * consent token and supersedes one that an in-flight `shareStart` has
-   * already spent, so no listener can bind behind the lock screen. Ordinary
-   * callers omit it and keep the ordinary semantics — a stop is not a reason
-   * to make the user confirm a prompt they may still have on screen.
-   */
-  shareStop(forLock?: boolean): Promise<ShareInfo>;
-  shareStatus(): Promise<ShareInfo>;
-  /** Publish a freshly built snapshot payload for the LAN server to serve. */
-  sharePublish(snapshotJson: string): Promise<ShareInfo>;
-  /**
-   * Record that the user confirmed the LAN-share prompt and return a one-shot
-   * token for `shareStart`. Issuing is not consent — only starting the
-   * listener consumes the token, and only once.
-   */
-  shareArm(): Promise<string>;
 }
 
 /**
@@ -726,14 +688,6 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     safetyBackupCopy: (label) => invoke("backup_safety_copy", { label }),
     beginImportLease: () => invoke("backup_import_begin"),
     endImportLease: (lease) => invoke("backup_import_end", { lease }),
-    // P5 share controls — 25 commands total now, still one driver.
-    shareStart: (consentToken) => invoke("share_start", { consentToken }),
-    shareArm: () => invoke("share_arm"),
-    // One `invoke` site, so the command surface this file is pinned against
-    // still lists `share_stop` once.
-    shareStop: (forLock) => invoke("share_stop", { forLock: forLock === true }),
-    shareStatus: () => invoke("share_status"),
-    sharePublish: (snapshotJson) => invoke("share_publish", { snapshotJson }),
     // Pairing window (§11.5). One command site each, so the IPC surface this
     // file is pinned against lists every command exactly once.
     pairingLocal: () => invoke("pairing_local"),
@@ -779,7 +733,7 @@ export function createTauriDriver(): DataDriver & PairingDriver {
  * (`src-tauri/src/reset.rs` pins the same shape from the Rust side).
  */
 export type ResetComponentName =
-  | "share_stop"
+  | "listeners_stop"
   | "database"
   | "photos"
   | "backups"
@@ -788,7 +742,7 @@ export type ResetComponentName =
 
 /**
  * Per-component reset statuses. `already_absent` counts as success for
- * `complete`; `not_attempted` only ever follows an aborting failure (share
+ * `complete`; `not_attempted` only ever follows an aborting failure (listener
  * stop or database) and blocks `complete` like `failed` does.
  */
 export type ResetComponentStatus =
@@ -815,8 +769,8 @@ export interface FactoryResetOutcome {
 /**
  * Run the factory-reset engine.
  *
- * Removes every piece of PurpleMemo-owned local state — the LAN share and its
- * consent token, the database and its WAL/SHM siblings, the photo tree, the
+ * Removes every piece of PurpleMemo-owned local state — the pairing
+ * listener, the database and its WAL/SHM siblings, the photo tree, the
  * safety-copy tree, the three logs, and the credential-store key LAST — and
  * reports each component individually. The engine is not the policy: the UI
  * must gate it behind the permanent-destruction acknowledgement and must only

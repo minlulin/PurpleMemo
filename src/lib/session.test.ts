@@ -1,19 +1,17 @@
 // The app shell's session coordination: locking must
-// end sharing, the LAN publisher must not repeat its stop notice, and the
-// reminder poll must ask for permission once, never stack ticks and never fire
-// after the shell locked. These rules used to live inside `App.tsx`, where no
-// test could reach them.
+// end the pairing window, and the reminder poll must ask for permission
+// once, never stack ticks and never fire after the shell locked. These
+// rules used to live inside `App.tsx`, where no test could reach them.
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   createReminderTicker,
-  createShareTicker,
+  LISTENER_STOP_RETRY_DELAYS_MS,
+  LISTENER_STOP_TIMEOUT_MS,
   lockSession,
   type ReminderTickPorts,
-  SHARE_STOP_RETRY_DELAYS_MS,
-  SHARE_STOP_TIMEOUT_MS,
-  stopSharingWithRetry,
+  stopListenersWithRetry,
 } from "./session.ts";
 import type { ReminderRow } from "./types.ts";
 
@@ -30,12 +28,12 @@ function reminderRow(over: Partial<ReminderRow> = {}): ReminderRow {
   };
 }
 
-test("lockSession ends the LAN session (locking ends sharing)", () => {
+test("lockSession ends the pairing window (locking ends the listener)", () => {
   const stopped: string[] = [];
   let locked = false;
   lockSession({
     lockVault: () => stopped.push("vault"),
-    stopSharing: async () => stopped.push("share"),
+    stopListeners: async () => stopped.push("listener"),
     onLocked: () => {
       locked = true;
     },
@@ -43,8 +41,8 @@ test("lockSession ends the LAN session (locking ends sharing)", () => {
   assert.equal(locked, true, "the shell must lock");
   assert.deepEqual(
     stopped.sort(),
-    ["share", "vault"],
-    "both the vault cache and the LAN listener are dropped",
+    ["listener", "vault"],
+    "both the vault cache and the network listener are dropped",
   );
 });
 
@@ -55,7 +53,7 @@ test("lockSession locks the shell even when the vault lock throws", () => {
     lockVault: () => {
       throw new Error("vault cache already gone");
     },
-    stopSharing: async () => {
+    stopListeners: async () => {
       sharingStopped = true;
     },
     onLocked: () => {
@@ -70,7 +68,7 @@ test("lockSession never lets the teardown failure reach the lock screen", () => 
   // Rejected promise, and a synchronous throw — both are best-effort. The
   // retry schedule is emptied so the background teardown finishes in one
   // attempt instead of keeping the test run alive.
-  for (const stopSharing of [
+  for (const stopListeners of [
     () => Promise.reject(new Error("listener busy")),
     () => {
       throw new Error("no runtime");
@@ -80,7 +78,7 @@ test("lockSession never lets the teardown failure reach the lock screen", () => 
     assert.doesNotThrow(() =>
       lockSession({
         lockVault: () => undefined,
-        stopSharing,
+        stopListeners,
         onLocked: () => {
           locked = true;
         },
@@ -92,14 +90,14 @@ test("lockSession never lets the teardown failure reach the lock screen", () => 
   }
 });
 
-test("stopSharingWithRetry retries a failed stop and stays quiet on success", async () => {
+test("stopListenersWithRetry retries a failed stop and stays quiet on success", async () => {
   // one failure is not the story. A busy worker or a client mid-write
   // usually clears on the next attempt, and that recovery should not alarm the
   // user with a notice.
   let attempts = 0;
   const waits: number[] = [];
   const failures: unknown[] = [];
-  const stopped = await stopSharingWithRetry(
+  const stopped = await stopListenersWithRetry(
     async () => {
       attempts += 1;
       if (attempts < 3) throw new Error("listener busy");
@@ -118,10 +116,10 @@ test("stopSharingWithRetry retries a failed stop and stays quiet on success", as
   assert.deepEqual(failures, [], "a recovered stop is not a failure to report");
 });
 
-test("stopSharingWithRetry reports the last failure exactly once", async () => {
+test("stopListenersWithRetry reports the last failure exactly once", async () => {
   let attempts = 0;
   const failures: unknown[] = [];
-  const stopped = await stopSharingWithRetry(
+  const stopped = await stopListenersWithRetry(
     async () => {
       attempts += 1;
       throw new Error(`attempt ${attempts} failed`);
@@ -143,14 +141,15 @@ test("stopSharingWithRetry reports the last failure exactly once", async () => {
 
 test("a cancelled teardown neither retries nor reports (the stale-retry rule)", async () => {
   // The H4 scenario: lock #1's backoff is still sleeping when the shell
-  // unlocks and the user starts a NEW LAN share. The next attempt must never
-  // run — it would stop the share that was just started — and walking away is
-  // not itself a failure to show: the owner that cancelled the teardown has
-  // taken share state over and decides what, if anything, the user is told.
+  // unlocks and the user opens a NEW pairing window. The next attempt must
+  // never run — it would close the window that was just opened — and
+  // walking away is not itself a failure to show: the owner that cancelled
+  // the teardown has taken listener state over and decides what, if
+  // anything, the user is told.
   let attempts = 0;
   let cancelled = false;
   const failures: unknown[] = [];
-  const stopped = await stopSharingWithRetry(
+  const stopped = await stopListenersWithRetry(
     async () => {
       attempts += 1;
       throw new Error("listener busy");
@@ -170,11 +169,11 @@ test("a cancelled teardown neither retries nor reports (the stale-retry rule)", 
 });
 
 test("a stop that never answers is bounded and counted as a failure", async () => {
-  // The plausible hang: `share_stop` joins a worker blocked writing to a
-  // stalled client. Without the per-attempt timeout the lock's teardown would
-  // wait forever and never report anything.
+  // The plausible hang: the pairing close joins a worker blocked on a
+  // stalled socket. Without the per-attempt timeout the lock's teardown
+  // would wait forever and never report anything.
   const failures: unknown[] = [];
-  const stopped = await stopSharingWithRetry(
+  const stopped = await stopListenersWithRetry(
     () => new Promise<void>(() => undefined),
     {
       retryDelaysMs: [],
@@ -198,13 +197,13 @@ test("lockSession surfaces a listener that survived every retry", async () => {
   const notes: unknown[] = [];
   lockSession({
     lockVault: () => undefined,
-    stopSharing: async () => {
+    stopListeners: async () => {
       throw new Error("worker wedged");
     },
     onLocked: () => {
       locked = true;
     },
-    onShareStopFailed: (e) => notes.push(e),
+    onListenerStopFailed: (e) => notes.push(e),
     retryDelaysMs: [0, 0],
     wait: async () => undefined,
   });
@@ -225,11 +224,11 @@ test("the lock does not wait on a hung listener", async () => {
   const notes: unknown[] = [];
   lockSession({
     lockVault: () => undefined,
-    stopSharing: () => new Promise<void>(() => undefined),
+    stopListeners: () => new Promise<void>(() => undefined),
     onLocked: () => {
       locked = true;
     },
-    onShareStopFailed: (e) => notes.push(e),
+    onListenerStopFailed: (e) => notes.push(e),
     retryDelaysMs: [],
     stopTimeoutMs: 10,
   });
@@ -241,21 +240,21 @@ test("the lock does not wait on a hung listener", async () => {
 test("a teardown the shell retired is neither retried nor reported", async () => {
   // The ports are the shell's only handle on the background loop: once
   // `isCancelled` answers true (an unlock, or a newer lock superseding this
-  // one), the retry that would have torn down a freshly started share must not
-  // run, and the walk-away must not surface as a failure notice either.
+  // one), the retry that would have closed a freshly opened pairing window
+  // must not run, and the walk-away must not surface as a failure notice.
   let unlocked = false;
   let attempts = 0;
   const notes: unknown[] = [];
   lockSession({
     lockVault: () => undefined,
-    stopSharing: async () => {
+    stopListeners: async () => {
       attempts += 1;
       throw new Error("worker wedged");
     },
     onLocked: () => {
       unlocked = false;
     },
-    onShareStopFailed: (e) => notes.push(e),
+    onListenerStopFailed: (e) => notes.push(e),
     retryDelaysMs: [0, 0],
     wait: async () => {
       unlocked = true; // the user unlocked while the teardown backed off
@@ -267,7 +266,7 @@ test("a teardown the shell retired is neither retried nor reported", async () =>
   assert.equal(
     attempts,
     1,
-    "the retry that would stop a newly started share never runs",
+    "the retry that would close a newly opened pairing window never runs",
   );
   assert.equal(
     notes.length,
@@ -280,131 +279,13 @@ test("the retry schedule is bounded and leaves the lock responsive", () => {
   // The defaults are a product decision, not an implementation detail: long
   // enough to ride out a busy worker, short enough that a wedged listener is
   // reported while the user is still standing at the lock screen.
-  assert.ok(SHARE_STOP_RETRY_DELAYS_MS.length > 0);
-  const total = SHARE_STOP_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
+  assert.ok(LISTENER_STOP_RETRY_DELAYS_MS.length > 0);
+  const total = LISTENER_STOP_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
   assert.ok(
     total <= 120_000,
     `retries must finish within two minutes: ${total}`,
   );
-  assert.ok(SHARE_STOP_TIMEOUT_MS <= 10_000);
-});
-
-test("the share ticker publishes only while the server runs", async () => {
-  const published: number[] = [];
-  let status: { running: boolean; note?: string | null } = { running: false };
-  const tick = createShareTicker({
-    status: async () => status,
-    publish: async () => {
-      published.push(1);
-    },
-    onNote: () => undefined,
-    isCancelled: () => false,
-  });
-  await tick();
-  assert.equal(published.length, 0, "nothing to publish while stopped");
-  status = { running: true };
-  await tick();
-  await tick();
-  assert.equal(published.length, 2, "every tick republishes while running");
-});
-
-test("the share ticker raises the stop notice once, on the running → stopped edge", async () => {
-  const notes: string[] = [];
-  let status = { running: true, note: null as string | null };
-  const tick = createShareTicker({
-    status: async () => status,
-    publish: async () => undefined,
-    onNote: (note) => notes.push(note),
-    isCancelled: () => false,
-  });
-  await tick();
-  // The server stopped itself: note it, and only once.
-  status = {
-    running: false,
-    note: "Sharing server stopped unexpectedly.",
-  };
-  await tick();
-  await tick();
-  await tick();
-  assert.deepEqual(notes, ["Sharing server stopped unexpectedly."]);
-});
-
-test("the share ticker raises nothing for an app that was never sharing", async () => {
-  const notes: string[] = [];
-  const tick = createShareTicker({
-    status: async () => ({ running: false, note: "Stopped sharing." }),
-    publish: async () => undefined,
-    onNote: (note) => notes.push(note),
-    isCancelled: () => false,
-  });
-  await tick();
-  assert.deepEqual(notes, [], "not sharing is the normal state, not a notice");
-});
-
-test("the share ticker contains its failures and does not read them as a stop", async () => {
-  const notes: string[] = [];
-  let publishFails = true;
-  const tick = createShareTicker({
-    status: async () => ({ running: true, note: null }),
-    publish: async () => {
-      if (publishFails) throw new Error("database is busy");
-    },
-    onNote: (note) => notes.push(note),
-    isCancelled: () => false,
-  });
-  await assert.doesNotReject(() => tick());
-  publishFails = false;
-  await tick();
-  assert.deepEqual(notes, [], "a failed publish is not a stopped server");
-});
-
-test("the share ticker does nothing after the shell locked", async () => {
-  let published = 0;
-  let cancelled = false;
-  const tick = createShareTicker({
-    status: async () => ({ running: true, note: null }),
-    publish: async () => {
-      published += 1;
-    },
-    onNote: () => undefined,
-    isCancelled: () => cancelled,
-  });
-  cancelled = true;
-  await tick();
-  assert.equal(published, 0, "the publisher is paused while locked");
-});
-
-test("concurrent share ticks do not double-fire the stop note", async () => {
-  // A `status()` read that started before sharing stopped answers late, with
-  // the stale `running: true` view it took when it began. Without the
-  // inFlight guard, a newer tick can observe the stop in between,
-  // raise the note, and then the stale answer re-arms `wasRunning` — so the
-  // next tick raises the same note a second time.
-  const notes: string[] = [];
-  let running = true;
-  let slowNext = false;
-  const tick = createShareTicker({
-    status: async () => {
-      if (slowNext) {
-        slowNext = false;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return { running: true, note: null };
-      }
-      return { running, note: running ? null : "Stopped sharing." };
-    },
-    publish: async () => undefined,
-    onNote: (note) => notes.push(note),
-    isCancelled: () => false,
-  });
-
-  await tick(); // server up → wasRunning is armed
-  running = false; // the server stops...
-  slowNext = true;
-  const stale = tick(); // ...while a stale read is still in flight
-  await tick(); // must be a no-op while the stale tick runs
-  await stale; // the stale answer re-arms wasRunning
-  await tick(); // the first tick to actually see the stop raises the note
-  assert.equal(notes.length, 1, "the stop note fires exactly once");
+  assert.ok(LISTENER_STOP_TIMEOUT_MS <= 10_000);
 });
 
 function reminderTick(over: Partial<ReminderTickPorts> = {}) {

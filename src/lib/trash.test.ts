@@ -76,15 +76,6 @@ CREATE TABLE collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
-const OFF_SHARE = {
-  running: false,
-  url: null,
-  key: null,
-  port: null,
-  publishedAt: null,
-  note: null,
-};
-
 function sqliteDriver(): DataDriver & {
   db: DatabaseSync;
   deletedFiles: string[];
@@ -142,26 +133,11 @@ function sqliteDriver(): DataDriver & {
     async saveBackupFile() {},
     async saveExportFile() {},
     async saveDbKeyFile() {},
-    async shareStart() {
-      return OFF_SHARE;
-    },
-    async shareStop() {
-      return OFF_SHARE;
-    },
-    async shareStatus() {
-      return OFF_SHARE;
-    },
-    async sharePublish() {
-      return OFF_SHARE;
-    },
     async safetyBackupCopy() {
       // The import confirm step calls this before it deletes anything
       //; these suites never import, so there is nothing to
       // copy and a throw is the honest answer.
       throw new Error("no safety copy in this test driver");
-    },
-    async shareArm() {
-      return "";
     },
   };
 }

@@ -40,7 +40,7 @@ import {
 
 /** Every name/status the Rust engine can serialize (reset.rs pins the set). */
 const ALL_NAMES: ResetComponentName[] = [
-  "share_stop",
+  "listeners_stop",
   "database",
   "photos",
   "backups",
@@ -163,7 +163,7 @@ test("outcome rows are rendered verbatim, in engine order, detail as-is", () => 
   const attempt = resetAttemptFromOutcome(
     outcome(false, [
       {
-        name: "share_stop",
+        name: "listeners_stop",
         status: "already_absent",
         detail: null,
       },
@@ -183,7 +183,7 @@ test("outcome rows are rendered verbatim, in engine order, detail as-is", () => 
   assert.deepEqual(
     rows.map((r) => r.componentKey),
     [
-      "reset.component.shareStop",
+      "reset.component.listenersStop",
       "reset.component.database",
       "reset.component.photos",
     ],
