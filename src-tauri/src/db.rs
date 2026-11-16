@@ -670,12 +670,33 @@ pub fn open_encrypted_db(path: &Path, key_hex: &str) -> Result<Connection, Strin
     conn.busy_timeout(std::time::Duration::from_secs(BUSY_TIMEOUT_SECS))
         .map_err(|e| format!("failed to set busy timeout: {e}"))?;
     apply_performance_pragmas(&conn)?;
+    tune_statement_cache(&conn);
     Ok(conn)
+}
+
+/// Prepared statements cached per connection (audit A9).
+///
+/// `rusqlite` defaults to 16. A page issues more distinct statements than that
+/// — a browse list, its counts, the ledger summaries and the FTS query pass 16
+/// on their own — so the LRU evicted statements the next call wanted and every
+/// call paid parse, plan and the SQLCipher page walk that `prepare_cached`
+/// exists to avoid. 64 covers a page's working set with headroom; these are
+/// compiled statements (tens of KB), not results.
+const PREPARED_STATEMENT_CACHE: usize = 64;
+
+// Below `rusqlite`'s default this change would be a no-op at best, and the
+// thrash would come back silently.
+const _: () = assert!(PREPARED_STATEMENT_CACHE > 16);
+
+/// Set once, right after the connection is usable: the cache outlives every
+/// query on it.
+fn tune_statement_cache(conn: &Connection) {
+    conn.set_prepared_statement_cache_capacity(PREPARED_STATEMENT_CACHE);
 }
 
 /// Connection settings that only affect speed, never durability of a committed
 /// write that survives an app crash — apply them after the key, WAL and the
-/// busy timeout (docs/AUDIT.md PERF-10).
+/// busy timeout.
 ///
 /// * `synchronous = NORMAL` — with WAL this is the documented pairing: a
 ///   commit is durable against an application crash (the WAL is fsynced before
@@ -737,6 +758,9 @@ pub fn open_encrypted_db_existing(path: &Path, key_hex: &str) -> Result<Connecti
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(|e| format!("open {}: {e}", path.display()))?;
     set_key_and_verify(&conn, key_hex)?;
+    // This connection answers one probe and is dropped today, but a caller that
+    // keeps it gets the same cache as the real one.
+    tune_statement_cache(&conn);
     Ok(conn)
 }
 
@@ -1418,6 +1442,35 @@ mod tests {
         let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
         init_schema(&conn).expect("init schema");
         (dir, conn)
+    }
+
+    #[test]
+    #[ignore = "measurement, not an assertion — run: cargo test --lib prepared_statement_cache_measurement -- --ignored --nocapture"]
+    fn prepared_statement_cache_measurement() {
+        // A9: 40 distinct statements is the shape of a page whose working set
+        // does not fit the default 16-entry cache. Both runs execute the same
+        // 8,000 statements and differ only in cache capacity, so the difference
+        // is re-preparing — parse, plan and the SQLCipher page walk.
+        let (_dir, conn) = open_baseline("stmt-cache");
+        let statements: Vec<String> = (0..40)
+            .map(|i| format!("SELECT count(*) FROM notes WHERE id = {i}"))
+            .collect();
+        let measure = |capacity: usize| {
+            conn.set_prepared_statement_cache_capacity(capacity);
+            let start = std::time::Instant::now();
+            for _ in 0..200 {
+                for sql in &statements {
+                    let mut stmt = conn.prepare_cached(sql).expect("prepare");
+                    let _: i64 = stmt.query_row([], |row| row.get(0)).expect("query");
+                }
+            }
+            start.elapsed()
+        };
+        let default = measure(16);
+        let tuned = measure(PREPARED_STATEMENT_CACHE);
+        println!(
+            "A9: 8,000 statements — cache 16: {default:?}; cache {PREPARED_STATEMENT_CACHE}: {tuned:?}"
+        );
     }
 
     fn table_count(conn: &Connection) -> i64 {
