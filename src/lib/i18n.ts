@@ -283,6 +283,9 @@ export const en = {
   "mobile.reminders.notifyBlocked":
     "Notifications are blocked, so this reminder is saved but cannot notify. Allow notifications in Settings.",
 
+  "mobile.settings.appearanceHeading": "Appearance",
+  "mobile.settings.themeDark": "Dark",
+  "mobile.settings.themeLight": "Light",
   "mobile.settings.syncHeading": "Sync",
   "mobile.settings.syncOff":
     "Off. This phone is local-only: nothing leaves it, and there is no account to sync with yet.",
@@ -1287,6 +1290,9 @@ export const my: Record<MessageKey, string> = {
   "mobile.reminders.notifyBlocked":
     "အသိပေးချက် ခွင့်မပြုထားပါ၊ ထို့ကြောင့် သတိပေးချက် သိမ်းသော်လည်း အသိပေး၍ မရပါ။ ဆက်တင်တွင် အသိပေးချက်ကို ခွင့်ပြုပါ။",
 
+  "mobile.settings.appearanceHeading": "အသွင်အပြင်",
+  "mobile.settings.themeDark": "အမှောင်",
+  "mobile.settings.themeLight": "အလင်း",
   "mobile.settings.syncHeading": "စန့် (Sync)",
   "mobile.settings.syncOff":
     "ပိတ်ထားသည်။ ဤဖုန်းသည် ဒေသတွင်းသာ ဖြစ်သည် — မည်သည့်အရာမှ ပြင်ပသို့ မထွက်ပါ၊ စန့်လုပ်ရန် အကောင့်လည်း မရှိသေးပါ။",

@@ -71,7 +71,7 @@ import {
   resetPinAccepted,
 } from "../lib/reset.ts";
 import { SEARCH_DEBOUNCE_MS } from "../lib/searchContract.ts";
-import { SETTING_KEYS } from "../lib/settings.ts";
+import { SETTING_KEYS, type Theme } from "../lib/settings.ts";
 import { remindableHere } from "../lib/sync/reminderDelivery.ts";
 import type {
   LoanDirection,
@@ -486,6 +486,7 @@ export function SettingsScreen({
 }) {
   const t = useT();
   const [facts, setFacts] = useState<SettingsFacts>(EMPTY_FACTS);
+  const [theme, setThemeState] = useState<Theme>("dark");
   const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);
   const [asking, setAsking] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -513,7 +514,7 @@ export function SettingsScreen({
     // One fact per promise: a permission or diagnostic that cannot be read
     // must not blank the ones that can.
     void (async () => {
-      const [diagnostics, backing, exact, permission, rawPin] =
+      const [diagnostics, backing, exact, permission, rawPin, storedTheme] =
         await Promise.all([
           readMobileDiagnostics().catch(() => null),
           invoke<string>("keystore_backing").catch(() => null),
@@ -523,8 +524,10 @@ export function SettingsScreen({
             (value) => value,
             () => null,
           ),
+          settingsRepo.getTheme().catch(() => null),
         ]);
       if (cancelled) return;
+      setThemeState(storedTheme ?? "dark");
       setDiagnosticsFailed(diagnostics === null);
       setFacts({
         schemaVersion: diagnostics?.schemaVersion ?? null,
@@ -544,6 +547,29 @@ export function SettingsScreen({
       cancelled = true;
     };
   }, []);
+
+  /**
+   * F-4: the phone's theme control. The theme itself is device-local
+   * (§2.2 — settings never sync), stored by the same settings repo the
+   * desktop uses, and App's boot already applies it to both shells; the
+   * phone simply had no control that could change it, so it sat on the
+   * dark default forever. Presentation first (the desktop language
+   * switch's rule): repaint at once, persist after; a failed persist
+   * restores the previous theme rather than leaving the screen
+   * claiming a choice that would not survive a restart.
+   */
+  const applyTheme = async (next: Theme) => {
+    if (next === theme) return;
+    const previous = theme;
+    setThemeState(next);
+    document.documentElement.dataset.theme = next;
+    try {
+      await settingsRepo.setTheme(next);
+    } catch {
+      setThemeState(previous);
+      document.documentElement.dataset.theme = previous;
+    }
+  };
 
   const askNotifications = async () => {
     setAsking(true);
@@ -647,6 +673,33 @@ export function SettingsScreen({
 
   return (
     <section className="mobile-page">
+      <p className="mobile-section-kicker">
+        {t("mobile.settings.appearanceHeading")}
+      </p>
+      <div className="mobile-card">
+        <fieldset className="theme-segmented">
+          <legend className="visually-hidden">
+            {t("mobile.settings.appearanceHeading")}
+          </legend>
+          <button
+            type="button"
+            className={theme === "dark" ? "btn is-on" : "btn"}
+            aria-pressed={theme === "dark"}
+            onClick={() => void applyTheme("dark")}
+          >
+            {t("mobile.settings.themeDark")}
+          </button>
+          <button
+            type="button"
+            className={theme === "light" ? "btn is-on" : "btn"}
+            aria-pressed={theme === "light"}
+            onClick={() => void applyTheme("light")}
+          >
+            {t("mobile.settings.themeLight")}
+          </button>
+        </fieldset>
+      </div>
+
       <p className="mobile-section-kicker">
         {t("mobile.settings.syncHeading")}
       </p>
