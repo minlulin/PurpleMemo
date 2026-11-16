@@ -37,7 +37,13 @@ export type SyncAuthority =
   | "desktop-owned"
   | "desktop-to-mobile";
 
-/** The narrow 17-table core (docs/ANDROID_DESIGN.md decision 1), §2.1. */
+/** The narrow 17-table core (docs/ANDROID_DESIGN.md decision 1), §2.1.
+ *
+ * F-3 (2026-11-16, owner's call): `shops` is create-only, not desktop-owned.
+ * A new shop walking in is exactly the quick-capture case — the phone could
+ * add a job but had no shop to attach it to, so the job could not be
+ * recorded at all. Creation opens to the phone; edits and deletes stay on
+ * the desktop, like jobs and loans. */
 export const SYNC_TABLES = {
   collections: "two-way",
   notes: "two-way",
@@ -48,7 +54,7 @@ export const SYNC_TABLES = {
   expense_categories: "desktop-owned",
   income_entries: "append-only",
   expense_entries: "append-only",
-  shops: "desktop-owned",
+  shops: "create-only",
   jobs: "create-only",
   loans: "create-only",
   habits: "desktop-owned",

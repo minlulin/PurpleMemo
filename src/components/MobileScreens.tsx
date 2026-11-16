@@ -51,6 +51,7 @@ import {
   jobFormReady,
   loanFormReady,
   loanStateKey,
+  shopFormReady,
 } from "../lib/mobileCreate.ts";
 import {
   habitDoneToday,
@@ -1302,7 +1303,11 @@ export function ShoppingItemCompose({ onDone }: { onDone: () => void }) {
  * payments are recorded on the desktop, and a job created on the phone stays
  * open with its full total outstanding.
  */
-export function BusinessScreen({ onCompose }: { onCompose: () => void }) {
+export function BusinessScreen({
+  onCompose,
+}: {
+  onCompose: (id: "job" | "shop") => void;
+}) {
   const t = useT();
   const locale = useLocale();
   const load = useCallback(async () => {
@@ -1323,8 +1328,19 @@ export function BusinessScreen({ onCompose }: { onCompose: () => void }) {
     <section className="mobile-page">
       <p className="mobile-section-kicker">{t("nav.business")}</p>
       <div className="mobile-actions">
-        <button type="button" className="btn btn-primary" onClick={onCompose}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => onCompose("job")}
+        >
           {t("mobile.job.new")}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => onCompose("shop")}
+        >
+          {t("mobile.shop.new")}
         </button>
       </div>
       <p className="muted">{t("mobile.job.noPayment")}</p>
@@ -1487,6 +1503,82 @@ export function JobCompose({ onDone }: { onDone: () => void }) {
             disabled={busy || !ready}
           >
             {busy ? t("notes.saving") : t("mobile.job.save")}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/**
+ * The shop create form (F-3), opened from the Business screen. A name is
+ * the whole requirement — a new shop walking in is the quick-capture case,
+ * and a job for it could not be recorded until the shop existed. Editing
+ * and deleting shops stay on the desktop (create-only, §2.3).
+ */
+export function ShopCompose({ onDone }: { onDone: () => void }) {
+  const t = useT();
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+
+  const ready = shopFormReady({ name });
+
+  const save = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setSaveFailed(false);
+    try {
+      await businessRepo.createShop({
+        name: name.trim(),
+        phone: phone.trim() === "" ? undefined : phone.trim(),
+      });
+      onDone();
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="mobile-page">
+      <form
+        className="mobile-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <label className="mobile-field">
+          <span>{t("mobile.shop.nameLabel")}</span>
+          <input
+            className="input"
+            type="text"
+            value={name}
+            placeholder={t("mobile.shop.namePlaceholder")}
+            onChange={(event) => setName(event.currentTarget.value)}
+          />
+        </label>
+        <label className="mobile-field">
+          <span>{t("mobile.shop.phoneLabel")}</span>
+          <input
+            className="input"
+            type="tel"
+            value={phone}
+            placeholder={t("mobile.shop.phonePlaceholder")}
+            onChange={(event) => setPhone(event.currentTarget.value)}
+          />
+        </label>
+        <LoadMessage failed={saveFailed} />
+        <div className="mobile-actions">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={busy || !ready}
+          >
+            {busy ? t("notes.saving") : t("mobile.shop.save")}
           </button>
         </div>
       </form>

@@ -55,6 +55,7 @@ import {
   NoteReaderScreen,
   NotesScreen,
   SettingsScreen,
+  ShopCompose,
   ShoppingItemCompose,
   ShoppingScreen,
   TaskCompose,
@@ -401,8 +402,7 @@ function SectionBody({
     return <ShoppingScreen onCompose={() => onCompose("shopping")} />;
   }
   if (page === "budget") return <BudgetScreen onCompose={onCompose} />;
-  if (page === "business")
-    return <BusinessScreen onCompose={() => onCompose("job")} />;
+  if (page === "business") return <BusinessScreen onCompose={onCompose} />;
   if (page === "loans")
     return <LoansScreen onCompose={() => onCompose("loan")} />;
   if (page === "habits") return <HabitsScreen />;
@@ -441,6 +441,7 @@ function ComposeBody({
     return <EntryCompose kind={id} onDone={onDone} />;
   }
   if (id === "job") return <JobCompose onDone={onDone} />;
+  if (id === "shop") return <ShopCompose onDone={onDone} />;
   if (id === "loan") return <LoanCompose onDone={onDone} />;
   return (
     <section className="mobile-page">

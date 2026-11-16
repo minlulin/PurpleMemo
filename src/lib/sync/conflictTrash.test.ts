@@ -399,10 +399,11 @@ test("a restore records its create op only where §2.3 allows one", async () => 
   // No Trash type is desktop-owned today (Notes, Tasks and Shopping are all
   // two-way), so the refusal branch is pinned on the rule itself: the synced
   // tables a restore could not record from the phone are the desktop-owned
-  // and one-way ones.
+  // and one-way ones. Shops joined the recordable side with F-3 (create-only
+  // — and a restore records a create).
   assert.equal(restoreOpAllowed("wallets", "mobile"), false);
-  assert.equal(restoreOpAllowed("shops", "mobile"), false);
   assert.equal(restoreOpAllowed("vault_items", "mobile"), false);
+  assert.equal(restoreOpAllowed("shops", "mobile"), true);
   assert.equal(restoreOpAllowed("notes", "mobile"), true);
   assert.equal(restoreOpAllowed("tasks", "mobile"), true);
   assert.equal(restoreOpAllowed("wallets", "desktop"), true);

@@ -155,7 +155,10 @@ export function routeForNote(id: number): MobileRoute {
 /**
  * What the FAB can create. Creation only — habit check-ins are 1-tap toggles on
  * Dashboard/Habits (his correction, 2026-11-02). Jobs and loans are also
- * reachable from their own pages, per the Phase B Session 2 order.
+ * reachable from their own pages, per the Phase B Session 2 order. `shop`
+ * (F-3) is reachable from the Business page only — it is in this union so
+ * the compose route can name it, and deliberately NOT in FAB_ACTIONS, so
+ * the speed-dial itself is unchanged.
  */
 export type FabActionId =
   | "note"
@@ -164,7 +167,8 @@ export type FabActionId =
   | "expense"
   | "shopping"
   | "job"
-  | "loan";
+  | "loan"
+  | "shop";
 
 export interface FabAction {
   id: FabActionId;

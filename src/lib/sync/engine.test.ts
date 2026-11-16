@@ -1012,8 +1012,8 @@ test("an update and a delete naming the loser uid act on the winner row", async 
 });
 
 // ---------------------------------------------------------------------------
-// Stage 2 Session 2 — Business/Loans: desktop-owned shops, create-only jobs
-// and loans (§12.2).
+// Stage 2 Session 2 — Business/Loans: create-only shops (F-3), jobs and
+// loans (§12.2).
 // ---------------------------------------------------------------------------
 
 test("a phone's job arrives on the desktop with its shop resolved by uid", async () => {
@@ -1182,16 +1182,18 @@ test("a phone's loan arrives on the desktop", async () => {
   assert.equal(loan.due_date, "2026-12-01");
 });
 
-test("a desktop shop reaches the phone while a mobile-origin shop op is refused", async () => {
+test("a shop crosses both ways: desktop shops flow down, a phone-created shop lands (F-3)", async () => {
   const pair = await openPair();
   await createBusinessRepo(pair.a.driver).createShop({ name: "Alpha" });
   await applyFrom(pair.b, pair.a);
   assert.equal(
     await count(pair.b, "SELECT count(*) AS n FROM shops WHERE name = 'Alpha'"),
     1,
-    "the desktop-owned shop flowed down",
+    "the desktop's shop flowed down",
   );
 
+  // F-3: the phone may CREATE a shop — a new shop walking in is the
+  // quick-capture case, and a job for it could not be recorded otherwise.
   const phoneId = await deviceOf(pair.b);
   const create = syntheticOp(
     phoneId,
@@ -1202,19 +1204,49 @@ test("a desktop shop reaches the phone while a mobile-origin shop op is refused"
     { name: "Phone shop", created_at: "2026-11-13" },
     5,
   );
+  await pair.a.driver.batch(
+    await applyOps(pair.a.driver, {
+      peerId: phoneId,
+      origin: "mobile",
+      ops: [create],
+    }),
+  );
+  assert.equal(
+    await count(
+      pair.a,
+      "SELECT count(*) AS n FROM shops WHERE name = 'Phone shop'",
+    ),
+    1,
+    "the phone's shop landed on the desktop",
+  );
+
+  // …but create-only is not two-way: an edit or a delete from the phone is
+  // still refused, and the desktop's row is untouched.
+  const update = syntheticOp(
+    phoneId,
+    3,
+    "shops",
+    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "update",
+    { name: "Renamed by phone" },
+    6,
+  );
   await assert.rejects(
     () =>
       applyOps(pair.a.driver, {
         peerId: phoneId,
         origin: "mobile",
-        ops: [create],
+        ops: [update],
       }),
-    /desktop-owned/,
+    /never updates or deletes/,
   );
   assert.equal(
-    await count(pair.a, "SELECT count(*) AS n FROM shops"),
+    await count(
+      pair.a,
+      "SELECT count(*) AS n FROM shops WHERE name = 'Phone shop'",
+    ),
     1,
-    "only the desktop's own shop exists there",
+    "the refused edit changed nothing",
   );
 });
 

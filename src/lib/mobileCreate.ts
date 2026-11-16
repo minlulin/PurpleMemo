@@ -27,6 +27,20 @@ export function jobFormReady(state: JobFormState): boolean {
   );
 }
 
+export interface ShopFormState {
+  name: string;
+}
+
+/**
+ * True when a shop may be saved (F-3): a name is the whole requirement —
+ * the schema's one NOT NULL without a default, and the only field a new
+ * shop walking in always has. Phone and the rest are optional and stay
+ * editable on the desktop.
+ */
+export function shopFormReady(state: ShopFormState): boolean {
+  return state.name.trim() !== "";
+}
+
 export interface LoanFormState {
   counterparty: string;
   amountCents: number | null;

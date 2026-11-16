@@ -118,7 +118,7 @@ decisions 3, 4 and the interaction-model refinement. The phone's authority only:
 | Tasks | `tasks`, `reminders` | create; toggle `tasks.done`; complete a repeating task (`done` + `due_date`); delete; reminders per §13.1 |
 | Budget | `income_entries`, `expense_entries` | **append** only — never edit or delete |
 | Budget | `wallets`, `income_categories`, `expense_categories` | read only (desktop-owned) |
-| Business | `shops` | read only |
+| Business | `shops` | create only — edits and deletes are desktop-only (F-3, 2026-11-16: a new shop walking in is the quick-capture case; the phone could add a job but had no shop to attach it to) |
 | Business | `jobs` | create only — payment fields are desktop-only |
 | Loans | `loans` | create only — repayments are desktop-only |
 | Habits | `habits` | read only |

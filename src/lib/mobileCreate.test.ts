@@ -1,6 +1,17 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { jobFormReady, loanFormReady, loanStateKey } from "./mobileCreate.ts";
+import {
+  jobFormReady,
+  loanFormReady,
+  loanStateKey,
+  shopFormReady,
+} from "./mobileCreate.ts";
+
+test("a shop needs only a name (F-3)", () => {
+  assert.equal(shopFormReady({ name: "City Mobile" }), true);
+  assert.equal(shopFormReady({ name: "   " }), false);
+  assert.equal(shopFormReady({ name: "" }), false);
+});
 
 test("a job needs a title and a total above zero", () => {
   assert.equal(
