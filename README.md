@@ -89,7 +89,8 @@ It only warns and exits 0 where there is nothing to arm: outside a git checkout
 (a source tarball, a packaged copy) or with no `git` on `PATH`.
 
 `npm run verify` =
-`node scripts/check-hooks.mjs` → `node scripts/check-signing-key.mjs` →
+`node scripts/check-hooks.mjs` → `node scripts/check-references.mjs` →
+`node scripts/check-signing-key.mjs` →
 `node scripts/check-versions.mjs` →
 `biome check --error-on-warnings .` → token lint → dead-code lint →
 `tsc --noEmit` →
@@ -100,6 +101,11 @@ It only warns and exits 0 where there is nothing to arm: outside a git checkout
 
 Rules of the gate:
 
+- A reference has to point somewhere. `scripts/check-references.mjs` fails the
+  gate when a comment or a test title names a file under `docs/` that is not
+  there, or when a link in a markdown file does not resolve. Comments are never
+  executed and links are never followed by the build, so without this check a
+  moved document leaves the source pointing at nothing for weeks.
 - Never use `git push --no-verify`. If the gate is red, fix it or revert —
   the gate's own output on your machine is the evidence.
 - Hosted CI is intentionally out of scope. Every clone must enable the hook
