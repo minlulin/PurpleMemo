@@ -243,11 +243,11 @@ export interface ExportBudget {
   bytes: number;
   photos: number;
   /**
-   * False when the library cannot produce an importable archive: either the
-   * photos exceed the total cap, or a SINGLE photo exceeds
-   * [`MAX_BACKUP_PHOTO_BYTES`] — inspection refuses those on restore, so an
-   * export that included one would write a backup this app cannot read back
-   * (E6).
+   * False when the library cannot produce an importable archive: the photos
+   * exceed the total cap, a SINGLE photo exceeds [`MAX_BACKUP_PHOTO_BYTES`],
+   * or there are more than [`MAX_BACKUP_PHOTOS`] of them. Inspection refuses
+   * all three on restore, so an export that included one would write a backup
+   * this app cannot read back (E6).
    */
   ok: boolean;
   /** The cap `bytes` was measured against. */
@@ -266,6 +266,13 @@ export interface ExportBudget {
  * the same stored sizes, before a single byte is read or a destination file
  * is touched — the moment to refuse an oversized library is BEFORE the
  * export replaces the previous backup with an unrestorable one.
+ *
+ * The PHOTO COUNT is part of `ok` for the same reason, and it was the gap
+ * an audit found: `parseBackupZip` refuses an archive with more than
+ * [`MAX_BACKUP_PHOTOS`] photos, and nothing on this side counted them, so a
+ * library of small photos could export a file this app would never import.
+ * Both sides read the one `MAX_BACKUP_PHOTOS` declaration above, so they
+ * cannot drift.
  */
 export function exportBudget(
   rows: { size_bytes: number }[],
@@ -283,10 +290,28 @@ export function exportBudget(
   return {
     bytes,
     photos: rows.length,
-    ok: bytes <= limit && largest <= MAX_BACKUP_PHOTO_BYTES,
+    ok:
+      bytes <= limit &&
+      largest <= MAX_BACKUP_PHOTO_BYTES &&
+      rows.length <= MAX_BACKUP_PHOTOS,
     limit,
     largest,
   };
+}
+
+/**
+ * Rows one export payload would hold, counted exactly the way the importer
+ * counts them ([`BACKUP_TABLES`], every row of every table).
+ *
+ * Pure and exported so the export side and the import side can be shown to
+ * agree on [`MAX_BACKUP_ROWS`] without materializing a 100 000-row archive.
+ */
+export function backupRowCount(data: Record<string, Row[]>): number {
+  let rows = 0;
+  for (const table of BACKUP_TABLES) {
+    rows += data[table]?.length ?? 0;
+  }
+  return rows;
 }
 
 /** Read every data table + photo bytes into a storable backup. */
@@ -294,7 +319,7 @@ export async function readBackupData(
   driver: DataDriver,
 ): Promise<{ payload: BackupPayload; photos: BackupPhotoEntry[] }> {
   // Every table read is independent, so they all go out together instead of
-  // one round trip after another (docs/AUDIT.md PERF-06). Order is fixed by
+  // one round trip after another. Order is fixed by
   // BACKUP_TABLES, not by which query answers first.
   const tableRows = await Promise.all(
     BACKUP_TABLES.map((table) => driver.query<Row>(`SELECT * FROM ${table}`)),
@@ -309,12 +334,30 @@ export async function readBackupData(
   data.settings = (data.settings ?? []).filter(
     (row) => !isDeviceLocalSetting(row),
   );
+  // The row ceiling the importer enforces, applied here (audit A1). It is
+  // checked before any photo byte is read, like the size refusals below, and
+  // after the settings filter so the count is of rows that will actually be
+  // written. A backup this app cannot import is the one outcome the export
+  // path exists to prevent.
+  const rowCount = backupRowCount(data);
+  if (rowCount > MAX_BACKUP_ROWS) {
+    throw new Error(
+      `This library holds ${rowCount.toLocaleString("en-US")} rows, more than the ${MAX_BACKUP_ROWS.toLocaleString("en-US")} one backup can hold — an archive that large would be refused on restore. Delete some records and export again; the library was not touched and no backup file was written.`,
+    );
+  }
   const photoRows = await driver.query<{
     rel_path: string;
     size_bytes: number;
   }>("SELECT rel_path, size_bytes FROM photos ORDER BY id");
   const budget = exportBudget(photoRows);
   if (!budget.ok) {
+    if (budget.photos > MAX_BACKUP_PHOTOS) {
+      // Counted, not summed: a library of small photos can be far inside the
+      // byte cap and still be an archive the importer refuses by count.
+      throw new Error(
+        `This library holds ${budget.photos.toLocaleString("en-US")} photos, more than the ${MAX_BACKUP_PHOTOS.toLocaleString("en-US")} one backup can hold — an archive with more would be refused on restore. Delete some photos and export again; the library was not touched and no backup file was written.`,
+      );
+    }
     if (budget.largest > MAX_BACKUP_PHOTO_BYTES) {
       // E6: name the offending photo rather than the total — the total may
       // be perfectly fine, and the user needs to know which single file makes
@@ -585,6 +628,39 @@ function incompleteBackupError(missing: string[]): Error {
   );
 }
 
+/**
+ * Refuse a cents column that is not a whole number (audit A3).
+ *
+ * The export path can only produce integers — `parseMMK` is bounded and exact —
+ * but a backup is a file the user can edit or receive from elsewhere, and every
+ * value in it is bound straight into SQL. A JSON `1.5` (or a number past 2^53
+ * that already lost precision) would be stored as a SQLite `REAL` in a column
+ * everything else treats as integer cents, quietly breaking every `SUM`,
+ * comparison and CSV export over it. The check runs during `parseBackupJson`,
+ * before a photo file is written and before the batch that replaces every table,
+ * so a bad archive is refused with the workspace untouched.
+ *
+ * Sign is deliberately not checked: a correction or an adjustment may legitimately
+ * carry a negative amount, and this rule is about exactness, not direction.
+ */
+function validateCentsColumns(payload: BackupPayload): void {
+  for (const table of BACKUP_TABLES) {
+    for (const [index, row] of (payload.data[table] ?? []).entries()) {
+      for (const [column, value] of Object.entries(row)) {
+        if (!column.endsWith("_cents")) continue;
+        // Absent is not the same as wrong: NULL is how these columns say
+        // "nothing recorded", and JSON may simply omit the key.
+        if (value === null || value === undefined) continue;
+        if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+          throw new Error(
+            `Backup ${table} row ${index + 1} has ${column} = ${JSON.stringify(value)}, which is not a whole number of cents — import rejected, nothing was changed.`,
+          );
+        }
+      }
+    }
+  }
+}
+
 function parseBackupJson(text: string): BackupPayload {
   let raw: unknown;
   try {
@@ -654,6 +730,7 @@ function parseBackupJson(text: string): BackupPayload {
   // After the upgrade, so a v2 payload's absent `links` key is not mistaken for
   // "no validation needed" — and still before a single byte is written.
   validateLinks(upgraded);
+  validateCentsColumns(upgraded);
   const trashItems = upgraded.data.trash_items ?? [];
   if (!Array.isArray(trashItems)) {
     throw new Error(

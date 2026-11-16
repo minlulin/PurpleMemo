@@ -27,6 +27,7 @@ import {
   BACKUP_TABLES,
   type BackupPayload,
   type BackupPhotoEntry,
+  backupRowCount,
   buildBackupZip,
   createBackupRepo,
   DEVICE_LOCAL_SETTING_KEYS,
@@ -299,6 +300,137 @@ test("readBackupData refuses an oversized library BEFORE reading any photo bytes
     [],
     "a refused export must not pull the library through IPC first",
   );
+});
+
+test("exportBudget: refuses a library with more photos than one backup can hold (A1)", () => {
+  // The count is a DIFFERENT bound from the byte total: 5 001 one-byte photos
+  // are 5 001 bytes and still an archive inspection refuses. This used to pass
+  // export and fail import, which is the one direction a backup must never
+  // fail.
+  const atCap = Array.from({ length: MAX_BACKUP_PHOTOS }, () => ({
+    size_bytes: 1,
+  }));
+  const overCap = [...atCap, { size_bytes: 1 }];
+
+  assert.equal(
+    exportBudget(atCap).ok,
+    true,
+    "exactly the importer's photo ceiling is still exportable",
+  );
+  const over = exportBudget(overCap);
+  assert.equal(over.ok, false, "one photo over the ceiling must refuse");
+  assert.equal(over.photos, MAX_BACKUP_PHOTOS + 1);
+  assert.equal(
+    over.bytes,
+    MAX_BACKUP_PHOTOS + 1,
+    "the byte total is nowhere near its own cap — this refusal is about count",
+  );
+});
+
+test("exportBudget and parseBackupZip read the SAME photo ceiling (A1)", async () => {
+  // The two sides are only in sync if they read one constant. Build the exact
+  // archive the export side would have produced one photo over the ceiling and
+  // prove the importer refuses it — so `exportBudget` refusing first is a
+  // convenience, not the only thing standing between the user and a dead
+  // backup.
+  const photos: Record<string, Uint8Array> = {
+    [BACKUP_JSON_ENTRY]: new TextEncoder().encode(
+      JSON.stringify(samplePayload()),
+    ),
+  };
+  for (let i = 0; i <= MAX_BACKUP_PHOTOS; i += 1) {
+    photos[`photos/2026/10/${String(i).padStart(64, "a")}.jpg`] =
+      new Uint8Array([1]);
+  }
+  const archive = zipSync(photos);
+  assert.throws(
+    () => parseBackupZip(archive),
+    new RegExp(`more than ${MAX_BACKUP_PHOTOS} photos`),
+    "the importer must refuse the count the export side now refuses",
+  );
+});
+
+test("backupRowCount counts every backed-up table, and readBackupData refuses over the row cap (A1)", async () => {
+  // Pure count first: one row in notes + one in tasks + a table the payload
+  // does not mention at all, which must count as zero rather than throwing.
+  assert.equal(backupRowCount({ notes: [NOTE_ROW], tasks: [{ id: 2 }] }), 2);
+  assert.equal(backupRowCount({}), 0);
+
+  // Then the refusal. A sparse array is enough: the export path only reads
+  // `.length` before it decides, so the cap can be exercised without
+  // allocating 100 000 row objects.
+  const tableResults: Queryable[][] = BACKUP_TABLES.map(() => []);
+  tableResults[BACKUP_TABLES.indexOf("notes")] = new Array(
+    MAX_BACKUP_ROWS + 1,
+  ) as Queryable[];
+  const driver = createMockDriver({ results: tableResults });
+  await assert.rejects(
+    () => readBackupData(driver),
+    new RegExp(
+      `more than the ${MAX_BACKUP_ROWS.toLocaleString("en-US")} one backup can hold`,
+    ),
+    "a payload the importer would refuse on row count must be refused here",
+  );
+  assert.deepEqual(
+    driver.callsTo("readPhoto"),
+    [],
+    "the row refusal must fire before the library is read through IPC",
+  );
+});
+
+test("readBackupData refuses a library over the photo ceiling before reading any bytes (A1)", async () => {
+  const tableResults: Queryable[][] = BACKUP_TABLES.map(() => []);
+  tableResults.push(
+    Array.from({ length: MAX_BACKUP_PHOTOS + 1 }, (_, i) => ({
+      rel_path: `photos/2026/10/p${i}.jpg`,
+      size_bytes: 1,
+    })),
+  );
+  const driver = createMockDriver({ results: tableResults });
+  await assert.rejects(
+    () => readBackupData(driver),
+    new RegExp(
+      `photos, more than the ${MAX_BACKUP_PHOTOS.toLocaleString("en-US")}`,
+    ),
+  );
+  assert.deepEqual(
+    driver.callsTo("readPhoto"),
+    [],
+    "a refused export must not pull the library through IPC first",
+  );
+});
+
+test("a backup whose cents column is not a whole number is refused (A3)", () => {
+  const withLimits = (limit_cents: unknown): Uint8Array => {
+    const payload = samplePayload();
+    payload.data.expense_limits = [
+      { id: 1, category_id: 1, month: "2026-10", limit_cents },
+    ];
+    return zipSync({
+      [BACKUP_JSON_ENTRY]: new TextEncoder().encode(JSON.stringify(payload)),
+    });
+  };
+
+  // A fraction is the case a hand-edited archive produces: it would bind as a
+  // SQLite REAL in a column every SUM and export treats as integer cents.
+  assert.throws(
+    () => parseBackupZip(withLimits(1.5)),
+    /expense_limits row 1 has limit_cents = 1\.5, which is not a whole number of cents/,
+  );
+  // A magnitude past 2^53 is the other half — JSON.parse has already lost the
+  // precision, so the number cannot be a cent value at all.
+  assert.throws(
+    () => parseBackupZip(withLimits(Number.MAX_SAFE_INTEGER + 2)),
+    /not a whole number of cents/,
+  );
+  // Whole cents still import: the rule rejects precision, not size. NULL is how
+  // these columns say "nothing recorded", so it must pass too.
+  assert.equal(
+    parseBackupZip(withLimits(1000)).payload.data.expense_limits?.[0]
+      ?.limit_cents,
+    1000,
+  );
+  assert.doesNotThrow(() => parseBackupZip(withLimits(null)));
 });
 
 test("parseBackupZip rejects bytes that are not a zip", () => {
