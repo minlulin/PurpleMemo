@@ -21,6 +21,7 @@ import {
 } from "../components/icons.tsx";
 import { LinksSection } from "../components/LinksSection.tsx";
 import {
+  MarkdownDocument,
   markdownComponents,
   markdownUrlTransform,
 } from "../components/MarkdownLink.tsx";
@@ -92,6 +93,12 @@ interface EditorProps {
   onViewMode: (mode: NotesViewMode) => void;
   /** Open dedicated pop-up modal reader. */
   onOpenReader: () => void;
+  /**
+   * Which document the preview is rendering (the note's id). Each note gets its
+   * own heading-id scope, so its `#introduction` anchors resolve even after a
+   * session has shown another note with the same heading (audit A4).
+   */
+  documentKey: string;
 }
 
 function NoteEditor(p: EditorProps) {
@@ -248,12 +255,14 @@ function NoteEditor(p: EditorProps) {
             {p.content.trim().length === 0 ? (
               <p className="empty-state">{t("notes.previewEmpty")}</p>
             ) : (
-              <ReactMarkdown
-                components={markdownComponents}
-                urlTransform={markdownUrlTransform}
-              >
-                {p.content}
-              </ReactMarkdown>
+              <MarkdownDocument documentKey={p.documentKey}>
+                <ReactMarkdown
+                  components={markdownComponents}
+                  urlTransform={markdownUrlTransform}
+                >
+                  {p.content}
+                </ReactMarkdown>
+              </MarkdownDocument>
             )}
           </div>
         </div>
@@ -349,7 +358,7 @@ export default function NotesPage(p: NotesPageProps) {
   // What the loader actually queries. Typing updates `search` on every
   // keystroke but only settles here after a pause: the search ran one query
   // per character, and a one-character FTS prefix match is the most expensive
-  // kind there is (docs/AUDIT.md PERF-02).
+  // kind there is.
   const [searchTerm, setSearchTerm] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -961,7 +970,7 @@ export default function NotesPage(p: NotesPageProps) {
 
   // 140-character excerpts were rebuilt for every note on every render — one
   // per keystroke before the search was debounced. They only change when the
-  // note list does (docs/AUDIT.md PERF-02).
+  // note list does.
   const excerpts = useMemo(
     () => new Map(notes.map((n) => [n.id, noteExcerpt(n.content)])),
     [notes],
@@ -1220,6 +1229,7 @@ export default function NotesPage(p: NotesPageProps) {
                     viewMode={viewMode}
                     onViewMode={changeViewMode}
                     onOpenReader={() => setReaderOpen(true)}
+                    documentKey={`note:${selected.id}`}
                   />
                 )}
               </section>

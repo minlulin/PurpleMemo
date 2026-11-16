@@ -81,7 +81,11 @@ import type {
 } from "../lib/types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { EmptyState } from "./EmptyState.tsx";
-import { markdownComponents, markdownUrlTransform } from "./MarkdownLink.tsx";
+import {
+  MarkdownDocument,
+  markdownComponents,
+  markdownUrlTransform,
+} from "./MarkdownLink.tsx";
 import { MobilePairingCard } from "./MobilePairingCard.tsx";
 import { useLocale, useT } from "./useTranslation.ts";
 
@@ -2694,12 +2698,16 @@ export function NoteReaderScreen({ noteId }: { noteId: number }) {
             <EmptyState>{t("mobile.noteReader.empty")}</EmptyState>
           ) : (
             <div className="mobile-reader-body">
-              <ReactMarkdown
-                components={markdownComponents}
-                urlTransform={markdownUrlTransform}
-              >
-                {data.content}
-              </ReactMarkdown>
+              {/* One heading-id scope per note, so each note's own
+                  `#introduction` anchors resolve (audit A4). */}
+              <MarkdownDocument documentKey={`note:${noteId}`}>
+                <ReactMarkdown
+                  components={markdownComponents}
+                  urlTransform={markdownUrlTransform}
+                >
+                  {data.content}
+                </ReactMarkdown>
+              </MarkdownDocument>
             </div>
           )}
         </article>

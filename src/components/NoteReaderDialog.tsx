@@ -20,7 +20,11 @@ import {
   IconFolder,
   IconPin,
 } from "./icons.tsx";
-import { markdownComponents, markdownUrlTransform } from "./MarkdownLink.tsx";
+import {
+  MarkdownDocument,
+  markdownComponents,
+  markdownUrlTransform,
+} from "./MarkdownLink.tsx";
 import { useToast } from "./Toast.tsx";
 import { useLocale, usePlural, useT } from "./useTranslation.ts";
 
@@ -227,12 +231,17 @@ export function NoteReaderDialog({
         {note.content.trim().length === 0 ? (
           <p className="empty-state">{t("notes.previewEmpty")}</p>
         ) : (
-          <ReactMarkdown
-            components={markdownComponents}
-            urlTransform={markdownUrlTransform}
-          >
-            {note.content}
-          </ReactMarkdown>
+          // One scope per note: Prev/Next keep this dialog mounted, so the
+          // document key is what makes the next note's `#introduction` its own
+          // anchor again (audit A4).
+          <MarkdownDocument documentKey={`note:${note.id}`}>
+            <ReactMarkdown
+              components={markdownComponents}
+              urlTransform={markdownUrlTransform}
+            >
+              {note.content}
+            </ReactMarkdown>
+          </MarkdownDocument>
         )}
       </div>
 

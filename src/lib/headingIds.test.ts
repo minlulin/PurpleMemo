@@ -1,5 +1,4 @@
-// Batch-12 D2 (docs/Arena_Findings_Batch12.md): heading ids for rendered
-// Markdown. Pure logic lives in `./headingIds.ts` so `node --test` can
+// Heading ids for rendered Markdown. Pure logic lives in `./headingIds.ts` so `node --test` can
 // exercise it directly — the component only owns the React side (one
 // allocation per mounted heading).
 
@@ -49,4 +48,21 @@ test("scope: separate scopes do not interfere", () => {
   const b = createHeadingIdScope();
   assert.equal(a.alloc("Introduction"), "introduction");
   assert.equal(b.alloc("Introduction"), "introduction");
+});
+
+test("scope: two documents each own their `#introduction` (A4)", () => {
+  // The bug the per-document scope fixes: with one session-wide scope the
+  // second note's heading became `introduction-1`, so its own
+  // `[Jump](#introduction)` found nothing. Dedup still holds WITHIN a
+  // document, which is what a duplicate heading in one note needs.
+  const noteA = createHeadingIdScope();
+  assert.equal(noteA.alloc("Introduction"), "introduction");
+  assert.equal(noteA.alloc("Introduction"), "introduction-1");
+
+  const noteB = createHeadingIdScope();
+  assert.equal(noteB.alloc("Introduction"), "introduction");
+  assert.equal(noteB.alloc("Introduction"), "introduction-1");
+
+  // And A's dedup is unaffected by B having allocated the same slugs.
+  assert.equal(noteA.alloc("Introduction"), "introduction-2");
 });

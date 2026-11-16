@@ -35,8 +35,14 @@ export interface HeadingIdScope {
  * A fresh scope. The scope only grows — allocations are never released
  * back — so an id handed out can never be handed out again, even if a
  * heading's text is edited twice. The map holds one small entry per
- * distinct slug; the component owns one module-level scope for the
- * session.
+ * distinct slug.
+ *
+ * One scope per rendered DOCUMENT, owned by `MarkdownDocument` in
+ * `src/components/MarkdownLink.tsx` and keyed on the note (or journal date)
+ * being rendered (audit A4): a session-wide scope meant the second note with
+ * an `# Introduction` rendered it as `introduction-1`, so that note's own
+ * `[Jump](#introduction)` scrolled nowhere. A per-document scope also bounds
+ * the map to the document on screen instead of the whole session.
  */
 export function createHeadingIdScope(): HeadingIdScope {
   const seen = new Map<string, number>();

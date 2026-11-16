@@ -11,6 +11,7 @@ import {
   IconJournal,
 } from "../components/icons.tsx";
 import {
+  MarkdownDocument,
   markdownComponents,
   markdownUrlTransform,
 } from "../components/MarkdownLink.tsx";
@@ -480,12 +481,17 @@ export default function JournalPage({
                 {content.trim().length === 0 ? (
                   <p className="empty-state">Live preview appears here.</p>
                 ) : (
-                  <ReactMarkdown
-                    components={markdownComponents}
-                    urlTransform={markdownUrlTransform}
-                  >
-                    {content}
-                  </ReactMarkdown>
+                  // One scope per entry: the preview stays mounted while the
+                  // date changes, and each day's `#introduction` must be its
+                  // own anchor (audit A4).
+                  <MarkdownDocument documentKey={`journal:${activeDate}`}>
+                    <ReactMarkdown
+                      components={markdownComponents}
+                      urlTransform={markdownUrlTransform}
+                    >
+                      {content}
+                    </ReactMarkdown>
+                  </MarkdownDocument>
                 )}
               </div>
             </div>

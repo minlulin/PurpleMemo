@@ -1,4 +1,4 @@
-// Batch-12 M5/M6/D2 wiring (docs/Arena_Findings_Batch12.md), pinned by
+// Rendered-markdown link wiring, pinned by
 // reading the component's source — the same trick the page suites use,
 // because `node --test` cannot import JSX: this project has no React
 // testing library, and `*.test.tsx` neither matches the test glob nor
@@ -70,11 +70,52 @@ test("the shared components render h1-h6 with heading ids (D2)", () => {
     );
   }
   assert.ok(
-    linkSrc.includes("headingScope.alloc(text)"),
+    linkSrc.includes("scope.alloc(text)"),
     "MarkdownLink: headings must allocate from the heading-id scope",
   );
   assert.ok(
     linkSrc.includes("../lib/headingIds.ts"),
     "MarkdownLink: the id logic must come from the tested lib module",
   );
+});
+
+test("each preview renders inside its own document-scoped heading ids (A4)", () => {
+  // One session-wide scope broke in-document anchors: the second note with an
+  // `# Introduction` rendered `introduction-1`, so its own
+  // `[Jump](#introduction)` scrolled nowhere. The scope is now created per
+  // document and handed to headings through context.
+  assert.ok(
+    linkSrc.includes("useMemo(() => createHeadingIdScope(), [documentKey])"),
+    "MarkdownLink: the scope must be created per document, keyed on documentKey",
+  );
+  assert.ok(
+    !/^const headingScope = createHeadingIdScope\(\);/m.test(linkSrc),
+    "MarkdownLink: no session-wide scope may be handed to the headings",
+  );
+  assert.ok(
+    linkSrc.includes("useContext(HeadingScopeContext)"),
+    "MarkdownLink: headings must take the scope from the document they render in",
+  );
+
+  // Every ReactMarkdown site: wrapped, and keyed on the document rather than
+  // on its text (a keystroke must not restart the ids).
+  for (const [label, src, key] of [
+    ["NotesPage", pageSrc("NotesPage.tsx"), "documentKey={p.documentKey}"],
+    ["JournalPage", pageSrc("JournalPage.tsx"), "documentKey={`journal:"],
+    [
+      "NoteReaderDialog",
+      dialogSrc("NoteReaderDialog.tsx"),
+      "documentKey={`note:",
+    ],
+    ["MobileScreens", dialogSrc("MobileScreens.tsx"), "documentKey={`note:"],
+  ] as const) {
+    assert.ok(
+      src.includes("<MarkdownDocument"),
+      `${label}: its ReactMarkdown must sit inside a MarkdownDocument`,
+    );
+    assert.ok(
+      src.includes(key),
+      `${label}: the heading scope must be keyed on the document it renders`,
+    );
+  }
 });
