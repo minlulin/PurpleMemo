@@ -4,7 +4,7 @@
 // are typed where they are read, in `sync/store.ts`, and are never in a backup
 // payload. Every other table in that schema
 // has a `*Row` here, including the two ledger tables, `settings` and
-// `trash_items` (docs/AUDIT.md SCHEMA-02). Money is integer cents
+// `trash_items`. Money is integer cents
 // everywhere; dates are local `yyyy-mm-dd` strings unless the field says
 // otherwise — `ReminderRow.remind_at` is `yyyy-mm-ddTHH:mm` and
 // `ContactRow.birthday` is `yyyy-mm-dd` or yearless `mm-dd`. Domain objects

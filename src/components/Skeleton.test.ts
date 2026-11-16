@@ -1,4 +1,4 @@
-// Batch-11 L3/L4 (docs/Arena_Findings_Batch11.md), pinned by reading the
+// Skeleton bar branches, pinned by reading the
 // component's source — the same trick the page suites use, since `node --test`
 // cannot mount a component.
 //

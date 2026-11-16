@@ -1248,7 +1248,7 @@ pub fn query_rows(
     // `prepare_cached`: the repository runs the same few dozen statements over
     // and over, and compiling one is not free (SQLite parses, plans, and
     // SQLCipher walks it). A cached statement is re-planned automatically if
-    // the schema changes under it (docs/AUDIT.md PERF-10).
+    // the schema changes under it.
     let mut stmt = conn
         .prepare_cached(sql)
         .map_err(|e| format!("prepare failed: {e}"))?;
@@ -2175,7 +2175,7 @@ mod tests {
 
     #[test]
     fn settings_value_is_still_not_null_for_the_import_canary() {
-        // SCHEMA-04 (docs/AUDIT.md): the backup import commits a deliberate
+        // The backup import commits a deliberate
         // constraint violation (`INSERT ... VALUES ('import-fk-check', NULL)`)
         // so a dangling foreign key rolls the whole import back. The failure
         // only happens because `settings.value` is NOT NULL — a default or a
@@ -2435,7 +2435,7 @@ mod tests {
 
     #[test]
     fn migration_5_6_adds_the_hot_path_indexes_and_narrows_the_fts_trigger() {
-        // PERF-09 / SCHEMA-03 (docs/AUDIT.md). A v1 fixture really lacks the
+        // A v1 fixture really lacks the
         // v6 additions, so this exercises the migration rather than the
         // baseline.
         let (_dir, conn) = seeded_v1("migrate-5-6");

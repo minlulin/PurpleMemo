@@ -295,7 +295,7 @@ function sqlOnly(input, options = {}) {
     if (spec.match === "fts") {
       // The shipping token quoting, imported rather than re-derived: a
       // hand-rolled copy would let this harness report a healthy number while
-      // the app's own MATCH expression regressed (docs/AUDIT.md DUP-11).
+      // the app's own MATCH expression regressed.
       sql = `SELECT n.id FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid
              WHERE notes_fts MATCH ? AND n.archived = 0 ORDER BY rank LIMIT ${spec.cap + 1}`;
       params.length = 0;

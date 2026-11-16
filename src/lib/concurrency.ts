@@ -1,6 +1,6 @@
 // Bounded parallelism for fan-outs over IPC. Each item still costs a round
 // trip, so the point is to overlap them without opening an unbounded number of
-// concurrent requests (docs/AUDIT.md PERF-05 and PERF-06): `Promise.all` over a
+// concurrent requests: `Promise.all` over a
 // thousand photos would queue a thousand IPC calls at once, which the host
 // handles by serialising them anyway — with all of them resident.
 

@@ -110,8 +110,7 @@ export function createJournalRepo(
 
     /**
      * Days of `yyyy-mm` that have an entry — the month grid's marked days.
-     * Range predicate so the `entry_date` index is used instead of a scan
-     * (docs/AUDIT.md PERF-01).
+     * Range predicate so the `entry_date` index is used instead of a scan.
      */
     async datesInMonth(yearMonth: string): Promise<string[]> {
       const { from, to } = monthRange(yearMonth);

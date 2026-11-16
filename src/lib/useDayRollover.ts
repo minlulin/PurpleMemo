@@ -5,7 +5,7 @@
 // label, overdue badges and habit check-ins until the user happened to tap
 // something. Five pages each carried their own `setInterval(…, 60_000)` for
 // this, in two different styles (state compared, or a ref the page had to keep
-// in sync) — docs/AUDIT.md DUP-03. The rule lives here once.
+// in sync). The rule lives here once.
 //
 // The handler receives the new local date, so a page can re-anchor its state
 // without reading the clock a second time and landing on a different day than

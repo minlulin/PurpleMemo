@@ -352,7 +352,7 @@ test("Today and Tasks complete through one repo function", () => {
   }
 });
 
-// docs/AUDIT.md PERF-08: the ticker settles a whole tick in one batch instead
+// The ticker settles a whole tick in one batch instead
 // of one awaited UPDATE per due reminder.
 test("reminderSettleStatements: fired vs re-armed, order preserved", () => {
   assert.deepEqual(

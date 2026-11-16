@@ -20,7 +20,7 @@ export const SETTING_KEYS = {
   securityAnswerHash: "security_answer_hash",
   /**
    * The vault's own marker/verifier rows. They live here because this module
-   * is the only place that knows key names (docs/AUDIT.md DUP-06); `vault.ts`
+   * is the only place that knows key names; `vault.ts`
    * re-exports them under its longer-standing names.
    */
   vaultSetup: "vault_setup",
@@ -50,7 +50,7 @@ export type Theme = "dark" | "light";
  * The one upsert for this table, as a batch statement.
  *
  * `setJSON`, `setManyJSON` and the batch writers in `gallery.ts` used to spell
- * this INSERT out four times (docs/AUDIT.md DUP-06), which is how one copy
+ * this INSERT out four times, which is how one copy
  * drifted from the others. `value` is the raw stored text — JSON for typed
  * settings, a bare string for the photo-cleanup records.
  */
@@ -113,7 +113,7 @@ export function createSettingsRepo(driver: DataDriver) {
      * Every row under `prefix`, key ascending.
      *
      * A prefix scan is not a setting anyone looks up by name, so the SQL stays
-     * here with the key names instead of in the caller (docs/AUDIT.md DUP-06).
+     * here with the key names instead of in the caller.
      */
     async listByPrefix(prefix: string): Promise<SettingRow[]> {
       return driver.query<SettingRow>(

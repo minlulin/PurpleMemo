@@ -1,6 +1,4 @@
-// Batch-3 stale-state gates (findings C2/C3/C4/C6 in
-// docs/Arena_Findings_Batch3.md), plus K9 from Batch10 — same defect class
-// (a read that lands after the human has already chosen), same file.
+// Stale-state gates: a read that lands after the human has already chosen.
 //
 // `node --test` cannot mount a page component, so each rule is pinned by
 // reading the page source — the same trick submit-guards.test.ts uses on the
@@ -78,7 +76,7 @@ test("date-derived reloads take their day at call time (C2)", () => {
       `${page}: reload must not be keyed on a render-captured \`today\` — that only refreshes when something re-renders the page`,
     );
     // Nothing re-renders a parked page, so the rollover needs its own tick.
-    // The tick now lives in ONE hook (docs/AUDIT.md DUP-03): each page used to
+    // The tick now lives in ONE hook: each page used to
     // carry its own copy, in two different staleness styles. The page only has
     // to use the hook — the next test pins the hook's own shape.
     assert.match(

@@ -344,7 +344,7 @@ test("monthlySummary keeps income/expense categories separate (ids collide)", as
   ]);
 });
 
-// docs/AUDIT.md PERF-01: `substr(entry_date, 1, 7) = ?` cannot use the date
+// `substr(entry_date, 1, 7) = ?` cannot use the date
 // index, so the month summaries filter with a half-open range instead. The
 // bounds must stay local-date strings; the sub-second 59x is in the audit.
 test("monthlySummary filters with an indexed range, not substr", async () => {
@@ -386,7 +386,7 @@ test("yearlySummary uses a year range, not substr", async () => {
   assert.deepEqual(params, ["2026-01-01", "2027-01-01"]);
 });
 
-// docs/AUDIT.md PERF-04: the Year view used to call monthlySummary 12 times
+// The Year view used to call monthlySummary 12 times
 // (48 statements). One grouped call now returns all twelve buckets.
 test("yearSummary returns twelve ordered buckets from four statements", async () => {
   const driver = createMockDriver({
@@ -422,7 +422,7 @@ test("yearSummary returns twelve ordered buckets from four statements", async ()
   assert.deepEqual(months[11]?.incomeByCategory, []);
 });
 
-// docs/AUDIT.md PERF-03: the Limits view fanned out to one statement per
+// The Limits view fanned out to one statement per
 // category (2N+1 per render). One grouped statement now covers all of them.
 test("limitStatuses fetches every category in one statement", async () => {
   const driver = createMockDriver({
@@ -447,7 +447,7 @@ test("limitStatuses fetches every category in one statement", async () => {
   assert.deepEqual(params, ["2026-10-01", "2026-11-01"]);
 });
 
-// docs/AUDIT.md DUP-05: five call sites spelled out the ledger INSERT. They
+// Five call sites spelled out the ledger INSERT. They
 // share one builder now, so `created_at` and the column list cannot drift.
 test("ledgerInsertStatement is the one shape for both ledger tables", () => {
   const income = ledgerInsertStatement("income", {

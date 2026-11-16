@@ -585,7 +585,7 @@ test("a non-uniqueness insert failure is not swallowed", async () => {
   );
 });
 
-// docs/AUDIT.md PERF-07: restore used to sha256 every photo a second time even
+// Restore used to sha256 every photo a second time even
 // though `save_photo` had just hashed it to build the content-addressed path.
 test("digestFromPhotoPath reads the digest the path already carries", () => {
   const hash = "a".repeat(64);

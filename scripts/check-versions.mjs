@@ -62,7 +62,7 @@ if (pkg !== tauri || pkg !== cargo) {
   process.exit(1);
 }
 
-// --- Vendored crypto (docs/AUDIT.md DUP-09) -------------------------------
+// --- Vendored crypto -------------------------------
 // The LAN share page runs in a phone browser with no bundler, so
 // `@noble/ciphers` is copied into `src-tauri/share/_crypto/` by hand. That copy
 // was byte-identical to the installed package but nothing enforced it: a
@@ -104,7 +104,7 @@ for (const name of VENDORED) {
   }
 }
 
-// --- Limits that exist in both languages (docs/AUDIT.md DUP-10) -----------
+// --- Limits that exist in both languages -----------
 // These values are enforced on ONE side and documented on the other: the Rust
 // command refuses an oversized photo, the TypeScript exporter refuses to write
 // an archive that restore would reject. They carried different names in the two

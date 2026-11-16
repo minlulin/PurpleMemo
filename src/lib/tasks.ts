@@ -141,8 +141,8 @@ export interface ReminderOutcome {
  * as `markReminderFired` / `rescheduleReminder`).
  */
 /**
- * The one task-list SELECT, mirroring `noteListQuery` in notes.ts
- * (docs/AUDIT.md DUP-07): `listTasks` and `openTasks` had written the same
+ * The one task-list SELECT, mirroring `noteListQuery` in notes.ts:
+ * `listTasks` and `openTasks` had written the same
  * open-task query twice, so an ORDER BY tuned for one silently missed the
  * other. `due_date IS NULL` first keeps undated tasks at the bottom.
  */
@@ -437,7 +437,7 @@ export function createTasksRepo(
      *
      * The ticker used to await one `UPDATE` per due reminder — after a wake
      * from sleep that is a burst of round trips for rows that are all decided
-     * at once (docs/AUDIT.md PERF-08). `markReminderFired` and
+     * at once. `markReminderFired` and
      * `rescheduleReminder` remain for the single-row paths (snooze, manual
      * re-arm) and share the same statement shapes.
      */

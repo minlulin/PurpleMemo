@@ -234,7 +234,7 @@ test("searchContacts: case-insensitive match on name/address/notes", () => {
   );
 });
 
-// docs/AUDIT.md DUP-02: `birthdayLabel` grew a second implementation, so the
+// `birthdayLabel` grew a second implementation, so the
 // Contacts list and the Memories card printed different labels for the same
 // row. It delegates to `formatBirthday` now — this pins that they agree, and
 // keeps a future "small tweak" here from forking them again.

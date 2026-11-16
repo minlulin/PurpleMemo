@@ -1185,7 +1185,7 @@ function YearView() {
     (async () => {
       try {
         // One grouped call for all twelve buckets, not twelve round trips
-        // (docs/AUDIT.md PERF-04).
+        //.
         const monthly = await budgetRepo.yearSummary(year);
         if (cancelled) return;
         setDisplay(yearDisplay(year, monthly));
@@ -1331,7 +1331,7 @@ function LimitsView() {
       try {
         setLoading(true);
         // One grouped statement for every category, not 2N+1
-        // (docs/AUDIT.md PERF-03).
+        //.
         const statuses = await budgetRepo.limitStatuses(ym);
         if (signal?.cancelled) return;
         const cats = await budgetRepo.listExpenseCategories();

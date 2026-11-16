@@ -1001,7 +1001,7 @@ test("every trash mutator serializes on the one repo lock (J3)", () => {
   );
 });
 
-// -- SCHEMA-01: the snapshot column lists must match the real DDL ------------
+// -- The snapshot column lists must match the real DDL -----------------------
 // A trash snapshot stores exactly the columns listed in trash.ts and restore
 // re-inserts exactly those. Nothing compared them to `schema.rs`, so a
 // migration that added a column (say `notes.colour`) would restore every note
@@ -1026,7 +1026,7 @@ function baselineColumns(sql: string, table: string): string[] {
   return columns;
 }
 
-test("every trash snapshot column list matches the baseline DDL (SCHEMA-01)", () => {
+test("every trash snapshot column list matches the baseline DDL", () => {
   const src = readFileSync(
     new URL("../../src-tauri/src/schema.rs", import.meta.url),
     "utf8",

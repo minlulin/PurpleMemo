@@ -143,7 +143,7 @@ test("addDays and addMonths return impossible or malformed dates unchanged", () 
 });
 
 // Half-open range bounds exist so SQL can use the date indexes instead of
-// `substr(entry_date, 1, 7) = ?` (see docs/AUDIT.md PERF-01). The `to` bound is
+// `substr(entry_date, 1, 7) = ?`. The `to` bound is
 // exclusive, so a date on the last day of the month must still be `< to`.
 test("monthRange returns half-open bounds that cover the whole month", () => {
   assert.deepEqual(monthRange("2026-01"), {

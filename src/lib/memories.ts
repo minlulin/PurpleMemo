@@ -107,7 +107,7 @@ export function createMemoriesRepo(
 
     /**
      * Entries in the month of `yyyy-mm` (month feed). Range predicate so the
-     * `memory_date` index is used instead of a scan (docs/AUDIT.md PERF-01).
+     * `memory_date` index is used instead of a scan.
      */
     async monthFeed(yearMonth: string): Promise<MemoryRow[]> {
       const { from, to } = monthRange(yearMonth);

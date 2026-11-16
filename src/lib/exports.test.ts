@@ -448,7 +448,7 @@ test("contactVcard escapes CATEGORIES as text; the separators stay literal", () 
   );
 });
 
-test("createExportsRepo reads collections and loans through the caller's repos (DUP-08)", async () => {
+test("createExportsRepo reads collections and loans through the caller's repos", async () => {
   // The exporter used to issue its own `SELECT * FROM collections` and
   // `SELECT * FROM loans` — the same statements the notes and loans repos
   // own. The spies replace those methods and must be the ones `collect` reads
@@ -483,7 +483,7 @@ test("createExportsRepo reads collections and loans through the caller's repos (
   assert.deepEqual(data.loans, []);
 });
 
-test("app.ts hands the export repo the singletons it already built (DUP-08)", () => {
+test("app.ts hands the export repo the singletons it already built", () => {
   // The runtime test above proves the parameter is honored; this proves the
   // production composition root actually passes it — a default-constructed
   // export repo would keep every test green while reading its own copies.

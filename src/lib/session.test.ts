@@ -412,7 +412,7 @@ function reminderTick(over: Partial<ReminderTickPorts> = {}) {
   const ports: ReminderTickPorts = {
     now: () => "2026-10-16T09:00",
     due: async () => [],
-    // One settle call per tick (docs/AUDIT.md PERF-08); the events keep the
+    // One settle call per tick; the events keep the
     // same per-reminder names the old per-row ports pushed.
     settle: async (outcomes) => {
       for (const o of outcomes) {
@@ -774,7 +774,7 @@ test("a preview read that throws falls back to the private text", async () => {
   ]);
 });
 
-// docs/AUDIT.md PERF-08: one settle call per tick, whatever the due count.
+// One settle call per tick, whatever the due count.
 test("the reminder ticker settles every due reminder in one call", async () => {
   const calls: { id: number; nextRemindAt: string | null }[][] = [];
   const reminders = [

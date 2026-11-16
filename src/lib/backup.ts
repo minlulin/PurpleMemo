@@ -372,7 +372,7 @@ export async function readBackupData(
   }
   // Photo bytes are bounded by `exportBudget` above, so a small pool is all
   // the archive needs; sequential reads made a 300-photo export 300 serial
-  // round trips (docs/AUDIT.md PERF-06).
+  // round trips.
   const photos = await mapConcurrent(
     photoRows,
     BACKUP_PHOTO_CONCURRENCY,
@@ -930,7 +930,7 @@ export async function applyBackup(
       row.rel_path = saved;
       // The path the host just built is content-addressed, so it already
       // carries the digest; hashing the same megabytes again doubled the
-      // restore cost (docs/AUDIT.md PERF-07). Never trust the name blindly —
+      // restore cost. Never trust the name blindly —
       // a path that does not parse falls back to hashing the bytes.
       row.sha256 =
         digestFromPhotoPath(saved) ?? (await sha256HexBytes(entry.bytes));

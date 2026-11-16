@@ -21,9 +21,8 @@ import type {
 } from "./types.ts";
 import { newUid } from "./uid.ts";
 
-// The row types live in types.ts with every other table's (docs/AUDIT.md
-// SCHEMA-02); these re-exports keep the call sites that already import them
-// from here working.
+// The row types live in types.ts with every other table's; these re-exports
+// keep the call sites that already import them from here working.
 export type { TrashEntityType, TrashItemRow };
 
 export const TRASH_RETENTION_DAYS = 30;
@@ -170,7 +169,7 @@ const INBOX_REF_COLUMNS = ["id", "converted_type", "converted_id"];
 
 /**
  * The snapshot column lists, exported so a test can compare them to the DDL
- * in `schema.rs` (docs/AUDIT.md SCHEMA-01).
+ * in `schema.rs`.
  *
  * They are hand-maintained on purpose — a snapshot is a historical record and
  * an explicit list keeps its shape readable — but "hand-maintained" is exactly
@@ -1092,7 +1091,7 @@ export function createTrashRepo(
     // Decide the policy from the small columns only. This runs on every
     // workspace load (and after every restore), and it used to pull every
     // snapshot through IPC and JSON-parse each one just to discover that
-    // nothing had expired (docs/AUDIT.md PERF-14). The usual answer is "no
+    // nothing had expired. The usual answer is "no
     // rows to purge", which now touches no snapshot at all.
     const policy = await driver.query<{ id: number; deleted_at: string }>(
       "SELECT id, deleted_at FROM trash_items ORDER BY deleted_at DESC, id DESC",

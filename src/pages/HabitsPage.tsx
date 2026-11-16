@@ -66,7 +66,7 @@ export default function HabitsPage() {
   /**
    * Sequence token for `reload`: two toggles may not install out of order
    * (D3). The shared guard instead of a hand-rolled counter
-   * (docs/AUDIT.md DUP-04) — same monotonic token, one implementation.
+   * — same monotonic token, one implementation.
    */
   const reloadGuard = useMemo(() => createLoadGuard(), []);
 

@@ -1,5 +1,4 @@
-// Batch-4 journal/inbox gates (findings D1 and D2 in
-// docs/Arena_Findings_Batch4.md).
+// Journal/inbox write gates.
 //
 // `node --test` cannot mount a page component, so each rule is pinned by
 // reading the page source — the same trick submit-guards.test.ts uses on the

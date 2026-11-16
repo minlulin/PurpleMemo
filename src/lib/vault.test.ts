@@ -266,7 +266,7 @@ test("changePassword leaves the verifier proving the new password", async () => 
 
   const badDriver = createMockDriver();
   // `isSetUp`/the marker read now come from the settings repo, which selects
-  // `value` (docs/AUDIT.md DUP-06) — the marker row is a value, not a key.
+  // `value` — the marker row is a value, not a key.
   badDriver.pushResults([[], [{ value: sealed }], [{ value: "{}" }]]);
   await assert.rejects(
     () => createVaultRepo(badDriver).unlock("old-pass"),
@@ -400,7 +400,7 @@ test("a structurally broken row reads as corruption, never a wrong password (H5)
 
 test("setupVault refuses a second setup — the marker is written once", async () => {
   const driver = createMockDriver({
-    // isSetUp: marker already present (the repo reads `value`, DUP-06).
+    // isSetUp: marker already present (the repo reads `value`).
     results: [[{ value: "{}" }]],
   });
   const vault = createVaultRepo(driver);

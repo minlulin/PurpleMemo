@@ -156,7 +156,7 @@ export default function GalleryPage() {
     async (list: PhotoRow[], isCancelled?: () => boolean) => {
       // Four tiles at a time: thumbnails used to load strictly one after the
       // other, so a 60-photo grid waited on 60 serial round trips
-      // (docs/AUDIT.md PERF-05). The bound keeps the queue from holding every
+      //. The bound keeps the queue from holding every
       // read at once; tile order is preserved by id, not by arrival.
       const loaded = await mapConcurrent(
         list,

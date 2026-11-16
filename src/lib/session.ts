@@ -278,7 +278,7 @@ export interface ReminderTickPorts {
    * Settle every due reminder of this tick. One call per tick, not one per
    * reminder: the ticker used to await `markFired` / `reschedule` in a loop,
    * which after a wake from sleep meant a burst of writes for rows that were
-   * all already decided (docs/AUDIT.md PERF-08).
+   * all already decided.
    */
   settle: (outcomes: ReminderOutcome[]) => Promise<void>;
   /**

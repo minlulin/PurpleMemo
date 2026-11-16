@@ -601,7 +601,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           prev.publishedAt === info.publishedAt;
         // A poll that repeats itself is not news. Re-rendering four times a
         // minute also wiped the "Copied" confirmation for a link that never
-        // changed (docs/AUDIT.md PERF-15); only a genuinely different state
+        // changed; only a genuinely different state
         // (or a different link) resets it.
         if (unchanged) return;
         setShareState(info);

@@ -455,8 +455,8 @@ export function createBusinessRepo(driver: DataDriver) {
      * nothing to cascade its polymorphic `(entity_type, entity_id)` pair, so
      * the same helper every note and memory delete uses applies here.
      *
-     * **Income entries it produced are deliberately left alone.** Cash basis
-     *: the money was received, and it is in the Budget as income. Removing
+     * **Income entries it produced are deliberately left alone.** Cash basis:
+     * the money was received, and it is in the Budget as income. Removing
      * the job does not un-receive it. Those rows keep the job's title in their
      * note as a historical record.
      */
@@ -570,8 +570,8 @@ export function createBusinessRepo(driver: DataDriver) {
     },
 
     /**
-     * Record a payment against a job. Never overpays. Cash basis
-     *: every receipt creates a Business-category income entry in the
+     * Record a payment against a job. Never overpays. Cash basis:
+     * every receipt creates a Business-category income entry in the
      * wallet the money arrived in, when it arrives — partial or full.
      * Fully paid -> status 'paid' (moves to History); partial -> stays in
      * Receivable. One batch write. Serialized per job: a second concurrent

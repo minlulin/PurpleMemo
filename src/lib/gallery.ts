@@ -48,7 +48,7 @@ export function isUniqueViolation(error: unknown): boolean {
  * The prefix contains no LIKE wildcards (`_`, `%`), so
  * `key LIKE '<prefix>%'` matches cleanup records and nothing else.
  */
-// The prefix lives with the other setting key names (docs/AUDIT.md DUP-06).
+// The prefix lives with the other setting key names.
 const PENDING_CLEANUP_PREFIX = SETTING_KEYS.photoCleanupPrefix;
 
 /**
@@ -224,7 +224,7 @@ const CONTENT_ADDRESSED_PATH_RE =
  *
  * Restore used to re-hash every photo after the host had just hashed it to
  * build the path — megabytes through sha256 twice per file, on the UI thread's
- * critical path (docs/AUDIT.md PERF-07). Callers must still validate: `null`
+ * critical path. Callers must still validate: `null`
  * means "hash the bytes yourself", never "trust whatever is in the name".
  */
 export function digestFromPhotoPath(relPath: string): string | null {

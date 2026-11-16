@@ -71,7 +71,7 @@ const MONTH_SHORT = [
  *
  * `formatBirthday` (format.ts) is the ONE birthday formatter — the same rule
  * printed a different label in the Contacts list than in the Memories card,
- * because this file grew a second implementation (docs/AUDIT.md DUP-02). What
+ * because this file grew a second implementation. What
  * stays local is the fallback: `formatBirthday` echoes input it cannot parse,
  * and a list row wants a placeholder rather than a raw "13-40".
  */

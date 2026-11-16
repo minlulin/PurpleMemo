@@ -121,8 +121,7 @@ CREATE UNIQUE INDEX idx_photo_refs_unique
 CREATE INDEX idx_reminders_fired_at ON reminders(fired, remind_at);
 "#;
 
-/// Hot-path indexes and a narrower FTS maintenance trigger
-/// (docs/AUDIT.md PERF-09 and SCHEMA-03).
+/// Hot-path indexes and a narrower FTS maintenance trigger.
 ///
 /// Every index below answers a query the repository actually runs, in the
 /// form it runs it:
@@ -596,7 +595,7 @@ END;
 
 -- Only the indexed columns: a pin, an archive or any other non-FTS column
 -- used to rewrite this row anyway, which left `notes_fts` at 2.2x the size of
--- the notes it indexes (docs/AUDIT.md SCHEMA-03; see MIGRATION_5_6).
+-- the notes it indexes.
 CREATE TRIGGER notes_fts_au AFTER UPDATE OF title, content, tags, collection_id ON notes BEGIN
   UPDATE notes_fts
   SET title = new.title,
@@ -934,7 +933,7 @@ CREATE INDEX idx_trash_items_deleted ON trash_items(deleted_at);
 -- ============================================================
 -- `value` must stay NOT NULL: the backup import uses a deliberately failing
 -- INSERT of a NULL value into this column as its foreign-key canary
--- (`backup.ts`, docs/AUDIT.md SCHEMA-04), and a default or a dropped NOT NULL
+-- (`backup.ts`), and a default or a dropped NOT NULL
 -- would turn that canary into a silent no-op. A Rust test pins the flag.
 CREATE TABLE settings (
   key   TEXT PRIMARY KEY,

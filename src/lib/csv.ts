@@ -158,7 +158,7 @@ export function unescapeSpreadsheetCell(raw: string): string {
 /**
  * One cell of a parsed record, by header name or one of its aliases.
  *
- * Both importers carried an identical private copy (docs/AUDIT.md DUP-01); the
+ * Both importers carried an identical private copy; the
  * two CSVs share the same header-alias convention and the same spreadsheet
  * formula guard, so the lookup belongs beside the parser. Missing columns read
  * as an empty string — an optional column is not an error.

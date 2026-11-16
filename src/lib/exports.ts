@@ -880,7 +880,7 @@ interface AttachmentRow {
 }
 
 /**
- * The domain repos the exporter reads through (docs/AUDIT.md DUP-08).
+ * The domain repos the exporter reads through.
  *
  * `collect` used to issue its own `SELECT * FROM collections ORDER BY name` and
  * `SELECT * FROM loans ORDER BY id` — the same statements `notesRepo` and

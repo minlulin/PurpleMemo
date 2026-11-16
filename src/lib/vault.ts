@@ -35,14 +35,13 @@ import { newUid } from "./uid.ts";
 
 /**
  * How many vault items `changePassword` re-encrypts at once. Items are few and
- * each holds its plaintext in memory while in flight, so this stays small
- * (docs/AUDIT.md PERF-13).
+ * each holds its plaintext in memory while in flight, so this stays small.
  */
 const VAULT_REENCRYPT_CONCURRENCY = 4;
 
 /**
  * Settings marker — its presence means the vault password has been set up.
- * The key name itself lives in `SETTING_KEYS` (docs/AUDIT.md DUP-06); this
+ * The key name itself lives in `SETTING_KEYS`; this
  * alias keeps the name the rest of the app and the tests already use.
  */
 export const VAULT_SETUP_KEY = SETTING_KEYS.vaultSetup;
@@ -345,7 +344,7 @@ export function createVaultRepo(
   return {
     async isSetUp(): Promise<boolean> {
       // `settings.value` is NOT NULL, so a present row always has a value —
-      // `undefined` means "no row" (docs/AUDIT.md SCHEMA-04 for the flag).
+      // `undefined` means "no row".
       return (
         (await createSettingsRepo(driver).getRaw(VAULT_SETUP_KEY)) !== undefined
       );
@@ -587,7 +586,7 @@ export function createVaultRepo(
       }[] = [];
       // Re-encrypt a few items at a time. Every item costs two ~600k-iteration
       // PBKDF2 derivations that run off-thread, so awaiting them one by one
-      // left the CPU idle between items (docs/AUDIT.md PERF-13). The pool is
+      // left the CPU idle between items. The pool is
       // deliberately small: each in-flight item holds its plaintext.
       const results = await mapConcurrent(
         items,

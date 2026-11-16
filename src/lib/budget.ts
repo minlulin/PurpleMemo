@@ -63,9 +63,9 @@ export interface LedgerInsert extends BatchStatement {
  * The single INSERT shape for both ledger tables.
  *
  * Five call sites used to spell this statement out separately (two entry
- * creates, recurring catch-up, job payment, payable payment — docs/AUDIT.md
- * DUP-05). A column added to one copy but not the others would silently write
- * defaults, so all of them go through here now.
+ * creates, recurring catch-up, job payment, payable payment). A column added to
+ * one copy but not the others would silently write defaults, so all of them go
+ * through here now.
  *
  * `createdAt` defaults to today's local date; batch callers pass one stamp for
  * every row they write so a multi-row catch-up cannot straddle midnight.
@@ -158,7 +158,7 @@ export async function ledgerCreateEntry(
 /**
  * One day's ledger row: an `expense_entries` row (the two ledger tables share
  * a column list) plus which side it came from. The row type now comes from
- * `types.ts` like every other table's (docs/AUDIT.md SCHEMA-02).
+ * `types.ts` like every other table's.
  */
 export type DayEntry = ExpenseEntryRow & { kind: LedgerKind };
 
@@ -1019,7 +1019,7 @@ export function createBudgetRepo(driver: DataDriver) {
     // -- Summaries (monthly / yearly / per-category) --------------------
     // Range predicates (`entry_date >= from AND entry_date < to`) rather than
     // `substr(entry_date, 1, 7) = ?`: a function of the column cannot use the
-    // date indexes, so the substr form was a full scan (docs/AUDIT.md PERF-01).
+    // date indexes, so the substr form was a full scan.
     async monthlySummary(yearMonth: string): Promise<MonthSummary> {
       const { from, to } = monthRange(yearMonth);
       const [incomeRows, expenseRows, incomeByCat, expenseByCat] =
@@ -1073,7 +1073,7 @@ export function createBudgetRepo(driver: DataDriver) {
      * All twelve month buckets for one year in four statements, in month order.
      *
      * The Year view used to call {@link monthlySummary} twelve times (48
-     * statements per render — docs/AUDIT.md PERF-04). Grouping by
+     * statements per render). Grouping by
      * `substr(entry_date, 1, 7)` in the *select list* is fine: the range
      * predicate has already narrowed the rows, so no index is bypassed.
      */
@@ -1179,7 +1179,7 @@ export function createBudgetRepo(driver: DataDriver) {
      * Spend + limit for every expense category in one statement.
      *
      * The Limits view used to call {@link limitStatusFor} once per category
-     * (2N+1 statements per render — docs/AUDIT.md PERF-03). This keeps the
+     * (2N+1 statements per render). This keeps the
      * same numbers with a fixed cost, and reports categories with no
      * `expense_limits` row as `limitCents: null` so the UI still lists them.
      */

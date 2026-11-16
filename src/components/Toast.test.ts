@@ -1,4 +1,4 @@
-// Batch-11 L5 (docs/Arena_Findings_Batch11.md), pinned by reading the
+// Toast registry bounds, pinned by reading the
 // provider's source — the same trick the page suites use, because `node --test`
 // cannot mount it: Toast.tsx is JSX and this project has no React testing
 // library. What is asserted is the shape that keeps the registry bounded:

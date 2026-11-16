@@ -270,7 +270,7 @@ test("parseCsv normalizes headerAliases and unescapeSpreadsheetCell strips only 
   );
 });
 
-// docs/AUDIT.md DUP-01: both importers carried a private copy of this lookup.
+// Both importers carried a private copy of this lookup.
 // It lives with the parser now; these are the rules both copies had to obey.
 test("cellValue reads by header or alias, and unescapes formula guards", () => {
   // The guard is the leading apostrophe: `'+95 9 777` reads back as `+95 9 777`.

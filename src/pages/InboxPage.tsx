@@ -123,7 +123,7 @@ export default function InboxPage(p: InboxPageProps) {
   const [archivingId, setArchivingId] = useState<number | null>(null);
   /**
    * Sequence token: only the newest reload may install its snapshot (D6).
-   * The shared guard, not a hand-rolled counter (docs/AUDIT.md DUP-04).
+   * The shared guard, not a hand-rolled counter.
    */
   const reloadGuard = useMemo(() => createLoadGuard(), []);
 
