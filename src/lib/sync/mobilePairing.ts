@@ -58,6 +58,7 @@ import {
   pendingForPeer,
   readPeers,
   readVaultMetadata,
+  readVaultMetaWire,
   type SnapshotApplyMode,
   type SnapshotOp,
   type SnapshotStamp,
@@ -66,6 +67,7 @@ import {
   VAULT_GENERATION_FIELD,
   VAULT_VERIFIER_FIELD,
   type VaultMetadata,
+  type VaultMetaWire,
 } from "./store.ts";
 
 export type FrameOutcome =
@@ -337,6 +339,9 @@ export interface StagedBatch {
   total: number;
   ops: SnapshotOp[];
   tombstones: SnapshotTombstoneOp[];
+  /** F-2: the sender's vault pair, carried at batch level when it has a
+   * vault set up — the only way an item-less vault reaches this phone. */
+  vaultMeta: VaultMetaWire | null;
   /** The document's own cost in UTF-8 bytes — what the frame carries. */
   bytes: number;
 }
@@ -470,6 +475,10 @@ export function readSnapshotBatch(
     if (!read.ok) return refuse(read.reason);
     if ("tombstone" in read) deleted.push(read.tombstone);
   }
+  const carriage = readVaultMetaWire(raw.vaultMeta);
+  if (!carriage.ok) {
+    return refuse("the desktop's vault carriage is not usable (F-2).");
+  }
   return {
     ok: true,
     batch: {
@@ -477,6 +486,7 @@ export function readSnapshotBatch(
       total,
       ops: staged,
       tombstones: deleted,
+      vaultMeta: carriage.meta,
       bytes,
     },
   };
@@ -601,6 +611,9 @@ export async function pullSnapshot(
 
   const staged: SnapshotOp[] = [];
   const deleted: SnapshotTombstoneOp[] = [];
+  // F-2: every batch of one held read carries the same vault pair; the first
+  // one seen is the snapshot's.
+  let vaultMeta: VaultMetaWire | null = null;
   let total = 0;
   let batch = 0;
   for (;;) {
@@ -616,6 +629,7 @@ export async function pullSnapshot(
     });
     if (!read.ok) return stalled(read.refusal, total);
     total = read.batch.total;
+    if (vaultMeta === null) vaultMeta = read.batch.vaultMeta;
     staged.push(...read.batch.ops);
     deleted.push(...read.batch.tombstones);
     options.onProgress?.({ batch: batch + 1, total });
@@ -647,6 +661,7 @@ export async function pullSnapshot(
         new Date(),
         input.desktopDeviceId,
         options.mode ?? "merge",
+        vaultMeta,
       ),
     );
   } catch (error) {

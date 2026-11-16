@@ -18,7 +18,9 @@ import {
   readOutbox,
   readVaultMetadata,
   type SnapshotOp,
+  snapshotApplyStatements,
   snapshotStatements,
+  type VaultMetaWire,
 } from "./store.ts";
 import { runSync } from "./syncSession.ts";
 import {
@@ -297,4 +299,131 @@ test("an adopted snapshot leaves a working vault of the snapshot's generation", 
   );
   assert.equal(Object.hasOwn(row ?? {}, "vault_generation"), false);
   assert.equal(Object.hasOwn(row ?? {}, "vault_verifier"), false);
+});
+
+// ---------------------------------------------------------------------------
+// F-2 — an item-less vault still crosses: the pair travels at batch level.
+// ---------------------------------------------------------------------------
+
+/** The desktop's batch-level carriage, exactly as the readers build it. */
+async function carriageOf(
+  store: Awaited<ReturnType<typeof pair>>["desktop"],
+): Promise<VaultMetaWire> {
+  const metadata = await readVaultMetadata(store.driver);
+  assert.ok(metadata.verifier !== null, "the desktop has a vault set up");
+  return { generation: metadata.generation ?? 1, verifier: metadata.verifier };
+}
+
+test("F-2: a setup-only desktop vault reaches the phone over sync", async () => {
+  const { phone, desktop } = await pair();
+  const desktopVault = createVaultRepo(desktop.driver);
+  await desktopVault.setupVault("desk-pass");
+  // No item is ever added: there is no op for the envelope to ride on.
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.confirmed, true);
+  assert.equal(outcome.pulled, 0, "no operation crossed — the carriage did");
+
+  const phoneVault = createVaultRepo(phone.driver, "mobile");
+  assert.equal(
+    await phoneVault.isSetUp(),
+    true,
+    "the phone now holds a vault, where it reported none before",
+  );
+  assert.equal(await generationOf(phone), JSON.stringify(1));
+  // The verifier is the only proof an empty vault has, and it works: the
+  // desktop's password unlocks, any other is refused.
+  await phoneVault.unlock("desk-pass");
+  await assert.rejects(() => phoneVault.unlock("not-the-password"));
+  assert.deepEqual(await storedItems(phone), [], "still no items anywhere");
+});
+
+test("F-2: a setup-only desktop vault reaches the phone over a snapshot", async () => {
+  const phone = openSyncStore(PHONE);
+  const desktop = openSyncStore(DESKTOP);
+  const desktopVault = createVaultRepo(desktop.driver);
+  await desktopVault.setupVault("desk-pass");
+
+  const meta = await carriageOf(desktop);
+  const statements = await snapshotApplyStatements(
+    phone.driver,
+    [],
+    [],
+    new Date(),
+    DESKTOP,
+    "merge",
+    meta,
+  );
+  await phone.driver.batch(statements);
+
+  const phoneVault = createVaultRepo(phone.driver, "mobile");
+  assert.equal(await phoneVault.isSetUp(), true);
+  await phoneVault.unlock("desk-pass");
+  await assert.rejects(() => phoneVault.unlock("not-the-password"));
+});
+
+test("F-2: a rotated empty vault replaces the phone's generation, items go", async () => {
+  const { phone, desktop } = await pair();
+  const desktopVault = createVaultRepo(desktop.driver);
+  await desktopVault.setupVault("desk-pass");
+
+  // The phone holds a first-generation copy WITH an item, adopted earlier.
+  const wire = ferry(phone, desktop);
+  await desktopVault.addItem("email", "s3cret", "desk-pass");
+  const first = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(first.confirmed, true);
+  assert.equal((await storedItems(phone)).length, 1);
+
+  // The desktop rotates its password and deletes its only item: generation
+  // 2 now holds nothing, so only the carriage can say so.
+  const items = await desktopVault.listItems();
+  for (const item of items) await desktopVault.deleteItem(item.id);
+  await desktopVault.changePassword("desk-pass", "new-pass");
+  assert.deepEqual(await storedItems(desktop), []);
+
+  wire.newWindow();
+  const second = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(second.confirmed, true);
+  assert.deepEqual(
+    await storedItems(phone),
+    [],
+    "the old generation's item did not survive the rotation",
+  );
+  assert.equal(await generationOf(phone), JSON.stringify(2));
+  const phoneVault = createVaultRepo(phone.driver, "mobile");
+  await phoneVault.unlock("new-pass");
+  await assert.rejects(() => phoneVault.unlock("desk-pass"));
+});
+
+test("F-2: a desktop with no vault sends nothing — the phone's own vault is untouched", async () => {
+  const { phone, desktop } = await pair();
+  void desktop;
+  const phoneVault = createVaultRepo(phone.driver, "mobile");
+  await phoneVault.setupVault("phone-pass");
+  await phoneVault.addItem("local", "phone secret", "phone-pass");
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+  assert.equal(outcome.confirmed, true);
+
+  const after = createVaultRepo(phone.driver, "mobile");
+  assert.equal(await after.isSetUp(), true);
+  const items = await after.listItems();
+  assert.equal(items.length, 1);
+  const first = items[0];
+  assert.ok(first);
+  assert.equal(
+    (await after.getItem(first.id, "phone-pass"))?.plaintext,
+    "phone secret",
+    "§9.1: no carriage arrived, so nothing here was the desktop's to change",
+  );
 });

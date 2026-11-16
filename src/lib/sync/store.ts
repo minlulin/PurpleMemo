@@ -740,6 +740,64 @@ export interface VaultMetadata {
 }
 
 /**
+ * The vault metadata as it travels OUTSIDE a row (F-2): the §12.3 envelope
+ * rides on vault rows, and a vault with no items has no rows to ride on — a
+ * password set up on the desktop and never used would otherwise never reach
+ * the phone, which would go on reporting that no vault exists. So a snapshot
+ * batch and a sync-pull reply carry the pair at batch level when the sender
+ * has a vault set up. A sender with NO vault sends nothing at all, which is
+ * what keeps §9.1's promise: an empty carriage never touches a vault this
+ * device made for itself.
+ */
+export interface VaultMetaWire {
+  generation: number;
+  verifier: string;
+}
+
+/** Read a batch-level vault carriage: absent is fine, malformed is not. */
+export function readVaultMetaWire(
+  raw: unknown,
+): { ok: true; meta: VaultMetaWire | null } | { ok: false } {
+  if (raw === undefined || raw === null) return { ok: true, meta: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
+  const { generation, verifier } = raw as Record<string, unknown>;
+  if (
+    typeof generation !== "number" ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1 ||
+    typeof verifier !== "string" ||
+    verifier.length === 0
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, meta: { generation, verifier } };
+}
+
+/**
+ * What receiving a batch-level carriage does, under the same generation rule
+ * the row path follows (decision 3): a different generation replaces — the
+ * local items go in the same batch — and the pair itself lands through the
+ * one writer both paths share. Same generation is a plain write, so a
+ * repeated carriage is a no-op in effect.
+ */
+export function vaultMetaApplyStatements(
+  meta: VaultMetaWire,
+  localGeneration: number | null,
+): BatchStatement[] {
+  const statements: BatchStatement[] = [];
+  if (localGeneration !== null && localGeneration !== meta.generation) {
+    statements.push(...vaultWipeStatements());
+  }
+  statements.push(
+    ...vaultMetadataStatements({
+      generation: meta.generation,
+      verifier: meta.verifier,
+    }),
+  );
+  return statements;
+}
+
+/**
  * The vault metadata this device holds, read the way its own `settings` store
  * it. `generation` is null when no row exists (a vault set up before Stage 3,
  * or none at all) — the caller decides what that means, because only the
@@ -1551,6 +1609,10 @@ export function snapshotStatements(
   tombstones: readonly SnapshotTombstoneOp[] = [],
   now: Date = new Date(),
   senderDeviceId?: string,
+  vaultCarriage?: {
+    meta: VaultMetaWire;
+    localGeneration: number | null;
+  } | null,
 ): BatchStatement[] {
   // `SYNC_TABLES` is declared in `UID_TABLES`'s order — parents before children
   // — and `store.test.ts` pins the two against each other, so this sort cannot
@@ -1595,6 +1657,17 @@ export function snapshotStatements(
     );
     for (const op of vaultRows)
       statements.push(...snapshotRowStatements(op, now, senderDeviceId));
+  } else if (vaultCarriage) {
+    // F-2: no vault rows, but the sender has a vault set up — the batch-level
+    // carriage is the only way its generation and verifier can land here.
+    // With rows present the envelope above already carried the same pair, so
+    // the carriage is spent either way and never applied twice.
+    statements.push(
+      ...vaultMetaApplyStatements(
+        vaultCarriage.meta,
+        vaultCarriage.localGeneration,
+      ),
+    );
   }
   for (const tombstone of tombstones) {
     assertSyncTable(tombstone.table);
@@ -1790,9 +1863,20 @@ export async function snapshotApplyStatements(
   now: Date = new Date(),
   senderDeviceId?: string,
   mode: SnapshotApplyMode = "merge",
+  vaultMeta?: VaultMetaWire | null,
 ): Promise<BatchStatement[]> {
+  // F-2: the batch-level carriage matters only when the snapshot carries no
+  // vault rows of its own; the local generation is read only in that case.
+  const hasVaultRows = ops.some((op) => op.table === "vault_items");
+  const carriage =
+    vaultMeta && !hasVaultRows
+      ? {
+          meta: vaultMeta,
+          localGeneration: (await readVaultMetadata(reader)).generation,
+        }
+      : null;
   if (mode === "replace") {
-    return snapshotStatements(ops, tombstones, now, senderDeviceId);
+    return snapshotStatements(ops, tombstones, now, senderDeviceId, carriage);
   }
   const vault: SnapshotOp[] = [];
   const rows: SnapshotOp[] = [];
@@ -1817,7 +1901,7 @@ export async function snapshotApplyStatements(
     );
   }
   statements.push(
-    ...snapshotStatements(vault, tombstones, now, senderDeviceId),
+    ...snapshotStatements(vault, tombstones, now, senderDeviceId, carriage),
   );
   return statements;
 }

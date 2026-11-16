@@ -453,6 +453,9 @@ struct Gate {
     /// Where the pull's ops come from. `None` is a window that stages a push
     /// but serves none of its own — every `sync-pull` is then `not-allowed`.
     sync_source: Option<SyncSource>,
+    /// F-2: where the pull's batch-level vault carriage comes from. `None`
+    /// serves no carriage — the shape every window had before F-2.
+    vault_meta_source: Option<VaultMetaSource>,
 }
 
 /// The one consistent §8.4 read this window holds, and the pull's progress
@@ -540,6 +543,11 @@ impl UploadState {
 /// connection — and read **once** per window, then served from memory.
 pub type SyncSource = Arc<dyn Fn(u64) -> Result<Vec<JsonValue>, String> + Send + Sync>;
 
+/// F-2: where a window serving a sync pull reads this device's vault pair —
+/// (generation, sealed verifier) when a vault is set up here, `None` when
+/// none is. Read once per held pull, like the ops read it rides beside.
+pub type VaultMetaSource = Arc<dyn Fn() -> Result<Option<(i64, String)>, String> + Send + Sync>;
+
 /// What the panel's apply decided about a staged push (§7). The phone acts on
 /// this and nothing else: `throughSeq` is the highest seq the desktop's engine
 /// actually applied, which is what its outbox may record as delivered.
@@ -558,6 +566,10 @@ struct SyncPullStream {
     /// different one would be a different read, which one window does not do.
     after_seq: Option<u64>,
     batches: Vec<Vec<JsonValue>>,
+    /// F-2: the vault pair read with the ops, repeated on every batch's
+    /// reply — an item-less vault has no op to carry it, so the reply
+    /// itself does. `None` when this device has no vault set up.
+    vault_meta: Option<(i64, String)>,
     /// Batches that already left the desktop: asking for one again re-serves
     /// it, because a lost reply must not cost the phone the whole pull.
     served: HashSet<usize>,
@@ -733,6 +745,8 @@ pub struct PairingListenerState {
     /// `start` parameter so the twenty windows that serve no ops stay as they
     /// are: an absent source is a window that stages a push and serves none.
     sync_source: Mutex<Option<SyncSource>>,
+    /// F-2: the vault carriage's reader, installed and taken the same way.
+    vault_meta_source: Mutex<Option<VaultMetaSource>>,
 }
 
 impl PairingListenerState {
@@ -750,6 +764,14 @@ impl PairingListenerState {
     /// the window that serves a pull is fixed for its whole life.
     pub fn set_sync_source(&self, source: SyncSource) {
         if let Ok(mut slot) = self.sync_source.lock() {
+            *slot = Some(source);
+        }
+    }
+
+    /// Install the F-2 vault carriage's reader for the window about to
+    /// open, under the same take-at-`start` discipline as the sync source.
+    pub fn set_vault_meta_source(&self, source: VaultMetaSource) {
+        if let Ok(mut slot) = self.vault_meta_source.lock() {
             *slot = Some(source);
         }
     }
@@ -832,6 +854,11 @@ impl PairingListenerState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
+        let vault_meta_source = self
+            .vault_meta_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         let local_secret = *identity.secret();
         let public_key = identity.public_key_hex();
         let fingerprint = identity.fingerprint();
@@ -902,6 +929,7 @@ impl PairingListenerState {
             upload: Mutex::new(UploadState::default()),
             sync: Mutex::new(SyncState::default()),
             sync_source,
+            vault_meta_source,
         });
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
@@ -2505,9 +2533,19 @@ fn serve_sync_ops(gate: &Gate, pin: &Pin, message: &JsonValue) -> Result<JsonVal
         if !current.is_empty() || batches.is_empty() {
             batches.push(current);
         }
+        // F-2: the vault pair is read with the ops, once per held pull. A
+        // failed read serves no carriage rather than failing the pull: the
+        // carriage is state sync, retried by the next window, while a
+        // refused pull would wedge the ops themselves behind it.
+        let vault_meta = gate
+            .vault_meta_source
+            .as_ref()
+            .and_then(|source| source().ok())
+            .flatten();
         sync.pull = Some(SyncPullStream {
             after_seq: Some(after_seq),
             batches,
+            vault_meta,
             served: HashSet::new(),
         });
     }
@@ -2527,16 +2565,23 @@ fn serve_sync_ops(gate: &Gate, pin: &Pin, message: &JsonValue) -> Result<JsonVal
         )));
     }
     let ops = pull.batches[batch].clone();
+    let vault_meta = pull.vault_meta.clone();
     pull.served.insert(batch);
     drop(sync);
 
-    let reply = json!({
+    let mut reply = json!({
         "kind": "sync-ops",
         "pairingId": gate.pairing_id,
         "batch": batch,
         "total": total,
         "ops": ops,
     });
+    if let Some((generation, verifier)) = vault_meta {
+        reply["vaultMeta"] = json!({
+            "generation": generation,
+            "verifier": verifier,
+        });
+    }
     let counter = gate.send_counter.fetch_add(1, Ordering::SeqCst) + 1;
     let wire = envelope::seal(SealInput {
         secret: &gate.local_secret,
@@ -4878,6 +4923,43 @@ mod tests {
             .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect("start");
         (state, info.port.expect("port"))
+    }
+
+    /// A window serving `ops` and a vault pair (F-2): the pull replies must
+    /// carry the pair at batch level, because an item-less vault has no op
+    /// to carry it.
+    fn started_with_ops_and_vault(ops: Vec<JsonValue>) -> (PairingListenerState, u16) {
+        let source: SyncSource = Arc::new(move |after_seq| {
+            Ok(ops
+                .iter()
+                .filter(|op| op["seq"].as_u64().is_some_and(|seq| seq > after_seq))
+                .cloned()
+                .collect())
+        });
+        let state = PairingListenerState::default();
+        state.set_sync_source(source);
+        state.set_vault_meta_source(Arc::new(|| Ok(Some((2, "sealed-verifier".to_string())))));
+        let info = state
+            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .expect("start");
+        (state, info.port.expect("port"))
+    }
+
+    #[test]
+    fn a_pull_reply_carries_the_vault_pair_when_one_is_set_up() {
+        let (state, port) = started_with_ops_and_vault(vec![sync_op(1)]);
+        let (status, reply) = post_sync(
+            port,
+            &seal_sync(
+                1,
+                &json!({ "kind": "sync-pull", "batch": 0, "afterSeq": 0 }),
+            ),
+        );
+        assert_eq!(status, 200, "{reply}");
+        let (document, _counter) = opened_batch(&reply, 0);
+        assert_eq!(document["vaultMeta"]["generation"], json!(2));
+        assert_eq!(document["vaultMeta"]["verifier"], json!("sealed-verifier"));
+        drop(state);
     }
 
     #[test]

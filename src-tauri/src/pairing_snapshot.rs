@@ -99,6 +99,12 @@ pub struct SnapshotTombstone {
 pub struct Snapshot {
     pub rows: Vec<SnapshotRow>,
     pub tombstones: Vec<SnapshotTombstone>,
+    /// F-2: the vault's (generation, sealed verifier) when a vault is set up
+    /// on this device — carried at batch level because the §12.3 envelope
+    /// rides on vault ROWS, and a vault with no items has none. Absent when
+    /// no vault exists here, which is what leaves a receiver's own vault
+    /// alone (§9.1).
+    pub vault_meta: Option<(i64, String)>,
 }
 
 /// One unit of transport. The receiver applies the whole snapshot in one
@@ -110,6 +116,11 @@ pub struct SnapshotBatch {
     pub total: usize,
     pub rows: Vec<SnapshotRow>,
     pub tombstones: Vec<SnapshotTombstone>,
+    /// F-2: the snapshot's batch-level vault carriage, repeated on every
+    /// batch — the receiver stages all batches before applying, so any one
+    /// of them can speak for the read, and repetition keeps that true
+    /// regardless of arrival order.
+    pub vault_meta: Option<(i64, String)>,
 }
 
 impl SnapshotBatch {
@@ -118,14 +129,21 @@ impl SnapshotBatch {
     /// belongs to, its index out of `total`, and the ops and tombstones it
     /// carries.
     pub fn to_json(&self, pairing_id: &str) -> JsonValue {
-        json!({
+        let mut doc = json!({
             "kind": "snapshot",
             "pairingId": pairing_id,
             "batch": self.index,
             "total": self.total,
             "ops": self.rows.iter().map(row_json).collect::<Vec<_>>(),
             "tombstones": self.tombstones.iter().map(tombstone_json).collect::<Vec<_>>(),
-        })
+        });
+        if let Some((generation, verifier)) = &self.vault_meta {
+            doc["vaultMeta"] = json!({
+                "generation": generation,
+                "verifier": verifier,
+            });
+        }
+        doc
     }
 }
 
@@ -206,6 +224,7 @@ impl Snapshot {
                 total,
                 rows,
                 tombstones,
+                vault_meta: self.vault_meta.clone(),
             })
             .collect()
     }
@@ -336,7 +355,17 @@ fn read_all(conn: &Connection) -> Result<Snapshot, String> {
         rows.extend(read_table(conn, table, &device_id)?);
     }
     let tombstones = read_tombstones(conn)?;
-    Ok(Snapshot { rows, tombstones })
+    // F-2: the batch-level carriage, from the same read the rows attach.
+    // A verifier with no readable generation is a pre-Stage-3 vault, which
+    // the receiving side counts as generation 1 — the same default its own
+    // metadata reader applies.
+    let (generation, verifier) = vault_metadata(conn)?;
+    let vault_meta = verifier.map(|v| (if generation >= 1 { generation } else { 1 }, v));
+    Ok(Snapshot {
+        rows,
+        tombstones,
+        vault_meta,
+    })
 }
 
 /// §12.3 (Stage 3 decision 2): the two envelope keys a snapshot's vault rows
@@ -352,7 +381,7 @@ fn read_all(conn: &Connection) -> Result<Snapshot, String> {
 const VAULT_GENERATION_KEY: &str = "vault_generation";
 const VAULT_VERIFY_KEY: &str = "vault_verify";
 
-fn vault_metadata(conn: &Connection) -> Result<(i64, Option<String>), String> {
+pub(crate) fn vault_metadata(conn: &Connection) -> Result<(i64, Option<String>), String> {
     let mut generation = 0i64;
     let mut verifier: Option<String> = None;
     let mut statement = conn
@@ -625,6 +654,38 @@ mod tests {
                        '2026-01-01', '2026-01-01');"
         ))
         .expect("seed note");
+    }
+
+    #[test]
+    fn an_itemless_vault_still_crosses_at_batch_level() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO settings (key, value) VALUES ('vault_generation', '2');
+             INSERT INTO settings (key, value) VALUES ('vault_verify', 'sealed-verifier');",
+        )
+        .expect("seed vault settings");
+        let snapshot = read_snapshot(&conn).expect("read snapshot");
+        assert_eq!(
+            snapshot.vault_meta,
+            Some((2, "sealed-verifier".to_string())),
+            "F-2: the pair is read even though no vault row exists to carry it"
+        );
+        let batches = snapshot.batches(30 * 1024);
+        let doc = batches[0].to_json("pair-1");
+        assert_eq!(doc["vaultMeta"]["generation"], json!(2));
+        assert_eq!(doc["vaultMeta"]["verifier"], json!("sealed-verifier"));
+    }
+
+    #[test]
+    fn no_vault_here_means_no_carriage() {
+        let conn = db();
+        let snapshot = read_snapshot(&conn).expect("read snapshot");
+        assert_eq!(snapshot.vault_meta, None);
+        let doc = snapshot.batches(30 * 1024)[0].to_json("pair-1");
+        assert!(
+            doc.get("vaultMeta").is_none(),
+            "§9.1: a vault-less device sends nothing a receiver could act on"
+        );
     }
 
     #[test]
@@ -1096,6 +1157,7 @@ mod tests {
             total: 1,
             rows,
             tombstones: Vec::new(),
+            vault_meta: None,
         }
     }
 
@@ -1201,6 +1263,7 @@ mod tests {
         let snapshot = Snapshot {
             rows: vec![padded_row(big.len())],
             tombstones: Vec::new(),
+            vault_meta: None,
         };
         let row = snapshot
             .unservable_row()
@@ -1226,6 +1289,7 @@ mod tests {
         let snapshot = Snapshot {
             rows: vec![padded_row(MAX_SERVABLE_ROW_BYTES - 900)],
             tombstones: Vec::new(),
+            vault_meta: None,
         };
         assert!(snapshot.unservable_row().is_none());
         let batches = snapshot.batches(MAX_SNAPSHOT_BATCH_BYTES);

@@ -20,6 +20,7 @@ import {
   type PeerRow,
   readOutbox,
   readPeers,
+  readVaultMetadata,
   registerPeerStatements,
 } from "./store.ts";
 import { batchSyncOps, type SyncTransport } from "./syncSession.ts";
@@ -64,6 +65,9 @@ export function ferry(phone: SyncFixture, desktop: SyncFixture): Ferry {
   let verdict: { throughSeq: number } | { error: string } | null = null;
   let pulledFrom: number | null = null;
   let pullBatches: PeerOp[][] = [];
+  // F-2: the desktop's vault pair, read with the pull's one read and
+  // repeated on every reply — the ferry mirrors the real listener here.
+  let pullVaultMeta: { generation: number; verifier: string } | null = null;
 
   const state: Ferry = {
     phone: null as unknown as SyncTransport,
@@ -81,6 +85,7 @@ export function ferry(phone: SyncFixture, desktop: SyncFixture): Ferry {
       verdict = null;
       pulledFrom = null;
       pullBatches = [];
+      pullVaultMeta = null;
       state.syncState = null;
       state.syncApplied = null;
       state.pushed = [];
@@ -131,6 +136,14 @@ export function ferry(phone: SyncFixture, desktop: SyncFixture): Ferry {
       }
       if (pulledFrom === null) {
         pulledFrom = afterSeq;
+        const metadata = await readVaultMetadata(desktop.driver);
+        pullVaultMeta =
+          metadata.verifier !== null
+            ? {
+                generation: metadata.generation ?? 1,
+                verifier: metadata.verifier,
+              }
+            : null;
         const rows = (await readOutbox(desktop.driver)).filter(
           (row) => row.seq > afterSeq,
         );
@@ -165,6 +178,7 @@ export function ferry(phone: SyncFixture, desktop: SyncFixture): Ferry {
         batch,
         total: pullBatches.length,
         ops: pullBatches[batch] ?? [],
+        ...(pullVaultMeta !== null ? { vaultMeta: pullVaultMeta } : {}),
       };
     },
     async syncApplied(_input, throughSeq) {

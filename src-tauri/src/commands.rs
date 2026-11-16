@@ -1018,6 +1018,20 @@ pub fn pairing_open(
         Ok(ops)
     });
     listener.set_sync_source(sync_source);
+    // F-2: the same window also serves the vault pair at batch level, so a
+    // vault set up here reaches the phone even while it holds no items —
+    // the §12.3 envelope otherwise rides on rows an empty vault never has.
+    let vault_reader = app.clone();
+    let vault_meta_source: crate::pairing_listener::VaultMetaSource =
+        std::sync::Arc::new(move || {
+            let db_state = vault_reader
+                .try_state::<AppState>()
+                .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+            let conn = lock_conn(&db_state)?;
+            let (generation, verifier) = crate::pairing_snapshot::vault_metadata(&conn)?;
+            Ok(verifier.map(|v| (if generation >= 1 { generation } else { 1 }, v)))
+        });
+    listener.set_vault_meta_source(vault_meta_source);
     listener.start("0.0.0.0", window, identity, Some(snapshot))
 }
 

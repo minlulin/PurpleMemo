@@ -1377,6 +1377,7 @@ mod tests {
                 })
                 .collect(),
             tombstones: Vec::new(),
+            vault_meta: None,
         }
     }
 

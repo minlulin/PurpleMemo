@@ -36,7 +36,11 @@ import {
   type OutboxRow,
   readOutbox,
   readPeers,
+  readVaultMetadata,
+  readVaultMetaWire,
   resolveWireParentUids,
+  type VaultMetaWire,
+  vaultMetaApplyStatements,
 } from "./store.ts";
 
 /** The driver surface one session uses — one method per Rust command. */
@@ -57,6 +61,8 @@ export interface SyncTransport {
     batch: number;
     total: number;
     ops: unknown[];
+    /** F-2: the desktop's vault pair at batch level, when it has one. */
+    vaultMeta?: unknown;
   }>;
   syncApplied(input: SnapshotPullInput, throughSeq: number): Promise<void>;
   syncStatus(input: SnapshotPullInput): Promise<SyncStatusResult>;
@@ -247,10 +253,11 @@ export function readSyncBatch(
     batch: number;
     total: number;
     ops: unknown[];
+    vaultMeta?: unknown;
   },
   expected: { pairingId: string; batch: number },
 ):
-  | { ok: true; ops: PeerOp[]; total: number }
+  | { ok: true; ops: PeerOp[]; total: number; vaultMeta: VaultMetaWire | null }
   | { ok: false; refusal: SyncRefusal } {
   const bad = (message: string, code = "malformed") => ({
     ok: false as const,
@@ -277,7 +284,17 @@ export function readSyncBatch(
   }
   const read = readSyncOps(raw.ops);
   if (!read.ok) return bad(read.reason);
-  return { ok: true, ops: read.ops, total: raw.total };
+  // F-2: the batch-level vault carriage rides the same reply; absent is
+  // fine (an older desktop, or none set up), malformed is not.
+  const carriage = readVaultMetaWire(raw.vaultMeta);
+  if (!carriage.ok)
+    return bad("the desktop's vault carriage is not usable (F-2).");
+  return {
+    ok: true,
+    ops: read.ops,
+    total: raw.total,
+    vaultMeta: carriage.meta,
+  };
 }
 
 /**
@@ -348,6 +365,9 @@ export async function runSync(
   let appliedThrough = afterSeq;
   let pulled = 0;
   let batch = 0;
+  // F-2: every pull batch of one held read carries the same vault pair; the
+  // first one seen is the session's, applied once the pull completes.
+  let vaultMeta: VaultMetaWire | null = null;
   for (;;) {
     let raw: Awaited<ReturnType<SyncTransport["syncPull"]>>;
     try {
@@ -370,6 +390,7 @@ export async function runSync(
       };
     }
     pulled += read.ops.length;
+    if (vaultMeta === null) vaultMeta = read.vaultMeta;
     if (read.ops.length > 0) {
       let statements: BatchStatement[];
       try {
@@ -404,6 +425,25 @@ export async function runSync(
     }
     batch += 1;
     if (batch >= read.total) break;
+  }
+
+  // F-2: the vault carriage lands after the pull, in its own batch — the
+  // generation rule's wipe and the metadata write are one transaction, and a
+  // failure here is an apply failure like any other, never a silent skip.
+  if (vaultMeta !== null) {
+    try {
+      const local = await readVaultMetadata(driver);
+      await transport.batch(
+        vaultMetaApplyStatements(vaultMeta, local.generation),
+      );
+    } catch (error) {
+      return {
+        ...refuse("apply-refused", errorText(error), pushing.length),
+        pulled,
+        appliedThrough,
+        refusal: splitRefusal(errorText(error)),
+      };
+    }
   }
 
   // 3. Report the position. The desktop turns it into an acknowledgement on

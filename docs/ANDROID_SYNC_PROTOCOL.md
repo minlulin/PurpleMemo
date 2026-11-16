@@ -1106,6 +1106,17 @@ verifier makes data undecryptable even though every field individually "won"
 (F3). A conflict archive keeps ciphertext only, never plaintext, and never mixes
 generations. Vault rows are aggregate-atomic (§4.4).
 
+The metadata also travels **at batch level** (F-2, 2026-11-16): the envelope
+above rides on vault rows, and a vault that holds no items has no rows — a
+password set up on the desktop and never used would otherwise never reach the
+phone, which would go on reporting that no vault exists. So every snapshot
+batch and every sync-pull reply carries a `vaultMeta` pair (generation,
+verifier) when the sender has a vault set up, and the receiver applies it
+under the same generation rule: a different generation replaces (local items
+go in the same batch), the same generation is a plain write. A sender with
+**no** vault sends no carriage at all — that absence is what keeps §9.1's
+promise that an empty snapshot leaves a receiver's own vault alone.
+
 #### §12.4 Each stage earns its own tests
 
 Passing Stage 1 does not authorise broad two-way financial or Vault editing. Every

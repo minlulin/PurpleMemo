@@ -708,6 +708,46 @@ test("a batch naming an unusable uid, stamp or pairing is refused", async () => 
   }
 });
 
+test("F-2: a batch's vault carriage is read, and a malformed one is refused", () => {
+  const base = {
+    kind: "snapshot",
+    pairingId: PULL_PAIRING,
+    batch: 0,
+    total: 1,
+    ops: [],
+    tombstones: [],
+  };
+  const carried = readSnapshotBatch(
+    { ...base, vaultMeta: { generation: 2, verifier: "sealed" } },
+    { batch: 0, pairingId: PULL_PAIRING },
+  );
+  assert.equal(carried.ok, true);
+  if (carried.ok) {
+    assert.deepEqual(carried.batch.vaultMeta, {
+      generation: 2,
+      verifier: "sealed",
+    });
+  }
+  const absent = readSnapshotBatch(base, {
+    batch: 0,
+    pairingId: PULL_PAIRING,
+  });
+  assert.equal(absent.ok, true);
+  if (absent.ok) assert.equal(absent.batch.vaultMeta, null);
+  for (const vaultMeta of [
+    { generation: 0, verifier: "sealed" },
+    { generation: 1, verifier: "" },
+    { generation: "2", verifier: "sealed" },
+    "sealed",
+  ]) {
+    const read = readSnapshotBatch(
+      { ...base, vaultMeta },
+      { batch: 0, pairingId: PULL_PAIRING },
+    );
+    assert.equal(read.ok, false, JSON.stringify(vaultMeta));
+  }
+});
+
 test("a batch over the sealed frame budget is refused before anything is staged", async () => {
   const read = readSnapshotBatch(
     {
