@@ -18,6 +18,12 @@ src-tauri/gen/apple/
 # Signing keys — never committed
 .keys/
 
+# The updater manifest is a release artifact, not source (audit A7).
+# `scripts/make-latest-json.mjs` writes it next to the built installer inside
+# `target/`; this entry stops a hand-passed `--out latest.json` from being
+# committed as a second manifest with the same name as the served one.
+/latest.json
+
 # Logs & local state
 *.log
 *.local

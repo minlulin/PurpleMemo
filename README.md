@@ -106,7 +106,8 @@ Rules of the gate:
 - Releases are built, signed and published **by hand** — there is no
   release workflow; see [`docs/RELEASE.md`](docs/RELEASE.md) for the exact
   procedure (`scripts/make-latest-json.mjs` builds the updater manifest, which
-  `tauri build` does not emit).
+  `tauri build` does not emit, and writes it beside the installer — it is a
+  release artifact and is never committed).
 
 ## License
 

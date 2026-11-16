@@ -14,13 +14,20 @@
  *     --asset src-tauri/target/release/bundle/nsis/purple-memo_0.2.0_x64-setup.exe \
  *     --notes-file RELEASE_NOTES.md \
  *     --repo minlulin/PurpleMemo \
- *     [--tag v0.2.0] [--out latest.json] [--platform windows-x86_64]
+ *     [--tag v0.2.0] [--out <dir>/latest.json] [--platform windows-x86_64]
  *
  * Then upload the installer, its `.sig` and `latest.json` to a PUBLISHED
  * (non-draft, non-prerelease) GitHub release — see docs/RELEASE.md.
+ *
+ * The manifest is a release artifact, not source (audit A7): by default it is
+ * written next to the installer it describes, inside `target/`, which is
+ * ignored. The repo root used to hold a tracked copy, which was a second
+ * manifest with the same name as the one clients fetch and no check that the
+ * two agreed — and every release rewrote it as a diff that looked like source
+ * but was a signature.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   buildLatestJson,
   RELEASE_PLATFORM,
@@ -61,7 +68,9 @@ if (!existsSync(sigPath)) {
 }
 
 const tag = args.get("tag") ?? `v${version}`;
-const out = args.get("out") ?? "latest.json";
+// Beside the installer it points at: ignored by git (`target/`), and it cannot
+// be mistaken for the manifest a client downloads.
+const out = args.get("out") ?? join(dirname(asset), "latest.json");
 const platform = args.get("platform") ?? RELEASE_PLATFORM;
 const repo = args.get("repo") ?? "minlulin/PurpleMemo";
 const notesFile = args.get("notes-file");

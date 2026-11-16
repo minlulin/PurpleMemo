@@ -165,6 +165,14 @@ a two-release operation:
      --notes-file RELEASE_NOTES.md
    ```
 
+   It writes `latest.json` **next to the installer** it describes — inside
+   `target/`, which git ignores — and prints the path. The manifest is a release
+   artifact, not source (audit A7): it carries a signature and a timestamp, and
+   the repo used to hold a tracked copy, which was a second manifest with the
+   same name as the one clients fetch and no check that the two agreed.
+   `.gitignore` now covers `/latest.json`, so an accidental `--out latest.json`
+   cannot be committed either.
+
    The `Purple Memo` space is handled for you: GitHub stores it as a dot, and
    the script builds the URL from that stored name.
 
@@ -179,7 +187,7 @@ a two-release operation:
      --notes-file RELEASE_NOTES.md \
      "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe" \
      "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe.sig" \
-     latest.json
+     "src-tauri/target/release/bundle/nsis/latest.json"
    ```
 
    Upload three assets: the installer, its `.sig`, and `latest.json`. Do not
