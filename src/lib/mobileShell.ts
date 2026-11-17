@@ -156,9 +156,9 @@ export function routeForNote(id: number): MobileRoute {
  * What the FAB can create. Creation only — habit check-ins are 1-tap toggles on
  * Dashboard/Habits (his correction, 2026-11-02). Jobs and loans are also
  * reachable from their own pages, per the Phase B Session 2 order. `shop`
- * (F-3) is reachable from the Business page only — it is in this union so
- * the compose route can name it, and deliberately NOT in FAB_ACTIONS, so
- * the speed-dial itself is unchanged.
+ * (F-3) is reachable from the Business page only — it is in this union, and
+ * in `COMPOSE_ACTIONS`, so the compose route can name it, and deliberately
+ * NOT in FAB_ACTIONS, so the speed-dial itself is unchanged.
  */
 export type FabActionId =
   | "note"
@@ -187,20 +187,36 @@ export const FAB_ACTIONS: readonly FabAction[] = [
   { id: "loan", label: "mobile.fab.loan", page: "loans" },
 ];
 
-const FAB_IDS: readonly FabActionId[] = [
-  "note",
-  "task",
-  "income",
-  "expense",
-  "shopping",
-  "job",
-  "loan",
+/**
+ * Everything the COMPOSE route can name — `FAB_ACTIONS` plus `shop` (F-3),
+ * which the Business page opens itself and the speed-dial deliberately does
+ * not list.
+ *
+ * This is the ONE table the three compose lookups read (route building,
+ * history restore, the shell's heading/body). They used to read
+ * `FAB_ACTIONS` alone, so a `shop` route fell through to the landing screen
+ * and the Business page's "New shop" button navigated to the Dashboard
+ * instead of opening the form.
+ */
+const COMPOSE_ACTIONS: readonly FabAction[] = [
+  ...FAB_ACTIONS,
+  { id: "shop", label: "mobile.shop.new", page: "business" },
 ];
 
-/** The route a FAB action lands on: the owning section, with its create form. */
+const COMPOSE_IDS: readonly FabActionId[] = COMPOSE_ACTIONS.map(
+  (action) => action.id,
+);
+
+/** The heading and section a compose id opens; null when no such id exists. */
+export function composeActionFor(id: FabActionId | null): FabAction | null {
+  if (id === null) return null;
+  return COMPOSE_ACTIONS.find((action) => action.id === id) ?? null;
+}
+
+/** The route a compose action lands on: the owning section, with its form open. */
 export function routeForCompose(id: FabActionId): MobileRoute {
-  const action = FAB_ACTIONS.find((candidate) => candidate.id === id);
-  if (action === undefined) return MOBILE_LANDING;
+  const action = composeActionFor(id);
+  if (action === null) return MOBILE_LANDING;
   return {
     tab: tabForPage(action.page),
     page: action.page,
@@ -240,7 +256,7 @@ export function routeFromHistoryState(state: unknown): MobileRoute {
   const page = pageValue as PageKey | null;
   const compose =
     typeof raw.compose === "string" &&
-    FAB_IDS.includes(raw.compose as FabActionId)
+    COMPOSE_IDS.includes(raw.compose as FabActionId)
       ? (raw.compose as FabActionId)
       : null;
   // A compose route without a page cannot be shown; a page that belongs to a

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   BACKGROUND_LOCK_GRACE_MS,
   backgroundAwayMs,
+  composeActionFor,
   FAB_ACTIONS,
   historyStateFor,
   isLanding,
@@ -116,6 +117,31 @@ test("a compose action lands on its module with the create form open", () => {
   const income = routeForCompose("income");
   assert.equal(income.page, "budget");
   assert.equal(income.compose, "income");
+});
+
+test("the Business page's shop compose opens though the FAB does not offer it (F-3)", () => {
+  // The speed-dial is unchanged by F-3: seven actions, no shop.
+  assert.equal(
+    FAB_ACTIONS.some((action) => action.id === "shop"),
+    false,
+  );
+
+  const route = routeForCompose("shop");
+  assert.equal(
+    isLanding(route),
+    false,
+    "'New shop' must open the form, not fall through to the Dashboard",
+  );
+  assert.equal(route.page, "business");
+  assert.equal(route.compose, "shop");
+  assert.equal(route.tab, "more");
+
+  // The shell's heading and body resolve the same id through the same table.
+  assert.equal(composeActionFor("shop")?.label, "mobile.shop.new");
+  assert.equal(composeActionFor(null), null);
+
+  // …and the route survives back/forward through history state.
+  assert.deepEqual(routeFromHistoryState(historyStateFor(route)), route);
 });
 
 test("routes survive a round trip through history state", () => {

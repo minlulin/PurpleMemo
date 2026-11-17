@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   backgroundAwayMs,
+  composeActionFor,
   FAB_ACTIONS,
   type FabActionId,
   historyStateFor,
@@ -196,10 +197,7 @@ export function MobileShell({
     if (sheetOpen) sheetCloseRef.current?.focus();
   }, [sheetOpen]);
 
-  const composeAction =
-    route.compose === null
-      ? null
-      : (FAB_ACTIONS.find((action) => action.id === route.compose) ?? null);
+  const composeAction = composeActionFor(route.compose);
   const tabLabel =
     MOBILE_TABS.find((tab) => tab.key === route.tab)?.label ?? "mobile.moreTab";
   const heading =
