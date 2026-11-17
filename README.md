@@ -50,13 +50,15 @@ Two things the archive is not:
   stick can still copy it. Encrypt the volume, and keep removable media
   physically safe.
 
-## Exports & LAN share
+## Exports
 
 - The **Exports page** writes a readable ZIP of Markdown, CSV and vCard files
   — see [`docs/EXPORTS.md`](docs/EXPORTS.md) for the exact field mapping.
-- The **LAN share** is off by default; when started it serves a read-only,
-  encrypted snapshot to browsers on the same network. There is still no sync
-  and no cloud — the share is manual, read-only and local.
+
+Device-to-device sync is **pairing**, not a share: the phone pairs with the
+desktop over the local network and exchanges changes in both directions (see
+[`docs/ANDROID_SYNC_PROTOCOL.md`](docs/ANDROID_SYNC_PROTOCOL.md)). The old
+read-only LAN share was removed on 2026-11-16 — pairing supersedes it.
 
 ## Development
 
