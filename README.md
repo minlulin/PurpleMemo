@@ -93,6 +93,7 @@ It only warns and exits 0 where there is nothing to arm: outside a git checkout
 `npm run verify` =
 `node scripts/check-hooks.mjs` → `node scripts/check-references.mjs` →
 `node scripts/check-signing-key.mjs` →
+`node scripts/check-android-apk.mjs` →
 `node scripts/check-versions.mjs` →
 `biome check --error-on-warnings .` → token lint → dead-code lint →
 `tsc --noEmit` →
@@ -108,6 +109,10 @@ Rules of the gate:
   there, or when a link in a markdown file does not resolve. Comments are never
   executed and links are never followed by the build, so without this check a
   moved document leaves the source pointing at nothing for weeks.
+- The Android release APK, when one is present, is checked by
+  `node scripts/check-android-apk.mjs`: signed (and not with the debug key),
+  arm64-only, and carrying the `versionCode` of the version in `package.json`.
+  With no APK it skips with a line, so a desktop clone runs the gate unchanged.
 - Never use `git push --no-verify`. If the gate is red, fix it or revert —
   the gate's own output on your machine is the evidence.
 - Hosted CI is intentionally out of scope. Every clone must enable the hook

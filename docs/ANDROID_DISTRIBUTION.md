@@ -66,9 +66,16 @@ env CC_aarch64-linux-android=aarch64-linux-android24-clang \
 ```
 
 `app/build.gradle.kts` refuses any release build whose ABI list is not exactly
-`arm64-v8a`, so `--target x86_64` (and a bare release build, which would default
-to all four ABIs) fails at configuration time rather than shipping an extra
-ABI.
+`arm64-v8a`, so `--target x86_64` fails at configuration time rather than
+shipping an extra ABI. That refusal covers `assemble` and `build` too: both
+package the release variant, and a name test for "Release" used to miss them,
+which built the release with the template's default four ABIs. As a second,
+structural line, the release build type excludes every other ABI directory from
+packaging, so an invocation the request check cannot name — a Gradle
+abbreviation such as `./gradlew assemb` — still cannot produce a four-ABI
+release. The same file refuses to configure without `app/tauri.properties`: the
+CLI regenerates it from the manifests before Gradle runs, and its absence would
+otherwise declare `versionCode 1`, an APK no later release can install over.
 
 Output:
 
@@ -78,22 +85,37 @@ src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-rele
 
 ## 3. Verify before anyone installs it
 
+This is a gate step, not a checklist: `npm run check:android-apk` runs inside
+`npm run verify`, and it reads the artefact instead of trusting the command line
+that produced it. It fails on
+
+- an APK that is not signed, is signed with the Android **debug** key, or has
+  more than one signer;
+- any `lib/<abi>/` other than `arm64-v8a`, or a missing
+  `lib/arm64-v8a/libpurple_memo_lib.so`;
+- a `versionCode`/`versionName` that does not belong to the version in
+  `package.json`, read through `app/tauri.properties` — the file the CLI
+  regenerates on every build, so a stale one cannot hand over an old code.
+
+It skips, with a line saying so, when no APK exists: that is the normal state of
+a desktop checkout, and the gate stays green there. Pass `--apk <path>` (or set
+`PM_ANDROID_APK`) to check an artefact somewhere else.
+
+On the release machine one command is the whole check, and its output is the
+hand-off record — the signer, the certificate digest, the ABI set, the version
+and the APK's own SHA-256, to keep beside `git rev-parse HEAD`:
+
 ```bash
-APK=src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
-
-# Which key signed it, and does the signature actually verify?
-$ANDROID_HOME/build-tools/37.0.0/apksigner verify --print-certs "$APK"
-
-# The bytes a user can compare against what they were told to download.
-sha256sum "$APK"
-
-# The APK is arm64 only, and carries the release Rust library.
-unzip -l "$APK" | grep -E "lib/.*/libpurple_memo_lib\.so"
+npm run check:android-apk
 ```
 
-`apksigner verify` must print `Verifies` and the certificate's SHA-256 digest
-must match the release key's. The `unzip` line must list
-`lib/arm64-v8a/libpurple_memo_lib.so` and no other ABI.
+The same facts by hand, if a dispute needs them:
+
+```bash
+APK=src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+$ANDROID_HOME/build-tools/37.0.0/apksigner verify --print-certs "$APK"
+unzip -l "$APK" | grep -E "lib/.*/libpurple_memo_lib\.so"
+```
 
 **Reproducibility.** Two builds from the same commit use the same commands and
 produce APKs with the same signing certificate and the same version code; the
