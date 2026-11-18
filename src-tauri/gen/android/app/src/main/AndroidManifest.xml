@@ -58,13 +58,29 @@
           android:name=".ReminderReceiver"
           android:exported="false" />
 
-        <!-- Re-arms persisted reminders after a reboot; the OS drops every
-             alarm when the phone restarts. -->
+        <!-- Re-arms persisted reminders after any event that stops the system
+             holding their alarms, instead of waiting for the app to be opened:
+             a reboot, an app update (the package is stopped, which clears its
+             alarms), a clock or timezone change (an RTC alarm keeps its instant,
+             so after a zone move it is armed for the wrong local time), and the
+             exact-alarm grant arriving (reminders already armed inexactly should
+             become exact).
+
+             All of these reach this non-exported receiver: the boot, TIME_SET and
+             TIMEZONE_CHANGED broadcasts are exempt from the implicit-broadcast
+             limits, MY_PACKAGE_REPLACED is addressed to this app alone, and
+             SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED is sent to manifest
+             receivers as well as runtime ones (API 31+; on older releases the
+             action simply never fires). -->
         <receiver
           android:name=".BootReceiver"
           android:exported="false">
           <intent-filter>
             <action android:name="android.intent.action.BOOT_COMPLETED" />
+            <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            <action android:name="android.intent.action.TIME_SET" />
+            <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
           </intent-filter>
         </receiver>
     </application>

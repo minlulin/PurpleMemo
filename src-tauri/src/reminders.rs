@@ -6,9 +6,11 @@
 //! (`gen/android/.../Reminders.kt`), which arms `AlarmManager` alarms: exact
 //! when the exact-alarm permission is held, inexact (`setAndAllowWhileIdle`)
 //! when it is not, and a `BroadcastReceiver` that posts the notification while
-//! Purple Memo is closed. Alarms do not survive a reboot, so the bridge keeps
-//! the armed set in device-local preferences and re-arms it from a
-//! `BOOT_COMPLETED` receiver.
+//! Purple Memo is closed. The system stops holding those alarms on a reboot and
+//! on an app update, and a timezone change leaves each one at an instant that is
+//! no longer the local time the user set, so the bridge keeps the armed set in
+//! device-local preferences and re-arms it from a receiver registered for those
+//! events and for a new exact-alarm grant.
 //!
 //! Everything here is **app code calling the Android framework** — there is no
 //! simulated scheduler and no fake clipboard on this path. On desktop the same

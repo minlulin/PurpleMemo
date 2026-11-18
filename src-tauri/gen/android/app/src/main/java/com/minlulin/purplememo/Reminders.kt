@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.PersistableBundle
 import android.provider.Settings
 import android.util.Log
+import androidx.core.app.NotificationManagerCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -36,13 +37,27 @@ import java.util.Locale
  * the ids, titles and due times of alarms that are already armed, so the
  * device-local delivery state never becomes a second unencrypted copy of the
  * user's notes.
+ *
+ * Two honesty rules ride on top of that. The notification is **private on the
+ * lock screen**: the app is FLAG_SECURE everywhere else (decision 6), so a
+ * readable lock-screen card is the one hole left in it. And a reminder the
+ * phone refused to show is **not reported as delivered** — the app settles a row
+ * from that report, so claiming delivery for a notification nobody saw would
+ * settle it silently. See [deliver].
  */
 object ReminderBridge {
     private const val TAG = "PurpleMemo"
     private const val PREFS = "purple_memo_reminders"
     private const val KEY_PENDING = "pending"
     private const val KEY_DELIVERED = "delivered"
-    const val CHANNEL_ID = "purple_memo_reminders"
+    /**
+     * Versioned because a channel's settings are immutable once created (see
+     * [ensureChannel]): v1 was made without a lock-screen visibility, and no
+     * later call can change that, so the honest fix is a new channel.
+     */
+    const val CHANNEL_ID = "purple_memo_reminders_v2"
+    /** The pre-v2 channel: retired on the next contact, so its cards go with it. */
+    private const val LEGACY_CHANNEL_ID = "purple_memo_reminders"
 
     @Volatile
     private var appContext: Context? = null
@@ -59,17 +74,32 @@ object ReminderBridge {
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    /**
+     * Create the reminder channel once, and retire the pre-v2 one.
+     *
+     * Alarms are unaffected by the rename: the channel is chosen when a
+     * notification is *posted*, not when it is armed, so a reminder armed before
+     * this change still fires and arrives on v2. Retiring v1 also cancels any
+     * notification it posted — those cards are already on the lock screen and
+     * cannot be recalled any other way.
+     */
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Reminders",
-            NotificationManager.IMPORTANCE_HIGH,
-        )
-        channel.description = "Task and reminder alerts scheduled on this phone"
-        manager.createNotificationChannel(channel)
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Reminders",
+                NotificationManager.IMPORTANCE_HIGH,
+            )
+            channel.description = "Task and reminder alerts scheduled on this phone"
+            channel.lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+            manager.createNotificationChannel(channel)
+        }
+        if (manager.getNotificationChannel(LEGACY_CHANNEL_ID) != null) {
+            manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+            Log.i(TAG, "retired the pre-v2 reminder channel")
+        }
     }
 
     /**
@@ -242,25 +272,87 @@ object ReminderBridge {
         Log.i(TAG, "cancelled reminder $id")
     }
 
-    /** Post the notification for a fired alarm and record device-local delivery. */
-    fun deliver(context: Context, id: Long, title: String, body: String) {
+    /**
+     * Post the notification for a fired alarm, and record device-local delivery
+     * **only when it was actually shown**.
+     *
+     * The accounting is load-bearing: the id this records is what makes the app
+     * settle a row without notifying a second time, so recording a reminder that
+     * was never displayed deletes it — no notification, no in-app reminder, no
+     * trace. A refusal therefore records nothing: the alarm is spent and dropped
+     * from the armed set, and the row stays pending in the database, where the
+     * app's own in-app poll settles it the next time the app is open.
+     *
+     * Returns whether the notification reached the user.
+     */
+    fun deliver(context: Context, id: Long, title: String, body: String): Boolean {
         ensureChannel(context)
         val manager = context.getSystemService(NotificationManager::class.java)
+        var refusal: String? = null
         if (manager == null) {
-            Log.e(TAG, "no NotificationManager; reminder $id could not be shown")
-            return
+            refusal = "this device has no NotificationManager"
+        } else {
+            refusal = refusalReason(context)
+            if (refusal == null) {
+                try {
+                    manager.notify(id.toInt(), buildNotification(context, id, title, body))
+                } catch (e: SecurityException) {
+                    // The grant can be revoked between the check and the call.
+                    refusal = "the notification permission was refused"
+                    Log.w(TAG, "notification refused for reminder $id", e)
+                }
+            }
         }
+        // The alarm has fired either way, so it is no longer armed. Only a
+        // notification the user could see may be reported as delivered.
+        val store = prefs(context)
+        val pending = readObject(store, KEY_PENDING)
+        pending.remove(id.toString())
+        if (refusal != null) {
+            store.edit().putString(KEY_PENDING, pending.toString()).apply()
+            Log.w(
+                TAG,
+                "reminder $id was not shown ($refusal); left pending for the in-app " +
+                    "poll instead of being settled unseen",
+            )
+            return false
+        }
+        val delivered = store.getString(KEY_DELIVERED, null)
+        val list = if (delivered == null) JSONArray() else JSONArray(delivered)
+        list.put(id)
+        store.edit()
+            .putString(KEY_PENDING, pending.toString())
+            .putString(KEY_DELIVERED, list.toString())
+            .apply()
+        Log.i(TAG, "delivered reminder $id at ${System.currentTimeMillis()}")
+        return true
+    }
+
+    /**
+     * The reminder notification: no content on the lock screen (decision 6).
+     *
+     * `VISIBILITY_PRIVATE` is what keeps the workspace out of a locked phone's
+     * screen; the channel's `lockscreenVisibility` is the same policy applied to
+     * a notification the channel did not create.
+     */
+    private fun buildNotification(
+        context: Context,
+        id: Long,
+        title: String,
+        body: String,
+    ): android.app.Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             android.app.Notification.Builder(context, CHANNEL_ID)
         } else {
             @Suppress("DEPRECATION")
             android.app.Notification.Builder(context)
         }
-        val notification = builder
+        return builder
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
+            .setVisibility(android.app.Notification.VISIBILITY_PRIVATE)
             // Tapping the notification opens the app (before this, the tap
             // only dismissed it — there was no content intent at all).
             .setContentIntent(
@@ -275,42 +367,67 @@ object ReminderBridge {
                 ),
             )
             .build()
-        try {
-            manager.notify(id.toInt(), notification)
-            Log.i(TAG, "delivered reminder $id at ${System.currentTimeMillis()}")
-        } catch (e: SecurityException) {
-            // No POST_NOTIFICATIONS grant: say so instead of pretending.
-            Log.w(TAG, "notification permission refused for reminder $id", e)
-        }
-        val store = prefs(context)
-        val pending = readObject(store, KEY_PENDING)
-        pending.remove(id.toString())
-        val delivered = store.getString(KEY_DELIVERED, null)
-        val list = if (delivered == null) JSONArray() else JSONArray(delivered)
-        list.put(id)
-        store.edit()
-            .putString(KEY_PENDING, pending.toString())
-            .putString(KEY_DELIVERED, list.toString())
-            .apply()
     }
 
-    /** Re-arm everything after a reboot: AlarmManager alarms do not survive one. */
-    fun rearm(context: Context) {
+    /**
+     * Why a notification posted right now would not be seen, or null when it
+     * would be.
+     *
+     * Both of these are *silent* refusals: a blocked app (no
+     * `POST_NOTIFICATIONS` grant, or notifications off in Settings) and a muted
+     * channel post nothing and throw nothing, so the `SecurityException` path
+     * alone would still record them as delivered.
+     */
+    private fun refusalReason(context: Context): String? {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            return "notifications are turned off for Purple Memo"
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            val channel = manager?.getNotificationChannel(CHANNEL_ID)
+            if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                return "the Reminders channel is muted"
+            }
+        }
+        return null
+    }
+
+    /**
+     * Re-arm the persisted reminders from their local `due` strings, in the zone
+     * that is current now.
+     *
+     * Called for every event that stops the system holding the alarms (see
+     * `BootReceiver`): a reboot or app update clears them outright, a timezone
+     * move leaves each RTC alarm at its old instant — the wrong wall time — and
+     * a new exact-alarm grant should upgrade the ones armed inexactly.
+     *
+     * Rows whose local time has already passed are not armed, and their pending
+     * alarm is **cancelled**: after a timezone move, "already passed here" and
+     * "still armed for the old instant" are different things, and letting the
+     * stale one stand would notify at a time the user never asked for. Such a
+     * row stays pending in the database for the app's in-app poll to settle.
+     */
+    fun rearm(context: Context, reason: String) {
         val pending = readObject(prefs(context), KEY_PENDING)
         val manager = context.getSystemService(AlarmManager::class.java) ?: return
         val exact = exactAllowed(context)
         var rearmed = 0
+        var dropped = 0
         val keys = pending.keys()
         while (keys.hasNext()) {
             val key = keys.next()
             val id = key.toLongOrNull() ?: continue
             val row = pending.optJSONObject(key) ?: continue
             val at = epochMillis(row.optString("due")) ?: continue
-            if (at <= System.currentTimeMillis()) continue
+            if (at <= System.currentTimeMillis()) {
+                cancel(context, manager, id)
+                dropped += 1
+                continue
+            }
             schedule(context, manager, id, row, at, exact)
             rearmed += 1
         }
-        Log.i(TAG, "re-armed $rearmed reminder(s) after boot")
+        Log.i(TAG, "re-armed $rearmed reminder(s) after $reason ($dropped past, dropped)")
     }
 
     /**
@@ -384,11 +501,40 @@ class ReminderReceiver : BroadcastReceiver() {
     }
 }
 
-/** Re-registers armed reminders after a reboot (alarms do not survive one). */
+/**
+ * `AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED`, API 31+.
+ * Spelled out rather than referenced so this file does not touch a constant that
+ * does not exist below that API level; on older releases the action never fires.
+ */
+private const val ACTION_EXACT_ALARM_CHANGED =
+    "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"
+
+/**
+ * Re-arms the persisted reminders after any event that stops the system holding
+ * their alarms, so a reminder survives an update or a flight across timezones
+ * instead of waiting for the app to be opened again.
+ *
+ * Each action is one of those events: a reboot drops every alarm, an app update
+ * stops the package (which drops them too), a clock or timezone change leaves an
+ * RTC alarm at an instant that is no longer the local time the user set, and a
+ * newly granted exact-alarm permission should turn the inexact fallbacks into
+ * exact alarms. The revocation direction sends no broadcast — the system cancels
+ * the exact alarms itself, and the next sync re-arms them inexactly.
+ *
+ * The manifest's intent filter is what makes any of this arrive; its comment
+ * records why each action is deliverable to a non-exported receiver.
+ */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        ReminderBridge.rearm(context)
+        val reason = when (intent.action) {
+            Intent.ACTION_BOOT_COMPLETED -> "boot"
+            Intent.ACTION_MY_PACKAGE_REPLACED -> "package replaced"
+            Intent.ACTION_TIME_CHANGED -> "time set"
+            Intent.ACTION_TIMEZONE_CHANGED -> "timezone changed"
+            ACTION_EXACT_ALARM_CHANGED -> "exact-alarm permission"
+            else -> return
+        }
+        ReminderBridge.rearm(context, reason)
     }
 }
 
