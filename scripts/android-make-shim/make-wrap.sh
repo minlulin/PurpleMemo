@@ -18,6 +18,13 @@
 #
 # Idempotent on purpose: a recipe that already names `@.objs-` is left alone, so
 # the sub-makes that re-enter through this same shim do no work.
+#
+# One response file per recipe line, not per archive: `libcrypto.a` is archived by
+# several consecutive `ar` calls (OpenSSL splits the object list to stay inside
+# the limit), and naming the file after the archive made every one of them read
+# the last chunk — a libcrypto.a with no `crypto/evp` objects at all, which links
+# (undefined symbols are allowed) and then fails on the phone with
+# `dlopen failed: cannot locate symbol "EVP_MAC_fetch"`.
 GMAKE=${PM_GMAKE:-/c/Strawberry/c/bin/gmake.exe}
 [ -x "$GMAKE" ] || GMAKE=gmake
 
@@ -32,12 +39,14 @@ patch_file() {
     open(my $in, "<", $f) or exit 0;
     my @out = <$in>; close $in;
     my $changed = 0;
+    my %chunk;
     for my $l (@out) {
       next if $l =~ /\@\.objs-/;
       if ($l =~ /^\s*\$\(AR\) \$\(ARFLAGS\) (\S+) (\S.*?)\s*$/ && length($2) > 5000) {
         my ($ar,$rest)=($1,$2);
         (my $safe = $ar) =~ s|/|-|g;
-        my $rsp = ".objs-$safe.txt";
+        my $n = ++$chunk{$safe};
+        my $rsp = ".objs-$safe-$n.txt";
         my @objs = split(/\s+/, $rest);
         if (open(my $fh, ">", $rsp)) {
           print $fh "$_\n" for @objs; close $fh;
