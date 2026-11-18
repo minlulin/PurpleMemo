@@ -59,7 +59,9 @@ the box. The recipe that works on this PC (Session 2, proven end to end):
    generated Makefile that `/usr/bin/sh` executes; a Windows path
    (`C:\...\bin\clang.exe`) loses its backslashes there and the build dies on
    `C:Userspurpl...binclang.exe`. Passing the NDK compiler, `ar` and `ranlib` as
-   **bare names with the NDK bin directory on PATH** avoids it entirely.
+   **bare names with the NDK bin directory on PATH** avoids it for the debug
+   build. The release build re-exports the absolute path and needs the
+   `MAKEFLAGS` override in Session 5 below.
 
 Concretely, with `NDKBIN=%ANDROID_NDK_HOME%\toolchains\llvm\prebuilt\windows-x86_64\bin`:
 
@@ -113,7 +115,9 @@ ships only `npm.cmd`, so the frontend step fails inside Gradle unless an
 `npm.bat` exists earlier on PATH (a one-line forwarder to `npm.cmd` is enough).
 
 These three shims live outside the repo (in `%TEMP%`), so a fresh machine needs
-them recreated. If the SQLCipher/OpenSSL step keeps costing time, MSYS2 is the
+them recreated. The `make.exe` one is now built from `scripts/android-make-shim/`
+by `npm run setup:android-make-shim`; the `npm.bat` and the `PERL5LIB` tree are
+still assembled by hand. If the SQLCipher/OpenSSL step keeps costing time, MSYS2 is the
 cleaner substitute: its perl has the modules and Unix paths, and it provides
 `make` — items 1 and 2 stop being local hacks, and only item 3 remains.
 
@@ -148,9 +152,11 @@ the re-run uses `--message-format short` to get a readable error.
 Windows clears `%TEMP%`, which deletes the shims and with them the recipe above
 (Session 4 hit exactly that). Recreate them before building:
 
-1. `make.exe` — copy Strawberry's `gmake.exe`, which on this machine is
-   `C:\Strawberry\c\bin\gmake.exe` (not under `perl\bin`); a shell-script
-   `make` dies with OS error 216.
+1. `make.exe` — no longer hand-made: `npm run setup:android-make-shim` rebuilds
+   it from `scripts/android-make-shim/`. It locates Strawberry's `gmake.exe`
+   (`C:\Strawberry\c\bin\gmake.exe`, not under `perl\bin`), Git Bash's `sh.exe`
+   and `rustc`, compiles the launcher, and then runs the result to prove it can
+   start gmake — a shell-script `make` would die with OS error 216 instead.
 2. `npm.bat` — write it from a heredoc (`@echo off`, then
    `call "C:\Program Files\nodejs\npm.cmd" %*`). Do not build it with `printf`
    and escaped backslashes: a half-eaten `\n` splits the path across lines and
@@ -168,6 +174,67 @@ program not found` on every build. That warning is expected here: the NDK ships
 that name as a shell script (plus a `.cmd`) which a native Windows `cc` cannot
 spawn, while `openssl-src` only writes the bare name into a Makefile that
 `/usr/bin/sh` runs, where the script resolves normally.
+
+### Session 5 (2026-11-18): what the bare-name recipe was still missing
+
+The recipe above builds the debug APK but was not sufficient for the release
+build from Git Bash. Two further failures showed up; only the first is still an
+environment setting.
+
+1. **The Windows compiler path comes back.** `npx tauri android build` exports
+   the NDK toolchain itself, so `CC_aarch64-linux-android` and friends lose:
+   OpenSSL's generated Makefile still read
+   `CC=$(CROSS_COMPILE)C:\Users\…\windows-x86_64\bin\clang.exe`, and
+   `/usr/bin/sh` turned that into `C:Userspurpl…clang.exe`. Overriding `SHELL`
+   to an `sh.exe` does not help. What does work is passing the POSIX paths as
+   make *command-line* variables, which beat the Makefile's own assignment and
+   stay runnable by `sh`. The ` -- ` form is required: without it MSYS2 rewrites
+   the value into something like `…/git/posix/clang`.
+
+   ```
+   export MSYS2_ENV_CONV_EXCL="PERL5LIB;MAKEFLAGS"
+   export MAKEFLAGS=" -- CC=<NDKBIN>/clang AR=<NDKBIN>/llvm-ar RANLIB=<NDKBIN>/llvm-ranlib"
+   ```
+
+   `<NDKBIN>` is the MSYS form (`/c/Users/…`).
+
+2. **`libcrypto.a` is archived in one 18 kB command line**, which make's recipe
+   shell truncates; `llvm-ar` reports the truncated tail as its first argument
+   (`llvm-ar.exe: error: cry: No such file or directory`, from `crypto/…`) and
+   the build dies at `makefile:4427: libcrypto.a`. Running the identical command
+   by hand from `sh` succeeds (`libcrypto.a` written, 13.8 MB), so the fix keeps
+   it off that command line. The shim now lives in the repo, not in `%TEMP%`:
+   `scripts/android-make-shim/` holds the launcher source (`make-launcher.rs`),
+   the rewriter (`make-wrap.sh`) and `setup.mjs`, which builds and installs
+   both:
+
+   ```
+   npm run setup:android-make-shim
+   export PATH="<shim dir>:$PATH"      # printed by the installer
+   ```
+
+   The launcher has to be a real `.exe`: the CLI spawns `make` through
+   `std::process::Command`, which resolves only `.exe` on Windows, and a shell
+   script named `make` dies with OS error 216. It runs `sh.exe` on the wrapper
+   with make's own arguments and exit code; the wrapper rewrites every
+   `\t$(AR) $(ARFLAGS) <archive> <more than 5000 characters of objects>` recipe
+   into `$(AR) $(ARFLAGS) <archive> @.objs-<archive>.txt` and then execs
+   Strawberry's `gmake`. `llvm-ar` accepts `@file` response files, so the
+   archive is byte-identical. The rewrite is idempotent and sanitises the
+   response-file name: archives live in subdirectories too
+   (`providers/libdefault.a`), and a name containing `/` aborts the write-back.
+
+With both in place the release build finished in 7m 39s from the same shell
+(`Finished 1 APK …/apk/universal/release/app-universal-release.apk`), and
+`npm run check:android-apk` accepted the artefact: release-key DN
+`CN=Purple Memo, OU=Release, O=Purple Memo, L=Local, ST=Local, C=US`,
+certificate SHA-256
+`D5F8786DE30C3E81CE3819EE0A69858C30DF487434F46BC19779DCD4D63F2089`, `versionCode
+2000`, `versionName 0.2.0`, `arm64-v8a only`. The same step run against the debug
+APK exits 1 on `signed with the Android DEBUG key (CN=Android Debug, O=Android,
+C=US)`, and `aapt2 dump badging` independently reports the same
+`versionCode='2000' versionName='0.2.0'` — the signature and version paths are
+now proven on real artefacts rather than synthetic zips.
 
 ### Reading the device key-store result
 

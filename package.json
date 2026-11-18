@@ -23,6 +23,7 @@
     "check:signing-key": "node scripts/check-signing-key.mjs",
     "check:android": "cargo check --target aarch64-linux-android --manifest-path src-tauri/Cargo.toml",
     "check:android-apk": "node scripts/check-android-apk.mjs",
+    "setup:android-make-shim": "node scripts/android-make-shim/setup.mjs",
     "clippy": "cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"
   },
