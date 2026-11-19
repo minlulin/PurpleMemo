@@ -733,6 +733,20 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             // finishes the job before first-run initialization can mistake
             // the leftovers for a fresh start.
             crate::reset::mark_reset_started(&db_state.data_dir)?;
+            // D2: the session is terminal from the marker on — not from the
+            // engine's return. The flag used to be raised after
+            // `run_factory_reset`, which left the whole engine (taking the
+            // connection, deleting the photo tree and the safety copies) with
+            // close-to-tray still armed: pressing the window's close button
+            // mid-reset hid the terminal screen behind the tray, and the next
+            // launch only raised that hidden window instead of starting
+            // fresh. The marker is the honest boundary, because once it lands
+            // the reset can no longer be abandoned — a failed engine still
+            // leaves the marker, and the next boot's recovery pass finishes
+            // the job. A marker that could NOT be written returned above,
+            // before this store, so that session keeps ordinary
+            // close-to-tray: the rule this flag has always been scoped to.
+            db_state.reset_terminal.store(true, Ordering::SeqCst);
             // E1: raise the barrier BEFORE the engine runs. This refuses every
             // writer that arrives from now on (including post-reset photo
             // commands, for the rest of the process) and waits out the photo
@@ -751,14 +765,8 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
                 &db_state.data_dir,
                 db::delete_db_key,
             );
-            // D6: the engine ran — complete or not, this session is now
-            // terminal (the reset result screen): closing the window must
-            // exit the process, not hide to tray, so the next launch is a
-            // genuine fresh start. Set here, after the engine — NOT on
-            // command entry: a reset aborted before the engine (an
-            // unrecordable marker) leaves the app running normally and
-            // must keep close-to-tray.
-            db_state.reset_terminal.store(true, Ordering::SeqCst);
+            // The session was already terminal before the engine ran (D2);
+            // the outcome only decides whether anything is left to finish.
             if outcome.complete {
                 // E3: the run reported `complete`, so the record of it goes
                 // away too. Best effort, deliberately — same reasoning as
@@ -2057,12 +2065,22 @@ mod tests {
         );
     }
 
-    /// D6: the terminal flag is set by the engine's return, not by command
-    /// entry — a reset aborted before the engine (unrecordable marker)
-    /// leaves the app running normally and must keep close-to-tray. A
-    /// source pin because the ORDER is the invariant.
+    /// D6/D2: the terminal flag is set once the durable marker is written —
+    /// never on command entry, and no longer only when the engine returns.
+    ///
+    /// A marker that cannot be recorded returns before the flag is raised, so
+    /// that session still runs normally and keeps close-to-tray (the D6 rule).
+    /// Once the marker IS on disk the reset can no longer be abandoned — a
+    /// failed engine leaves it, and the next boot's recovery pass finishes the
+    /// job — so the engine that follows (taking the connection, deleting the
+    /// photo tree and the safety copies) must not leave close-to-tray armed
+    /// over a terminal session. That was D2: waiting for the engine's return
+    /// hid the reset result screen behind the tray for as long as the deletion
+    /// ran. A source pin because the ORDER is the invariant; `factory_reset`
+    /// takes an `AppHandle` and runs the engine through seams, so it is pinned
+    /// the same way `lib.rs` pins its tray wiring.
     #[test]
-    fn factory_reset_marks_the_session_terminal_after_the_engine_runs() {
+    fn factory_reset_marks_the_session_terminal_at_the_recovery_marker() {
         let src = include_str!("commands.rs");
         let start = src
             .find("pub async fn factory_reset(")
@@ -2072,17 +2090,30 @@ mod tests {
             .map(|i| start + i)
             .unwrap_or(src.len());
         let body = &src[start..end];
-        let engine = body.find("run_factory_reset(").expect("the engine runs");
-        let mark = body
+        let marker = body
+            .find("mark_reset_started(&db_state.data_dir)?")
+            .expect("the reset is recorded before anything is deleted (E3)");
+        let terminal = body
             .find("reset_terminal")
-            .expect("the engine's return marks the session terminal (D6)");
+            .expect("the marker marks the session terminal (D6/D2)");
+        let barrier = body
+            .find("raise_reset()")
+            .expect("the barrier is raised before the engine (E1)");
+        let engine = body.find("run_factory_reset(").expect("the engine runs");
         assert!(
-            engine < mark,
-            "the flag must be set after the engine runs, never on entry"
+            marker < terminal && terminal < barrier && barrier < engine,
+            "order must be: marker -> terminal -> barrier -> engine \
+             (found {marker}, {terminal}, {barrier}, {engine})"
         );
         assert!(
-            body[mark..].contains(".store(true"),
+            body[terminal..].contains(".store(true"),
             "the flag is set, not merely read"
+        );
+        assert_eq!(
+            body.matches(".store(true").count(),
+            1,
+            "one store, at the marker: a second one after the engine would \
+             leave the window between them with close-to-tray still armed"
         );
     }
 

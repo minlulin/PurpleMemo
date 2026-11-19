@@ -10,9 +10,10 @@ copy, file writes, the pairing listener's state, and the desktop UI paths
 `src/data/driver.ts`, `src/lib/settings.ts`, `src/lib/appLock.ts`,
 `src/lib/drafts.ts`, `src/lib/backup.ts`, `src/lib/update.ts`).
 
-This is a review, not an implementation. Findings are recorded with the
-mechanism that produces them so each one can be verified or dismissed by
-reading the code it names. The Android companion is out of scope.
+This is a review record. Findings are kept with the mechanism that produces
+them, so each can be verified or dismissed by reading the code it names. D1 and
+D2 were fixed in follow-up changes; the rest are open, each with a suggested
+fix. The Android companion is out of scope.
 
 **Method:** static review of the code, plus a read of the earlier
 full-repository audit for the areas it already closed. Nothing was built or
@@ -36,7 +37,7 @@ None of them threatens data at rest; two of them are user-visible.
 | ID | Severity | Area | Finding | Status |
 |----|----------|------|---------|--------|
 | D1 | Medium | Tray | The window-close handler takes the database connection lock on the event-loop thread | Fixed |
-| D2 | Medium-low | Reset | Closing during a factory reset hides a terminal session instead of exiting | Open |
+| D2 | Medium-low | Reset | Closing during a factory reset hides a terminal session instead of exiting | Fixed |
 | D3 | Medium-low (latent) | DB guard | `db_query` can write, and writes bypass the lifecycle barrier | Open |
 | D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Open |
 | D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Open |
@@ -100,10 +101,16 @@ start it yourself" guidance false for the launch.
 This is the failure the `reset_terminal` flag exists to prevent (D6 in the
 code's own notes); the guard simply starts too late.
 
-**Fix.** After a reset the session is over the moment the connection is taken,
-so the empty-connection branch should answer "quit" rather than "hide". A
-failed boot never manages `AppState`, so that branch is reachable only from a
-reset.
+**Fixed in a follow-up change.** The terminal flag is now raised immediately
+after the durable marker is written, before the barrier and before the engine.
+The marker is the honest boundary: once it lands the reset can no longer be
+abandoned — an engine failure still leaves the marker, and the next boot's
+recovery pass finishes the job — so the session is terminal from that point and
+closing quits. A marker that could not be written still returns before the flag
+is raised, so that session keeps ordinary close-to-tray, which is the rule the
+flag has always been scoped to; the old placement, after the engine, was the
+only window where the rule was false. A source pin in `commands.rs` holds the
+order (marker → terminal → barrier → engine) and the single store.
 
 ## D3 — Medium-low, latent — `db_query` can write, and writes bypass the lifecycle barrier
 
