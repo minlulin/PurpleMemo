@@ -333,6 +333,45 @@ test("an applied verdict records the ack, so the pushed rows are prunable", asyn
   assert.equal((await peer(phone, DESKTOP)).cursor_out, 2);
 });
 
+test("a failed final ack is a refusal with the session's result, not an exception", async () => {
+  const { phone, desktop } = await pair();
+  await createNotesRepo(phone.driver).createNote({
+    title: "Send me",
+    content: "",
+  });
+
+  const wire = ferry(phone, desktop);
+  const transport = {
+    ...wire.phone,
+    // The pull has nothing to apply, so the only batch this session writes is
+    // the final acknowledgement.
+    batch: async () => {
+      throw new Error("ack write failed: disk full");
+    },
+  };
+  const outcome = await runSync(phone.driver, transport, input, {
+    sleep: async () => undefined,
+  });
+
+  assert.equal(outcome.confirmed, false);
+  assert.equal(outcome.state, "refused");
+  assert.match(outcome.refusal?.message ?? "", /disk full/);
+  assert.equal(outcome.pushed, 1, "what was pushed is still reported");
+  assert.equal(outcome.pulled, 0);
+  assert.equal(outcome.appliedThrough, 0);
+  assert.equal(
+    outcome.ackThrough,
+    0,
+    "the failed ack did not claim a new acknowledged position",
+  );
+
+  // The desktop really did apply the push; only this device's receipt failed,
+  // so its cursor stays behind and the outbox row is unpruned for the retry.
+  assert.equal((await peer(desktop, PHONE)).cursor_in, 1);
+  assert.equal((await peer(phone, DESKTOP)).cursor_out, 0);
+  assert.equal((await readOutbox(phone.driver)).length, 1);
+});
+
 /**
  * The exit gate's one proof that was not written yet: **counters reconcile over
  * a full cycle**.

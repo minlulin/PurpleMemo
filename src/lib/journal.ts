@@ -1,7 +1,12 @@
 // Journal repository: one entry per calendar day, month navigation.
 
 import type { DataDriver } from "../data/driver.ts";
-import { datesInMonth, monthRange, todayLocal } from "./dates.ts";
+import {
+  datesInMonth,
+  isValidISODate,
+  monthRange,
+  todayLocal,
+} from "./dates.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { JournalEntryRow } from "./types.ts";
 
@@ -92,7 +97,7 @@ export function createJournalRepo(
      * column: a date from an imported payload must never leave this function.
      */
     async upsertEntry(entryDate: string, content: string): Promise<void> {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
+      if (!isValidISODate(entryDate)) {
         throw new Error(`Invalid journal entry date: ${entryDate}`);
       }
       await driver.execute(

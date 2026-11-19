@@ -278,14 +278,22 @@ weaker hardware.
 - [ ] Signed APK distribution + update/rollback documentation — docs written
   (`docs/ANDROID_DISTRIBUTION.md`: key creation, `key.properties`, the
   arm64-only release build, `apksigner verify`/`sha256sum` checks, the Redmi
-  install checklist, the upgrade path and the lossy rollback). **The signed
-  artefact was not produced**: the aarch64 release build aborts with a rustc
-  ICE — `error: the compiler unexpectedly panicked. This is a bug` while
-  compiling `icu_locale_core` 2.3.0 with `-C opt-level=s -C panic=abort`,
-  rustc 1.95.0, NDK 27.3 clang linker (exit 101). There is also no release
-  keystore on this PC and no `key.properties` (both gitignored and absent), so
-  signing has to be set up before the first distribution. Left unticked: this
-  needs a toolchain/scope decision, not a code fix in this session.
+  install checklist, the upgrade path and the lossy rollback). The signed
+  artefact has since been produced and checked: the aarch64 release builds of
+  2026-11-15 and 2026-11-18 finished, and `npm run check:android-apk` accepted
+  the release-key DN, certificate SHA-256, `versionCode 2000`, `versionName
+  0.2.0` and `arm64-v8a only` (see `docs/ANDROID_TOOLCHAIN.md`, "Session 5").
+  Unticked only for the owner's Redmi checklist in
+  `docs/ANDROID_DISTRIBUTION.md` §4 (install, first run, TEE backing, reminder,
+  `FLAG_SECURE`) and the upgrade/rollback drills — the agent that wrote these
+  docs never touched that phone.
+
+  **Release-profile check.** The `icu_locale_core` override is no longer
+  "unverified": both completed builds compiled that crate under the release
+  profile with no ICE, and produced the signed APK. The stanza stays, and
+  `docs/ANDROID_TOOLCHAIN.md` ("The release-profile ICU stanza — confirmed")
+  records the evidence. The Windows toolchain workarounds around it (perl
+  module tree, sh/gmake shim, `MAKEFLAGS`) are documented in the same file.
 - [x] Writable sync stays **disabled** (pairing UI may exist, sync does not run)
   — re-proved on the final build: “New code” on the Settings pairing block
   left the `settings` row count at **5 → 5**, no key is exchanged and no
@@ -326,8 +334,10 @@ nothing in this session.
   reads `software` on Settings), inexact fallback and its delay, pairing
   prototype writing nothing, reminders being device-local, Vault clipboard
   clear being best effort: each is stated where the user meets it.
-- **Signed install/upgrade reproducible — FAIL / BLOCKED** (see the Signed APK
-  item: rustc ICE on the aarch64 release build, and no release keystore yet).
+- **Signed install/upgrade reproducible — PARTIAL.** The signed arm64 APK has
+  been built twice and passed `check:android-apk` (2026-11-15 and 2026-11-18);
+  the owner's Redmi install, upgrade and rollback checklist in
+  `docs/ANDROID_DISTRIBUTION.md` is still open.
 
 - **Empty states + first-run — PASS (Session 6).** Fresh install, setup
   completed through real input events, every surface walked and its guided
@@ -336,10 +346,11 @@ nothing in this session.
 **Phase B is closed (2026-11-07).** MinLulin closed it on 2026-11-07:
 Session 6 (`a02b5c9`), exit gate "PASSES EXCEPT THE SIGNED RELEASE APK",
 gate FULL GREEN (TS 898 + Rust 196). The signed release artefact (Blocker 2,
-a separate toolchain track) is parked as a **release-time item** — a rustc ICE
-on the aarch64 release build and no release keystore yet, see
-`docs/ANDROID_DISTRIBUTION.md` — and is **not** a Phase B gate item, so it no
-longer holds the phase open.
+a separate toolchain track) was parked as a **release-time item**; it was
+built and checked twice afterwards (2026-11-15, 2026-11-18 — see
+`docs/ANDROID_TOOLCHAIN.md`), and only the owner's Redmi install/upgrade
+checklist remains (`docs/ANDROID_DISTRIBUTION.md`). It was **not** a Phase B
+gate item, so it never held the phase open.
 
 ## Phase C — Staged sync, narrow first
 

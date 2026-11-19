@@ -1,5 +1,6 @@
 import { strToU8, zip, zipSync } from "fflate";
 import type { DataDriver } from "../data/driver.ts";
+import { isValidISODate } from "./dates.ts";
 import { createLoansRepo } from "./loans.ts";
 import { outstandingCents } from "./money.ts";
 import { createNotesRepo, parseTags } from "./notes.ts";
@@ -290,9 +291,13 @@ export function noteExportPath(note: NoteRow): string {
 }
 
 export function journalExportPath(entry: JournalEntryRow): string {
-  const date = entry.entry_date.match(/^\d{4}-\d{2}-\d{2}$/)
-    ? entry.entry_date
-    : sanitizeFilePart(entry.entry_date, "journal");
+  // An imported backup has no CHECK on this column, so an impossible date can
+  // reach export even though `upsertEntry` now refuses to write one. Give it a
+  // path that cannot collide with a real day instead of inventing a calendar.
+  if (!isValidISODate(entry.entry_date)) {
+    return `journal/undated/${sanitizeFilePart(entry.entry_date, "journal")}.md`;
+  }
+  const date = entry.entry_date;
   const year = date.slice(0, 4);
   return `journal/${year}/${date}.md`;
 }

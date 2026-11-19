@@ -490,9 +490,24 @@ export async function runSync(
       };
     }
     if (status.state === "applied") {
-      await transport.batch(
-        ackStatements(input.desktopDeviceId, status.throughSeq),
-      );
+      // The verdict is sealed, but the acknowledgement is a local write like
+      // any other. If it fails, the caller must still get the structured result
+      // (what was pushed, pulled and applied) instead of a raw exception —
+      // otherwise the one step that makes the rows prunable reports itself as a
+      // crash and loses everything the session had already learned.
+      try {
+        await transport.batch(
+          ackStatements(input.desktopDeviceId, status.throughSeq),
+        );
+      } catch (error) {
+        return {
+          ...refuse("ack-refused", errorText(error), pushing.length),
+          pulled,
+          appliedThrough,
+          ackThrough: peer.cursor_out,
+          refusal: splitRefusal(errorText(error)),
+        };
+      }
       return {
         confirmed: true,
         pushed: pushing.length,

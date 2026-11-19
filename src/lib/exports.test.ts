@@ -18,6 +18,7 @@ import {
   type ExportContact,
   type ExportData,
   fieldMappingMarkdown,
+  journalExportPath,
   journalMarkdown,
   noteMarkdown,
   sanitizeFilePart,
@@ -236,6 +237,30 @@ test("file names are safe, unique and preserve non-Latin titles", () => {
   assert.equal(sanitizeFilePart("CON", "note"), "CON-file");
   assert.equal(sanitizeFilePart("   ", "note"), "note");
   assert.equal(sanitizeFilePart("a/b", "note"), "a b");
+});
+
+test("journalExportPath keeps real dates and names an impossible one undated", () => {
+  const row = (entry_date: string) => ({
+    id: 1,
+    entry_date,
+    content: "",
+    created_at: "2026-01-01",
+    updated_at: "2026-01-01",
+  });
+  assert.equal(
+    journalExportPath(row("2026-10-20")),
+    "journal/2026/2026-10-20.md",
+  );
+  // A backup can carry a row `upsertEntry` would refuse; export must not
+  // pretend the date is a real calendar day.
+  assert.equal(
+    journalExportPath(row("2026-02-31")),
+    "journal/undated/2026-02-31.md",
+  );
+  assert.equal(
+    journalExportPath(row("2026/13/45")),
+    "journal/undated/2026 13 45.md",
+  );
 });
 
 test("markdown front matter carries archive state, tags and attachments", () => {

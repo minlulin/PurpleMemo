@@ -84,11 +84,11 @@ opt-level = "s"
 strip = true
 panic = "abort"
 
-# rustc ICE workaround, UNVERIFIED (no release build has completed yet):
-# rustc 1.95.0 crashes compiling icu_locale_core under opt-level = "s" with
-# panic = "abort" (the Android release build, 2026-11-07). Building that one
-# package at opt-level 3 is the candidate workaround from the 2026-11-13
-# Android review; the other lead is rust-lang/rust #157148 (re-run with
-# --message-format short). Confirm or remove this at the first release build.
+# rustc 1.95.0 ICEd compiling icu_locale_core under opt-level = "s" with
+# panic = "abort" in the Android release build (2026-11-07). Building that one
+# package at opt-level 3 is the confirmed workaround: the aarch64 release
+# builds of 2026-11-15 and 2026-11-18 both compiled it with no ICE and produced
+# the signed APK. See docs/ANDROID_TOOLCHAIN.md, "The release-profile ICU
+# stanza — confirmed".
 [profile.release.package.icu_locale_core]
 opt-level = 3

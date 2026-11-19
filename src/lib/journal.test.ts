@@ -3,8 +3,13 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-
-import { buildMonthGrid, monthLabel, weekRowKey } from "./journal.ts";
+import { createMockDriver } from "../data/mock-driver.ts";
+import {
+  buildMonthGrid,
+  createJournalRepo,
+  monthLabel,
+  weekRowKey,
+} from "./journal.ts";
 
 test("October 2026 grid: Sunday-start, 4 leading blanks, 5 full weeks", () => {
   const weeks = buildMonthGrid("2026-10", []);
@@ -67,4 +72,35 @@ test("monthLabel renders the English month name", () => {
   assert.equal(monthLabel("2026-10"), "October 2026");
   assert.equal(monthLabel("2026-01"), "January 2026");
   assert.equal(monthLabel("nope"), "");
+});
+
+test("upsertEntry refuses impossible calendar dates before writing", async () => {
+  const driver = createMockDriver();
+  const journal = createJournalRepo(driver);
+
+  for (const entryDate of [
+    "2026-13-45", // month and day out of range
+    "2026-02-31", // February never has 31 days
+    "2026-04-31", // April has 30
+    "2026-02-29", // 2026 is not a leap year
+    "2026-2-3", // not the stored zero-padded shape
+    "10/20/2026",
+  ]) {
+    await assert.rejects(
+      () => journal.upsertEntry(entryDate, "anything"),
+      /Invalid journal entry date/,
+      entryDate,
+    );
+  }
+  assert.equal(
+    driver.callsTo("execute").length,
+    0,
+    "a refused date never reaches the database",
+  );
+
+  // Real dates, including a leap day and a month end, still write.
+  for (const entryDate of ["2024-02-29", "2026-02-28", "2026-04-30"]) {
+    await journal.upsertEntry(entryDate, "entry");
+  }
+  assert.equal(driver.callsTo("execute").length, 3);
 });
