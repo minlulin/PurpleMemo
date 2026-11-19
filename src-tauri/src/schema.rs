@@ -1,17 +1,20 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 39 tables at `PRAGMA user_version = 10`: 38 regular tables + the
+//! 41 tables at `PRAGMA user_version = 12`: 40 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
-//! shadow tables are FTS internals, not part of the 38).
+//! shadow tables are FTS internals, not part of the 40).
 //!
-//! Seven of the 38 are device-local sync storage (`sync_*`): the six from
+//! Nine of the 40 are device-local sync storage (`sync_*`): the six from
 //! [`MIGRATION_7_8`] that hold the durable outbox, tombstones, peer cursors and
-//! the device identity of docs/ANDROID_SYNC_PROTOCOL.md §1.2/§5/§6/§10, plus
+//! the device identity of docs/ANDROID_SYNC_PROTOCOL.md §1.2/§5/§6/§10;
 //! [`migration_8_9`]'s `sync_row_stamps` — the §4.2 stamp of the value each row
-//! currently holds, which a snapshot must carry so §4's merge has an input.
-//! They are deliberately absent from `BACKUP_TABLES`: §10.3 forbids device
-//! state travelling with user data.
+//! currently holds, which a snapshot must carry so §4's merge has an input;
+//! [`MIGRATION_10_11`]'s `sync_uid_aliases`, which remembers that a folded seed
+//! resolved to the winning uid; and [`MIGRATION_11_12`]'s
+//! `sync_tombstone_gc_log`, the delete a tombstone GC pruned before a late
+//! create could arrive. They are deliberately absent from `BACKUP_TABLES`:
+//! §10.3 forbids device state travelling with user data.
 //!
 //! **Migrations are forward-only and sequential.** `db::init_schema` reads
 //! `user_version`, applies every step from there to [`SCHEMA_VERSION`] in
@@ -25,9 +28,9 @@
 //! The same change also goes into `BASELINE_SQL`, because a fresh install must
 //! land on the current version in one step — a test asserts the two agree.
 
-/// The schema version this build expects and stamps.
 use std::sync::OnceLock;
 
+/// The schema version this build expects and stamps.
 pub const SCHEMA_VERSION: i64 = 12;
 
 /// Relationships between notes, tasks and contacts.

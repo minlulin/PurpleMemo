@@ -19,10 +19,13 @@ use crate::messages::Refusal;
 const MAX_URL_LEN: usize = 2_048;
 
 /// Android's action for an `http(s):` link: open it in the browser.
+#[cfg(any(target_os = "android", test))]
 const ACTION_VIEW: &str = "android.intent.action.VIEW";
 /// Android's action for a `tel:` link: open the dialer, never place the call.
+#[cfg(any(target_os = "android", test))]
 const ACTION_DIAL: &str = "android.intent.action.DIAL";
 /// Android's action for a `mailto:` link: hand it to a mail client.
+#[cfg(any(target_os = "android", test))]
 const ACTION_SENDTO: &str = "android.intent.action.SENDTO";
 
 /// Open `url` with whatever app the system has registered for its scheme.
@@ -58,6 +61,7 @@ fn validate(url: &str) -> Result<&str, Refusal> {
 }
 
 /// The intent action a validated URL calls for.
+#[cfg(any(target_os = "android", test))]
 fn intent_action(url: &str) -> &'static str {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("tel:") {
