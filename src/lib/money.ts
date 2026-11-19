@@ -9,8 +9,6 @@ export function toCents(major: number): number {
   return Math.round(major * 100);
 }
 
-const AMOUNT_INPUT = /^\d+(?:\.\d{1,2})?$/;
-
 /**
  * Largest amount this app records, in cents (10 trillion major units).
  *
@@ -28,12 +26,63 @@ const AMOUNT_INPUT = /^\d+(?:\.\d{1,2})?$/;
  */
 export const MAX_AMOUNT_CENTS = 1_000_000_000_000_000;
 
+const AMOUNT_GRAMMAR_DIGITS = /^\d+$/;
+
+/**
+ * One grammar for amount input, shared by the parser and the mid-edit check.
+ *
+ * The whole part is either plain digits (`1234`) or comma-grouped thousands
+ * (`1,234`, `12,345,678`). Grouping is strict: a comma must follow a digit, the
+ * first group is one to three digits, and every later group is exactly three.
+ * `"1,,2"`, `",5"`, `"1,2,3"`, `"1,2345"` and trailing commas are not amounts.
+ *
+ * `partial` is for a field the user is still typing. It allows the one group
+ * that can grow (the final one may hold 0–3 digits, so `"1,2"` and `"1,"`
+ * pass), a final empty fraction (`"12."`), and a leading fraction (`".5"`).
+ * It never accepts a grammar the finished value could not reach: an empty
+ * middle group or an over-long fraction is still wrong.
+ */
+function amountGrammar(raw: string, partial: boolean): boolean {
+  const value = raw.trim();
+  if (value.length === 0) return partial;
+  // Only digits, separators and the decimal point belong in an amount.
+  if (!/^[\d.,]+$/.test(value)) return false;
+  const parts = value.split(".");
+  if (parts.length > 2) return false;
+  const whole = parts[0] ?? "";
+  const fraction = parts[1];
+
+  if (fraction !== undefined) {
+    if (!/^\d{0,2}$/.test(fraction)) return false;
+    if (fraction.length === 0 && !partial) return false;
+  }
+  // `.5` and `.` can only be midway through typing.
+  if (whole.length === 0) return partial;
+
+  const groups = whole.split(",");
+  if (groups.length === 1) return AMOUNT_GRAMMAR_DIGITS.test(whole);
+
+  const [first = ""] = groups;
+  if (!/^\d{1,3}$/.test(first)) return false;
+  for (let i = 1; i < groups.length; i += 1) {
+    const group = groups[i] ?? "";
+    const last = i === groups.length - 1;
+    if (partial && last) {
+      if (!/^\d{0,3}$/.test(group)) return false;
+    } else if (!/^\d{3}$/.test(group)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Parse user-typed major-unit input ("1,234.56") to integer cents at the
- * display edge. Accepts optional thousands commas and up to two
- * decimals; anything else (empty, negative, malformed, or above
- * {@link MAX_AMOUNT_CENTS}) is `null` — the same invalid-input answer every
- * form already renders as its normal "enter an amount" error.
+ * display edge. Accepts optional, correctly grouped thousands commas and up to
+ * two decimals; anything else (empty, negative, ungrouped or misplaced commas,
+ * malformed, or above {@link MAX_AMOUNT_CENTS}) is `null` — the same
+ * invalid-input answer every form already renders as its normal "enter an
+ * amount" error.
  *
  * The arithmetic is exact by construction: the digits are split and combined as
  * `BigInt` cents, so no double ever multiplies the amount. `Number(x) * 100`
@@ -41,8 +90,9 @@ export const MAX_AMOUNT_CENTS = 1_000_000_000_000_000;
  * `"9007199254740993"`, which SQLite then stored as `REAL`).
  */
 export function parseMMK(raw: string): number | null {
-  const normalized = raw.trim().replace(/,/g, "");
-  if (!AMOUNT_INPUT.test(normalized)) return null;
+  const trimmed = raw.trim();
+  if (!amountGrammar(trimmed, false)) return null;
+  const normalized = trimmed.replace(/,/g, "");
   const [units = "", fraction = ""] = normalized.split(".");
   const cents = BigInt(units) * 100n + BigInt(fraction.padEnd(2, "0"));
   if (cents > BigInt(MAX_AMOUNT_CENTS)) return null;
@@ -54,17 +104,16 @@ export function fromCents(cents: number): number {
   return cents / 100;
 }
 
-// A half-typed amount: "12" or "12." or "12.5" are all still on the way to a
-// valid number, so a field must not call them wrong while the user types.
-const AMOUNT_IN_PROGRESS = /^\d*\.?\d{0,2}$/;
-
 /**
  * True while `raw` could still become a valid amount with a few more
  * keystrokes. Lets the UI hold off on `aria-invalid` for "12." — which
  * `parseMMK` rejects — instead of flashing an error mid-edit.
+ *
+ * Reads the SAME grammar as `parseMMK`, so the two can no longer disagree about
+ * a separator: a string this says is wrong can never parse successfully.
  */
 export function isPartialAmount(raw: string): boolean {
-  return AMOUNT_IN_PROGRESS.test(raw.trim().replace(/,/g, ""));
+  return amountGrammar(raw, true);
 }
 
 const MMK_FORMATS = new Map<Locale, Intl.NumberFormat>();

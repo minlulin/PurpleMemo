@@ -50,7 +50,7 @@ export function MarkdownLink({ href, children, title }: MarkdownLinkProps) {
         title ??
         (external === undefined
           ? undefined
-          : `Opens in your default browser: ${external}`)
+          : `Opens in your default app: ${external}`)
       }
       rel="noreferrer noopener"
     >

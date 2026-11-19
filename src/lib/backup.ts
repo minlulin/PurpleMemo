@@ -29,7 +29,7 @@ import {
   sealBackupContainer,
 } from "./backupContainer.ts";
 import { mapConcurrent } from "./concurrency.ts";
-import { sha256HexBytes } from "./crypto.ts";
+import { isValidStoredVaultCipher, sha256HexBytes } from "./crypto.ts";
 import {
   isLinkableType,
   linkIsCanonical,
@@ -661,6 +661,35 @@ function validateCentsColumns(payload: BackupPayload): void {
   }
 }
 
+/**
+ * Refuse a backup that carries a malformed vault verifier.
+ *
+ * `vault_verify` travels in the `settings` table (§12.3) because a restored
+ * vault must still unlock. The unlock path now validates it, but import is the
+ * earlier and cheaper boundary: refusing here leaves the live data untouched
+ * instead of replacing it with a vault that can never be opened. The verifier
+ * gets the same canonical-base64 and byte-length rules as a vault item — salt
+ * of at least `SALT_BYTES`, a `IV_BYTES` IV, and a ciphertext at least one GCM
+ * tag long — so a hand-edited `{}` or a bad-base64 field cannot get in.
+ */
+function validateVaultVerifier(payload: BackupPayload): void {
+  for (const [index, row] of (payload.data.settings ?? []).entries()) {
+    if (row.key !== SETTING_KEYS.vaultVerify) continue;
+    let parsed: unknown;
+    try {
+      parsed =
+        typeof row.value === "string" ? JSON.parse(row.value) : undefined;
+    } catch {
+      parsed = undefined;
+    }
+    if (!isValidStoredVaultCipher(parsed)) {
+      throw new Error(
+        `Backup settings row ${index + 1} carries a vault verifier that is not a valid sealed password record — import rejected, nothing was changed.`,
+      );
+    }
+  }
+}
+
 function parseBackupJson(text: string): BackupPayload {
   let raw: unknown;
   try {
@@ -731,6 +760,7 @@ function parseBackupJson(text: string): BackupPayload {
   // "no validation needed" — and still before a single byte is written.
   validateLinks(upgraded);
   validateCentsColumns(upgraded);
+  validateVaultVerifier(upgraded);
   const trashItems = upgraded.data.trash_items ?? [];
   if (!Array.isArray(trashItems)) {
     throw new Error(

@@ -55,10 +55,11 @@ Unknown commands behave as expected: `this_command_does_not_exist` →
 2. **Update checks on Android now fail with a sentence, not a plugin error.**
    `checkForUpdate()` refuses on Android with "updates are installed from the
    desktop build; this phone is updated by installing a new APK".
-3. **External links in notes do not open on Android yet.** `MarkdownLink` calls
-   `plugin-opener`, which the phone no longer has; the call is caught and
-   ignored. Opening links through the system browser is Phase A platform work,
-   recorded here rather than worked around.
+3. **External links in notes reach their system handler on Android.**
+   `MarkdownLink` keeps calling `plugin-opener` on the desktop; on Android it
+   calls the app's own `open_external_url` command, which validates the URL
+   again and starts `ACTION_VIEW` for `http(s)`, `ACTION_DIAL` for `tel` and
+   `ACTION_SENDTO` for `mailto`.
 4. **Two commands are reachable but not safe to probe from the shell**:
    `factory_reset` and `app_restart` act immediately with no argument that can
    be made invalid. Their registration is covered by the handler list, not by

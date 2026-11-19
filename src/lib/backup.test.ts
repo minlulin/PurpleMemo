@@ -433,6 +433,39 @@ test("a backup whose cents column is not a whole number is refused (A3)", () => 
   assert.doesNotThrow(() => parseBackupZip(withLimits(null)));
 });
 
+test("a backup carrying a malformed vault verifier is refused (settings travels)", () => {
+  // The verifier is the vault's own data line (§12.3) and rides in `settings`.
+  // Refusing it here keeps a damaged archive from replacing a working vault
+  // with one that can never be unlocked.
+  const withVerifier = (value: unknown): Uint8Array => {
+    const payload = samplePayload();
+    payload.data.settings = [{ key: "vault_verify", value }];
+    return zipWithPayload(payload);
+  };
+  for (const value of [
+    "{}",
+    "null",
+    "not json",
+    '{"salt":"!!!","iv":"aXYtYnl0ZXMh","ciphertext":"Y2lwaGVydGV4dA=="}',
+    '{"salt":"c2FsdA==","iv":"aXYtYnl0ZXMh","ciphertext":"Y2lwaGVydGV4dA=="}',
+    { salt: 42 },
+  ]) {
+    assert.throws(
+      () => parseBackupZip(withVerifier(value)),
+      /vault verifier/,
+      JSON.stringify(value),
+    );
+  }
+  // A real-shaped verifier still imports: the check is on the stored rules,
+  // not on the presence of the row.
+  const valid = JSON.stringify({
+    salt: "AAAAAAAAAAAAAAAAAAAAAA==", // 16 bytes
+    iv: "AAAAAAAAAAAAAAAA", // 12 bytes
+    ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==", // 16 bytes: one GCM tag
+  });
+  assert.doesNotThrow(() => parseBackupZip(withVerifier(valid)));
+});
+
 test("parseBackupZip rejects bytes that are not a zip", () => {
   assert.throws(
     () => parseBackupZip(new Uint8Array([1, 2, 3, 4])),
@@ -1896,7 +1929,7 @@ test("a payload carries the theme and the vault verifier, never the app PIN", as
     ('security_question', 'poison-question'),
     ('security_answer_hash', 'poison-answer-hash'),
     ('theme', '"light"'),
-    ('vault_verify', '{"salt":"s","iv":"i","ciphertext":"c"}'),
+    ('vault_verify', '{"salt":"AAAAAAAAAAAAAAAAAAAAAA==","iv":"AAAAAAAAAAAAAAAA","ciphertext":"AAAAAAAAAAAAAAAAAAAAAA=="}'),
     ('vault_generation', '1')`);
 
   const { bytes } = await createBackupRepo(driver).exportBackup();

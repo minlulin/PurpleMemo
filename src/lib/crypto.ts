@@ -387,6 +387,46 @@ export interface VaultCipher {
   iv: string; // base64, per-item
 }
 
+/** A stored triple: the cipher plus the salt its key was derived from. */
+export interface StoredVaultCipher extends VaultCipher {
+  salt: string; // base64
+}
+
+/**
+ * True when `value` has the stored vault triple's shape and its fields pass the
+ * same base64/byte-length rules {@link decryptBytesWithKey} and
+ * {@link deriveVaultKey} enforce: canonical base64, a salt of at least
+ * `SALT_BYTES`, an IV of exactly `IV_BYTES`, and ciphertext at least one GCM tag
+ * long.
+ *
+ * The vault verifier is stored in `settings` as JSON and arrives through an
+ * imported backup, so it needs the same refusal its item rows already get. A
+ * caller can then name the corruption instead of letting `atob` throw an
+ * `InvalidCharacterError` or reading `.length` off `undefined`.
+ */
+export function isValidStoredVaultCipher(
+  value: unknown,
+): value is StoredVaultCipher {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<StoredVaultCipher>;
+  if (
+    typeof v.salt !== "string" ||
+    typeof v.iv !== "string" ||
+    typeof v.ciphertext !== "string"
+  ) {
+    return false;
+  }
+  try {
+    return (
+      b64ToBytes(v.salt).byteLength >= SALT_BYTES &&
+      b64ToBytes(v.iv).byteLength === IV_BYTES &&
+      b64ToBytes(v.ciphertext).byteLength >= GCM_TAG_BYTES
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function encryptWithKey(
   key: CryptoKey,
   plaintext: string,

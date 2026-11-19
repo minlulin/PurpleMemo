@@ -493,6 +493,41 @@ test("unlock with no items still verifies the stored verifier, rejecting a wrong
   await assert.rejects(() => badVault.unlock("not-the-password"), /password/i);
 });
 
+test("a malformed stored verifier is named as corruption, not a raw runtime error", async () => {
+  // `vault_verify` is JSON in `settings`, and a backup supplies it. Before the
+  // shape check, a damaged value reached WebCrypto or `.length` on undefined,
+  // so the user saw `TypeError` / `InvalidCharacterError` instead of a sentence
+  // naming the damaged vault.
+  const malformed = [
+    "{}",
+    "null",
+    "[]",
+    '"a string"',
+    '{"salt":42,"iv":"aXYtYnl0ZXMh","ciphertext":"Y2lwaGVydGV4dA=="}',
+    '{"salt":"!!!","iv":"aXYtYnl0ZXMh","ciphertext":"Y2lwaGVydGV4dA=="}',
+    // Canonical base64, but too short to be a salt/ciphertext this app wrote.
+    '{"salt":"c2FsdA==","iv":"aXYtYnl0ZXMh","ciphertext":"Y2lwaGVydGV4dA=="}',
+    // An IV that is not 12 bytes.
+    '{"salt":"AAAAAAAAAAAAAAAAAAAAAA==","iv":"aXY=","ciphertext":"AAAAAAAAAAAAAAAAAAAAAA=="}',
+    // Missing a field.
+    '{"iv":"aXYtYnl0ZXMh","ciphertext":"Y2lwaGVydGV4dA=="}',
+  ];
+  for (const raw of malformed) {
+    const driver = createMockDriver();
+    driver.pushResults([[], [{ value: raw }]]);
+    const err = await createVaultRepo(driver)
+      .unlock("any-password")
+      .then(() => null)
+      .catch((e: unknown) => e);
+    assert.ok(err instanceof Error, `${raw}: unlock must fail`);
+    assert.ok(
+      !(err instanceof WrongPasswordError),
+      `${raw}: corruption must not masquerade as a wrong password`,
+    );
+    assert.match(err.message, /corrupt/i, `${raw}: refusal must name it`);
+  }
+});
+
 test("listItems never selects ciphertext, salt or iv", async () => {
   const driver = createMockDriver();
   const vault = createVaultRepo(driver);

@@ -12,7 +12,9 @@ import {
   deriveVaultKey,
   deriveVaultTag,
   encryptWithKey,
+  isValidStoredVaultCipher,
   randomSaltB64,
+  type StoredVaultCipher,
 } from "./crypto.ts";
 import { todayLocal } from "./dates.ts";
 import { errText } from "./errors.ts";
@@ -109,11 +111,7 @@ async function decryptItem(
 
 const VERIFIER_PLAINTEXT = "purple-memo/vault/verifier/v1";
 
-interface VaultVerifier {
-  salt: string;
-  iv: string;
-  ciphertext: string;
-}
+type VaultVerifier = StoredVaultCipher;
 
 /**
  * The verifier write, as a BATCH STATEMENT rather than an executed one.
@@ -164,12 +162,21 @@ async function verifyStored(
   password: string,
 ): Promise<boolean> {
   if (!raw) return false; // nothing stored — nothing to check
-  let verifier: VaultVerifier;
+  let parsed: unknown;
   try {
-    verifier = JSON.parse(raw) as VaultVerifier;
+    parsed = JSON.parse(raw);
   } catch {
     throw new Error("stored vault verifier is corrupt");
   }
+  // The verifier arrives from `settings`, which an imported backup supplies.
+  // Check the same shape and byte rules the item path uses BEFORE reading a
+  // field or handing anything to WebCrypto: a `{}` used to throw a raw
+  // `TypeError`, `null` another, and bad base64 an `InvalidCharacterError`.
+  // None of those tells the user the stored vault is damaged.
+  if (!isValidStoredVaultCipher(parsed)) {
+    throw new Error("stored vault verifier is corrupt");
+  }
+  const verifier = parsed;
   // A wrong password fails the GCM auth tag. Translate that into "this
   // password did not open the verifier" rather than leaking a raw WebCrypto
   // OperationError to the caller.

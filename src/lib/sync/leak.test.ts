@@ -396,6 +396,18 @@ test("a backup payload carries no sync storage and no app PIN", async () => {
   for (const table of ["photo_refs", "photos", "links", "trash_items"]) {
     store.db.exec(`DELETE FROM ${table}`);
   }
+  // The plant's marker verifier is deliberately not sealed (its salt spells the
+  // leak marker), which the import path now refuses. This leg is about what a
+  // backup CARRIES, so give it a real-shaped record instead.
+  store.db
+    .prepare("UPDATE settings SET value = ? WHERE key = 'vault_verify'")
+    .run(
+      JSON.stringify({
+        salt: "AAAAAAAAAAAAAAAAAAAAAA==",
+        iv: "AAAAAAAAAAAAAAAA",
+        ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==",
+      }),
+    );
 
   const { bytes } = await createBackupRepo(store.driver).exportBackup();
   const { payload } = parseBackupZip(bytes);

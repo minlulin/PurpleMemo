@@ -73,6 +73,34 @@ test("parseMMK parses user amount input to integer cents (edge)", () => {
   assert.equal(parseMMK("1.505"), null);
 });
 
+test("parseMMK rejects misplaced or malformed thousands separators", () => {
+  // The regression: removing every comma before validating turned "1,,2" into
+  // 1,200.00 while the form's own partial check called the same text invalid —
+  // a paste could multiply an amount by a hundred.
+  assert.equal(parseMMK("1,,2"), null);
+  assert.equal(isPartialAmount("1,,2"), false);
+  for (const raw of [
+    ",5",
+    "1,2,3",
+    "1,2345",
+    "1,234,56",
+    "1234,567",
+    "1,234,",
+    "12,34.56",
+    "1,23,456",
+    "1 234",
+    "1,234.5.6",
+  ]) {
+    assert.equal(parseMMK(raw), null, raw);
+  }
+
+  // Correct grouping is still accepted, with or without a fraction.
+  assert.equal(parseMMK("1,234"), 123_400);
+  assert.equal(parseMMK("12,345"), 1_234_500);
+  assert.equal(parseMMK("1,234,567"), 123_456_700);
+  assert.equal(parseMMK("1,234,567.89"), 123_456_789);
+});
+
 test("parseMMK is exact and bounded: cents are always safe integers (A3)", () => {
   // The ceiling itself is representable and exact, and so is everything under
   // it — including values where `Number(x) * 100` used to drift.
@@ -121,12 +149,22 @@ test("isPartialAmount lets a half-typed amount through (no error mid-edit)", () 
   assert.equal(isPartialAmount("12.5"), true);
   assert.equal(isPartialAmount("12.55"), true);
   assert.equal(isPartialAmount("1,234."), true);
+  assert.equal(isPartialAmount("1,"), true);
+  assert.equal(isPartialAmount("1,2"), true);
+  assert.equal(isPartialAmount("1,23"), true);
+  assert.equal(isPartialAmount("1,234,5"), true);
+  assert.equal(isPartialAmount(".5"), true);
   assert.equal(isPartialAmount("  7 "), true);
 
-  // Genuinely wrong input is not "still typing".
+  // Genuinely wrong input is not "still typing". The same grammar decides this
+  // as `parseMMK`, so a separator the parser refuses is never called partial.
   assert.equal(isPartialAmount("abc"), false);
   assert.equal(isPartialAmount("1.2.3"), false);
   assert.equal(isPartialAmount("1.234"), false);
   assert.equal(isPartialAmount("-5"), false);
+  assert.equal(isPartialAmount("1,,2"), false);
+  assert.equal(isPartialAmount(",5"), false);
+  assert.equal(isPartialAmount("1,2,3"), false);
+  assert.equal(isPartialAmount("1,2345"), false);
   assert.equal(isPartialAmount("5."), true);
 });
