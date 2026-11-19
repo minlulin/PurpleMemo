@@ -604,10 +604,17 @@ export default function SettingsPage(p: SettingsPageProps) {
     setError(null);
     setUpdateDone(false);
     setUpdatePercent(null);
+    // D4: "no newer release" is a claim about a check that succeeded, so the
+    // answer is recorded only once the updater gave one — a failed check is the
+    // error banner and nothing else. Cleared up front as well, so a stale
+    // "no newer release" from an earlier success cannot sit under a fresh
+    // failure.
+    setUpdateChecked(false);
     savingRef.current = true;
     setUpdateBusy(true);
     try {
       setUpdate(await checkForUpdate());
+      setUpdateChecked(true);
     } catch (e) {
       // No release published yet is the expected answer before the first
       // hand-made release — report it plainly instead of hiding it.
@@ -615,7 +622,6 @@ export default function SettingsPage(p: SettingsPageProps) {
       setError(`Could not check for updates: ${errText(e)}`);
     } finally {
       savingRef.current = false;
-      setUpdateChecked(true);
       setUpdateBusy(false);
     }
   };

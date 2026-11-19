@@ -11,9 +11,9 @@ copy, file writes, the pairing listener's state, and the desktop UI paths
 `src/lib/drafts.ts`, `src/lib/backup.ts`, `src/lib/update.ts`).
 
 This is a review record. Findings are kept with the mechanism that produces
-them, so each can be verified or dismissed by reading the code it names. D1, D2
-and D3 were fixed in follow-up changes; the rest are open, each with a
-suggested fix. The Android companion is out of scope.
+them, so each can be verified or dismissed by reading the code it names. D1–D4
+were fixed in follow-up changes; the rest are open, each with a suggested fix.
+The Android companion is out of scope.
 
 **Method:** static review of the code, plus a read of the earlier
 full-repository audit for the areas it already closed. Nothing was built or
@@ -39,7 +39,7 @@ None of them threatens data at rest; two of them are user-visible.
 | D1 | Medium | Tray | The window-close handler takes the database connection lock on the event-loop thread | Fixed |
 | D2 | Medium-low | Reset | Closing during a factory reset hides a terminal session instead of exiting | Fixed |
 | D3 | Medium-low (latent) | DB guard | `db_query` can write, and writes bypass the lifecycle barrier | Fixed |
-| D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Open |
+| D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Fixed |
 | D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Open |
 | D6 | Low | i18n | The Burmese locale covers only part of the desktop surface | Open |
 
@@ -152,8 +152,11 @@ whenever `updateChecked && update === null && !updateDone`. A network error
 therefore produces an error banner *and* an unrelated positive claim directly
 below it.
 
-**Fix.** Set `updateChecked` only on success, or make it a tri-state
-(`clean` / `failed`).
+**Fixed in a follow-up change.** `updateChecked` is cleared when a check starts
+and set only after `checkForUpdate()` returns, so a failed check produces the
+error banner alone — and a stale "no newer release" from an earlier success can
+no longer sit under a fresh failure. It stays a boolean because its one reader
+asks only "did a check produce an answer?", which a failure now never answers.
 
 ## D5 — Low — The pairing panel polls forever after its code is dead
 
