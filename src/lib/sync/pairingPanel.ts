@@ -205,6 +205,21 @@ export function panelPhase(
   return phase;
 }
 
+/**
+ * Whether the panel's one-second clock has anything left to ask.
+ *
+ * `expired`, `locked` and `closed` are terminal: the settle that reached one of
+ * them has already closed the listener, so a further tick could only repeat the
+ * same `pairing_status` call and take the same listener lock — once a second,
+ * for as long as the panel stays open (D5). `used` is deliberately not
+ * terminal: a phone can still be staged behind a spent code, and the settle is
+ * what carries its push, its upload state and the exchange, until the offer
+ * expires.
+ */
+export function clockStillMatters(phase: PanelPhase): boolean {
+  return phase === "active" || phase === "used";
+}
+
 /** The one word the code cell shows when there is no live code to show. */
 export function panelPhaseLabel(phase: PanelPhase): string {
   switch (phase) {

@@ -30,6 +30,7 @@ import {
 } from "./pairing.ts";
 import {
   applyStagedUpload,
+  clockStillMatters,
   closePairingPanel,
   discardPendingOutbox,
   identityRecovery,
@@ -241,6 +242,19 @@ test("expiry closes the socket before the code leaves the screen", async () => {
   );
   assert.equal(settled.listener.running, false);
   assert.equal(driver.callsTo("pairingClose").length, 1);
+});
+
+test("the panel's clock stops on a dead code and runs on a spent one (D5)", () => {
+  // The three terminal phases: the settle that reaches one of them has already
+  // closed the listener, so the tick has nothing left to ask — it used to keep
+  // issuing `pairing_status` once a second for as long as the panel stayed open.
+  for (const phase of ["expired", "locked", "closed"] as const) {
+    assert.equal(clockStillMatters(phase), false, `${phase} is terminal`);
+  }
+  // A spent code is not: a phone can still be staged behind it, and the settle
+  // is what carries its push, its upload state and the exchange.
+  assert.equal(clockStillMatters("active"), true);
+  assert.equal(clockStillMatters("used"), true);
 });
 
 function openDb(): { db: DatabaseSync; driver: DataDriver } {

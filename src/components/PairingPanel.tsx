@@ -19,9 +19,11 @@ import { pairingRepo } from "../data/app.ts";
 import type { PairingIdentityStatus } from "../data/driver.ts";
 import { errText } from "../lib/errors.ts";
 import {
+  clockStillMatters,
   identityRecovery,
   type PairingPanelState,
   type PinWrite,
+  panelPhase,
   panelPhaseLabel,
   panelView,
   pendingConfirmation,
@@ -189,24 +191,40 @@ export function PairingPanel() {
   // screen, and a live one reports whatever the listener has learned. The tick
   // NEVER writes a pin — the pin is the person's decision, not the clock's
   // (§11.1, wave 1 N1).
+  //
+  // D5: self-scheduled rather than a fixed interval, so the settle that kills
+  // the code is also the one that stops the polling — a fixed interval kept
+  // issuing `pairing_status` (and taking the Rust listener lock) every second
+  // for as long as Settings stayed open. Self-scheduling also serialises a slow
+  // poll instead of stacking the next one on top of it.
   useEffect(() => {
     if (pairingId === null) return;
     let cancelled = false;
+    let timer: number | null = null;
     const tick = async () => {
       const current = stateRef.current;
       if (current === null) return;
       const next = await pairingRepo
         .settle(current, Date.now())
         .catch(() => null);
-      if (cancelled || next === null) return;
+      if (cancelled) return;
+      if (next === null) {
+        // A failed poll is transient — an IPC hiccup, a close that arrived mid
+        // reset — so it is retried. Only a settle that comes back with a dead
+        // code stops the clock.
+        timer = window.setTimeout(() => void tick(), 1_000);
+        return;
+      }
       stateRef.current = next;
       setState(next);
+      if (clockStillMatters(panelPhase(next))) {
+        timer = window.setTimeout(() => void tick(), 1_000);
+      }
     };
     void tick();
-    const timer = setInterval(() => void tick(), 1_000);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [pairingId]);
 

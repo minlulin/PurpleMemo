@@ -11,7 +11,7 @@ copy, file writes, the pairing listener's state, and the desktop UI paths
 `src/lib/drafts.ts`, `src/lib/backup.ts`, `src/lib/update.ts`).
 
 This is a review record. Findings are kept with the mechanism that produces
-them, so each can be verified or dismissed by reading the code it names. D1–D4
+them, so each can be verified or dismissed by reading the code it names. D1–D5
 were fixed in follow-up changes; the rest are open, each with a suggested fix.
 The Android companion is out of scope.
 
@@ -40,7 +40,7 @@ None of them threatens data at rest; two of them are user-visible.
 | D2 | Medium-low | Reset | Closing during a factory reset hides a terminal session instead of exiting | Fixed |
 | D3 | Medium-low (latent) | DB guard | `db_query` can write, and writes bypass the lifecycle barrier | Fixed |
 | D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Fixed |
-| D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Open |
+| D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Fixed |
 | D6 | Low | i18n | The Burmese locale covers only part of the desktop surface | Open |
 
 ## D1 — Medium — The close handler takes the database lock on the event-loop thread
@@ -166,9 +166,15 @@ listener is stopped (including by hiding to the tray), the tick keeps issuing
 `pairing_status` IPC calls and taking the listener lock for as long as the
 Settings page is open.
 
-**Fix.** Stop the interval when the panel's phase is `expired`, `locked` or
-`closed`; keep ticking for `used` while the offer has not expired, because a
-phone can still be staged behind a spent code.
+**Fixed in a follow-up change.** The interval became a self-scheduled tick whose
+own settle decides whether there is another one: `clockStillMatters` in
+`pairingPanel.ts` answers for `active` and `used` only, so `expired`, `locked`
+and `closed` stop the clock on the same call that closed the listener. That
+matters — the terminal phase is reached by the settle itself, not by an
+unrelated re-render that might otherwise have torn the effect down before the
+closing poll ran. A failed poll is still retried, because a transient failure is
+not an answer; and self-scheduling stops a slow `pairing_status` from stacking
+the next tick on top of it.
 
 ## D6 — Low — The Burmese locale covers only part of the desktop surface
 
