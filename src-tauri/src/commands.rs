@@ -5,9 +5,11 @@
 //! `backup_save_file` (write the backup archive to a file the user chose),
 //! `backup_safety_copy` (open the import exclusion window and take the copy),
 //! `backup_import_begin`/`backup_import_end` (claim and release the window's
-//! lease). The reset engine adds `factory_reset` (which reports per-component
-//! outcomes) and `app_restart` (a thin wrapper over Tauri's restart, called by
-//! the frontend only after a complete reset).
+//! lease), and `close_to_tray_set` (publish the Settings toggle to the close
+//! handler's in-memory mirror — the handler itself must never read the database
+//! on the window-event thread). The reset engine adds `factory_reset` (which
+//! reports per-component outcomes) and `app_restart` (a thin wrapper over
+//! Tauri's restart, called by the frontend only after a complete reset).
 //!
 //! Every WRITER — DB execute/batch/manual-txn, photo save/thumb/delete and the
 //! safety copy — first passes through the [`crate::lifecycle`] barrier and
@@ -633,8 +635,49 @@ pub fn backup_import_begin(lifecycle: State<'_, Arc<Lifecycle>>) -> CmdResult<u6
 /// enforcement is restored, so the window closes on success and failure
 /// alike.
 #[tauri::command]
-pub fn backup_import_end(lifecycle: State<'_, Arc<Lifecycle>>, lease: u64) -> CmdResult<()> {
-    lifecycle.end_import(lease)
+pub fn backup_import_end(
+    app: tauri::AppHandle,
+    lifecycle: State<'_, Arc<Lifecycle>>,
+    lease: u64,
+) -> CmdResult<()> {
+    lifecycle.end_import(lease)?;
+    // An import replaces the `settings` table, so the close-to-tray value the
+    // close handler holds in memory may now be the one from the backup. Read
+    // the row again here — the write has finished, and this is not the
+    // window-event thread. Best effort: the lease really was released, and a
+    // mirror that could not be refreshed must not turn a finished import into
+    // a reported failure; the next boot seeds it again.
+    refresh_close_to_tray_from(&app);
+    Ok(())
+}
+
+/// Republish the close-to-tray mirror from the live connection, if there is
+/// one. A closed connection leaves the mirror as it was, and its default is the
+/// same "on" the absent-row rule gives.
+fn refresh_close_to_tray_from(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(conn) = lock_conn(&state) else {
+        return;
+    };
+    crate::refresh_close_to_tray(&conn);
+}
+
+/// Publish the close-to-tray toggle the Settings page just wrote.
+///
+/// The window-close handler runs on the event loop, where the database
+/// connection must not be touched (D1: `db_batch` holds that mutex for a whole
+/// import batch, and `backup_safety_copy` across its checkpoint and file copy).
+/// So the renderer tells Rust the new value here, after the row is written, and
+/// the handler keeps reading memory only.
+///
+/// The row is already persisted by the caller, so a failure to deliver this
+/// in-process copy cannot lose the setting — the next boot reads it back.
+#[tauri::command]
+pub fn close_to_tray_set(enabled: bool) -> CmdResult<()> {
+    crate::publish_close_to_tray(enabled);
+    Ok(())
 }
 
 #[tauri::command]

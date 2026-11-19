@@ -253,7 +253,9 @@ export default function SettingsPage(p: SettingsPageProps) {
     try {
       await settingsRepo.setCloseToTray(enabled);
       setCloseToTray(enabled);
-      // Rust reads the row fresh on every close, so no restart is needed.
+      // The repo publishes the new value to Rust's in-memory mirror after
+      // writing the row, so the very next close obeys it: no restart, and no
+      // database read on the close path.
     } catch (e) {
       setError(errText(e));
     }

@@ -468,6 +468,20 @@ export interface DataDriver {
    * it can never open the door for someone else's write.
    */
   endImportLease?(lease: number): Promise<void>;
+  /**
+   * Publish the close-to-tray toggle to the window-close handler (D1).
+   *
+   * That handler runs on the event loop, where the database connection must
+   * not be touched: `db_batch` holds its mutex for a whole import batch, and
+   * `backup_safety_copy` across its checkpoint and file copy, so reading the
+   * setting there could freeze the close for the duration. Rust keeps the
+   * decision in memory instead — seeded at boot, republished at the end of an
+   * import, and republished by this call whenever the toggle is written.
+   *
+   * Optional like the import lease: only the settings path needs it, and the
+   * drivers that never touch the toggle leave it out.
+   */
+  syncCloseToTray?(enabled: boolean): Promise<void>;
 }
 
 /**
@@ -688,6 +702,9 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     safetyBackupCopy: (label) => invoke("backup_safety_copy", { label }),
     beginImportLease: () => invoke("backup_import_begin"),
     endImportLease: (lease) => invoke("backup_import_end", { lease }),
+    // D1: the close handler reads a mirror, so the write that changes the row
+    // is also the write that publishes it.
+    syncCloseToTray: (enabled) => invoke("close_to_tray_set", { enabled }),
     // Pairing window (§11.5). One command site each, so the IPC surface this
     // file is pinned against lists every command exactly once.
     pairingLocal: () => invoke("pairing_local"),

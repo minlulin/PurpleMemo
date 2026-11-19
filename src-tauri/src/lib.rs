@@ -173,6 +173,7 @@ pub fn run() {
             commands::backup_safety_copy,
             commands::backup_import_begin,
             commands::backup_import_end,
+            commands::close_to_tray_set,
             commands::export_save_file,
             commands::pairing_local,
             commands::pairing_open,
@@ -343,6 +344,11 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     // path, not as a bare error the first time the pairing panel is opened.
     // Nothing is minted and no data is touched: notes and tasks stay readable.
     surface_pairing_identity_loss(&conn);
+    // Publish the stored close-to-tray toggle for the window-close handler,
+    // which reads it from memory only (D1: it must never take the connection
+    // lock on the window-event thread). This is the first value; the Settings
+    // toggle and the end of an import republish it.
+    refresh_close_to_tray(&conn);
     app.manage(db::AppState {
         // `Some` until factory reset takes it; every DB command fails closed
         // with `db::DB_CLOSED_MESSAGE` once it is `None`.
@@ -691,9 +697,54 @@ const TRAY_SHOW_ID: &str = "show";
 const TRAY_QUIT_ID: &str = "quit";
 
 /// Settings key behind the close-to-tray toggle. The frontend writes it
-/// (`SETTING_KEYS.closeToTray` in `src/lib/settings.ts`); Rust reads it fresh
-/// on every close, so flipping the toggle applies without a restart (§B.3).
+/// (`SETTING_KEYS.closeToTray` in `src/lib/settings.ts`) and publishes the new
+/// value through `commands::close_to_tray_set`; Rust seeds the mirror below
+/// from the stored row, so flipping the toggle applies to the very next close
+/// without a restart (§B.3).
 const CLOSE_TO_TRAY_KEY: &str = "close_to_tray";
+
+/// The close-to-tray decision, held in memory for the window-close handler.
+///
+/// The handler runs on the event loop, and the database connection mutex is
+/// held there for whole operations — `db_batch` replays an import's statements
+/// in one call, and `backup_safety_copy` holds it across the WAL checkpoint and
+/// the database-file copy. Reading the setting from the database on that path
+/// (which this used to do, on every close) could therefore freeze the UI — and
+/// the close itself — for the duration of an import or a safety copy.
+///
+/// So the row is *published* here instead, and the handler only loads an
+/// atomic:
+///
+/// * seeded ON, the same fail-safe default as the missing-row rule
+///   ([`parse_close_to_tray`]) — a mirror that was never published keeps the
+///   process alive rather than quitting on a surprise;
+/// * published at boot ([`refresh_close_to_tray`]), at the end of a backup
+///   import (which replaced the `settings` table the row lives in), and by
+///   `commands::close_to_tray_set` when the Settings toggle persists a value.
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
+
+/// Publish `enabled` as the close-to-tray decision. One writer shape, so every
+/// publisher goes through the same store rather than open-coding one.
+pub(crate) fn publish_close_to_tray(enabled: bool) {
+    CLOSE_TO_TRAY.store(enabled, Ordering::SeqCst);
+}
+
+/// Read the stored toggle from `conn` and publish it for the close handler.
+///
+/// Runs wherever the row can change — boot (the first value) and the end of a
+/// backup import — and never on the window-event path. An unreadable row goes
+/// through the tested parser, so the missing-row and corrupt-row rules are the
+/// same here as they are everywhere else.
+pub(crate) fn refresh_close_to_tray(conn: &rusqlite::Connection) {
+    let raw = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [CLOSE_TO_TRAY_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    publish_close_to_tray(parse_close_to_tray(raw.as_deref()));
+}
 
 /// Install the session chrome — tray icon plus close-to-tray — exactly once.
 /// Called after a successful `boot` and again after a successful Retry, since
@@ -784,21 +835,22 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
     });
 }
 
-/// The toggle, read fresh from the settings table on every close (§B.3) —
-/// never cached, so flipping it in Settings applies to the very next close
-/// without a restart.
+/// The toggle, as the close handler sees it (§B.3): the in-memory mirror, read
+/// on every close and never from the settings table — this runs on the
+/// window-event thread, where the connection must not be touched (see
+/// [`CLOSE_TO_TRAY`]). The value is still the current one, because every writer
+/// of the row publishes it before the next close.
 ///
-/// No managed state (a failed boot), no open connection, or no row all answer
-/// "on": the default is to keep the process alive, and the paths that could
-/// not read the setting are exactly the paths where quitting silently would be
-/// the worst surprise.
+/// No managed state (a failed boot) answers "on": that is the default
+/// keep-the-process-alive rule, and a boot that failed is exactly the path
+/// where quitting silently would be the worst surprise.
 #[cfg(desktop)]
 fn close_to_tray_enabled(app: &tauri::AppHandle) -> bool {
     let Some(state) = app.try_state::<db::AppState>() else {
         return true;
     };
     // D6: a reset-terminal session bypasses the tray entirely. After a
-    // reset the connection below is closed, so without this check the
+    // reset the database connection is taken, so without this check the
     // default-on rule would hide the terminal screen instead of exiting
     // — and the next launch would merely raise the hidden window rather
     // than starting fresh, making the "close and start it yourself"
@@ -807,21 +859,7 @@ fn close_to_tray_enabled(app: &tauri::AppHandle) -> bool {
     if state.reset_terminal.load(Ordering::SeqCst) {
         return false;
     }
-    let conn = state
-        .conn
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(conn) = conn.as_ref() else {
-        return true;
-    };
-    let raw = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [CLOSE_TO_TRAY_KEY],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    parse_close_to_tray(raw.as_deref())
+    CLOSE_TO_TRAY.load(Ordering::SeqCst)
 }
 
 /// The stored close-to-tray value. Default ON: a missing row (every install
@@ -1199,17 +1237,69 @@ mod tray_tests {
         );
     }
 
+    /// D1: the close handler runs on the event loop, where the connection
+    /// mutex is held for whole operations — a `db_batch` replays an import in
+    /// one call, and the safety copy holds it across its checkpoint and file
+    /// copy. Reading the settings row on that path, on every close, could
+    /// freeze the UI for the duration; the handler must only load the mirror.
     #[test]
-    fn the_toggle_is_read_from_settings_on_every_close() {
+    fn the_close_handler_reads_the_mirror_and_never_the_database() {
         let body = body_of("fn close_to_tray_enabled");
         assert!(
-            body.contains("SELECT value FROM settings"),
-            "the setting is read fresh from the settings table, not cached"
+            body.contains("CLOSE_TO_TRAY.load"),
+            "the close decision comes from the in-memory mirror: {body}"
         );
         assert!(
-            body.contains("parse_close_to_tray"),
-            "the raw row goes through the tested parser"
+            !body.contains("SELECT "),
+            "no SQL may run on the window-event path (D1): {body}"
         );
+        assert!(
+            !body.contains(".conn"),
+            "nor may the connection lock be taken there (D1): {body}"
+        );
+    }
+
+    /// The mirror is only as fresh as its publishers, so every place the row
+    /// can change publishes it: boot, the Settings toggle, and the end of an
+    /// import (which replaces the `settings` table the row lives in).
+    #[test]
+    fn the_mirror_is_published_wherever_the_row_can_change() {
+        assert!(
+            SRC.contains("refresh_close_to_tray(&conn);"),
+            "boot seeds the mirror before any window can be closed"
+        );
+        let commands = include_str!("commands.rs");
+        assert!(
+            commands.contains("crate::refresh_close_to_tray(&conn);"),
+            "an import republishes it — the import replaced the settings table"
+        );
+        assert!(
+            commands.contains("crate::publish_close_to_tray(enabled);"),
+            "the Settings toggle publishes the value it just wrote"
+        );
+        assert!(
+            SRC.contains("commands::close_to_tray_set,"),
+            "and that command is reachable from the webview"
+        );
+    }
+
+    /// The mirror is the whole decision now, so its semantics are pinned
+    /// directly: it can only be what a publisher stored, and its own starting
+    /// point is the fail-safe "on".
+    #[test]
+    fn the_mirror_holds_what_was_published() {
+        use super::{publish_close_to_tray, CLOSE_TO_TRAY};
+        use std::sync::atomic::Ordering;
+        publish_close_to_tray(true);
+        assert!(CLOSE_TO_TRAY.load(Ordering::SeqCst), "default is on");
+        publish_close_to_tray(false);
+        assert!(
+            !CLOSE_TO_TRAY.load(Ordering::SeqCst),
+            "an explicit false turns close into a quit"
+        );
+        // Leave the process-wide mirror as every other test, and a real boot,
+        // expects it.
+        publish_close_to_tray(true);
     }
 
     #[test]
@@ -1219,7 +1309,7 @@ mod tray_tests {
             .find("reset_terminal")
             .expect("the terminal flag is consulted (D6)");
         let toggle = body
-            .find("parse_close_to_tray")
+            .find("CLOSE_TO_TRAY.load")
             .expect("the normal toggle path still exists");
         assert!(
             flag < toggle,

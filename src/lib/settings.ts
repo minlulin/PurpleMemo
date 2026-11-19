@@ -226,6 +226,12 @@ export function createSettingsRepo(driver: DataDriver) {
 
     async setCloseToTray(enabled: boolean): Promise<void> {
       await this.setJSON(SETTING_KEYS.closeToTray, enabled);
+      // D1: Rust's close handler keeps this decision in memory, because it
+      // runs on the event loop where the connection lock is held for whole
+      // operations. Publishing here is what makes the toggle apply to the very
+      // next close; the row is already written, so a delivery failure is
+      // reported but cannot lose the setting — the next boot reads it back.
+      await driver.syncCloseToTray?.(enabled);
     },
 
     /**
