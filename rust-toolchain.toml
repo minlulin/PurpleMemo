@@ -1,0 +1,8 @@
+# The gate and the Android release both run on this exact compiler: the release
+# profile's behaviour is part of the shipped binary, and the ICU stanza in
+# src-tauri/Cargo.toml is evidence from this version (docs/ANDROID_TOOLCHAIN.md,
+# "The release-profile ICU stanza — confirmed"). rustup installs the channel and
+# the two gate components on first use.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]

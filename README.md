@@ -62,10 +62,18 @@ read-only LAN share was removed on 2026-11-16 — pairing supersedes it.
 
 ## Development
 
-Requires **Node.js ≥ 24** (the `engines` field in `package.json` is enforced by
-`engine-strict=true` in `.npmrc`, so `npm install` refuses anything older) and,
-for the Rust gates, a Rust toolchain with the `clippy` and `rustfmt`
-components (`rustup component add clippy rustfmt`).
+Requires **Node.js 26.13.1** and **Rust 1.95.0**. Both are pinned so a fresh
+clone runs the same gate as the release:
+
+- `.nvmrc` selects the Node version (`nvm use`, `fnm use`, or the equivalent
+  your version manager reads). `package.json` still declares `>=24` and
+  `engine-strict=true` in `.npmrc` enforces it, so an older Node fails at
+  `npm install` instead of somewhere inside the gate.
+- `rust-toolchain.toml` makes rustup install that toolchain and its `clippy`
+  and `rustfmt` components on first use.
+- Android builds additionally need the targets and NDK in
+  [`docs/ANDROID_TOOLCHAIN.md`](docs/ANDROID_TOOLCHAIN.md); `npm run
+  check:android` uses `aarch64-linux-android`.
 
 ```
 npm install        # once
@@ -76,13 +84,16 @@ npm run verify     # the full local gate (see below)
 
 ## Local gate
 
-The pre-push hook runs the full local gate. This project deliberately does not
-use GitHub Actions or any hosted CI: the repository owner cannot rely on paid
-GitHub Actions minutes. **No change should be merged or released unless
-`npm run verify` is green**:
+The pre-push hook runs the full local gate, and it remains the enforcement.
+A pull request also runs the small hosted workflow in
+`.github/workflows/pr.yml` — lint, typecheck, the reference check and the JS
+tests — so a reviewer can see those pass before the author's gate output
+arrives; the workflow does not build the Rust side or the desktop app.
+**No change should be merged or released unless `npm run verify` is green.**
+Enable the hook once per clone:
 
 ```
-git config core.hooksPath .githooks   # once per clone
+git config core.hooksPath .githooks
 ```
 
 The first step of the gate, `scripts/check-hooks.mjs`, **fails** when the hook
@@ -115,11 +126,13 @@ Rules of the gate:
   With no APK it skips with a line, so a desktop clone runs the gate unchanged.
 - Never use `git push --no-verify`. If the gate is red, fix it or revert —
   the gate's own output on your machine is the evidence.
-- Hosted CI is intentionally out of scope. Every clone must enable the hook
+- Hosted CI is limited to the PR workflow above (the free-minutes constraint is
+  why it is only the cheap checks). Every clone must still enable the full gate
   with `git config core.hooksPath .githooks`; `npm run verify` refuses to run
   green until it is enabled. Reviewers and release operators should request the
   local gate output when verifying a change.
-- Rust side needs `rustup component add clippy rustfmt` once.
+- Rust side: `rust-toolchain.toml` installs the pinned toolchain with `clippy`
+  and `rustfmt`; no manual `rustup component add` step.
 - Releases are built, signed and published **by hand** — there is no
   release workflow; see [`docs/RELEASE.md`](docs/RELEASE.md) for the exact
   procedure (`scripts/make-latest-json.mjs` builds the updater manifest, which

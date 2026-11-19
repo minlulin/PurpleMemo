@@ -7,9 +7,10 @@ produces the specification, the failure-injection harness
 that judge it. No sync engine, no pairing-key exchange and no network call
 exists yet, and none was added in this session.
 
-**Authority.** This document, together with `ANDROID_DESIGN_REVIEW.md` F1/F3, is
-the contract every later Phase C session is measured against. It is versioned as
-a whole: protocol version `1`.
+**Authority.** This document, together with the F1/F3 findings of the Android
+design review (archived outside the repo; the fixes live in this document and
+in the code), is the contract every later Phase C session is measured against.
+It is versioned as a whole: protocol version `1`.
 
 ---
 
@@ -27,9 +28,10 @@ has nothing to take on trust.
 
 §5 of the design says: per-record `updated_at`, a per-side last-successful-sync
 watermark, field LWW, and the losing version written to trash before overwrite.
-`ANDROID_DESIGN_REVIEW.md` F1 shows that combination cannot preserve offline
-edits: date-only timestamps tie, clocks skew, retries repeat, deletes vanish, and
-an interrupted apply can advance a cursor before its effects are durable.
+The design review that preceded this document (F1) showed that combination
+cannot preserve offline edits: date-only timestamps tie, clocks skew, retries
+repeat, deletes vanish, and an interrupted apply can advance a cursor before
+its effects are durable.
 
 **Where this document and §5 disagree, this document wins.** Explicitly:
 

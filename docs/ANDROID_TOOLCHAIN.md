@@ -16,9 +16,9 @@ of them re-opens the native build and `npm run verify`.
 | Command-line Tools | **23.0.0** (`latest`) | `sdkmanager` is deprecated in this release — installs work through it, but `android sdk install` is the replacement. |
 | Platform-Tools | **37.0.1** (`adb` 1.0.41, `37.0.1-15733141`) | |
 | NDK | **27.3.13750724** (r27d) | `ANDROID_NDK_HOME`. The Gradle build reads the NDK through this variable. |
-| Rust | **rustc / cargo 1.95.0** | |
+| Rust | **rustc / cargo 1.95.0** | Pinned by `rust-toolchain.toml` (repository root) with `clippy` + `rustfmt`. |
 | Rust Android targets | `aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`, `x86_64-linux-android` | The Phase 0 build uses `aarch64` (arm64-v8a) only. |
-| Node / npm | 26.13.0 / 11.20.0 | Only used for the Tauri CLI and frontend build. |
+| Node / npm | 26.13.1 / 11.20.0 | Pinned by `.nvmrc` (repository root); only used for the Tauri CLI and frontend build. |
 | Test device | Redmi Note 14 Pro+ `24115RA8EG` (`amethyst`), Android 16 / API 36 | `adb` serial recorded in the Session 2 report. |
 
 ## Environment variables

@@ -2,8 +2,9 @@
 /**
  * Local-gate arming check.
  *
- * There is no hosted CI: the pre-push hook running `npm run verify` IS the
- * enforcement, so a clone where `core.hooksPath` is unset has no gate at all.
+ * The hosted PR workflow only runs lint, typecheck and the JS tests. The
+ * pre-push hook running `npm run verify` IS the enforcement, so a clone where
+ * `core.hooksPath` is unset has no gate at all.
  * This check therefore FAILS rather than warns — a green
  * `npm run verify` next to an unarmed hook was the one combination the README
  * claimed could not happen.

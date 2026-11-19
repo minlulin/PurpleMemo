@@ -1,8 +1,33 @@
 # Purple Memo Android — Build Progress Todo
 
-Companion to `docs/ANDROID_DESIGN.md` (decisions) and
-`docs/ANDROID_DESIGN_REVIEW.md` (risks). Check off as each item lands;
-nothing moves to the next phase until its exit gate passes.
+Companion to `docs/ANDROID_DESIGN.md` (decisions). The design review that
+produced the risk list was archived outside the repo; its outcomes are in the
+phase notes below and in `src/lib/sync/protocol.ts`. Check off as each item
+lands; nothing moves to the next phase until its exit gate passes.
+
+---
+
+**Current status (2026-11-19) — read this before acting on a session note.**
+The entries below are the state at the session that wrote them, not a live
+statement today. These have been answered since:
+
+- **§13.1 `reminder-definition-owner` is settled**, not open: Option A is
+  built (`created_by_device_id`, each device arms and settles only its own
+  reminders). The ruling is recorded in `SETTLED_DECISIONS` in
+  `src/lib/sync/protocol.ts`.
+- **A restore does bump the generation and force a re-pair.** `applyBackup`
+  writes the bump and the old line's bookkeeping in the same batch as the
+  restored rows (`src/lib/backup.ts`, §10.1).
+- **The sync engine is called by the app.** `src/data/app.ts` builds the sync
+  repo, and the pairing, snapshot and session paths drive it; "nothing calls
+  the store" below is Session-1 history.
+- **The six engine invariants run** over two real SQLite stores in
+  `src/lib/sync/harness.test.ts`; none is skipped.
+- **The signed arm64 APK exists** — built and checked on 2026-11-15 and
+  2026-11-18; only the owner's Redmi install/upgrade checklist is open.
+
+Where a later session corrected a paragraph, the superseded text is marked
+inline.
 
 ## Phase 0 — Contract and feasibility proof (no personal data)
 
@@ -21,7 +46,8 @@ nothing moves to the next phase until its exit gate passes.
 - [x] Toolchain pinned: JDK, Android SDK/Build Tools, NDK, Rust targets
 - [x] Android project generated and curated in git (despite `gen/` ignore;
   exclude build outputs, SDK paths, signing material)
-- [x] Mobile entry point; tray / single-instance / updater / desktop window (updater plugin gating still open)
+- [x] Mobile entry point; tray / single-instance / updater / desktop window
+  (updater plugin and capability are desktop-only; the phone has none)
   behavior target-gated
 - [x] SQLCipher + OpenSSL cross-compile via NDK proven
 - [x] SQLCipher create/open/migrate/reopen with a real Keystore-wrapped DEK
@@ -358,10 +384,9 @@ gate item, so it never held the phase open.
   2026-11-08, approved 2026-11-10** (approved by Muus on MinLulin's delegation —
   he asked Muus to approve it. The approval is of the spec as the working
   contract, with two recorded exceptions: §10.1's "and by a re-pair" wording is
-  wrong and Wave 3 (D3) removes it; the restore-bumps-generation behavior is
-  specified but not yet implemented in code — Session 2 carry-over, "Backup
-  payload rules" item. The 6 pending harness invariants are unwritten tests,
-  not spec gaps.) Spec: protocol v1 in
+  wrong and Wave 3 (D3) removes it. *Superseded: the restore-generation bump
+  was implemented (see `applyBackup`) and the six harness invariants now run;
+  this parenthetical records the 2026-11-08 state.*) Spec: protocol v1 in
   `docs/ANDROID_SYNC_PROTOCOL.md`, superseding `ANDROID_DESIGN.md` §5 wherever
   they conflict (`updated_at` LWW + watermark replaced by Lamport version
   stamps and transactional cursors).
@@ -371,15 +396,17 @@ gate item, so it never held the phase open.
   **Injections implemented (9):** `mid-apply-kill`, `duplicate-delivery`,
   `clock-skew`, `conflicting-offline-edits`, `delete-vs-edit`,
   `cascaded-child-delete`, `revoked-peer`, `old-backup-restore`,
-  `desktop-only-leak`. **Invariant tests pending on Stage 1's engine (6):** two
+  `desktop-only-leak`. *Superseded: the six invariants below were registered
+  as pending here and now run over the real stack — see `harness.test.ts`.*
+  They are: two
   populated peers converge; retry idempotent; interrupted apply loses no
   acknowledged write; tombstones propagate incl. cascades; revoked peer
-  rejected; desktop-only rows never appear on the peer — each skipped with its
-  reason and clause, never passing on a stub.
-  **Open decision for MinLulin:** §13.1 `reminder-definition-owner` (Option A
-  recommended: reminder definitions two-way, `created_by_device_id`, the
-  creating device notifies). §13.2 (conflict losers → per-device local trash)
-  is confirmed, not open.
+  rejected; desktop-only rows never appear on the peer.
+  **§13.1 `reminder-definition-owner` — settled 2026-11-13 (Option A as
+  built:** reminder definitions two-way, `created_by_device_id`, the creating
+  device notifies**)**. It lives in `SETTLED_DECISIONS`; the "open decision"
+  wording that stood here is history. §13.2 (conflict losers → per-device
+  local trash) was confirmed, not open.
 - [x] Schema & storage work — **written 2026-11-08, storage tests green,
   engine not started** (schema **v8**, migration 7→8). Six device-local
   tables: `sync_state` (§1.2 device id, §4.2 Lamport counter, §1.3 last
@@ -401,10 +428,9 @@ gate item, so it never held the phase open.
   honesty, acks prune only when every live peer acked, tombstone GC
   needs a peer, device id stable per install (a wipe mints a new one),
   restore bumps the generation and forces re-pair, allowlist refusal,
-  §13.1 marker unread. The six engine invariants in `harness.test.ts`
-  stay pending. Still open by design: nothing calls the store (no
-  engine yet), and `applyBackup` does not bump the generation — that
-  belongs to the "Backup payload rules" item.
+  §13.1 marker unread. *(Superseded: the six invariants now run, the app
+  calls the store, and `applyBackup` bumps the generation in its own batch —
+  this paragraph records the state before Stage 1 landed.)*
 - [x] Pairing & bootstrap — **written 2026-11-08; core, sealed envelope and
   LAN listener green, Stage 1 not started** (no QR rendering and no device
   run yet — see the last paragraph). CORE:
@@ -1085,7 +1111,9 @@ asserted the old unconditional re-key for the same reason and was rewritten
 (“a same-name create leaves the winning row's uid alone, and its child still
 resolves”), with the child now proving the in-batch alias instead.
 
-**Still open, and not part of this gate:** the signed release APK (Phase B's
-gate, §13.1's reminder-owner decision, and the upload's own WAVE 3 wording),
-and the two-device run of the fold — this gate proves the engine's determinism
-in tests, not on hardware.
+**Still open, and not part of this gate:** two things named here have since
+closed — the signed release APK was built and checked (2026-11-15,
+2026-11-18) and §13.1's reminder-owner decision is settled in
+`SETTLED_DECISIONS`. What remains is the upload's own WAVE 3 wording and the
+two-device run of the fold — this gate proves the engine's determinism in
+tests, not on hardware.
