@@ -28,14 +28,6 @@ export type UpdateDownloadEvent =
 /** Cap on shown release notes — a manifest body is not a changelog reader. */
 export const NOTES_MAX_CHARS = 1_200;
 
-/** One-line description of an available update. */
-export function describeUpdate(update: {
-  currentVersion: string;
-  version: string;
-}): string {
-  return `Purple Memo ${update.version} is available — you have ${update.currentVersion}.`;
-}
-
 /** Release notes as shown in Settings: trimmed, and capped when enormous. */
 export function notesExcerpt(body: string | undefined): string {
   const text = (body ?? "").trim();

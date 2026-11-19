@@ -1,7 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
-  describeUpdate,
   installUpdate,
   notesExcerpt,
   progressPercent,
@@ -25,13 +24,6 @@ function fakeHandle(events: unknown[]) {
   };
   return { handle, wasInstalled: () => installed };
 }
-
-test("describeUpdate names both versions", () => {
-  assert.equal(
-    describeUpdate({ currentVersion: "0.1.0", version: "0.2.0" }),
-    "Purple Memo 0.2.0 is available — you have 0.1.0.",
-  );
-});
 
 test("notesExcerpt trims release notes and caps absurd lengths", () => {
   assert.equal(notesExcerpt(undefined), "");

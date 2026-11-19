@@ -9,6 +9,7 @@ import {
   type PinHash,
   SALT_BYTES,
 } from "./crypto.ts";
+import type { MessageKey } from "./i18n.ts";
 
 export const MIN_PIN_LENGTH = 6;
 export const DEFAULT_AUTO_LOCK_MINUTES = 10;
@@ -237,17 +238,19 @@ export function classifyPin(raw: string | undefined): PinState {
 }
 
 /**
- * How to tell the user their PIN is unreadable. Defined here, beside the
- * classification that produces it, so the two cannot drift — and reused by the
- * Change-PIN path, which said nothing at all before (review P3-18).
+ * How to tell the user their PIN is unreadable: message keys, not sentences, so
+ * the Change-PIN banner renders in the locale active when it is shown. Typing
+ * the map as `MessageKey` makes a reason without copy a compile error, and the
+ * suite resolves every key in both catalogues (D6).
+ *
+ * Defined here, beside the classification that produces it, so the two cannot
+ * drift — and reused by the Change-PIN path, which said nothing at all before
+ * (review P3-18).
  */
-export const UNREADABLE_PIN_REASON: Record<PinUnreadable, string> = {
-  corrupt: "corrupt (not valid JSON)",
-  malformed: "in an unexpected shape",
-  // `en-US` explicitly: this is English copy, and an implicit host locale
-  // formats the floor as "100.000" (de-DE) or "100 000" (fr-FR) inside an
-  // English sentence — mixed-script text that also fails the test (H9).
-  "weak-iterations": `hashed with too few iterations (below ${MIN_PIN_HASH_ITERATIONS.toLocaleString("en-US")})`,
+export const UNREADABLE_PIN_REASON: Record<PinUnreadable, MessageKey> = {
+  corrupt: "settings.pinUnreadable.corrupt",
+  malformed: "settings.pinUnreadable.malformed",
+  "weak-iterations": "settings.pinUnreadable.weakIterations",
 };
 
 export function lockGate(pin: PinState, answerHash: unknown): LockGate {

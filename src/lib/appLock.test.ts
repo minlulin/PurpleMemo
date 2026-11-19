@@ -23,6 +23,7 @@ import {
   showReloadWarning,
   UNREADABLE_PIN_REASON,
 } from "./appLock.ts";
+import { LOCALES, placeholdersIn, translateFor } from "./i18n.ts";
 
 // The lock gate must fail CLOSED (the PIN is required and cannot be
 // skipped). A partially-written settings row — a corrupt value, or a backup
@@ -551,32 +552,29 @@ test("lockRetryDelayMs: free attempts are instant, then a fixed pause", () => {
   );
 });
 
-test("UNREADABLE_PIN_REASON covers every reason classifyPin can produce", () => {
-  // P3-18: the Change-PIN path now names the reason. Every kind the classifier
-  // can return needs a message, or the UI falls back to nothing useful — which
-  // is what it used to do.
+test("UNREADABLE_PIN_REASON maps every reason classifyPin can produce to copy", () => {
+  // P3-18: the Change-PIN path names the reason. The map holds KEYS (D6), and
+  // this test resolves each one in every locale — a reason with no copy, in
+  // either language, is the failure it pins.
   const reasons: PinUnreadable[] = ["corrupt", "malformed", "weak-iterations"];
+  const keys = new Set<string>();
   for (const reason of reasons) {
-    assert.ok(
-      UNREADABLE_PIN_REASON[reason]?.length > 0,
-      `no message for ${reason}`,
-    );
-    assert.doesNotMatch(
-      UNREADABLE_PIN_REASON[reason],
-      /\[object|undefined/,
-      "the message must be plain text the user can read",
-    );
+    const key = UNREADABLE_PIN_REASON[reason];
+    keys.add(key);
+    for (const locale of LOCALES) {
+      // `development` throws on a missing key rather than falling back to
+      // English, which is exactly the gap this must catch.
+      const copy = translateFor(locale, key, {}, "development");
+      assert.deepEqual(
+        placeholdersIn(copy),
+        [],
+        `${reason} (${locale}) must be a whole sentence`,
+      );
+    }
   }
-  // The iteration floor is named in the message, so the user learns why a PIN
-  // that used to work is now refused. Formatted for en-US explicitly (H9): on
-  // a de-DE host an implicit locale would print "100.000" inside this English
-  // sentence and fail the match.
-  assert.match(
-    UNREADABLE_PIN_REASON["weak-iterations"],
-    new RegExp(
-      String(MIN_PIN_HASH_ITERATIONS).replace(/(\d)(?=(\d{3})+$)/g, "$1,"),
-    ),
-  );
+  // One message per reason: two reasons sharing a key would tell the user
+  // something untrue about their row.
+  assert.equal(keys.size, reasons.length, "every reason needs its own copy");
 });
 
 test("a weak-iteration PIN is unreadable, so Change PIN refuses to touch it", () => {
@@ -589,8 +587,6 @@ test("a weak-iteration PIN is unreadable, so Change PIN refuses to touch it", ()
     weak.kind === "unreadable" ? weak.reason : null,
     "weak-iterations",
   );
-  // And the message the page will show names the floor.
-  assert.match(UNREADABLE_PIN_REASON["weak-iterations"], /too few iterations/);
 });
 
 test("classifyPin still separates absent from unreadable for the write path", () => {

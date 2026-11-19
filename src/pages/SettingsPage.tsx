@@ -23,7 +23,7 @@ import {
 } from "../components/icons.tsx";
 import { PairingPanel } from "../components/PairingPanel.tsx";
 import { useToast } from "../components/Toast.tsx";
-import { useLocale, useT } from "../components/useTranslation.ts";
+import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
 import { backupRepo, settingsRepo } from "../data/app.ts";
 import { factoryReset } from "../data/driver.ts";
 import {
@@ -51,6 +51,7 @@ import {
   LOCALE_LABELS,
   LOCALES,
   type Locale,
+  type MessageKey,
   setLocale,
 } from "../lib/i18n.ts";
 import type { PageKey } from "../lib/navigation.ts";
@@ -62,7 +63,6 @@ import {
 import { SETTING_KEYS, type Theme } from "../lib/settings.ts";
 import {
   checkForUpdate,
-  describeUpdate,
   installUpdate,
   notesExcerpt,
   type UpdateHandle,
@@ -84,19 +84,25 @@ interface SettingsPageProps {
   onResetFinished: (attempt: ResetAttempt) => void;
 }
 
-/** Anchors for the sticky sub-nav; the ids live on the sections below. */
-const SETTINGS_SECTIONS = [
-  { id: "appearance", label: "Appearance" },
-  { id: "lock", label: "App lock & PIN" },
-  { id: "notifications", label: "Notifications" },
-  { id: "vault", label: "Vault" },
-  { id: "key-export", label: "Key export" },
-  { id: "backup", label: "Backup" },
-  { id: "pairing", label: "Pairing" },
-  { id: "updates", label: "Updates" },
-  { id: "about", label: "About" },
-  { id: "danger", label: "Danger zone" },
-] as const;
+/**
+ * Anchors for the sticky sub-nav; the ids live on the sections below.
+ *
+ * The labels are keys, not text (D6): the nav, the section headings and the
+ * filter then read one source, so a Burmese reader does not see an English
+ * skeleton around translated controls.
+ */
+const SETTINGS_SECTIONS: readonly { id: string; labelKey: MessageKey }[] = [
+  { id: "appearance", labelKey: "settings.section.appearance" },
+  { id: "lock", labelKey: "settings.section.lock" },
+  { id: "notifications", labelKey: "settings.section.notifications" },
+  { id: "vault", labelKey: "settings.section.vault" },
+  { id: "key-export", labelKey: "settings.section.keyExport" },
+  { id: "backup", labelKey: "settings.section.backup" },
+  { id: "pairing", labelKey: "settings.section.pairing" },
+  { id: "updates", labelKey: "settings.section.updates" },
+  { id: "about", labelKey: "settings.section.about" },
+  { id: "danger", labelKey: "reset.dangerZone" },
+];
 
 /**
  * Extra search terms per section (review P3-31).
@@ -144,6 +150,7 @@ const SETTINGS_ALIASES: Record<string, string[]> = {
 
 export default function SettingsPage(p: SettingsPageProps) {
   const t = useT();
+  const plural = usePlural();
   const locale = useLocale();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -200,10 +207,11 @@ export default function SettingsPage(p: SettingsPageProps) {
     if (needle === "") return true;
     const section = SETTINGS_SECTIONS.find((s) => s.id === id);
     if (!section) return true;
-    const terms = [section.label, ...(SETTINGS_ALIASES[id] ?? [])].map((t) =>
-      t.toLowerCase(),
-    );
-    return terms.some((t) => t.includes(needle));
+    // The label is translated, so the filter matches what is on screen as well
+    // as the English aliases below — a Burmese reader searching in Burmese and
+    // an English speaker searching in English both find the section.
+    const terms = [t(section.labelKey), ...(SETTINGS_ALIASES[id] ?? [])];
+    return terms.some((term) => term.toLowerCase().includes(needle));
   };
 
   const setTheme = async (theme: Theme) => {
@@ -276,25 +284,25 @@ export default function SettingsPage(p: SettingsPageProps) {
         await settingsRepo.getRaw(SETTING_KEYS.pinHash),
       );
       if (state.kind === "absent") {
-        setError("No PIN is set yet — complete the first-run setup.");
+        setError(t("settings.pinAbsent"));
         return;
       }
       if (state.kind === "unreadable") {
-        setError(
-          `The stored PIN is ${UNREADABLE_PIN_REASON[state.reason]} — nothing was changed.`,
-        );
+        // The reason is a key chosen beside the classifier (D6), so this banner
+        // reads in the same language as the rest of the page.
+        setError(t(UNREADABLE_PIN_REASON[state.reason]));
         return;
       }
       if (!(await verifyPin(pin.current, state.hash))) {
-        setError("Current PIN is wrong.");
+        setError(t("settings.pinWrong"));
         return;
       }
       if (pin.next.length < MIN_PIN_LENGTH) {
-        setError(`New PIN must be at least ${MIN_PIN_LENGTH} characters.`);
+        setError(t("settings.pinTooShort", { count: MIN_PIN_LENGTH }));
         return;
       }
       if (pin.next !== pin.confirm) {
-        setError("New PINs do not match.");
+        setError(t("settings.pinMismatch"));
         return;
       }
       // The question/answer change is optional — empty fields keep the old
@@ -303,9 +311,7 @@ export default function SettingsPage(p: SettingsPageProps) {
       const question = pin.question.trim();
       const answer = pin.answer.trim();
       if (question.length > 0 !== answer.length > 0) {
-        setError(
-          "Provide BOTH a question and an answer to change the fallback — nothing was changed.",
-        );
+        setError(t("settings.pinQuestionPair"));
         return;
       }
       setBusy(true);
@@ -541,24 +547,20 @@ export default function SettingsPage(p: SettingsPageProps) {
     if (savingRef.current) return;
     setError(null);
     if (!keyAck) {
-      setError(
-        "Tick the acknowledgement first — the key must go into its own file, never into a backup.",
-      );
+      setError(t("settings.keyExportAckRequired"));
       return;
     }
     savingRef.current = true;
     setKeyBusy(true);
     try {
       const path = await save({
-        title: "Save Purple Memo encryption key",
+        title: t("settings.keySaveTitle"),
         defaultPath: "purple-memo-db-key.txt",
-        filters: [{ name: "Text file", extensions: ["txt"] }],
+        filters: [{ name: t("settings.keyTextFile"), extensions: ["txt"] }],
       });
       if (path === null) return;
       await settingsRepo.saveDatabaseKeyFile(path);
-      toast.success(
-        `Encryption key saved to ${path}. Store it separately from backups.`,
-      );
+      toast.success(t("settings.keySaved", { path }));
       // The disclosure is now on record; make the user restart from the gate so
       // the acknowledgement cannot be reused silently for a second export.
       setKeyAck(false);
@@ -619,7 +621,7 @@ export default function SettingsPage(p: SettingsPageProps) {
       // No release published yet is the expected answer before the first
       // hand-made release — report it plainly instead of hiding it.
       setUpdate(null);
-      setError(`Could not check for updates: ${errText(e)}`);
+      setError(t("settings.checkFailed", { error: errText(e) }));
     } finally {
       savingRef.current = false;
       setUpdateBusy(false);
@@ -637,7 +639,7 @@ export default function SettingsPage(p: SettingsPageProps) {
       await installUpdate(update, setUpdatePercent);
       setUpdateDone(true);
     } catch (e) {
-      setError(`Update failed: ${errText(e)}`);
+      setError(t("settings.updateFailed", { error: errText(e) }));
     } finally {
       savingRef.current = false;
       setUpdateBusy(false);
@@ -703,7 +705,7 @@ export default function SettingsPage(p: SettingsPageProps) {
               <IconSettings className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Settings</h2>
+              <h2 className="editor-title">{t("settings.title")}</h2>
             </div>
           </div>
         </div>
@@ -719,28 +721,30 @@ export default function SettingsPage(p: SettingsPageProps) {
         <input
           className="input"
           type="search"
-          placeholder="Filter settings…"
-          aria-label="Filter settings"
+          placeholder={t("settings.filterPlaceholder")}
+          aria-label={t("settings.filterLabel")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <IconFilter className="icon input-icon" />
       </span>
 
-      <nav className="settings-nav" aria-label="Settings sections">
+      <nav className="settings-nav" aria-label={t("settings.sectionsLabel")}>
         {SETTINGS_SECTIONS.filter((s) => shows(s.id)).map((s) => (
           <a
             key={s.id}
             className="settings-nav-link"
             href={`#settings-${s.id}`}
           >
-            {s.label}
+            {t(s.labelKey)}
           </a>
         ))}
       </nav>
 
       {needle !== "" && SETTINGS_SECTIONS.every((s) => !shows(s.id)) && (
-        <p className="empty-state">No settings match “{query.trim()}”.</p>
+        <p className="empty-state">
+          {t("settings.noMatches", { query: query.trim() })}
+        </p>
       )}
 
       <section
@@ -749,18 +753,24 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("appearance")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">Appearance</h3>
-          <span className="badge badge-accent">{p.theme}</span>
+          <h3 className="settings-heading">
+            {t("settings.section.appearance")}
+          </h3>
+          <span className="badge badge-accent">
+            {p.theme === "dark"
+              ? t("settings.themeDark")
+              : t("settings.themeLight")}
+          </span>
         </div>
         <fieldset className="theme-segmented">
-          <legend className="visually-hidden">Theme</legend>
+          <legend className="visually-hidden">{t("settings.theme")}</legend>
           <button
             type="button"
             className={p.theme === "dark" ? "btn is-on" : "btn"}
             aria-pressed={p.theme === "dark"}
             onClick={() => void setTheme("dark")}
           >
-            <IconMoon className="icon" /> Dark
+            <IconMoon className="icon" /> {t("settings.themeDark")}
           </button>
           <button
             type="button"
@@ -768,7 +778,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             aria-pressed={p.theme === "light"}
             onClick={() => void setTheme("light")}
           >
-            <IconSun className="icon" /> Light
+            <IconSun className="icon" /> {t("settings.themeLight")}
           </button>
         </fieldset>
         <div className="side-form">
@@ -795,12 +805,12 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("lock")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">App lock &amp; PIN</h3>
+          <h3 className="settings-heading">{t("settings.section.lock")}</h3>
           <span className="badge">PBKDF2-SHA256</span>
         </div>
         <div className="side-form">
           <label>
-            Lock after idle
+            {t("settings.autoLock")}
             <select
               className="select"
               value={p.autoLockMinutes}
@@ -808,13 +818,15 @@ export default function SettingsPage(p: SettingsPageProps) {
             >
               {AUTO_LOCK_CHOICES.map((m) => (
                 <option key={m} value={m}>
-                  {m === 0 ? "Never" : `${m} minutes`}
+                  {m === 0
+                    ? t("settings.autoLockNever")
+                    : plural("settings.autoLockMinutes", m)}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            Current PIN
+            {t("settings.currentPin")}
             <input
               className="input"
               type="password"
@@ -825,7 +837,7 @@ export default function SettingsPage(p: SettingsPageProps) {
           </label>
           <div className="form-grid">
             <label>
-              New PIN (at least {MIN_PIN_LENGTH} characters)
+              {t("settings.newPin", { count: MIN_PIN_LENGTH })}
               <input
                 className="input"
                 type="password"
@@ -835,7 +847,7 @@ export default function SettingsPage(p: SettingsPageProps) {
               />
             </label>
             <label>
-              Confirm new PIN
+              {t("settings.confirmNewPin")}
               <input
                 className="input"
                 type="password"
@@ -846,7 +858,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             </label>
           </div>
           <label>
-            New security question (blank keeps the old one)
+            {t("settings.newQuestion")}
             <input
               className="input"
               value={pin.question}
@@ -854,7 +866,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             />
           </label>
           <label>
-            New answer
+            {t("settings.newAnswer")}
             <input
               className="input"
               value={pin.answer}
@@ -868,7 +880,7 @@ export default function SettingsPage(p: SettingsPageProps) {
               disabled={busy}
               onClick={() => void changePin()}
             >
-              {busy ? "Updating…" : "Change PIN"}
+              {busy ? t("settings.changingPin") : t("settings.changePin")}
             </button>
           </div>
         </div>
@@ -880,9 +892,11 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("notifications")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">Notifications</h3>
+          <h3 className="settings-heading">
+            {t("settings.section.notifications")}
+          </h3>
           <span className={preview ? "badge badge-accent" : "badge"}>
-            {preview ? "previews on" : "previews off"}
+            {preview ? t("settings.previewsOn") : t("settings.previewsOff")}
           </span>
         </div>
         <label className="check-label">
@@ -891,10 +905,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             checked={preview}
             onChange={(e) => void changePreview(e.target.checked)}
           />
-          Include reminder text in notifications. Off (the default) means every
-          notification says only that a reminder is due — never its title or
-          note. When several come due at once, they share one summary alert
-          either way.
+          {t("settings.previewHint")}
         </label>
         <label className="check-label">
           <input
@@ -914,7 +925,7 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("vault")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">Vault</h3>
+          <h3 className="settings-heading">{t("settings.section.vault")}</h3>
           <span className="badge badge-accent">AES-256-GCM</span>
         </div>
         <div className="editor-row">
@@ -923,7 +934,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             className="btn"
             onClick={() => p.onNavigate("vault")}
           >
-            Open Vault <IconArrowRight className="icon" />
+            {t("settings.openVault")} <IconArrowRight className="icon" />
           </button>
         </div>
       </section>
@@ -934,19 +945,17 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("key-export")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">Encryption key export</h3>
-          <span className="badge badge-warn">Sensitive</span>
+          <h3 className="settings-heading">{t("settings.keyExportTitle")}</h3>
+          <span className="badge badge-warn">{t("settings.sensitive")}</span>
         </div>
-        <p className="muted">
-          If this key is lost, the data it protects cannot be recovered.
-        </p>
+        <p className="muted">{t("settings.keyExportWarn")}</p>
         <label className="settings-check">
           <input
             type="checkbox"
             checked={keyAck}
             onChange={(e) => setKeyAck(e.target.checked)}
           />
-          I understand — the key goes into its own file, never into a backup.
+          {t("settings.keyExportAck")}
         </label>
         <div className="editor-row">
           <button
@@ -955,7 +964,7 @@ export default function SettingsPage(p: SettingsPageProps) {
             disabled={keyBusy}
             onClick={() => void exportKey()}
           >
-            {keyBusy ? "Writing…" : "Save encryption key…"}
+            {keyBusy ? t("settings.keyWriting") : t("settings.keySave")}
           </button>
         </div>
       </section>
@@ -1115,7 +1124,7 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("pairing")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">Pair a phone</h3>
+          <h3 className="settings-heading">{t("settings.pairTitle")}</h3>
           <span className="badge">Protocol v1</span>
         </div>
         {/* A filtered-away section must unmount, not just hide: `hidden` left
@@ -1130,8 +1139,8 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("updates")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">Updates</h3>
-          <span className="badge">Signed releases</span>
+          <h3 className="settings-heading">{t("settings.section.updates")}</h3>
+          <span className="badge">{t("settings.signedReleases")}</span>
         </div>
         <div className="editor-row">
           <button
@@ -1140,7 +1149,9 @@ export default function SettingsPage(p: SettingsPageProps) {
             disabled={updateBusy}
             onClick={() => void checkUpdates()}
           >
-            {updateBusy && update === null ? "Checking…" : "Check for updates"}
+            {updateBusy && update === null
+              ? t("common.checking")
+              : t("settings.checkUpdates")}
           </button>
           {update !== null && (
             <button
@@ -1150,16 +1161,25 @@ export default function SettingsPage(p: SettingsPageProps) {
               onClick={() => void installNow()}
             >
               {updateBusy && <IconSpinner />}
-              {updateBusy ? "Downloading…" : `Install ${update.version}`}
+              {updateBusy
+                ? t("settings.downloading")
+                : t("settings.installVersion", { version: update.version })}
             </button>
           )}
         </div>
         {update !== null && (
           <div>
-            <p className="figure">{describeUpdate(update)}</p>
+            <p className="figure">
+              {t("settings.updateAvailable", {
+                version: update.version,
+                current: update.currentVersion,
+              })}
+            </p>
             {update.date ? (
               <p className="muted">
-                Published {new Date(update.date).toLocaleString()}
+                {t("settings.published", {
+                  date: new Date(update.date).toLocaleString(locale),
+                })}
               </p>
             ) : null}
             {notesExcerpt(update.body).length > 0 && (
@@ -1168,19 +1188,19 @@ export default function SettingsPage(p: SettingsPageProps) {
             {updateBusy && (
               <p className="muted">
                 {updatePercent === null
-                  ? "Downloading…"
-                  : `Downloading… ${updatePercent}%`}
+                  ? t("settings.downloading")
+                  : t("settings.downloadingPercent", {
+                      percent: updatePercent,
+                    })}
               </p>
             )}
           </div>
         )}
         {updateChecked && update === null && !updateDone && (
-          <p className="muted">No newer release is published yet.</p>
+          <p className="muted">{t("settings.noNewerRelease")}</p>
         )}
         {updateDone && (
-          <p className="alert alert-note">
-            Update installed — restart Purple Memo to run the new version.
-          </p>
+          <p className="alert alert-note">{t("settings.updateInstalled")}</p>
         )}
       </section>
 
@@ -1190,12 +1210,12 @@ export default function SettingsPage(p: SettingsPageProps) {
         hidden={!shows("about")}
       >
         <div className="dash-card-head">
-          <h3 className="settings-heading">About</h3>
-          <span className="badge badge-accent">Open Source</span>
+          <h3 className="settings-heading">{t("settings.section.about")}</h3>
+          <span className="badge badge-accent">{t("settings.openSource")}</span>
         </div>
         {appVersion !== null && (
           <p className="muted" data-testid="app-version">
-            Version {appVersion}
+            {t("settings.version", { version: appVersion })}
           </p>
         )}
       </section>

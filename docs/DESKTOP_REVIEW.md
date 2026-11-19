@@ -11,7 +11,7 @@ copy, file writes, the pairing listener's state, and the desktop UI paths
 `src/lib/drafts.ts`, `src/lib/backup.ts`, `src/lib/update.ts`).
 
 This is a review record. Findings are kept with the mechanism that produces
-them, so each can be verified or dismissed by reading the code it names. D1–D5
+them, so each can be verified or dismissed by reading the code it names. D1–D6
 were fixed in follow-up changes; the rest are open, each with a suggested fix.
 The Android companion is out of scope.
 
@@ -41,7 +41,8 @@ None of them threatens data at rest; two of them are user-visible.
 | D3 | Medium-low (latent) | DB guard | `db_query` can write, and writes bypass the lifecycle barrier | Fixed |
 | D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Fixed |
 | D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Fixed |
-| D6 | Low | i18n | The Burmese locale covers only part of the desktop surface | Open |
+| D6 | Low | i18n | The Burmese locale covers only part of the desktop surface | Fixed |
+| D7 | Low | i18n | Everything Rust originates (tray, boot dialogs, command errors) is English-only | Open |
 
 ## D1 — Medium — The close handler takes the database lock on the event-loop thread
 
@@ -178,18 +179,43 @@ the next tick on top of it.
 
 ## D6 — Low — The Burmese locale covers only part of the desktop surface
 
-`LOCALES` is `["en", "my"]`, and Settings mixes translated strings with
+`LOCALES` is `["en", "my"]`, and Settings mixed translated strings with
 literal English: the section labels, "Lock after idle", "Current PIN",
 "Change PIN", "Vault", "Encryption key export", "Pair a phone", "Updates",
-"About", "No settings match …", and the messages produced by the PIN change,
-key export and update handlers. Everything Rust originates is English-only as
-well: the tray items, the boot-failure dialogs, and every error string returned
-from a command. A Burmese user sees both languages on one page.
+"About", "No settings match …", the badges that are words rather than readouts,
+and the messages produced by the PIN change, key export and update handlers. A
+Burmese user saw both languages on one page.
 
-**Fix.** Route the remaining Settings copy through the message table, and make
-the tray menu and boot dialogs read their labels from the same source (they are
-built in Rust, so this needs either a small label table passed in from the
-frontend or a Rust-side copy of the few strings).
+**Fixed in a follow-up change.** Every one of those strings now comes from the
+catalogue — roughly sixty `settings.*` keys in both languages — and the section
+table holds keys instead of labels, so the sticky nav, the section headings and
+the filter read the same translated text (searching while Burmese is selected
+matches the label on screen *and* the English aliases). The auto-lock interval
+uses a plural key, because "1 minutes" is wrong in English. `describeUpdate` was
+page copy with no other caller, so it became `settings.updateAvailable` and the
+helper was removed rather than left unused.
+
+`appLock.ts`'s corrupt-PIN diagnostic was the last English left in the page: a
+sentence fragment quoted into `settings.pinUnreadable`, so it is now a map of
+message keys rendered in the locale active when the banner appears. Nothing
+Settings shows is literal text from the source any more.
+
+What remains of the finding is Rust's own English — the tray, the boot dialogs
+and command errors — split out as D7 below, because none of it is Settings copy.
+
+## D7 — Low — Everything Rust originates is still English-only
+
+Split out of D6, whose Settings half is closed above. The tray menu and its
+items, the boot-failure dialogs, and every error string a command returns are
+built in Rust with literal English. A Burmese reader meets that language in the
+tray and in the banner under a failed command.
+
+**Fix.** Give the renderer the vocabulary it already has: pass the few tray and
+boot labels in from the frontend at boot (the locale is stored already), and have
+commands return a key plus params — the `MessageKeyError` shape `lib/i18n.ts`
+defines — instead of a finished English sentence. A Rust-side copy of the
+catalogue is the alternative, but then two catalogues have to be kept complete
+and in step.
 
 ## Improvements
 

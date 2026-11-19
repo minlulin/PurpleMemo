@@ -99,6 +99,79 @@ export const en = {
   "nav.settings": "Settings",
 
   "settings.pinUpdated": "PIN updated.",
+  "settings.title": "Settings",
+  "settings.filterPlaceholder": "Filter settings…",
+  "settings.filterLabel": "Filter settings",
+  "settings.sectionsLabel": "Settings sections",
+  "settings.noMatches": "No settings match “{query}”.",
+  "settings.section.appearance": "Appearance",
+  "settings.section.lock": "App lock & PIN",
+  "settings.section.notifications": "Notifications",
+  "settings.section.vault": "Vault",
+  "settings.section.keyExport": "Key export",
+  "settings.section.backup": "Backup",
+  "settings.section.pairing": "Pairing",
+  "settings.section.updates": "Updates",
+  "settings.section.about": "About",
+  "settings.theme": "Theme",
+  "settings.themeDark": "Dark",
+  "settings.themeLight": "Light",
+  "settings.autoLock": "Lock after idle",
+  "settings.autoLockNever": "Never",
+  "settings.currentPin": "Current PIN",
+  "settings.newPin": "New PIN (at least {count} characters)",
+  "settings.confirmNewPin": "Confirm new PIN",
+  "settings.newQuestion": "New security question (blank keeps the old one)",
+  "settings.newAnswer": "New answer",
+  "settings.changingPin": "Updating…",
+  "settings.changePin": "Change PIN",
+  "settings.pinAbsent": "No PIN is set yet — complete the first-run setup.",
+  "settings.pinUnreadable.corrupt":
+    "The stored PIN is corrupt (not valid JSON) — nothing was changed.",
+  "settings.pinUnreadable.malformed":
+    "The stored PIN is in an unexpected shape — nothing was changed.",
+  "settings.pinUnreadable.weakIterations":
+    "The stored PIN was hashed with too few iterations to be trusted — nothing was changed.",
+  "settings.pinWrong": "Current PIN is wrong.",
+  "settings.pinTooShort": "New PIN must be at least {count} characters.",
+  "settings.pinMismatch": "New PINs do not match.",
+  "settings.pinQuestionPair":
+    "Provide BOTH a question and an answer to change the fallback — nothing was changed.",
+  "settings.previewsOn": "previews on",
+  "settings.previewsOff": "previews off",
+  "settings.previewHint":
+    "Include reminder text in notifications. Off (the default) means every notification says only that a reminder is due — never its title or note. When several come due at once, they share one summary alert either way.",
+  "settings.openVault": "Open Vault",
+  "settings.keyExportTitle": "Encryption key export",
+  "settings.sensitive": "Sensitive",
+  "settings.keyExportWarn":
+    "If this key is lost, the data it protects cannot be recovered.",
+  "settings.keyExportAck":
+    "I understand — the key goes into its own file, never into a backup.",
+  "settings.keyExportAckRequired":
+    "Tick the acknowledgement first — the key must go into its own file, never into a backup.",
+  "settings.keyWriting": "Writing…",
+  "settings.keySave": "Save encryption key…",
+  "settings.keySaveTitle": "Save Purple Memo encryption key",
+  "settings.keyTextFile": "Text file",
+  "settings.keySaved":
+    "Encryption key saved to {path}. Store it separately from backups.",
+  "settings.pairTitle": "Pair a phone",
+  "settings.signedReleases": "Signed releases",
+  "settings.checkUpdates": "Check for updates",
+  "settings.downloading": "Downloading…",
+  "settings.downloadingPercent": "Downloading… {percent}%",
+  "settings.installVersion": "Install {version}",
+  "settings.updateAvailable":
+    "Purple Memo {version} is available — you have {current}.",
+  "settings.published": "Published {date}",
+  "settings.noNewerRelease": "No newer release is published yet.",
+  "settings.updateInstalled":
+    "Update installed — restart Purple Memo to run the new version.",
+  "settings.checkFailed": "Could not check for updates: {error}",
+  "settings.updateFailed": "Update failed: {error}",
+  "settings.openSource": "Open Source",
+  "settings.version": "Version {version}",
   "mobile.moreTab": "More",
   "mobile.more.title": "More tools",
   "mobile.more.subtitle":
@@ -1106,6 +1179,79 @@ export const my: Record<MessageKey, string> = {
   "nav.settings": "ဆက်တင်များ",
 
   "settings.pinUpdated": "PIN ကို အပ်ဒိတ်လုပ်ပြီးပါပြီ။",
+  "settings.title": "ဆက်တင်",
+  "settings.filterPlaceholder": "ဆက်တင်များကို စစ်ထုတ်ရန်…",
+  "settings.filterLabel": "ဆက်တင်များကို စစ်ထုတ်ရန်",
+  "settings.sectionsLabel": "ဆက်တင်အပိုင်းများ",
+  "settings.noMatches": "“{query}” နှင့် ကိုက်ညီသော ဆက်တင် မရှိပါ။",
+  "settings.section.appearance": "အပြင်အဆင်",
+  "settings.section.lock": "အက်ပ် လော့ခ်နှင့် PIN",
+  "settings.section.notifications": "အသိပေးချက်များ",
+  "settings.section.vault": "လျှို့ဝှက်သေတ္တာ",
+  "settings.section.keyExport": "သော့ ထုတ်ယူမှု",
+  "settings.section.backup": "အရန်သိမ်းဆည်းမှု",
+  "settings.section.pairing": "တွဲချိတ်ခြင်း",
+  "settings.section.updates": "အပ်ဒိတ်များ",
+  "settings.section.about": "အကြောင်း",
+  "settings.theme": "အရောင် အပြင်အဆင်",
+  "settings.themeDark": "အမည်းရောင်",
+  "settings.themeLight": "အဖြူရောင်",
+  "settings.autoLock": "အလုပ်မလုပ်ဘဲ နေလျှင် လော့ခ်ချမည့်အချိန်",
+  "settings.autoLockNever": "ဘယ်တော့မှ မလော့ခ်ချပါ",
+  "settings.currentPin": "လက်ရှိ PIN",
+  "settings.newPin": "PIN အသစ် (အနည်းဆုံး အက္ခရာ {count} လုံး)",
+  "settings.confirmNewPin": "PIN အသစ် အတည်ပြုပါ",
+  "settings.newQuestion": "လုံခြုံရေး မေးခွန်း အသစ် (ဗလာထားပါက ယခင်အတိုင်း ရှိမည်)",
+  "settings.newAnswer": "အဖြေ အသစ်",
+  "settings.changingPin": "အပ်ဒိတ်လုပ်နေသည်…",
+  "settings.changePin": "PIN ပြောင်းမည်",
+  "settings.pinAbsent": "PIN မသတ်မှတ်ရသေးပါ — ပထမဆုံး သတ်မှတ်ခြင်းကို အပြီးသတ်ပါ။",
+  "settings.pinUnreadable.corrupt":
+    "သိမ်းထားသော PIN သည် ပျက်စီးနေသည် (JSON မမှန်ကန်ပါ) — မည်သည့်အရာမျှ မပြောင်းလဲရသေးပါ။",
+  "settings.pinUnreadable.malformed":
+    "သိမ်းထားသော PIN သည် မမျှော်လင့်သော ပုံစံဖြင့် ရှိနေသည် — မည်သည့်အရာမျှ မပြောင်းလဲရသေးပါ။",
+  "settings.pinUnreadable.weakIterations":
+    "သိမ်းထားသော PIN ကို ယုံကြည်နိုင်ရန် အလွန်နည်းသော iteration ဖြင့် hash လုပ်ထားသည် — မည်သည့်အရာမျှ မပြောင်းလဲရသေးပါ။",
+  "settings.pinWrong": "လက်ရှိ PIN မှားနေသည်။",
+  "settings.pinTooShort": "PIN အသစ်သည် အနည်းဆုံး အက္ခရာ {count} လုံး ရှိရမည်။",
+  "settings.pinMismatch": "PIN အသစ်နှစ်ခု မကိုက်ညီပါ။",
+  "settings.pinQuestionPair":
+    "အရန်မေးခွန်း ပြောင်းလဲရန် မေးခွန်းနှင့် အဖြေ နှစ်ခုစလုံး ဖြည့်ပါ — မည်သည့်အရာမျှ မပြောင်းလဲရသေးပါ။",
+  "settings.previewsOn": "အစမ်းပြချက် ဖွင့်ထားသည်",
+  "settings.previewsOff": "အစမ်းပြချက် ပိတ်ထားသည်",
+  "settings.previewHint":
+    "အသိပေးချက်များတွင် သတိပေးချက်၏ စာသားကို ထည့်ပါ။ ပိတ်ထားပါက (မူလအတိုင်း) သတိပေးချက် ရောက်လာကြောင်းကိုသာ ဖော်ပြမည်ဖြစ်ပြီး ခေါင်းစဉ် သို့မဟုတ် မှတ်စုကို ဘယ်တော့မှ မပြပါ။ တစ်ချိန်တည်းတွင် အများအပြား ရောက်လာပါက မည်သို့ပင်ဖြစ်စေ အကျဉ်းချုပ် အသိပေးချက် တစ်ခုတည်းကို မျှဝေမည်။",
+  "settings.openVault": "လျှို့ဝှက်သေတ္တာကို ဖွင့်မည်",
+  "settings.keyExportTitle": "ကုဒ်ဝှက်သော့ ထုတ်ယူမှု",
+  "settings.sensitive": "ဂရုပြုရန်",
+  "settings.keyExportWarn":
+    "ဤသော့ ပျောက်ဆုံးပါက ၎င်း ကာကွယ်ထားသော ဒေတာကို ပြန်လည်ရယူ၍ မရနိုင်ပါ။",
+  "settings.keyExportAck":
+    "နားလည်ပါသည် — သော့ကို သီးခြားဖိုင်တွင် ထည့်မည်ဖြစ်ပြီး အရန်သိမ်းဆည်းမှုထဲ ဘယ်တော့မှ မထည့်ပါ။",
+  "settings.keyExportAckRequired":
+    "အသိအမှတ်ပြုချက်ကို အရင်စစ်ပါ — သော့ကို သီးခြားဖိုင်တွင် ထည့်ရမည်ဖြစ်ပြီး အရန်သိမ်းဆည်းမှုထဲ ဘယ်တော့မှ မထည့်ရပါ။",
+  "settings.keyWriting": "ရေးနေသည်…",
+  "settings.keySave": "ကုဒ်ဝှက်သော့ သိမ်းမည်…",
+  "settings.keySaveTitle": "Purple Memo ကုဒ်ဝှက်သော့ သိမ်းမည်",
+  "settings.keyTextFile": "စာသားဖိုင်",
+  "settings.keySaved":
+    "ကုဒ်ဝှက်သော့ကို {path} တွင် သိမ်းပြီးပါပြီ။ အရန်သိမ်းဆည်းမှုများနှင့် သီးခြား သိမ်းထားပါ။",
+  "settings.pairTitle": "ဖုန်း တွဲချိတ်မည်",
+  "settings.signedReleases": "လက်မှတ်ထိုးထားသော ထုတ်ဝေမှုများ",
+  "settings.checkUpdates": "အပ်ဒိတ်များ စစ်ဆေးမည်",
+  "settings.downloading": "ဒေါင်းလုဒ်လုပ်နေသည်…",
+  "settings.downloadingPercent": "ဒေါင်းလုဒ်လုပ်နေသည်… {percent}%",
+  "settings.installVersion": "{version} ကို တပ်ဆင်မည်",
+  "settings.updateAvailable":
+    "Purple Memo {version} ကို ရရှိနိုင်ပါပြီ — လက်ရှိ ဗားရှင်းမှာ {current} ဖြစ်သည်။",
+  "settings.published": "ထုတ်ဝေခဲ့သည် {date}",
+  "settings.noNewerRelease": "အသစ်သော ထုတ်ဝေမှု မရှိသေးပါ။",
+  "settings.updateInstalled":
+    "အပ်ဒိတ် တပ်ဆင်ပြီးပါပြီ — ဗားရှင်းအသစ် အသုံးပြုရန် Purple Memo ကို ပြန်ဖွင့်ပါ။",
+  "settings.checkFailed": "အပ်ဒိတ်များကို စစ်ဆေး၍ မရပါ — {error}",
+  "settings.updateFailed": "အပ်ဒိတ် မအောင်မြင်ပါ — {error}",
+  "settings.openSource": "ပွင့်လင်းရင်းမြစ်",
+  "settings.version": "ဗားရှင်း {version}",
   "mobile.moreTab": "အခြား",
   "mobile.more.title": "ကိရိယာများ",
   "mobile.more.subtitle":
@@ -2089,6 +2235,10 @@ export const enPlurals = {
     one: "{count} contact imported",
     other: "{count} contacts imported",
   },
+  "settings.autoLockMinutes": {
+    one: "{count} minute",
+    other: "{count} minutes",
+  },
 } as const;
 
 export type PluralKey = keyof typeof enPlurals;
@@ -2138,6 +2288,10 @@ export const myPlurals: Record<PluralKey, PluralForms> = {
   "contacts.imported": {
     one: "ဆက်သွယ်ရန် {count} ခု တင်သွင်းပြီး",
     other: "ဆက်သွယ်ရန် {count} ခု တင်သွင်းပြီး",
+  },
+  "settings.autoLockMinutes": {
+    one: "{count} မိနစ်",
+    other: "{count} မိနစ်",
   },
 };
 
