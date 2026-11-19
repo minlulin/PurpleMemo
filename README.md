@@ -84,13 +84,10 @@ npm run verify     # the full local gate (see below)
 
 ## Local gate
 
-The pre-push hook runs the full local gate, and it remains the enforcement.
-A pull request also runs the small hosted workflow in
-`.github/workflows/pr.yml` — lint, typecheck, the reference check and the JS
-tests — so a reviewer can see those pass before the author's gate output
-arrives; the workflow does not build the Rust side or the desktop app.
-**No change should be merged or released unless `npm run verify` is green.**
-Enable the hook once per clone:
+The pre-push hook runs the full local gate. This project deliberately does not
+use GitHub Actions or any hosted CI: the repository owner cannot rely on paid
+GitHub Actions minutes. **No change should be merged or released unless
+`npm run verify` is green**:
 
 ```
 git config core.hooksPath .githooks
@@ -126,8 +123,7 @@ Rules of the gate:
   With no APK it skips with a line, so a desktop clone runs the gate unchanged.
 - Never use `git push --no-verify`. If the gate is red, fix it or revert —
   the gate's own output on your machine is the evidence.
-- Hosted CI is limited to the PR workflow above (the free-minutes constraint is
-  why it is only the cheap checks). Every clone must still enable the full gate
+- Hosted CI is intentionally out of scope. Every clone must enable the hook
   with `git config core.hooksPath .githooks`; `npm run verify` refuses to run
   green until it is enabled. Reviewers and release operators should request the
   local gate output when verifying a change.
