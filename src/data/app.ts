@@ -14,6 +14,7 @@ import { createExportsRepo } from "../lib/exports.ts";
 import { createGalleryRepo } from "../lib/gallery.ts";
 import { globalSearch, type SearchOptions } from "../lib/globalSearch.ts";
 import { createHabitsRepo } from "../lib/habits.ts";
+import type { Locale } from "../lib/i18n.ts";
 import { createInboxRepo } from "../lib/inbox.ts";
 import { createJournalRepo } from "../lib/journal.ts";
 import { createLoansRepo } from "../lib/loans.ts";
@@ -36,6 +37,20 @@ import { createVaultRepo } from "../lib/vault.ts";
 import { createTauriDriver } from "./driver.ts";
 
 const driver = createTauriDriver();
+
+/**
+ * Tell Rust the interface language (D7).
+ *
+ * The tray menu and the boot-failure dialogs are built before this renderer can
+ * answer — and the dialogs run exactly when the database could not be opened —
+ * so they read the language from a marker this publishes.
+ *
+ * Best effort: the UI has already switched, and a failed write costs only a
+ * restart in the previous language, which the next boot corrects.
+ */
+export function publishUiLocale(locale: Locale): void {
+  void driver.uiLocaleSet?.(locale)?.catch(() => undefined);
+}
 
 /**
  * This installation's own side of a pairing (§2.3): the APK is the phone, and

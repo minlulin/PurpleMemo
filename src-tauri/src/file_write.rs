@@ -28,6 +28,8 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+
+use crate::messages::Refusal;
 use std::path::Path;
 
 /// Request header carrying the destination path on a raw `backup_save_file`
@@ -51,34 +53,35 @@ const TEMP_SUFFIX: &str = ".purple-memo-tmp";
 /// both are signs the caller lost track of what it was saving, and turning
 /// them into a written file would be worse than an error. Otherwise the write
 /// is atomic (see the module docs).
-pub fn save_backup_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    save_file(path, bytes, "backup")
+pub fn save_backup_file(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
+    save_file(path, bytes)
 }
 
-pub fn save_export_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    save_file(path, bytes, "export")
+pub fn save_export_file(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
+    save_file(path, bytes)
 }
 
-fn save_file(path: &Path, bytes: &[u8], kind: &str) -> Result<(), String> {
+fn save_file(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
     if bytes.is_empty() {
-        return Err(format!("refusing to write an empty {kind} archive"));
+        return Err(Refusal::new("rust.error.emptyArchive"));
     }
     if path.is_dir() {
-        return Err(format!(
-            "{} is a directory — pick a file name for the {kind}",
-            path.display()
-        ));
+        return Err(Refusal::new("rust.error.pathIsDirectory").with("path", path.display()));
     }
     let parent = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => return Err(format!("{} has no directory to write into", path.display())),
+        _ => return Err(Refusal::new("rust.error.pathHasNoDirectory").with("path", path.display())),
     };
-    fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    fs::create_dir_all(parent).map_err(|e| {
+        Refusal::new("rust.error.folderCreate")
+            .with("path", parent.display())
+            .with("detail", e)
+    })?;
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return Err(format!("invalid destination {}", path.display()));
+        return Err(Refusal::new("rust.error.invalidDestination").with("path", path.display()));
     };
     let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|e| format!("OS random source unavailable: {e}"))?;
+    getrandom::fill(&mut random).map_err(|e| Refusal::from(e.to_string()))?;
     let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     let tmp_path = parent.join(format!(".{file_name}.{suffix}{TEMP_SUFFIX}"));
     let mut options = OpenOptions::new();
@@ -88,21 +91,24 @@ fn save_file(path: &Path, bytes: &[u8], kind: &str) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let mut temp = options
-        .open(&tmp_path)
-        .map_err(|e| format!("create {}: {e}", tmp_path.display()))?;
+    let mut temp = options.open(&tmp_path).map_err(|e| {
+        Refusal::new("rust.error.writeFailed")
+            .with("path", path.display())
+            .with("detail", e)
+    })?;
     if let Err(e) = temp.write_all(bytes).and_then(|()| temp.sync_all()) {
         drop(temp);
         let _ = fs::remove_file(&tmp_path);
-        return Err(format!("write {}: {e}", tmp_path.display()));
+        return Err(Refusal::new("rust.error.writeFailed")
+            .with("path", path.display())
+            .with("detail", e));
     }
     drop(temp);
     if let Err(e) = fs::rename(&tmp_path, path) {
-        return Err(format!(
-            "could not replace {} ({e}); the archive is still at {}",
-            path.display(),
-            tmp_path.display()
-        ));
+        return Err(Refusal::new("rust.error.replaceFailed")
+            .with("path", path.display())
+            .with("temp", tmp_path.display())
+            .with("detail", e));
     }
     Ok(())
 }
@@ -334,9 +340,9 @@ mod tests {
             b"PK\x03\x04 readable export"
         );
         let error = save_export_file(&dir.path("empty.zip"), b"").expect_err("empty");
-        assert!(error.contains("empty export archive"), "{error}");
+        assert_eq!(error.key, "rust.error.emptyArchive");
         let error = save_export_file(&dir.0, b"readable export").expect_err("directory");
-        assert!(error.contains("pick a file name for the export"), "{error}");
+        assert_eq!(error.key, "rust.error.pathIsDirectory");
         assert_eq!(
             fs::read_dir(&dir.0).expect("read directory").count(),
             1,

@@ -5,9 +5,10 @@
 // them together (the same trick `contrast.test.ts` uses on the stylesheets).
 
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { MAX_BACKUP_PHOTO_BYTES } from "../lib/backup.ts";
+import { en, LOCALES, my } from "../lib/i18n.ts";
 import {
   BACKUP_PATH_HEADER,
   createTauriDriver,
@@ -56,13 +57,14 @@ test("every command the driver invokes is registered in Rust", () => {
   // panel-side, §9.6), plus the §6 exchange's seven (`pairing_sync_push`,
   // `_commit`/`_pull`/`_applied`/`_status` phone-side, `pairing_sync_take`/
   // `_outcome` panel-side) — 42 — plus the close handler's mirror
-  // (`close_to_tray_set`, D1) — 43.
+  // (`close_to_tray_set`, D1) — 43 — plus the interface language
+  // (`ui_locale_set`, D7) — 44.
   // Bump deliberately, with the change that adds the command —
   // the count is what catches a command dropped from BOTH sides at once.
   assert.equal(
     commands.length,
-    43,
-    `expected the full 43-command surface, got ${commands.length}`,
+    44,
+    `expected the full 44-command surface, got ${commands.length}`,
   );
   for (const command of commands) {
     assert.ok(
@@ -80,6 +82,38 @@ test("every command the driver invokes is registered in Rust", () => {
     [...new Set(commands)].sort(),
     "registered commands and driver commands must match exactly",
   );
+});
+
+test("every refusal key Rust sends exists in both catalogues (D7)", () => {
+  // Rust names a message; the catalogue says it. A key with no copy would put
+  // `rust.error.…` in a user's banner — the English-only state D7 removed — so
+  // the two sides are pinned together here, the way the commands are.
+  const keys = new Set<string>();
+  const walk = (dir: URL) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = new URL(entry.name, dir);
+      if (entry.isDirectory()) {
+        walk(new URL(`${entry.name}/`, dir));
+      } else if (entry.name.endsWith(".rs")) {
+        for (const match of readFileSync(child, "utf8").matchAll(
+          /"(rust\.[a-zA-Z.]+)"/g,
+        )) {
+          if (match[1]) keys.add(match[1]);
+        }
+      }
+    }
+  };
+  walk(new URL("../../src-tauri/src/", import.meta.url));
+  assert.ok(keys.size > 20, `expected the Rust refusals, found ${keys.size}`);
+  const missing: string[] = [];
+  for (const key of keys) {
+    for (const locale of LOCALES) {
+      const catalogue: Record<string, string | undefined> =
+        locale === "en" ? en : my;
+      if (catalogue[key] === undefined) missing.push(`${key} (${locale})`);
+    }
+  }
+  assert.deepEqual(missing, [], "Rust names a message with no translation");
 });
 
 test("the raw-photo headers are the same strings on both sides", () => {

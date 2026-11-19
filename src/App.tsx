@@ -52,6 +52,7 @@ import {
   inboxRepo,
   localDeviceId,
   pairingRepo,
+  publishUiLocale,
   settingsRepo,
   tasksRepo,
   trashRepo,
@@ -538,8 +539,11 @@ function AppShell() {
           rejectAfter(SECURITY_LOAD_TIMEOUT_MS),
         ]);
       // The stored choice wins; with no stored row, keep the browser language
-      // detected at startup.
-      setLocale(locale ?? detectInitialLocale());
+      // detected at startup. Rust learns it too (D7): the tray and the
+      // boot-failure dialogs are built before this catalogue exists.
+      const activeLocale = locale ?? detectInitialLocale();
+      setLocale(activeLocale);
+      publishUiLocale(activeLocale);
       const nextTheme = theme ?? "dark";
       document.documentElement.dataset.theme = nextTheme;
       // `error: null` here is the ONLY place that error is cleared, so a

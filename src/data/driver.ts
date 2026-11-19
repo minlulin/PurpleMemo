@@ -9,6 +9,7 @@
 // nothing outside this driver while it is held.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { Locale } from "../lib/i18n.ts";
 
 /**
  * Request-header names shared with `src-tauri/src/commands.rs`. The Rust side
@@ -482,6 +483,17 @@ export interface DataDriver {
    * drivers that never touch the toggle leave it out.
    */
   syncCloseToTray?(enabled: boolean): Promise<void>;
+  /**
+   * Publish the interface language to Rust (D7).
+   *
+   * The tray menu and the boot-failure dialogs are built before this renderer
+   * can answer anything — and the dialogs run exactly when the database could
+   * not be opened — so they read the language from a marker instead of the
+   * catalogue. Called at boot and on every language switch.
+   *
+   * Optional like the import lease: only the two locale call sites need it.
+   */
+  uiLocaleSet?(locale: Locale): Promise<void>;
 }
 
 /**
@@ -705,6 +717,8 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     // D1: the close handler reads a mirror, so the write that changes the row
     // is also the write that publishes it.
     syncCloseToTray: (enabled) => invoke("close_to_tray_set", { enabled }),
+    // D7: the tray and the boot dialogs learn the language the same way.
+    uiLocaleSet: (locale) => invoke("ui_locale_set", { locale }),
     // Pairing window (§11.5). One command site each, so the IPC surface this
     // file is pinned against lists every command exactly once.
     pairingLocal: () => invoke("pairing_local"),

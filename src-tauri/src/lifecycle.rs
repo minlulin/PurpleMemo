@@ -7,11 +7,11 @@
 //! * **Importing** — the pre-import safety copy has been taken and the import
 //!   owns the data until it restores `foreign_keys = ON`. Only writes carrying
 //!   the window's lease are admitted; quick capture and gallery writes are
-//!   refused with [`IMPORT_BLOCKED`]. This is E5: the snapshot boundary and
+//!   refused with [`Blocked::Import`]. This is E5: the snapshot boundary and
 //!   the destructive replacement are one exclusion window, not two awaits in
 //!   the frontend.
 //! * **Resetting** — a factory reset owns the data. Every writer is refused
-//!   with [`RESET_BLOCKED`], already-admitted workers are drained before the
+//!   with [`Blocked::Reset`], already-admitted workers are drained before the
 //!   reset deletes anything, and the phase never goes back for the life of the
 //!   process. This is E1: a photo save that was already in flight when the
 //!   reset started is waited out, and a photo command that arrives after the
@@ -45,17 +45,19 @@ pub enum Phase {
     Resetting,
 }
 
-/// Refused while a factory reset owns the data (E1). Says what to do — the
-/// same rule as `db::DB_CLOSED_MESSAGE`: a dead end with no next step is a
-/// bug report waiting to happen.
-pub const RESET_BLOCKED: &str =
-    "a factory reset owns this app's data now — restart the app before writing again";
-
-/// Refused for anyone who is not the import's lease-holder while the window
-/// is open (E5). The caller's write did not happen; the import finishes in
-/// seconds and the next attempt succeeds.
-pub const IMPORT_BLOCKED: &str =
-    "an import is replacing this app's data — this write was refused; try again when it finishes";
+/// Which barrier refused a writer (E1/E5).
+///
+/// A variant, not a sentence (D7): the command layer turns it into a message
+/// key, so the banner reads in the user's language, and this module's tests
+/// compare the refusal itself instead of its wording — the same rule
+/// `db::KeyLoadError` follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blocked {
+    /// A factory reset owns this app's data, for the rest of the process.
+    Reset,
+    /// The import window is open and the caller does not hold its lease.
+    Import,
+}
 
 /// Shared state: the phase, the current import lease (0 = none), and how many
 /// admitted writers are still in flight. The condvar's waiters are the
@@ -139,21 +141,21 @@ impl Lifecycle {
     ///   already closed is harmless and admitted too: the write would be
     ///   admissible as an ordinary write anyway.
     /// * `Phase::Importing` — admitted only with the window's exact lease;
-    ///   everyone else gets [`IMPORT_BLOCKED`]. This is what keeps quick
+    ///   everyone else gets [`Blocked::Import`]. This is what keeps quick
     ///   capture (E5) out of the gap between the safety copy and the
     ///   replacement.
     /// * `Phase::Resetting` — refused regardless of lease: a lease minted
     ///   before the reset cannot write into an erased app (E1).
-    pub fn admit(&self, lease: Option<u64>) -> Result<WriterTicket<'_>, String> {
+    pub fn admit(&self, lease: Option<u64>) -> Result<WriterTicket<'_>, Blocked> {
         let mut inner = self.lock();
         match inner.phase {
-            Phase::Resetting => Err(RESET_BLOCKED.to_string()),
+            Phase::Resetting => Err(Blocked::Reset),
             Phase::Importing => match lease {
                 Some(l) if l == inner.lease => {
                     inner.in_flight += 1;
                     Ok(WriterTicket { lifecycle: self })
                 }
-                _ => Err(IMPORT_BLOCKED.to_string()),
+                _ => Err(Blocked::Import),
             },
             Phase::Normal => {
                 inner.in_flight += 1;
@@ -173,10 +175,10 @@ impl Lifecycle {
     ///
     /// Refuses while a reset owns the data: a reset preempts an import, and
     /// an import must never resume on top of it.
-    pub fn begin_import(&self) -> Result<u64, String> {
+    pub fn begin_import(&self) -> Result<u64, Blocked> {
         let mut inner = self.lock();
         match inner.phase {
-            Phase::Resetting => return Err(RESET_BLOCKED.to_string()),
+            Phase::Resetting => return Err(Blocked::Reset),
             Phase::Normal => {
                 // Monotonic and never 0: a stale lease from an earlier window
                 // can never match a later one.
@@ -194,7 +196,7 @@ impl Lifecycle {
         }
         // A reset raised while we drained preempts the import entirely.
         if inner.phase == Phase::Resetting {
-            return Err(RESET_BLOCKED.to_string());
+            return Err(Blocked::Reset);
         }
         Ok(lease)
     }
@@ -239,11 +241,11 @@ impl Lifecycle {
     /// an import the frontend has closed the pairing window and it must
     /// not be re-opened from underneath it, and during a reset a listener
     /// that came alive after `stop_for_reset` would serve an erased app.
-    pub fn ensure_listener_allowed(&self) -> Result<(), String> {
+    pub fn ensure_listener_allowed(&self) -> Result<(), Blocked> {
         match self.lock().phase {
             Phase::Normal => Ok(()),
-            Phase::Importing => Err(IMPORT_BLOCKED.to_string()),
-            Phase::Resetting => Err(RESET_BLOCKED.to_string()),
+            Phase::Importing => Err(Blocked::Import),
+            Phase::Resetting => Err(Blocked::Reset),
         }
     }
 }
@@ -280,13 +282,12 @@ mod tests {
         let lease = lc.begin_import().expect("open window");
 
         let refused = lc.admit(None).expect_err("quick capture must be refused");
-        assert_eq!(refused, IMPORT_BLOCKED);
-        assert!(refused.contains("try again"), "actionable: {refused}");
+        assert_eq!(refused, Blocked::Import);
 
         let wrong = lc
             .admit(Some(lease.wrapping_add(1)))
             .expect_err("a stale lease must not match");
-        assert_eq!(wrong, IMPORT_BLOCKED);
+        assert_eq!(wrong, Blocked::Import);
 
         // A lease-carrying write runs to completion before anything attaches
         // again — no caller ever holds its own ticket across a barrier wait:
@@ -379,8 +380,7 @@ mod tests {
         assert_eq!(lc.phase(), Phase::Resetting);
         for lease in [None, Some(1), Some(u64::MAX)] {
             let err = lc.admit(lease).expect_err("no lease survives a reset");
-            assert_eq!(err, RESET_BLOCKED);
-            assert!(err.contains("restart"), "must say what to do: {err}");
+            assert_eq!(err, Blocked::Reset);
         }
         assert!(lc.begin_import().is_err(), "no import on an erased app");
         lc.end_import(1).expect_err("nor a window left to close");
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(
             lc.ensure_listener_allowed()
                 .expect_err("no listener mid-import"),
-            IMPORT_BLOCKED
+            Blocked::Import
         );
         lc.end_import(lease).expect("close");
         lc.ensure_listener_allowed()
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(
             lc.ensure_listener_allowed()
                 .expect_err("no listener after reset"),
-            RESET_BLOCKED
+            Blocked::Reset
         );
     }
 
@@ -444,7 +444,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the attach must wake when the writer drains")
             .expect_err("and refuse: a reset preempts the import");
-        assert_eq!(attached, RESET_BLOCKED);
+        assert_eq!(attached, Blocked::Reset);
         attach.join().expect("attach thread");
         resetter.join().expect("reset thread");
         assert_eq!(lc.phase(), Phase::Resetting);

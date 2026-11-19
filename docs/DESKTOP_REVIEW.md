@@ -11,8 +11,9 @@ copy, file writes, the pairing listener's state, and the desktop UI paths
 `src/lib/drafts.ts`, `src/lib/backup.ts`, `src/lib/update.ts`).
 
 This is a review record. Findings are kept with the mechanism that produces
-them, so each can be verified or dismissed by reading the code it names. D1–D6
-were fixed in follow-up changes; the rest are open, each with a suggested fix.
+them, so each can be verified or dismissed by reading the code it names. D1–D7
+were fixed in follow-up changes; the entries are kept because each one names
+the mechanism that produced the fault.
 The Android companion is out of scope.
 
 **Method:** static review of the code, plus a read of the earlier
@@ -42,7 +43,7 @@ None of them threatens data at rest; two of them are user-visible.
 | D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Fixed |
 | D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Fixed |
 | D6 | Low | i18n | The Burmese locale covers only part of the desktop surface | Fixed |
-| D7 | Low | i18n | Everything Rust originates (tray, boot dialogs, command errors) is English-only | Open |
+| D7 | Low | i18n | Everything Rust originates (tray, boot dialogs, command errors) is English-only | Fixed |
 
 ## D1 — Medium — The close handler takes the database lock on the event-loop thread
 
@@ -210,12 +211,29 @@ items, the boot-failure dialogs, and every error string a command returns are
 built in Rust with literal English. A Burmese reader meets that language in the
 tray and in the banner under a failed command.
 
-**Fix.** Give the renderer the vocabulary it already has: pass the few tray and
-boot labels in from the frontend at boot (the locale is stored already), and have
-commands return a key plus params — the `MessageKeyError` shape `lib/i18n.ts`
-defines — instead of a finished English sentence. A Rust-side copy of the
-catalogue is the alternative, but then two catalogues have to be kept complete
-and in step.
+**Fixed in a follow-up change.** Rust now names things and the renderer says
+them. Every command refuses with `messages::Refusal` — `{ key, params }`,
+serialised straight to the webview — and `errText` recognises that shape and
+renders it in the locale active when the banner appears, so the same failure
+reads in Burmese after a switch. The `rust.error.*` keys are in both
+catalogues, and `ipc.test.ts` fails when Rust names a key either language
+lacks. `lifecycle`'s two barrier refusals became a `Blocked` variant compared
+by type rather than by message text, and the argument refusals in `photos.rs`,
+`file_write.rs` and `external_links.rs` return keys as well.
+
+Two surfaces are built before the renderer can answer: the tray menu during
+`setup`, and the boot-failure dialogs — which run exactly when the database
+could not be opened. They read the language from `ui-locale`, a marker the
+renderer publishes at boot and on every switch (`ui_locale_set`), and speak
+from a small Rust table (`messages::boot`, `messages::tray`); the same call
+relabels a live tray instead of rebuilding it.
+
+Three things deliberately stay untranslated. A failing layer's own words —
+SQLite's, the OS's, a JNI exception — travel as a `{detail}` param inside the
+translated framing, because inventing a translation for them would misreport
+what happened. The pairing window's `note` is a diagnostic channel that also
+relays the peer's own text. And the boot log and stderr stay English: they are
+read on a bug report, not by the person using the app.
 
 ## Improvements
 

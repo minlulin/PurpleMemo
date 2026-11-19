@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use sha2::{Digest, Sha256};
 
 use crate::bytes_to_hex;
+use crate::messages::Refusal;
 
 /// Serialize content-addressed writes *and deletes*. The destination path is
 /// derived from the bytes, so concurrent saves of the same photo would
@@ -45,7 +46,7 @@ pub fn save_photo(
     year_month: &str,
     bytes: &[u8],
     ext: &str,
-) -> Result<String, String> {
+) -> Result<String, Refusal> {
     // Recover from poisoning rather than refusing forever (review P3-3). The
     // guard's inner value is `()`, so there is nothing inconsistent to inherit —
     // unlike a database connection, which may be mid-transaction. This was
@@ -55,9 +56,7 @@ pub fn save_photo(
     let _write_guard = PHOTO_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let ext = ext.to_ascii_lowercase();
     if !is_valid_ext(&ext) {
-        return Err(format!(
-            "invalid photo extension {ext:?}: 1-8 lowercase letters/digits expected"
-        ));
+        return Err(Refusal::new("rust.error.photoExt").with("ext", &ext));
     }
     let (year, month) = parse_year_month(year_month)?;
     let digest = Sha256::digest(bytes);
@@ -65,11 +64,12 @@ pub fn save_photo(
     let rel_path = format!("photos/{year}/{month}/{hash}.{ext}");
     let abs_path = data_dir.join(&rel_path);
     if let Some(parent) = abs_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| Refusal::new("rust.error.photoWrite").with("detail", e))?;
     }
     if abs_path.exists() {
-        let existing =
-            fs::read(&abs_path).map_err(|e| format!("read {}: {e}", abs_path.display()))?;
+        let existing = fs::read(&abs_path)
+            .map_err(|e| Refusal::new("rust.error.photoRead").with("detail", e))?;
         let existing_hash: String = bytes_to_hex(Sha256::digest(&existing).as_slice());
         if existing_hash == hash {
             return Ok(rel_path);
@@ -102,16 +102,17 @@ pub fn save_photo(
 /// good file before a rename that was always going to succeed. `rename_replaces_an_existing_file`
 /// in this module's tests is what keeps the platform assumption checked rather
 /// than asserted.
-fn write_atomic(abs_path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_atomic(abs_path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
     let Some(parent) = abs_path.parent() else {
-        return Err(format!("no parent directory for {}", abs_path.display()));
+        return Err(Refusal::new("rust.error.photoPath").with("path", abs_path.display()));
     };
-    fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|e| Refusal::new("rust.error.photoWrite").with("detail", e))?;
     let Some(file_name) = abs_path.file_name().and_then(|n| n.to_str()) else {
-        return Err(format!("invalid destination {}", abs_path.display()));
+        return Err(Refusal::new("rust.error.photoPath").with("path", abs_path.display()));
     };
     let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|e| format!("OS random source unavailable: {e}"))?;
+    getrandom::fill(&mut random).map_err(|e| Refusal::from(e.to_string()))?;
     let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     let tmp_path = parent.join(format!(".{file_name}.{suffix}.tmp"));
     let mut options = fs::OpenOptions::new();
@@ -125,20 +126,15 @@ fn write_atomic(abs_path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut temp = options
         .open(&tmp_path)
-        .map_err(|e| format!("create {}: {e}", tmp_path.display()))?;
+        .map_err(|e| Refusal::new("rust.error.photoWrite").with("detail", e))?;
     if let Err(e) = temp.write_all(bytes) {
         drop(temp);
         let _ = fs::remove_file(&tmp_path);
-        return Err(format!("write {}: {e}", tmp_path.display()));
+        return Err(Refusal::new("rust.error.photoWrite").with("detail", e));
     }
     drop(temp);
-    fs::rename(&tmp_path, abs_path).map_err(|e| {
-        format!(
-            "rename {} -> {}: {e}",
-            tmp_path.display(),
-            abs_path.display()
-        )
-    })
+    fs::rename(&tmp_path, abs_path)
+        .map_err(|e| Refusal::new("rust.error.photoWrite").with("detail", e))
 }
 
 /// The thumbnail that belongs to a stored photo: same directory and hash, with a
@@ -155,7 +151,7 @@ fn write_atomic(abs_path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// drifted from the documented `.thumb.jpg`. Libraries with thumbs under the old
 /// names regenerate them on first view, which is the correct outcome for a
 /// derived cache.
-pub fn thumb_rel_path(rel_path: &str) -> Result<String, String> {
+pub fn thumb_rel_path(rel_path: &str) -> Result<String, Refusal> {
     validate_rel_path(rel_path)?;
     let (dir, file) = rel_path
         .rsplit_once('/')
@@ -167,22 +163,24 @@ pub fn thumb_rel_path(rel_path: &str) -> Result<String, String> {
 }
 
 /// Read photo bytes by relative path (traversal-guarded).
-pub fn read_photo(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, String> {
+pub fn read_photo(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, Refusal> {
     validate_rel_path(rel_path)?;
-    fs::read(data_dir.join(rel_path)).map_err(|e| format!("read {rel_path}: {e}"))
+    fs::read(data_dir.join(rel_path))
+        .map_err(|e| Refusal::new("rust.error.photoRead").with("detail", e))
 }
 
 /// Read the thumbnail of a stored photo. The caller passes the SOURCE path;
 /// the sibling thumb path is derived here. An error means "no thumbnail yet"
 /// (or a source that does not exist) — the frontend then generates one.
-pub fn read_thumb(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, String> {
+pub fn read_thumb(data_dir: &Path, rel_path: &str) -> Result<Vec<u8>, Refusal> {
     let thumb = thumb_rel_path(rel_path)?;
-    fs::read(data_dir.join(&thumb)).map_err(|e| format!("read {thumb}: {e}"))
+    fs::read(data_dir.join(&thumb))
+        .map_err(|e| Refusal::new("rust.error.photoRead").with("detail", e))
 }
 
 /// Write the thumbnail of a stored photo and return the derived thumb path.
 /// Same atomic-write discipline as a photo save.
-pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<String, String> {
+pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<String, Refusal> {
     // Recover from poisoning rather than refusing forever (review P3-3). The
     // guard's inner value is `()`, so there is nothing inconsistent to inherit —
     // unlike a database connection, which may be mid-transaction. This was
@@ -203,7 +201,7 @@ pub fn save_thumb(data_dir: &Path, rel_path: &str, bytes: &[u8]) -> Result<Strin
 /// same bytes is verifying, writing or renaming into place. Serializing the
 /// delete against the saves keeps "save returned this path" and "the file at
 /// this path exists" from coming apart.
-pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), String> {
+pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), Refusal> {
     // Recover from poisoning rather than refusing forever (review P3-3). The
     // guard's inner value is `()`, so there is nothing inconsistent to inherit —
     // unlike a database connection, which may be mid-transaction. This was
@@ -215,7 +213,7 @@ pub fn delete_photo(data_dir: &Path, rel_path: &str) -> Result<(), String> {
     match fs::remove_file(data_dir.join(rel_path)) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("delete {rel_path}: {e}")),
+        Err(e) => return Err(Refusal::new("rust.error.photoDelete").with("detail", e)),
     }
     // Best-effort: a thumbnail is derived data, so failing to unlink one must
     // never turn a successful (or already-done) photo delete into an error.
@@ -229,7 +227,7 @@ fn is_valid_ext(ext: &str) -> bool {
     (1..=8).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
-fn parse_year_month(year_month: &str) -> Result<(&str, &str), String> {
+fn parse_year_month(year_month: &str) -> Result<(&str, &str), Refusal> {
     let parts: Vec<&str> = year_month.split('/').collect();
     match parts.as_slice() {
         [year, month]
@@ -241,15 +239,13 @@ fn parse_year_month(year_month: &str) -> Result<(&str, &str), String> {
         {
             Ok((year, month))
         }
-        _ => Err(format!(
-            "invalid year/month {year_month:?}: expected yyyy/mm"
-        )),
+        _ => Err(Refusal::new("rust.error.photoMonth").with("value", year_month)),
     }
 }
 
 /// Strict grammar check — the only defense needed against traversal, since
 /// the validated path is joined directly onto the data dir.
-fn validate_rel_path(rel_path: &str) -> Result<(), String> {
+fn validate_rel_path(rel_path: &str) -> Result<(), Refusal> {
     let rest = rel_path
         .strip_prefix("photos/")
         .ok_or_else(|| invalid_rel(rel_path))?;
@@ -275,8 +271,8 @@ fn validate_rel_path(rel_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn invalid_rel(rel_path: &str) -> String {
-    format!("invalid photo path {rel_path:?}")
+fn invalid_rel(rel_path: &str) -> Refusal {
+    Refusal::new("rust.error.photoPath").with("path", rel_path)
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@
 //! note text and imported backups can contain any scheme, and the boundary that
 //! reaches another app is worth checking twice.
 
+use crate::messages::Refusal;
+
 /// Longest URL this app will hand over. Well past any real link, short enough
 /// that a pathological row cannot be turned into a megabyte-long intent.
 const MAX_URL_LEN: usize = 2_048;
@@ -19,31 +21,31 @@ const MAX_URL_LEN: usize = 2_048;
 /// Fails loudly instead of doing nothing: the UI turns the error into a toast,
 /// which is honest about a tap that could not be served.
 #[tauri::command]
-pub fn open_external_url(url: String) -> Result<(), String> {
+pub fn open_external_url(url: String) -> Result<(), Refusal> {
     let url = validate(&url)?;
     open_in_browser(url)
 }
 
 /// Accept only an absolute, unpadded http(s) URL: no `javascript:`, `intent:`,
 /// `file:`, `content:` and no embedded control characters.
-fn validate(url: &str) -> Result<&str, String> {
+fn validate(url: &str) -> Result<&str, Refusal> {
     if url.is_empty() || url.len() > MAX_URL_LEN {
-        return Err("refusing to open an empty or over-long link".to_string());
+        return Err(Refusal::new("rust.error.linkEmpty"));
     }
     if url.trim() != url || url.chars().any(char::is_control) {
-        return Err("refusing to open a padded or control-character link".to_string());
+        return Err(Refusal::new("rust.error.linkPadded"));
     }
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
-        return Err("only http and https links open outside the app".to_string());
+        return Err(Refusal::new("rust.error.linkScheme"));
     }
     Ok(url)
 }
 
 #[cfg(target_os = "android")]
-fn open_in_browser(url: &str) -> Result<(), String> {
+fn open_in_browser(url: &str) -> Result<(), Refusal> {
     let context = std::panic::catch_unwind(ndk_context::android_context)
-        .map_err(|_| "the Android context is not available".to_string())?;
+        .map_err(|_| Refusal::new("rust.error.browserStart"))?;
     // SAFETY: the runtime owns this VM pointer for the whole process lifetime.
     let vm = unsafe { JavaVM::from_raw(context.vm().cast()) }
         .map_err(|e| format!("could not reach the Android runtime: {e}"))?;
@@ -60,7 +62,7 @@ fn open_in_browser(url: &str) -> Result<(), String> {
         let _ = env.exception_describe();
         let _ = env.exception_clear();
         if result.is_ok() {
-            return Err("the system browser could not be started".to_string());
+            return Err(Refusal::new("rust.error.browserStart"));
         }
     }
     result
@@ -72,7 +74,7 @@ fn start_view_intent(
     env: &mut JNIEnv,
     context: jni::sys::jobject,
     url: &str,
-) -> Result<(), String> {
+) -> Result<(), Refusal> {
     let intent_class = env.find_class("android/content/Intent").map_err(jni_text)?;
     let uri_class = env.find_class("android/net/Uri").map_err(jni_text)?;
     let url_text = env.new_string(url).map_err(jni_text)?;
@@ -126,12 +128,10 @@ fn jni_text(error: jni::errors::Error) -> String {
 }
 
 #[cfg(not(target_os = "android"))]
-fn open_in_browser(_url: &str) -> Result<(), String> {
-    Err(
-        "opening links outside the app is the Android path; the desktop build opens them with \
-         the opener plugin"
-            .to_string(),
-    )
+fn open_in_browser(_url: &str) -> Result<(), Refusal> {
+    // Unreachable from the desktop UI, which opens links with the opener
+    // plugin; the phone's path is the only caller of this command.
+    Err(Refusal::new("rust.error.browserStart"))
 }
 
 #[cfg(target_os = "android")]

@@ -821,7 +821,9 @@ impl PairingListenerState {
         epoch: u64,
     ) -> Result<PairingListenerInfo, String> {
         // Fail before binding anything if a reset or import owns the app (E2).
-        self.lifecycle.ensure_listener_allowed()?;
+        self.lifecycle
+            .ensure_listener_allowed()
+            .map_err(|blocked| crate::messages::Refusal::from(blocked).diagnostic())?;
         // §11.6.1: a window is bound to its pairing id, which is the HKDF salt.
         // An empty one would seal under the all-zero default while claiming to
         // be bound, so it is refused here rather than trusted (N9).
@@ -867,7 +869,9 @@ impl PairingListenerState {
         let mut guard = self.lock()?;
         // Re-check under the server lock: a reset that landed while this start
         // was preparing must not be followed by a bind.
-        self.lifecycle.ensure_listener_allowed()?;
+        self.lifecycle
+            .ensure_listener_allowed()
+            .map_err(|blocked| crate::messages::Refusal::from(blocked).diagnostic())?;
         // …and neither must a lock (D2a): the barrier was raised before the
         // lock's stop, so a start carrying a superseded epoch binds nothing
         // behind the lock screen.
@@ -3319,7 +3323,10 @@ mod tests {
         let error = state
             .start("127.0.0.1", window(false), desktop_identity(), None)
             .expect_err("no listener may come up after the barrier");
-        assert!(error.contains("restart"), "must say what to do: {error}");
+        // The refusal is a message key (D7). `start` still answers with one
+        // string — the panel's note channel — so the key is what it carries,
+        // and the catalogue says what to do with it.
+        assert_eq!(error, "rust.error.resetInProgress");
         assert!(!state.status().expect("status").running);
     }
 

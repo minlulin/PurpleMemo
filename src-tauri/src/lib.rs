@@ -7,6 +7,7 @@ mod external_links;
 mod file_write;
 mod key_store;
 mod lifecycle;
+mod messages;
 mod navigation;
 // Public for the same reason as `envelope`: the pairing identity and the
 // listener are the sync boundary both halves speak, and their API is proved by
@@ -34,7 +35,7 @@ use std::time::Duration;
 #[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
 #[cfg(desktop)]
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::Manager;
 // Only the desktop close-to-tray watcher reads window events.
 #[cfg(desktop)]
@@ -47,12 +48,6 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 /// or starting a session before choosing Retry.
 const BOOT_FAILURE_WATCHDOG: Duration = Duration::from_secs(600);
 const WATCHDOG_TICK: Duration = Duration::from_secs(5);
-
-/// Button labels, in one place so the dialog and its guidance cannot drift.
-const RETRY_LABEL: &str = "Retry";
-const QUIT_LABEL: &str = "Quit";
-/// The missing-key dialog's recovery action.
-const RESTORE_LABEL: &str = "Restore exported key…";
 
 /// The main window's label, matching `tauri.conf.json`. Named here because
 /// `focus_main_window` has to find the window to raise, and a typo in a string
@@ -78,12 +73,6 @@ const SHARE_LOG: &str = "share.log";
 /// constant the reset engine can follow instead of a string literal in two
 /// places.
 const BOOT_ERROR_LOG: &str = "boot-error.log";
-
-/// Added to the dialog body — the log line stays the plain, quotable failure.
-const RETRY_GUIDANCE: &str = " Fix that and choose Retry, or choose Quit to close Purple Memo.";
-
-/// Added to the missing-key refusal: what the restore action wants.
-const RESTORE_GUIDANCE: &str = " Choose Restore exported key… and pick the key file you exported in Settings (Backup & key), or choose Quit to close Purple Memo.";
 
 /// Added to the boot-failure message when the failure smells like a missing or
 /// locked OS credential store.
@@ -174,6 +163,7 @@ pub fn run() {
             commands::backup_import_begin,
             commands::backup_import_end,
             commands::close_to_tray_set,
+            commands::ui_locale_set,
             commands::export_save_file,
             commands::pairing_local,
             commands::pairing_open,
@@ -351,7 +341,7 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     refresh_close_to_tray(&conn);
     app.manage(db::AppState {
         // `Some` until factory reset takes it; every DB command fails closed
-        // with `db::DB_CLOSED_MESSAGE` once it is `None`.
+        // with the `rust.error.dbClosed` refusal once it is `None`.
         conn: Mutex::new(Some(conn)),
         txn_open: AtomicBool::new(false),
         reset_terminal: AtomicBool::new(false),
@@ -501,36 +491,62 @@ fn parse_injection_spec(spec: &str) -> Option<(String, i64)> {
 ///   store that is locked, missing, or not reachable in this session. Quit
 ///   exits non-zero; the log file and stderr stay the durable record.
 fn report_boot_failure(app: &tauri::AppHandle, failure: &db::KeyLoadError) {
-    let full = if failure.is_missing_key_for_existing_db() {
+    let locale = read_ui_locale(app);
+    // The log keeps the English cause and the English hint: it is read on a
+    // bug report, often on another machine, and it is the one place the
+    // diagnostic must read the same whatever the interface language is (D7).
+    let logged = if failure.is_missing_key_for_existing_db() {
         // The credential store is reachable but empty — the keyring hint
         // would blame the wrong thing.
         format!("Purple Memo failed to start: {}.", failure.message())
     } else {
         boot_failure_message(failure.message())
     };
-    write_boot_error_log(&full);
-    eprintln!("{full}");
+    write_boot_error_log(&logged);
+    eprintln!("{logged}");
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
     arm_watchdog("the boot-failure dialog");
-    if failure.is_missing_key_for_existing_db() {
-        offer_key_restore(app.clone(), full);
+    let body = if failure.is_missing_key_for_existing_db() {
+        messages::boot(locale).failed(failure.message())
     } else {
-        show_retry_or_quit(app.clone(), format!("{full}{RETRY_GUIDANCE}"));
+        boot_dialog_body(locale, failure.message())
+    };
+    if failure.is_missing_key_for_existing_db() {
+        offer_key_restore(app.clone(), body);
+    } else {
+        show_retry_or_quit(app.clone(), body);
     }
+}
+
+/// The dialog's headline and cause in `locale`, carrying the credential-store
+/// hint only when the cause looks like one.
+fn boot_dialog_body(locale: messages::Locale, message: &str) -> String {
+    let strings = messages::boot(locale);
+    let hint = if looks_like_keyring_failure(message) {
+        strings.keyring_hint
+    } else {
+        ""
+    };
+    format!("{}{hint}", strings.failed(message))
 }
 
 /// The standard boot-failure dialog: Retry runs boot again on a fresh thread;
 /// Quit exits non-zero.
+///
+/// `body` carries the headline and the cause; the guidance is appended here, in
+/// the same language, so a caller cannot pair one language's body with another
+/// language's instruction.
 fn show_retry_or_quit(app: tauri::AppHandle, body: String) {
+    let strings = messages::boot(read_ui_locale(&app));
     app.dialog()
-        .message(body)
-        .title("Purple Memo can't start")
+        .message(format!("{body}{}", strings.retry_guidance))
+        .title(strings.title)
         .kind(MessageDialogKind::Error)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            RETRY_LABEL.into(),
-            QUIT_LABEL.into(),
+            strings.retry.into(),
+            strings.quit.into(),
         ))
         .show(move |retry| {
             if retry {
@@ -543,18 +559,19 @@ fn show_retry_or_quit(app: tauri::AppHandle, body: String) {
 
 /// The missing-key dialog: offer the restore half of the
 /// key-export path, with Quit as the way out.
-fn offer_key_restore(app: tauri::AppHandle, full: String) {
+fn offer_key_restore(app: tauri::AppHandle, body: String) {
+    let strings = messages::boot(read_ui_locale(&app));
     app.dialog()
-        .message(format!("{full}{RESTORE_GUIDANCE}"))
-        .title("Purple Memo can't start")
+        .message(format!("{body}{}", strings.restore_guidance))
+        .title(strings.title)
         .kind(MessageDialogKind::Error)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            RESTORE_LABEL.into(),
-            QUIT_LABEL.into(),
+            strings.restore.into(),
+            strings.quit.into(),
         ))
         .show(move |restore| {
             if restore {
-                pick_key_file_and_restore(app, full);
+                pick_key_file_and_restore(app, body);
             } else {
                 std::process::exit(1);
             }
@@ -570,14 +587,15 @@ fn offer_key_restore(app: tauri::AppHandle, full: String) {
 /// the credential store. A cancel, a malformed file, or a wrong key changes
 /// nothing and lands back on the standard Retry/Quit dialog — never a dead
 /// end, and never a store write.
-fn pick_key_file_and_restore(app: tauri::AppHandle, failure_message: String) {
+fn pick_key_file_and_restore(app: tauri::AppHandle, failure_body: String) {
     // The user answered the dialog — the clock now measures the PICKER, not
     // the answered dialog (E13): without this bump the old watchdog could
     // fire while someone is still looking through their files.
     arm_watchdog("the key file picker");
+    let strings = messages::boot(read_ui_locale(&app));
     app.dialog()
         .file()
-        .set_title("Choose your exported Purple Memo key file")
+        .set_title(strings.choose_key_file)
         .pick_file(move |picked| {
             // The picker was answered — the clock now measures the restore
             // attempt itself (E13), and whichever dialog or retry follows
@@ -587,21 +605,15 @@ fn pick_key_file_and_restore(app: tauri::AppHandle, failure_message: String) {
                 // Picker cancelled (or the path could not be converted):
                 // restore nothing, give the standard choices back.
                 arm_watchdog("the boot-failure dialog");
-                show_retry_or_quit(app, format!("{failure_message}{RETRY_GUIDANCE}"));
+                show_retry_or_quit(app, failure_body);
                 return;
             };
             match restore_key_from_file(&key_file) {
                 Ok(()) => retry_boot(app),
                 Err(reason) => {
                     arm_watchdog("the boot-failure dialog");
-                    show_retry_or_quit(
-                        app,
-                        format!(
-                            "Purple Memo failed to start: restoring the key failed: {reason}. \
-                             Nothing was changed — the database and the credential store are \
-                             untouched.{RETRY_GUIDANCE}"
-                        ),
-                    );
+                    let strings = messages::boot(read_ui_locale(&app));
+                    show_retry_or_quit(app, strings.restore_failed(&reason));
                 }
             }
         });
@@ -773,9 +785,66 @@ fn start_session_chrome(app: &tauri::AppHandle) {
 #[cfg(mobile)]
 fn start_session_chrome(_app: &tauri::AppHandle) {}
 
+/// Where the renderer's chosen language is remembered.
+///
+/// Beside the database rather than in it: the tray is built, and the
+/// boot-failure dialogs can run, before — or without — a database connection,
+/// and the interface language is not user data. A factory reset that removes
+/// it costs one launch in English, which the renderer then corrects.
+const UI_LOCALE_FILE: &str = "ui-locale";
+
+/// The language the tray and the boot dialogs speak.
+///
+/// A missing or unreadable marker answers English: those surfaces have no
+/// renderer to ask, and English is the catalogue's source of truth.
+fn read_ui_locale(app: &tauri::AppHandle) -> messages::Locale {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join(UI_LOCALE_FILE)).ok())
+        .and_then(|tag| messages::Locale::parse(&tag))
+        .unwrap_or(messages::Locale::En)
+}
+
+/// The tray's live handles, so a language switch relabels the menu instead of
+/// rebuilding it (D7).
+#[cfg(desktop)]
+struct TrayHandles {
+    show: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+    tray: TrayIcon<tauri::Wry>,
+}
+
+#[cfg(desktop)]
+static TRAY_HANDLES: Mutex<Option<TrayHandles>> = Mutex::new(None);
+
+/// Record the renderer's language for the surfaces that run before it, and
+/// relabel the tray if it is already up.
+///
+/// Called from `ui_locale_set` at boot and whenever Settings changes the
+/// language. Writing the marker is best effort: a read-only data dir must not
+/// make a language switch fail in a UI that has already re-rendered.
+pub(crate) fn publish_ui_locale(app: &tauri::AppHandle, locale: messages::Locale) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(UI_LOCALE_FILE), locale.code());
+    }
+    #[cfg(desktop)]
+    {
+        let labels = messages::tray(locale);
+        let handles = TRAY_HANDLES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(handles) = handles.as_ref() {
+            let _ = handles.show.set_text(labels.show);
+            let _ = handles.quit.set_text(labels.quit);
+            let _ = handles.tray.set_tooltip(Some(labels.tooltip));
+        }
+    }
+}
+
 /// The tray icon: the existing app icon and exactly two menu items —
-/// "Show Purple Memo" (restore the window) and "Quit" (full exit). No new
-/// artwork, no other actions (plan §B.2.3 / §B.2.5).
+/// "Show Purple Memo" (restore the window) and "Quit" (full exit), in the
+/// language the marker records. No new artwork, no other actions (plan §B.2.3 /
+/// §B.2.5).
 #[cfg(desktop)]
 fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
     let icon = app
@@ -783,14 +852,15 @@ fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "the default window icon is missing".to_string())?
         .clone()
         .to_owned();
-    let show = MenuItem::with_id(app, TRAY_SHOW_ID, "Show Purple Memo", true, None::<&str>)
+    let labels = messages::tray(read_ui_locale(app));
+    let show = MenuItem::with_id(app, TRAY_SHOW_ID, labels.show, true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, labels.quit, true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let menu = Menu::with_items(app, &[&show, &quit]).map_err(|e| e.to_string())?;
-    TrayIconBuilder::with_id("main-tray")
+    let tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("Purple Memo")
+        .tooltip(labels.tooltip)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_SHOW_ID => focus_main_window(app),
@@ -802,6 +872,10 @@ fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
         })
         .build(app)
         .map_err(|e| e.to_string())?;
+    // Kept so `publish_ui_locale` can relabel the menu in place: rebuilding the
+    // tray to change two words would blink the icon and lose its state.
+    let mut handles = TRAY_HANDLES.lock().unwrap_or_else(|e| e.into_inner());
+    *handles = Some(TrayHandles { show, quit, tray });
     Ok(())
 }
 

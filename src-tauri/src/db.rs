@@ -37,8 +37,8 @@ pub type JsonObj = JsonMap<String, JsonValue>;
 /// after the WAL checkpoint the connection is closed and dropped **before**
 /// any database file is deleted, so the app never holds an open handle over a
 /// file that is being removed. From that point on every DB command fails
-/// closed with [`DB_CLOSED_MESSAGE`] instead of touching a deleted file — see
-/// `commands::lock_conn` and [`close_connection_for_reset`].
+/// closed with the `rust.error.dbClosed` refusal instead of touching a deleted
+/// file — see `commands::lock_conn` and [`close_connection_for_reset`].
 pub struct AppState {
     pub conn: Mutex<Option<Connection>>,
     pub txn_open: AtomicBool,
@@ -51,12 +51,6 @@ pub struct AppState {
     /// with it clear.
     pub reset_terminal: AtomicBool,
 }
-
-/// The error every DB command returns once the connection has been taken by
-/// factory reset. It says what happened *and* what fixes it,
-/// because after a reset the only way back is the restart into the first-run
-/// boot path — the database file is gone, not merely unreachable.
-pub const DB_CLOSED_MESSAGE: &str = "database is closed — restart the app";
 
 /// One statement of a [`batch`] write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -877,7 +871,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 /// the app holding **no open database handle**.
 ///
 /// This is the step that makes deleting the database files safe: after it
-/// returns `Ok`, every DB command fails closed with [`DB_CLOSED_MESSAGE`]
+/// returns `Ok`, every DB command fails closed with `rust.error.dbClosed`
 /// rather than running against a file that is about to be removed. An open
 /// manual transaction is rolled back first — an uncommitted transaction would
 /// make the checkpoint fail, and its rows are about to be deleted anyway.

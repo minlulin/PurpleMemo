@@ -72,3 +72,43 @@ test("errText: a keyed refusal interpolates its params in the active locale", ()
   const e = keyed("common.deleteWhat", { what: "Note" });
   assert.equal(errText(e), "Delete Note");
 });
+
+test("errText: a Rust refusal renders from the catalogue, not as an object (D7)", () => {
+  // What Tauri hands back from `messages::Refusal`: a plain object, not an
+  // Error — it used to reach the banner as `{"key":…}` JSON.
+  const refusal = {
+    key: "rust.error.photoTooLarge",
+    params: { size: "30.0", limit: "25" },
+  };
+  assert.match(errText(refusal), /30\.0 MiB/);
+  assert.match(errText(refusal), /up to 25 MiB/);
+  try {
+    setLocale("my");
+    const burmese = errText(refusal);
+    assert.notEqual(burmese, "[object Object]");
+    assert.ok(burmese.includes("30.0"), "the params survive the switch");
+  } finally {
+    setLocale("en");
+  }
+});
+
+test("errText: an unknown refusal key falls back to its detail, then itself", () => {
+  // A newer Rust build against an older catalogue must still say something
+  // useful: the failing layer's own words if it sent them, else the key.
+  assert.equal(
+    errText({
+      key: "rust.error.notInThisBuild",
+      params: { detail: "prepare failed: no such column: nope" },
+    }),
+    "prepare failed: no such column: nope",
+  );
+  assert.equal(
+    errText({ key: "rust.error.notInThisBuild", params: {} }),
+    "rust.error.notInThisBuild",
+  );
+  // A plain object with a `key` that is not ours is still JSON, not a refusal.
+  assert.equal(
+    errText({ key: "some-other-field" }),
+    '{"key":"some-other-field"}',
+  );
+});

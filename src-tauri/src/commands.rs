@@ -7,9 +7,17 @@
 //! `backup_import_begin`/`backup_import_end` (claim and release the window's
 //! lease), and `close_to_tray_set` (publish the Settings toggle to the close
 //! handler's in-memory mirror — the handler itself must never read the database
-//! on the window-event thread). The reset engine adds `factory_reset` (which
-//! reports per-component outcomes) and `app_restart` (a thin wrapper over
-//! Tauri's restart, called by the frontend only after a complete reset).
+//! on the window-event thread). `ui_locale_set` (D7) records the interface
+//! language for the tray and the boot dialogs, which are built before this
+//! renderer can answer. The reset engine adds `factory_reset` (which reports
+//! per-component outcomes) and `app_restart` (a thin wrapper over Tauri's
+//! restart, called by the frontend only after a complete reset).
+//!
+//! Every failure is a [`Refusal`] — a message key plus params, resolved by the
+//! renderer's catalogue — rather than an English sentence (D7). A detail from
+//! a layer that only speaks diagnostics (SQLite, the OS) rides along as a
+//! `{detail}` param, so the framing is translated and the cause is not
+//! misreported.
 //!
 //! Every WRITER — DB execute/batch/manual-txn, photo save/thumb/delete and the
 //! safety copy — first passes through the [`crate::lifecycle`] barrier and
@@ -44,6 +52,7 @@ use tauri::{Manager, State};
 use crate::db::{self, AppState, BatchStatement, ExecuteOutcome, JsonObj};
 use crate::file_write;
 use crate::lifecycle::Lifecycle;
+use crate::messages::{self, Refusal};
 use crate::pairing_key::{self, PairingHistory, PairingIdentity};
 use crate::pairing_listener::{
     PairingListenerInfo, PairingListenerState, PairingOffer, PairingOpenInput, PairingWindow,
@@ -51,7 +60,9 @@ use crate::pairing_listener::{
 };
 use crate::photos;
 
-type CmdResult<T> = Result<T, String>;
+/// Every command's failure is a key plus params (D7): the renderer has the
+/// catalogue, and Rust only knows which message to use.
+type CmdResult<T> = Result<T, Refusal>;
 
 /// Request header carrying the photo extension on a raw `photo_save` body.
 const EXT_HEADER: &str = "x-photo-ext";
@@ -78,7 +89,7 @@ const MAX_SAVED_PHOTO_BYTES: u64 = 25 * 1024 * 1024;
 fn raw_body(request: &Request<'_>) -> CmdResult<Vec<u8>> {
     match request.body() {
         InvokeBody::Raw(bytes) => Ok(bytes.to_vec()),
-        InvokeBody::Json(_) => Err("expected a raw byte payload".to_string()),
+        InvokeBody::Json(_) => Err(Refusal::new("rust.error.rawBody")),
     }
 }
 
@@ -86,9 +97,9 @@ fn header_str<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<&'a str> {
     request
         .headers()
         .get(name)
-        .ok_or_else(|| format!("missing {name} header"))?
+        .ok_or_else(|| Refusal::new("rust.error.headerMissing").with("name", name))?
         .to_str()
-        .map_err(|_| format!("{name} header is not valid ASCII"))
+        .map_err(|_| Refusal::new("rust.error.headerNotAscii").with("name", name))
 }
 
 /// Present-and-valid header value, or `None` when the header is absent —
@@ -96,11 +107,9 @@ fn header_str<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<&'a str> {
 fn header_str_opt<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<Option<&'a str>> {
     match request.headers().get(name) {
         None => Ok(None),
-        Some(value) => {
-            Ok(Some(value.to_str().map_err(|_| {
-                format!("{name} header is not valid ASCII")
-            })?))
-        }
+        Some(value) => Ok(Some(value.to_str().map_err(|_| {
+            Refusal::new("rust.error.headerNotAscii").with("name", name)
+        })?)),
     }
 }
 
@@ -108,11 +117,10 @@ fn header_str_opt<'a>(request: &'a Request<'_>, name: &str) -> CmdResult<Option<
 fn lease_from_header(request: &Request<'_>) -> CmdResult<Option<u64>> {
     match header_str_opt(request, LEASE_HEADER)? {
         None => Ok(None),
-        Some(text) => {
-            Ok(Some(text.parse::<u64>().map_err(|_| {
-                format!("{LEASE_HEADER} header must be a lease number")
-            })?))
-        }
+        Some(text) => Ok(Some(
+            text.parse::<u64>()
+                .map_err(|_| Refusal::new("rust.error.leaseNotNumber"))?,
+        )),
     }
 }
 
@@ -162,7 +170,7 @@ fn lock_conn(state: &AppState) -> CmdResult<ConnGuard<'_>> {
     // database file is gone or going, so every DB command must refuse with a
     // message the user can act on instead of touching a deleted file.
     if conn.is_none() {
-        return Err(db::DB_CLOSED_MESSAGE.to_string());
+        return Err(Refusal::new("rust.error.dbClosed"));
     }
     Ok(ConnGuard(conn))
 }
@@ -175,7 +183,7 @@ pub fn db_query(
     params: Option<Vec<JsonValue>>,
 ) -> CmdResult<Vec<JsonObj>> {
     let conn = lock_conn(&state)?;
-    db::query_rows(&conn, &sql, params.as_deref().unwrap_or(&[]))
+    db::query_rows(&conn, &sql, params.as_deref().unwrap_or(&[])).map_err(Refusal::from)
 }
 
 /// Single write: returns affected-row count + last insert rowid.
@@ -193,7 +201,7 @@ pub fn db_execute(
     // safety copy know its snapshot has no writer landing behind it (E5).
     let _ticket = lifecycle.admit(lease)?;
     let conn = lock_conn(&state)?;
-    db::execute(&conn, &sql, params.as_deref().unwrap_or(&[]))
+    db::execute(&conn, &sql, params.as_deref().unwrap_or(&[])).map_err(Refusal::from)
 }
 
 /// Multi-statement writes, committed as one transaction inside Rust
@@ -219,12 +227,12 @@ pub async fn db_batch(
         // form did — `db_begin` takes the same lock, so the two cannot race.
         let conn = lock_conn(&state)?;
         if state.txn_open.load(Ordering::SeqCst) {
-            return Err("db_batch is not allowed while a manual transaction is open".to_string());
+            return Err(Refusal::new("rust.error.batchDuringTxn"));
         }
-        db::batch(&conn, &statements)
+        db::batch(&conn, &statements).map_err(Refusal::from)
     })
     .await
-    .map_err(|e| format!("db batch task failed: {e}"))?
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Start a manual transaction — short critical sections only, the UI
@@ -246,11 +254,11 @@ pub fn db_begin(state: State<'_, AppState>, lifecycle: State<'_, Arc<Lifecycle>>
     let _ticket = lifecycle.admit(None)?;
     let conn = lock_conn(&state)?;
     if state.txn_open.swap(true, Ordering::SeqCst) {
-        return Err("a transaction is already open".to_string());
+        return Err(Refusal::new("rust.error.txnAlreadyOpen"));
     }
     if let Err(e) = db::begin_tx(&conn) {
         state.txn_open.store(false, Ordering::SeqCst);
-        return Err(e);
+        return Err(Refusal::from(e));
     }
     Ok(())
 }
@@ -266,7 +274,7 @@ pub fn db_commit(
     let _ticket = lifecycle.admit(None)?;
     let conn = lock_conn(&state)?;
     if !state.txn_open.load(Ordering::SeqCst) {
-        return Err("no open transaction to commit".to_string());
+        return Err(Refusal::new("rust.error.noTxnToCommit"));
     }
     db::commit_tx(&conn)?;
     state.txn_open.store(false, Ordering::SeqCst);
@@ -282,7 +290,7 @@ pub fn db_rollback(
     let _ticket = lifecycle.admit(None)?;
     let conn = lock_conn(&state)?;
     if !state.txn_open.load(Ordering::SeqCst) {
-        return Err("no open transaction to roll back".to_string());
+        return Err(Refusal::new("rust.error.noTxnToRollback"));
     }
     db::rollback_tx(&conn)?;
     state.txn_open.store(false, Ordering::SeqCst);
@@ -345,14 +353,15 @@ pub async fn photo_save(app: tauri::AppHandle, request: Request<'_>) -> CmdResul
     // is the one choke point every original bytes pass through — and the
     // refusal happens before any hashing, writing, or barrier ticket.
     if bytes.len() as u64 > MAX_SAVED_PHOTO_BYTES {
-        return Err(format!(
-            "this photo is {:.1} MiB — Purple Memo accepts a single photo up to \
-             {:.0} MiB, because a larger one would make every backup containing \
-             it unrestorable. Compress or resize the image and try again; \
-             nothing was saved.",
-            bytes.len() as f64 / (1024.0 * 1024.0),
-            MAX_SAVED_PHOTO_BYTES as f64 / (1024.0 * 1024.0),
-        ));
+        return Err(Refusal::new("rust.error.photoTooLarge")
+            .with(
+                "size",
+                format!("{:.1}", bytes.len() as f64 / (1024.0 * 1024.0)),
+            )
+            .with(
+                "limit",
+                format!("{:.0}", MAX_SAVED_PHOTO_BYTES as f64 / (1024.0 * 1024.0)),
+            ));
     }
     // Admit BEFORE the date lookup and hold the ticket across the blocking
     // write (E1): a save admitted before `raise_reset` is drained before the
@@ -366,14 +375,14 @@ pub async fn photo_save(app: tauri::AppHandle, request: Request<'_>) -> CmdResul
         conn.query_row("SELECT strftime('%Y/%m', 'now', 'localtime')", [], |row| {
             row.get(0)
         })
-        .map_err(|e| format!("local date lookup failed: {e}"))?
+        .map_err(|e| Refusal::new("rust.error.photoWrite").with("detail", e))?
     };
     let data_dir = app.state::<AppState>().data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         photos::save_photo(&data_dir, &year_month, &bytes, &ext)
     })
     .await
-    .map_err(|e| format!("photo save task failed: {e}"))?
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Read photo bytes by DB-relative path (traversal-guarded). The response is
@@ -418,7 +427,7 @@ pub async fn photo_save_thumb(app: tauri::AppHandle, request: Request<'_>) -> Cm
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || photos::save_thumb(&data_dir, &source, &bytes))
         .await
-        .map_err(|e| format!("photo thumbnail save task failed: {e}"))?
+        .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Delete a photo file by DB-relative path (traversal-guarded, idempotent).
@@ -456,6 +465,7 @@ pub fn photo_delete(
 pub fn db_key_save(path: String) -> CmdResult<()> {
     refuse_mobile_role()?;
     db::save_db_key_file(std::path::Path::new(&path))
+        .map_err(|e| Refusal::new("rust.error.keyWrite").with("detail", e))
 }
 
 /// Desktop-role commands refuse on mobile. The handler list is shared
@@ -466,7 +476,7 @@ pub fn db_key_save(path: String) -> CmdResult<()> {
 /// not in the UI, so no page needs to know it is there.
 #[cfg(mobile)]
 fn refuse_mobile_role() -> CmdResult<()> {
-    Err("this is a desktop-only part of Purple Memo".to_string())
+    Err(Refusal::new("rust.error.desktopOnly"))
 }
 
 #[cfg(not(mobile))]
@@ -502,7 +512,7 @@ pub async fn backup_save_file(request: Request<'_>) -> CmdResult<()> {
         file_write::save_backup_file(std::path::Path::new(&path), &bytes)
     })
     .await
-    .map_err(|e| format!("backup save task failed: {e}"))?
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Take a copy of the encrypted database and the photo library before an
@@ -563,20 +573,14 @@ pub async fn backup_safety_copy(app: tauri::AppHandle, label: String) -> CmdResu
                             row.get::<_, i64>(2)?,
                         ))
                     })
-                    .map_err(|e| {
-                        format!("could not flush the database before the safety copy: {e}")
-                    })?;
+                    .map_err(|e| Refusal::new("rust.error.flushFailed").with("detail", e))?;
                 if busy != 0 {
                     // Fail closed: an incomplete checkpoint aborts the import at
                     // the snapshot boundary — the copy would miss committed rows,
                     // and the destructive phase must never run against it.
-                    return Err(format!(
-                        "the database flush before the safety copy did not complete \
-                         (checkpoint busy, {checkpointed} of {log_pages} WAL pages flushed) — \
-                         the copy would be stale, so the import was cancelled before \
-                         anything was replaced; close any other program using this \
-                         app's data folder and try again"
-                    ));
+                    return Err(Refusal::new("rust.error.flushIncomplete")
+                        .with("checkpointed", checkpointed)
+                        .with("logPages", log_pages));
                 }
                 crate::safety_copy::copy_database_for_import(&state.data_dir, &label)?
             };
@@ -594,7 +598,7 @@ pub async fn backup_safety_copy(app: tauri::AppHandle, label: String) -> CmdResu
         copied
     })
     .await
-    .map_err(|e| format!("safety copy task failed: {e}"))??;
+    .map_err(|e| Refusal::from(e.to_string()))??;
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -625,7 +629,7 @@ impl Drop for ImportWindowGuard {
 /// reset owns the data.
 #[tauri::command]
 pub fn backup_import_begin(lifecycle: State<'_, Arc<Lifecycle>>) -> CmdResult<u64> {
-    lifecycle.begin_import()
+    lifecycle.begin_import().map_err(Refusal::from)
 }
 
 /// Release the import exclusion window with the lease it was opened with.
@@ -680,6 +684,22 @@ pub fn close_to_tray_set(enabled: bool) -> CmdResult<()> {
     Ok(())
 }
 
+/// Tell Rust which language the interface is in (D7).
+///
+/// The tray menu and the boot-failure dialogs are built before the renderer can
+/// answer anything, so they cannot read the catalogue; this records the choice
+/// where they can find it (`ui-locale`) and relabels a tray that is already up.
+/// Called at boot and on every language switch. An unknown tag is refused
+/// rather than guessed: the marker is what boot reads, and a wrong value there
+/// would outlive the session that wrote it.
+#[tauri::command]
+pub fn ui_locale_set(app: tauri::AppHandle, locale: String) -> CmdResult<()> {
+    let locale =
+        messages::Locale::parse(&locale).ok_or_else(|| Refusal::new("rust.error.locale"))?;
+    crate::publish_ui_locale(&app, locale);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn export_save_file(request: Request<'_>) -> CmdResult<()> {
     let encoded = header_str(&request, file_write::EXPORT_PATH_HEADER)?;
@@ -689,7 +709,7 @@ pub async fn export_save_file(request: Request<'_>) -> CmdResult<()> {
         file_write::save_export_file(std::path::Path::new(&path), &bytes)
     })
     .await
-    .map_err(|e| format!("export save task failed: {e}"))?
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Factory reset: remove every piece of PurpleMemo-owned local
@@ -699,7 +719,7 @@ pub async fn export_save_file(request: Request<'_>) -> CmdResult<()> {
 /// explicit permanent-destruction acknowledgement (Wave 2), and restarts the
 /// app only when the outcome says `complete`. The engine stops the pairing
 /// listener first, checkpoints the WAL and takes the managed connection (from then on
-/// every DB command fails closed with `db::DB_CLOSED_MESSAGE`), deletes the
+/// every DB command fails closed with `rust.error.dbClosed`), deletes the
 /// database files, the photo tree, the safety-copy tree and the logs, and
 /// deletes the credential-store key **last** — never orphaning a live
 /// database from its key. Anything it cannot remove blocks `complete` and is
@@ -721,10 +741,10 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
                 })?;
             let db_state = handle
                 .try_state::<AppState>()
-                .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+                .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
             let lifecycle = handle
                 .try_state::<Arc<Lifecycle>>()
-                .ok_or_else(|| "lifecycle state is not available — restart the app".to_string())?;
+                .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
             // E3: record the reset durably BEFORE anything is deleted — and
             // before the barrier, so a marker that cannot be written aborts
             // the reset while the app still runs normally (nothing was
@@ -785,7 +805,7 @@ pub async fn factory_reset(app: tauri::AppHandle) -> CmdResult<crate::reset::Res
             Ok(outcome)
         })
         .await
-        .map_err(|e| format!("factory reset task failed: {e}"))?;
+        .map_err(|e| Refusal::from(e.to_string()))?;
     outcome
 }
 
@@ -824,10 +844,10 @@ fn local_sync_facts(state: &AppState) -> CmdResult<(String, u64, u64)> {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|e| format!("could not read this device's sync state: {e}"))?;
+        .map_err(|e| Refusal::new("rust.error.syncState").with("detail", e))?;
     let schema: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|e| format!("could not read the schema version: {e}"))?;
+        .map_err(|e| Refusal::new("rust.error.schemaVersion").with("detail", e))?;
     Ok((device_id, generation.max(0) as u64, schema.max(0) as u64))
 }
 
@@ -839,7 +859,7 @@ pub(crate) fn pairing_history(conn: &Connection) -> CmdResult<PairingHistory> {
         .query_row("SELECT EXISTS (SELECT 1 FROM sync_peers)", [], |row| {
             row.get(0)
         })
-        .map_err(|e| format!("could not read this device's pairing history: {e}"))?;
+        .map_err(|e| Refusal::new("rust.error.pairingHistory").with("detail", e))?;
     Ok(if paired {
         PairingHistory::Paired
     } else {
@@ -855,7 +875,7 @@ pub(crate) fn re_pair_required(conn: &Connection) -> CmdResult<bool> {
             [],
             |row| row.get(0),
         )
-        .map_err(|e| format!("could not read the re-pair flag: {e}"))?;
+        .map_err(|e| Refusal::new("rust.error.rePairFlag").with("detail", e))?;
     Ok(flag == 1)
 }
 
@@ -867,7 +887,7 @@ pub(crate) fn mark_re_pair_required(conn: &Connection) -> CmdResult<()> {
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1",
         [],
     )
-    .map_err(|e| format!("could not record that this device must re-pair: {e}"))?;
+    .map_err(|e| Refusal::new("rust.error.rePairRecord").with("detail", e))?;
     Ok(())
 }
 
@@ -887,7 +907,7 @@ fn load_pairing_identity(db_state: &AppState) -> CmdResult<PairingIdentity> {
                 let _ = mark_re_pair_required(&conn);
             }
         }
-        error.message().to_string()
+        Refusal::new("rust.error.pairingIdentity").with("detail", error.message())
     })
 }
 
@@ -897,7 +917,7 @@ fn load_pairing_identity(db_state: &AppState) -> CmdResult<PairingIdentity> {
 pub fn pairing_local(app: tauri::AppHandle) -> CmdResult<PairingLocalInfo> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
     let identity = load_pairing_identity(&db_state)?;
     Ok(PairingLocalInfo {
@@ -921,16 +941,16 @@ pub fn pairing_open(
     refuse_mobile_role()?;
     let listener = app
         .try_state::<PairingListenerState>()
-        .ok_or_else(|| "pairing listener state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
     let identity = load_pairing_identity(&db_state)?;
     let offer = match (input.offer_code, input.offer_expires_at) {
         (Some(code), Some(expires_at)) => Some(PairingOffer { code, expires_at }),
         (None, None) => None,
-        _ => return Err("a pairing offer needs both a six-digit code and its expiry".to_string()),
+        _ => return Err(Refusal::new("rust.error.offerIncomplete")),
     };
     let window = PairingWindow {
         local_device_id: device_id,
@@ -946,11 +966,14 @@ pub fn pairing_open(
     // other reader takes, because §8.4 requires one transaction across the whole
     // read and the webview cannot hold one across an IPC round trip.
     let reader = app.clone();
+    // These three readers feed the window's `note`, which is a diagnostic
+    // channel (it also relays the peer's own words), so they keep a single
+    // string: `Refusal::diagnostic` carries the layer's detail.
     let snapshot: crate::pairing_listener::SnapshotSource = std::sync::Arc::new(move || {
         let db_state = reader
             .try_state::<AppState>()
-            .ok_or_else(|| "database state is not available — restart the app".to_string())?;
-        let conn = lock_conn(&db_state)?;
+            .ok_or_else(|| Refusal::new("rust.error.stateUnavailable").diagnostic())?;
+        let conn = lock_conn(&db_state).map_err(|e| e.diagnostic())?;
         crate::pairing_snapshot::read_snapshot(&conn)
     });
     // §11.5: the window is on the LAN only while pairing is on screen; the
@@ -962,15 +985,15 @@ pub fn pairing_open(
     let sync_source: crate::pairing_listener::SyncSource = std::sync::Arc::new(move |after_seq| {
         let db_state = sync_reader
             .try_state::<AppState>()
-            .ok_or_else(|| "database state is not available — restart the app".to_string())?;
-        let conn = lock_conn(&db_state)?;
+            .ok_or_else(|| Refusal::new("rust.error.stateUnavailable").diagnostic())?;
+        let conn = lock_conn(&db_state).map_err(|e| e.diagnostic())?;
         let mut statement = conn
             .prepare(
                 "SELECT device_id, seq, op_id, entity_table, entity_uid, op, \
                  base_counter, counter, field_stamps, payload FROM sync_outbox \
                  WHERE seq > ? ORDER BY seq",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Refusal::from(error.to_string()).diagnostic())?;
         let rows = statement
             .query_map([after_seq as i64], |row| {
                 Ok(serde_json::json!({
@@ -986,10 +1009,10 @@ pub fn pairing_open(
                     "payload": row.get::<_, String>(9)?,
                 }))
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Refusal::from(error.to_string()).diagnostic())?;
         let mut ops = Vec::new();
         for row in rows {
-            ops.push(row.map_err(|error| error.to_string())?);
+            ops.push(row.map_err(|error| Refusal::from(error.to_string()).diagnostic())?);
         }
         Ok(ops)
     });
@@ -1002,13 +1025,15 @@ pub fn pairing_open(
         std::sync::Arc::new(move || {
             let db_state = vault_reader
                 .try_state::<AppState>()
-                .ok_or_else(|| "database state is not available — restart the app".to_string())?;
-            let conn = lock_conn(&db_state)?;
+                .ok_or_else(|| Refusal::new("rust.error.stateUnavailable").diagnostic())?;
+            let conn = lock_conn(&db_state).map_err(|e| e.diagnostic())?;
             let (generation, verifier) = crate::pairing_snapshot::vault_metadata(&conn)?;
             Ok(verifier.map(|v| (if generation >= 1 { generation } else { 1 }, v)))
         });
     listener.set_vault_meta_source(vault_meta_source);
-    listener.start("0.0.0.0", window, identity, Some(snapshot))
+    listener
+        .start("0.0.0.0", window, identity, Some(snapshot))
+        .map_err(Refusal::from)
 }
 
 /// Close the pairing window. Idempotent, and called by the lock and app-
@@ -1016,7 +1041,7 @@ pub fn pairing_open(
 #[tauri::command]
 pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
     refuse_mobile_role()?;
-    state.stop()
+    state.stop().map_err(Refusal::from)
 }
 
 /// Current pairing state — including the peer a code-confirmed rendezvous
@@ -1024,7 +1049,7 @@ pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<Pairin
 #[tauri::command]
 pub fn pairing_status(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
     refuse_mobile_role()?;
-    state.status()
+    state.status().map_err(Refusal::from)
 }
 
 /// The pairing identity's state, for the re-pair recovery (§11.2, wave 1 N2).
@@ -1053,7 +1078,7 @@ pub struct PairingIdentityStatus {
 pub fn pairing_identity_status(app: tauri::AppHandle) -> CmdResult<PairingIdentityStatus> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (history, flagged) = {
         let conn = lock_conn(&db_state)?;
         (pairing_history(&conn)?, re_pair_required(&conn)?)
@@ -1119,7 +1144,7 @@ pub fn pairing_phone_pair(
 ) -> CmdResult<PhonePairResult> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let identity = load_pairing_identity(&db_state)?;
     let target = crate::pairing_client::PairingTarget {
@@ -1134,7 +1159,7 @@ pub fn pairing_phone_pair(
         schema_version,
     };
     let ack = crate::pairing_client::request_pairing(&target, &facts, &identity)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| Refusal::from(error.to_string()))?;
     crate::pairing_client::send_hello(
         &target,
         &facts,
@@ -1142,7 +1167,7 @@ pub fn pairing_phone_pair(
         &ack,
         crate::pairing_client::next_hello_counter(),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| Refusal::from(error.to_string()))?;
     Ok(PhonePairResult {
         desktop_device_id: ack.desktop_device_id,
         desktop_fingerprint: pairing_key::fingerprint_of(&input.public_key),
@@ -1197,21 +1222,26 @@ fn pinned_pull(db_state: &AppState, device_id: &str) -> CmdResult<PinnedPull> {
             "SELECT pairing_id, public_key, generation FROM sync_peers \
              WHERE device_id = ? AND revoked_at IS NULL",
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| Refusal::from(error.to_string()))?;
     let mut rows = statement
         .query([device_id])
-        .map_err(|error| error.to_string())?;
-    let Some(row) = rows.next().map_err(|error| error.to_string())? else {
-        return Err(
-            "this phone has not pinned that desktop, or the pairing was revoked, so there is \
-             nothing to pull (§11.2)."
-                .to_string(),
-        );
+        .map_err(|error| Refusal::from(error.to_string()))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|error| Refusal::from(error.to_string()))?
+    else {
+        return Err(Refusal::new("rust.error.notPinned"));
     };
-    let pairing_id: Option<String> = row.get(0).map_err(|error| error.to_string())?;
-    let public_key: Option<String> = row.get(1).map_err(|error| error.to_string())?;
+    let pairing_id: Option<String> = row
+        .get(0)
+        .map_err(|error| Refusal::from(error.to_string()))?;
+    let public_key: Option<String> = row
+        .get(1)
+        .map_err(|error| Refusal::from(error.to_string()))?;
     // `sync_peers.generation` is a SQLite INTEGER: i64 in, u64 out.
-    let generation: i64 = row.get(2).map_err(|error| error.to_string())?;
+    let generation: i64 = row
+        .get(2)
+        .map_err(|error| Refusal::from(error.to_string()))?;
     let generation = u64::try_from(generation).unwrap_or(0);
     let pairing_id = pairing_id
         .filter(|value| !value.is_empty())
@@ -1244,7 +1274,7 @@ pub fn pairing_snapshot_request(
 ) -> CmdResult<SnapshotBatchResult> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     let identity = load_pairing_identity(&db_state)?;
@@ -1267,7 +1297,7 @@ pub fn pairing_snapshot_request(
         crate::pairing_client::process_counters(),
         batch,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| Refusal::from(error.to_string()))?;
     let list = |key: &str| {
         reply
             .get(key)
@@ -1297,7 +1327,7 @@ pub fn pairing_snapshot_applied(
 ) -> CmdResult<()> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     let identity = load_pairing_identity(&db_state)?;
@@ -1320,7 +1350,7 @@ pub fn pairing_snapshot_applied(
         crate::pairing_client::process_counters(),
         batch,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// Acknowledge the whole snapshot, with the counts the §9.3 summary shows.
@@ -1337,7 +1367,7 @@ pub fn pairing_snapshot_adopted(
 ) -> CmdResult<()> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     let identity = load_pairing_identity(&db_state)?;
@@ -1361,7 +1391,7 @@ pub fn pairing_snapshot_adopted(
         rows,
         tombstones,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// Send one batch of this phone's own records to the pinned desktop (§9.1).
@@ -1380,7 +1410,7 @@ pub fn pairing_upload_batch(
 ) -> CmdResult<()> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     let identity = load_pairing_identity(&db_state)?;
@@ -1405,7 +1435,7 @@ pub fn pairing_upload_batch(
         total,
         &ops,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// Tell the pinned desktop every upload batch was sent (§9.1). It refuses
@@ -1415,7 +1445,7 @@ pub fn pairing_upload_batch(
 pub fn pairing_upload_commit(app: tauri::AppHandle, input: SnapshotPullInput) -> CmdResult<()> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     let identity = load_pairing_identity(&db_state)?;
@@ -1437,7 +1467,7 @@ pub fn pairing_upload_commit(app: tauri::AppHandle, input: SnapshotPullInput) ->
         &identity,
         crate::pairing_client::process_counters(),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// The desktop's verdict on this phone's upload (§9.1), as the sealed reply
@@ -1459,7 +1489,7 @@ pub fn pairing_upload_status(
 ) -> CmdResult<UploadStatusResult> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     let identity = load_pairing_identity(&db_state)?;
@@ -1481,7 +1511,7 @@ pub fn pairing_upload_status(
         &identity,
         crate::pairing_client::process_counters(),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| Refusal::from(error.to_string()))?;
     let number = |key: &str| reply.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
     Ok(UploadStatusResult {
         state: reply
@@ -1547,12 +1577,7 @@ pub fn pairing_upload_outcome(
             }
         }
         (None, None, Some(message)) => crate::pairing_listener::UploadOutcome::Failed { message },
-        _ => {
-            return Err(
-                "an upload outcome is either its counts or its failure, never both or neither."
-                    .to_string(),
-            )
-        }
+        _ => return Err(Refusal::new("rust.error.uploadOutcome")),
     };
     state.set_upload_outcome(outcome);
     Ok(())
@@ -1575,7 +1600,7 @@ fn sync_phone_facts(
 ) -> CmdResult<SyncPhoneFacts> {
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
     let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
     Ok(SyncPhoneFacts {
@@ -1600,7 +1625,7 @@ pub fn pairing_sync_push(
     let facts = sync_phone_facts(&app, &input)?;
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let identity = load_pairing_identity(&db_state)?;
     let pull = crate::pairing_client::SnapshotPull {
         endpoint: &input.endpoint,
@@ -1623,7 +1648,7 @@ pub fn pairing_sync_push(
         total,
         &ops,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// Tell the pinned desktop every pushed batch was sent (§6.2).
@@ -1632,7 +1657,7 @@ pub fn pairing_sync_commit(app: tauri::AppHandle, input: SnapshotPullInput) -> C
     let facts = sync_phone_facts(&app, &input)?;
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let identity = load_pairing_identity(&db_state)?;
     let pull = crate::pairing_client::SnapshotPull {
         endpoint: &input.endpoint,
@@ -1652,7 +1677,7 @@ pub fn pairing_sync_commit(app: tauri::AppHandle, input: SnapshotPullInput) -> C
         &identity,
         crate::pairing_client::process_counters(),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// One batch of the pinned desktop's own operations after `afterSeq` (§6.3).
@@ -1675,7 +1700,7 @@ pub fn pairing_sync_pull(
     let facts = sync_phone_facts(&app, &input)?;
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let identity = load_pairing_identity(&db_state)?;
     let pull = crate::pairing_client::SnapshotPull {
         endpoint: &input.endpoint,
@@ -1697,7 +1722,7 @@ pub fn pairing_sync_pull(
         batch,
         after_seq,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| Refusal::from(error.to_string()))?;
     Ok(SyncBatchResult {
         pairing_id: facts.pairing_id,
         batch,
@@ -1724,7 +1749,7 @@ pub fn pairing_sync_applied(
     let facts = sync_phone_facts(&app, &input)?;
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let identity = load_pairing_identity(&db_state)?;
     let pull = crate::pairing_client::SnapshotPull {
         endpoint: &input.endpoint,
@@ -1745,7 +1770,7 @@ pub fn pairing_sync_applied(
         crate::pairing_client::process_counters(),
         through_seq,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| Refusal::from(error.to_string()))
 }
 
 /// The desktop's verdict on this phone's push, as its sealed reply reported it.
@@ -1765,7 +1790,7 @@ pub fn pairing_sync_status(
     let facts = sync_phone_facts(&app, &input)?;
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let identity = load_pairing_identity(&db_state)?;
     let pull = crate::pairing_client::SnapshotPull {
         endpoint: &input.endpoint,
@@ -1785,7 +1810,7 @@ pub fn pairing_sync_status(
         &identity,
         crate::pairing_client::process_counters(),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| Refusal::from(error.to_string()))?;
     Ok(SyncStatusResult {
         state: reply
             .get("state")
@@ -1837,10 +1862,7 @@ pub fn pairing_sync_outcome(
     let outcome = match (input.applied_through, input.error) {
         (Some(through_seq), None) => crate::pairing_listener::SyncOutcome::Applied { through_seq },
         (None, Some(message)) => crate::pairing_listener::SyncOutcome::Failed { message },
-        _ => return Err(
-            "a sync outcome is either its applied position or its failure, never both or neither."
-                .to_string(),
-        ),
+        _ => return Err(Refusal::new("rust.error.syncOutcome")),
     };
     state.set_sync_outcome(outcome);
     Ok(())
@@ -1857,17 +1879,14 @@ pub fn pairing_identity_replace(
     confirm: bool,
 ) -> CmdResult<PairingIdentityStatus> {
     if !confirm {
-        return Err(
-            "re-pairing replaces this device's pairing key; it needs an explicit confirmation \
-             (§11.4)."
-                .to_string(),
-        );
+        return Err(Refusal::new("rust.error.rePairConfirm"));
     }
     let db_state = app
         .try_state::<AppState>()
-        .ok_or_else(|| "database state is not available — restart the app".to_string())?;
-    let identity =
-        pairing_key::replace_after_confirmation().map_err(|error| error.message().to_string())?;
+        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
+    let identity = pairing_key::replace_after_confirmation().map_err(|error| {
+        Refusal::new("rust.error.pairingIdentity").with("detail", error.message())
+    })?;
     {
         let conn = lock_conn(&db_state)?;
         mark_re_pair_required(&conn)?;
@@ -1972,8 +1991,7 @@ mod tests {
             Ok(_) => panic!("a taken connection must fail closed"),
             Err(e) => e,
         };
-        assert_eq!(error, crate::db::DB_CLOSED_MESSAGE);
-        assert!(error.contains("restart"), "must say what to do: {error}");
+        assert_eq!(error.key, "rust.error.dbClosed");
     }
 
     /// The fail-closed check must not get in the way of normal operation:

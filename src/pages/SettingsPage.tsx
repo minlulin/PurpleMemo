@@ -24,7 +24,7 @@ import {
 import { PairingPanel } from "../components/PairingPanel.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
-import { backupRepo, settingsRepo } from "../data/app.ts";
+import { backupRepo, publishUiLocale, settingsRepo } from "../data/app.ts";
 import { factoryReset } from "../data/driver.ts";
 import {
   AUTO_LOCK_CHOICES,
@@ -232,6 +232,10 @@ export default function SettingsPage(p: SettingsPageProps) {
   const changeLocale = async (next: Locale) => {
     if (!isLocale(next)) return;
     setLocale(next);
+    // The tray and the boot-failure dialogs cannot read this catalogue, so
+    // they are told the choice (D7) — before the write, because the switch is
+    // presentation and a failed write must not leave them in the old language.
+    publishUiLocale(next);
     try {
       await settingsRepo.setLocale(next);
     } catch (e) {

@@ -145,7 +145,9 @@ test("the pairing commands are registered and the window binds the LAN", () => {
     commands,
     /pub fn pairing_open\(\s*app: tauri::AppHandle,\s*input: PairingOpenInput,\s*\)/,
   );
-  assert.match(commands, /listener\.start\("0\.0\.0\.0"/);
+  // The bind address, however rustfmt wraps the call: the window is the only
+  // refusal that can read the LAN, and it must say which interface.
+  assert.match(commands, /listener\s*\.\s*start\(\s*"0\.0\.0\.0"/);
   // The device id, generation and schema come from the store, not the caller.
   assert.match(commands, /fn local_sync_facts\(/);
   assert.match(commands, /SELECT device_id, data_generation FROM sync_state/);

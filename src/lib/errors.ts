@@ -6,7 +6,12 @@
 // never "[object Object]", never a blank that a `{error ? <p>}` banner
 // would render as nothing at all.
 
-import { getLocale, isMessageKeyError, translate } from "./i18n.ts";
+import {
+  getLocale,
+  isMessageKeyError,
+  refusalText,
+  translate,
+} from "./i18n.ts";
 
 export function errText(e: unknown): string {
   // A keyed refusal names a key, not text: render it in the locale active
@@ -17,6 +22,11 @@ export function errText(e: unknown): string {
   if (isMessageKeyError(e)) {
     return translate(getLocale(), e.messageKey, e.params);
   }
+  // A Rust refusal is the same idea from the other side of the IPC boundary
+  // (D7): a key plus params, so it is rendered here in the active locale
+  // rather than shown as whatever object Tauri serialised.
+  const refusal = refusalText(e);
+  if (refusal !== null) return refusal;
   const text = describe(e);
   // An empty message must still render an alert: `{error ? …}` treats ""
   // as "no error" and silently swallows the failure (J6).
