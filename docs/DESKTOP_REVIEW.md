@@ -11,9 +11,9 @@ copy, file writes, the pairing listener's state, and the desktop UI paths
 `src/lib/drafts.ts`, `src/lib/backup.ts`, `src/lib/update.ts`).
 
 This is a review record. Findings are kept with the mechanism that produces
-them, so each can be verified or dismissed by reading the code it names. D1 and
-D2 were fixed in follow-up changes; the rest are open, each with a suggested
-fix. The Android companion is out of scope.
+them, so each can be verified or dismissed by reading the code it names. D1, D2
+and D3 were fixed in follow-up changes; the rest are open, each with a
+suggested fix. The Android companion is out of scope.
 
 **Method:** static review of the code, plus a read of the earlier
 full-repository audit for the areas it already closed. Nothing was built or
@@ -38,7 +38,7 @@ None of them threatens data at rest; two of them are user-visible.
 |----|----------|------|---------|--------|
 | D1 | Medium | Tray | The window-close handler takes the database connection lock on the event-loop thread | Fixed |
 | D2 | Medium-low | Reset | Closing during a factory reset hides a terminal session instead of exiting | Fixed |
-| D3 | Medium-low (latent) | DB guard | `db_query` can write, and writes bypass the lifecycle barrier | Open |
+| D3 | Medium-low (latent) | DB guard | `db_query` can write, and writes bypass the lifecycle barrier | Fixed |
 | D4 | Low | Settings | A failed update check also says "No newer release is published yet." | Open |
 | D5 | Low | Pairing | The pairing panel polls once per second forever after its code is dead | Open |
 | D6 | Low | i18n | The Burmese locale covers only part of the desktop surface | Open |
@@ -129,11 +129,20 @@ writes via `query` would silently land inside the import window — exactly the
 failure E5 exists to prevent. Same class as the earlier audit's A5: a guard
 that claims more than it enforces.
 
-**Fix.** Prefer precision over vocabulary: prepare the statement and refuse it
-when `sqlite3_stmt_readonly` is false. That closes `WITH … DELETE` and every
-future spelling of a write, instead of enumerating keywords again. Giving
-`db_query` the same `admit()` call would additionally make the barrier uniform
-at the command boundary.
+**Fixed in a follow-up change.** `query_rows` now prepares the statement and
+refuses it when `sqlite3_stmt_readonly` is false — precision over vocabulary,
+so `WITH … DELETE` and every future spelling of a write are closed, not just the
+four keywords named here. The allowlist itself is unchanged, because it must
+keep serving `execute`, whose whole vocabulary is exactly those writers; the
+read path simply adds SQLite's own answer about what the compiled statement
+does.
+
+`db_query` deliberately does *not* take `admit()`. With writes refused it cannot
+break the barrier, and `admit(None)` refuses every caller during an import
+window — which would fail the UI's own reads for as long as an import runs, a
+regression in exchange for uniformity the guard already provides. A Rust test
+(`db_query_refuses_statements_that_write`) holds all four spellings, checks the
+rows are untouched, and pins that a read-only CTE still returns rows.
 
 ## D4 — Low — A failed update check also claims no release is published
 

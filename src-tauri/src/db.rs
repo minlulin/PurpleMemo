@@ -1276,6 +1276,22 @@ pub fn query_rows(
     let mut stmt = conn
         .prepare_cached(sql)
         .map_err(|e| format!("prepare failed: {e}"))?;
+    // D3: the allowlist above admits INSERT, UPDATE, DELETE and WITH, and this
+    // read path takes no lifecycle ticket — so `WITH … DELETE` sent here wrote
+    // without admitting through the barrier: it could land inside an import's
+    // exclusion window, or while a reset drained writers. The keyword list
+    // cannot separate reads from writes (`WITH` is both) and it must keep
+    // serving `execute`, whose whole vocabulary is the writers, so ask SQLite
+    // what the compiled statement actually does: `sqlite3_stmt_readonly` is
+    // false for anything that changes the database, which closes every
+    // spelling of a write rather than the ones we thought to enumerate.
+    if !stmt.readonly() {
+        return Err(
+            "db_query is the read path: send writes through db_execute or \
+                    db_batch, which admit through the lifecycle barrier"
+                .to_string(),
+        );
+    }
     let columns: Vec<String> = stmt
         .column_names()
         .iter()
@@ -4417,6 +4433,48 @@ mod tests {
         );
         rollback_tx(&conn).expect("cleanup rollback");
         assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM t"), 0);
+    }
+
+    /// D3: the allowlist admits INSERT/UPDATE/DELETE/WITH, so a write reached
+    /// the READ path — which takes no lifecycle ticket, meaning it could land
+    /// inside an import's exclusion window or while a reset drained writers.
+    /// The list cannot separate reads from writes (`WITH` is both) and it must
+    /// keep serving `execute`, so the check is SQLite's own answer for the
+    /// compiled statement: `sqlite3_stmt_readonly`.
+    #[test]
+    fn db_query_refuses_statements_that_write() {
+        let (_dir, conn) = open_baseline("query-writes");
+        conn.execute_batch(
+            "CREATE TABLE t (v TEXT NOT NULL);\
+             INSERT INTO t(v) VALUES ('keep');",
+        )
+        .expect("scratch table");
+
+        for smuggled in [
+            "INSERT INTO t(v) VALUES ('new')",
+            "UPDATE t SET v = 'changed'",
+            "DELETE FROM t",
+            // The spelling the keyword guard waves through on its own.
+            "WITH gone AS (SELECT 1) DELETE FROM t",
+        ] {
+            let err = query_rows(&conn, smuggled, &[])
+                .expect_err("db_query must refuse a statement that writes");
+            assert!(
+                err.contains("db_query is the read path"),
+                "{smuggled} gave: {err}"
+            );
+            assert_eq!(
+                scalar_i64(&conn, "SELECT count(*) FROM t"),
+                1,
+                "{smuggled} must not have changed a row"
+            );
+        }
+
+        // Reads still work, including a CTE — the guard must not mistake it for
+        // its data-modifying sibling.
+        let rows = query_rows(&conn, "WITH x AS (SELECT 1 AS n) SELECT n FROM x", &[])
+            .expect("a read-only CTE is a read");
+        assert_eq!(rows.len(), 1, "the read path still returns rows");
     }
 
     #[test]
