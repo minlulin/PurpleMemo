@@ -306,7 +306,7 @@ function ShopsView() {
                       disabled={saving || editDraft.name.trim().length === 0}
                       onClick={() => void saveEdit()}
                     >
-                      {t("business.save")}
+                      {t("common.save")}
                     </button>
                     <button
                       type="button"
@@ -1194,7 +1194,7 @@ function HistoryView({
                       className="btn btn-primary"
                       onClick={() => void saveEditJob(j.id, draft)}
                     >
-                      {t("business.save")}
+                      {t("common.save")}
                     </button>
                     <button
                       type="button"

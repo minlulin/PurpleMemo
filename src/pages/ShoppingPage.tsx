@@ -7,6 +7,7 @@ import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconPlus, IconShopping } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { shoppingRepo } from "../data/app.ts";
 import { errText } from "../lib/errors.ts";
 import { moveItem } from "../lib/shopping.ts";
@@ -21,6 +22,7 @@ export default function ShoppingPage({
   focusListId?: number | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [lists, setLists] = useState<ShoppingListRow[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [items, setItems] = useState<ShoppingItemRow[]>([]);
@@ -94,9 +96,7 @@ export default function ShoppingPage({
       await reloadItems(requested);
       setLoading(false);
       if (focusItemId !== null && requested !== focusListId) {
-        setError(
-          "That shopping item no longer exists — it may have been deleted.",
-        );
+        setError(t("shopping.itemMissing"));
       }
     })();
     return () => {
@@ -115,9 +115,7 @@ export default function ShoppingPage({
     )
       return;
     if (!items.some((item) => item.id === focusItemId)) {
-      setError(
-        "That shopping item no longer exists — it may have been deleted.",
-      );
+      setError(t("shopping.itemMissing"));
       return;
     }
     document
@@ -256,11 +254,8 @@ export default function ShoppingPage({
               <IconShopping className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Shopping Lists</h2>
-              <p className="page-subtitle">
-                Checkable shopping &amp; packing lists with manual priority
-                ordering
-              </p>
+              <h2 className="editor-title">{t("shopping.title")}</h2>
+              <p className="page-subtitle">{t("shopping.subtitle")}</p>
             </div>
           </div>
         </div>
@@ -272,8 +267,8 @@ export default function ShoppingPage({
           }}
         >
           <input
-            aria-label="New list name"
-            placeholder="New list (e.g. Market)"
+            aria-label={t("shopping.newListAria")}
+            placeholder={t("shopping.newListPlaceholder")}
             value={listName}
             onChange={(e) => setListName(e.target.value)}
           />
@@ -282,7 +277,7 @@ export default function ShoppingPage({
             className="btn btn-primary"
             disabled={saving || listName.trim().length === 0}
           >
-            <IconPlus className="icon" /> Add list
+            <IconPlus className="icon" /> {t("shopping.addList")}
           </button>
         </form>
       </header>
@@ -296,7 +291,7 @@ export default function ShoppingPage({
 
       {lists.length === 0 ? (
         <section className="settings-section">
-          <EmptyState>No shopping lists yet — add one above.</EmptyState>
+          <EmptyState>{t("shopping.emptyLists")}</EmptyState>
         </section>
       ) : (
         <>
@@ -322,8 +317,8 @@ export default function ShoppingPage({
                     takes every item in the list with it (review P2-10). */}
                 <ConfirmButton
                   className="btn btn-ghost"
-                  what={`list “${l.name}” and its items`}
-                  aria-label={`Delete list ${l.name}`}
+                  what={t("shopping.deleteListWhat", { name: l.name })}
+                  aria-label={t("shopping.deleteListAria", { name: l.name })}
                   onConfirm={() => removeList(l.id)}
                 >
                   ×
@@ -335,21 +330,25 @@ export default function ShoppingPage({
           {selectedId !== null ? (
             <section
               className="settings-section"
-              aria-label="Selected list items"
+              aria-label={t("shopping.itemsAria")}
             >
               <div className="dash-card-head">
                 <div className="row-title">
                   <h3 className="settings-heading">
-                    {lists.find((l) => l.id === selectedId)?.name ?? "List"}
+                    {lists.find((l) => l.id === selectedId)?.name ??
+                      t("shopping.fallbackList")}
                   </h3>
                   <span className="badge badge-accent figure">
-                    {doneCount}/{items.length} checked
+                    {t("shopping.checked", {
+                      done: doneCount,
+                      total: items.length,
+                    })}
                   </span>
                 </div>
                 {renaming !== null ? (
                   <span className="inline-form">
                     <input
-                      aria-label="List name"
+                      aria-label={t("shopping.listNameAria")}
                       value={renaming}
                       onChange={(e) => setRenaming(e.target.value)}
                     />
@@ -359,14 +358,14 @@ export default function ShoppingPage({
                       disabled={renaming.trim().length === 0}
                       onClick={() => void commitRename(selectedId)}
                     >
-                      Save
+                      {t("common.save")}
                     </button>
                     <button
                       type="button"
                       className="btn"
                       onClick={() => setRenaming(null)}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   </span>
                 ) : (
@@ -379,13 +378,13 @@ export default function ShoppingPage({
                       )
                     }
                   >
-                    Rename list
+                    {t("shopping.rename")}
                   </button>
                 )}
               </div>
 
               {items.length === 0 ? (
-                <EmptyState>Empty list — add items below.</EmptyState>
+                <EmptyState>{t("shopping.emptyItems")}</EmptyState>
               ) : (
                 <ul className="budget-list">
                   {items.map((item, index) => (
@@ -416,7 +415,9 @@ export default function ShoppingPage({
                         <button
                           type="button"
                           className="btn btn-ghost"
-                          aria-label={`Move ${item.text} up`}
+                          aria-label={t("shopping.moveUpAria", {
+                            name: item.text,
+                          })}
                           disabled={reordering}
                           onClick={() => void move(index, "up")}
                         >
@@ -425,7 +426,9 @@ export default function ShoppingPage({
                         <button
                           type="button"
                           className="btn btn-ghost"
-                          aria-label={`Move ${item.text} down`}
+                          aria-label={t("shopping.moveDownAria", {
+                            name: item.text,
+                          })}
                           disabled={reordering}
                           onClick={() => void move(index, "down")}
                         >
@@ -433,10 +436,10 @@ export default function ShoppingPage({
                         </button>
                         <ConfirmButton
                           className="btn btn-ghost"
-                          what="item"
+                          what={t("shopping.deleteItemWhat")}
                           onConfirm={() => removeItem(item.id)}
                         >
-                          Delete
+                          {t("common.delete")}
                         </ConfirmButton>
                       </span>
                     </li>
@@ -452,8 +455,8 @@ export default function ShoppingPage({
                 }}
               >
                 <input
-                  aria-label="New item"
-                  placeholder="Add item (e.g. Rice 5kg)"
+                  aria-label={t("shopping.newItemAria")}
+                  placeholder={t("shopping.newItemPlaceholder")}
                   value={itemName}
                   onChange={(e) => setItemName(e.target.value)}
                 />
@@ -462,7 +465,7 @@ export default function ShoppingPage({
                   className="btn btn-primary"
                   disabled={saving || itemName.trim().length === 0}
                 >
-                  Add item
+                  {t("shopping.addItem")}
                 </button>
               </form>
             </section>

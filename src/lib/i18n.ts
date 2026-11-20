@@ -44,6 +44,7 @@ export const en = {
   "common.cancel": "Cancel",
   "common.delete": "Delete",
   "common.edit": "Edit",
+  "common.save": "Save",
   "common.close": "Close",
   "common.closeDialog": "Close dialog",
   "common.tryAgain": "Try again",
@@ -1140,7 +1141,6 @@ export const en = {
     "That payable is no longer in this view — it may have changed or been deleted.",
 
   "business.saving": "Saving…",
-  "business.save": "Save",
   "business.none": "None",
   "business.saveChanges": "Save changes",
   "business.cancelEdit": "Cancel edit",
@@ -1274,7 +1274,6 @@ export const en = {
   "loans.left": "{amount} left",
   "loans.due": "due {date}",
   "loans.repayAmountAria": "Repayment amount for {name}",
-  "loans.save": "Save",
   "loans.saving": "Saving…",
   "loans.recordRepayment": "Record repayment",
   "loans.deleteRepaidWhat":
@@ -1312,6 +1311,33 @@ export const en = {
   "habits.monthHistory": "Month history",
   "habits.showMonth": "Show month",
   "habits.hideMonth": "Hide month",
+
+  // Shopping — the fifth page on the catalogue (F6). The tabs are list names
+  // (user data), so only the chrome around them is here: the two create forms,
+  // the rename row, the per-item moves and the delete nouns.
+  "shopping.title": "Shopping Lists",
+  "shopping.subtitle":
+    "Checkable shopping & packing lists with manual priority ordering",
+  "shopping.newListAria": "New list name",
+  "shopping.newListPlaceholder": "New list (e.g. Market)",
+  "shopping.addList": "Add list",
+  "shopping.emptyLists": "No shopping lists yet — add one above.",
+  "shopping.deleteListWhat": "list “{name}” and its items",
+  "shopping.deleteListAria": "Delete list {name}",
+  "shopping.itemsAria": "Selected list items",
+  "shopping.fallbackList": "List",
+  "shopping.checked": "{done}/{total} checked",
+  "shopping.listNameAria": "List name",
+  "shopping.rename": "Rename list",
+  "shopping.emptyItems": "Empty list — add items below.",
+  "shopping.moveUpAria": "Move {name} up",
+  "shopping.moveDownAria": "Move {name} down",
+  "shopping.deleteItemWhat": "item",
+  "shopping.newItemAria": "New item",
+  "shopping.newItemPlaceholder": "Add item (e.g. Rice 5kg)",
+  "shopping.addItem": "Add item",
+  "shopping.itemMissing":
+    "That shopping item no longer exists — it may have been deleted.",
 
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
@@ -1571,6 +1597,7 @@ export const my: Record<MessageKey, string> = {
   "common.cancel": "ပယ်ဖျက်",
   "common.delete": "ဖျက်မည်",
   "common.edit": "ပြင်မည်",
+  "common.save": "သိမ်းမည်",
   "common.close": "ပိတ်မည်",
   "common.closeDialog": "ဒိုင်ယာလော့ဂ်ကို ပိတ်မည်",
   "common.tryAgain": "ထပ်စမ်းကြည့်မည်",
@@ -2639,7 +2666,6 @@ export const my: Record<MessageKey, string> = {
     "ထို ပေးရန်ကျန်ငွေ ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
 
   "business.saving": "သိမ်းနေသည်…",
-  "business.save": "သိမ်းမည်",
   "business.none": "မရှိ",
   "business.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
   "business.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
@@ -2770,7 +2796,6 @@ export const my: Record<MessageKey, string> = {
   "loans.left": "{amount} ကျန်",
   "loans.due": "ကျသင့်ရက် {date}",
   "loans.repayAmountAria": "{name} အတွက် ပြန်ဆပ်မည့် ပမာဏ",
-  "loans.save": "သိမ်းမည်",
   "loans.saving": "သိမ်းနေသည်…",
   "loans.recordRepayment": "ပြန်ဆပ်မှု မှတ်မည်",
   "loans.deleteRepaidWhat":
@@ -2807,6 +2832,31 @@ export const my: Record<MessageKey, string> = {
   "habits.monthHistory": "လစဉ် မှတ်တမ်း",
   "habits.showMonth": "လ ပြမည်",
   "habits.hideMonth": "လ ဖျောက်မည်",
+
+  // Shopping — mirrors the English block above key for key ({name}, {done},
+  // {total}).
+  "shopping.title": "ဈေးဝယ် စာရင်းများ",
+  "shopping.subtitle":
+    "အမှန်ခြစ် မှတ်နိုင်သော ဈေးဝယ်နှင့် ပစ္စည်းထုပ်ပိုး စာရင်းများ — ကိုယ်တိုင် ဦးစားပေး အစီအစဉ် သတ်မှတ်နိုင်သည်",
+  "shopping.newListAria": "စာရင်း အမည် အသစ်",
+  "shopping.newListPlaceholder": "စာရင်း အသစ် (ဥပမာ ဈေး)",
+  "shopping.addList": "စာရင်း ထည့်မည်",
+  "shopping.emptyLists": "ဈေးဝယ် စာရင်း မရှိသေးပါ — အပေါ်တွင် တစ်ခု ထည့်ပါ။",
+  "shopping.deleteListWhat": "စာရင်း “{name}” နှင့် ၎င်း၏ ပစ္စည်းများ",
+  "shopping.deleteListAria": "{name} စာရင်းကို ဖျက်မည်",
+  "shopping.itemsAria": "ရွေးထားသော စာရင်း၏ ပစ္စည်းများ",
+  "shopping.fallbackList": "စာရင်း",
+  "shopping.checked": "{done}/{total} ပြီး",
+  "shopping.listNameAria": "စာရင်း အမည်",
+  "shopping.rename": "စာရင်း အမည်ပြောင်းမည်",
+  "shopping.emptyItems": "စာရင်း လွတ်နေသည် — အောက်တွင် ပစ္စည်းများ ထည့်ပါ။",
+  "shopping.moveUpAria": "{name} ကို အပေါ်သို့ ရွှေ့မည်",
+  "shopping.moveDownAria": "{name} ကို အောက်သို့ ရွှေ့မည်",
+  "shopping.deleteItemWhat": "ပစ္စည်း",
+  "shopping.newItemAria": "ပစ္စည်း အသစ်",
+  "shopping.newItemPlaceholder": "ပစ္စည်း ထည့်မည် (ဥပမာ ဆန် 5kg)",
+  "shopping.addItem": "ပစ္စည်း ထည့်မည်",
+  "shopping.itemMissing": "ထို ဈေးဝယ် ပစ္စည်း မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
 
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.

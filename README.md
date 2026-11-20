@@ -68,16 +68,16 @@ compile error rather than a blank label.
 
 That coverage is not yet the whole app. The shell, lock screen, Settings, Tasks,
 Notes, Contacts, Inbox, search, Trash, Vault, Budget, Business, Loans, Habits,
-the shared month and weekday headings, the import/export dialogs and the phone
-UI read from the catalogue. **Shopping, Gallery, Memories, Journal and Exports
+Shopping, the shared month and weekday headings, the import/export dialogs and
+the phone UI read from the catalogue. **Gallery, Memories, Journal and Exports
 are English-only for now** — their text lives in the pages, not in the
 catalogue. This is a known gap rather than a bug: finishing it means a
 namespace per page, and until a page has one the language switch cannot reach
-its text. Budget (`budget.*`), Business (`business.*`), Loans (`loans.*`) and
-Habits (`habits.*`) are the pages migrated this way; `src/lib/i18n.test.ts`
-fails if a key in those namespaces still reads English, and month/year headings
-come from `month.*`/`weekday.*` so a Burmese page does not show English calendar
-chrome.
+its text. Budget (`budget.*`), Business (`business.*`), Loans (`loans.*`),
+Habits (`habits.*`) and Shopping (`shopping.*`) are the pages migrated this
+way; `src/lib/i18n.test.ts` fails if a key in those namespaces still reads
+English, and month/year headings come from `month.*`/`weekday.*` so a Burmese
+page does not show English calendar chrome.
 
 ## Development
 

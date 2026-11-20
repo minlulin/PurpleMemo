@@ -346,7 +346,7 @@ export default function LoansPage({
                         >
                           {payingId === l.id
                             ? t("loans.saving")
-                            : t("loans.save")}
+                            : t("common.save")}
                         </button>
                         <button
                           type="button"
