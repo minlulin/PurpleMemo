@@ -82,6 +82,17 @@ test("weekday headings are abbreviated in Burmese, not left in English", () => {
   assertNamespaceTranslated("weekday.", 7);
 });
 
+test("the Burmese weekday abbreviations run Sunday to Saturday in order", () => {
+  // Each is the day's distinguishing syllable (ကြာသပတေး → ကြာ, သောကြာ → သော).
+  // Being off by one is not visible to a not-English check, and Thursday and
+  // Friday both start with ကြ, so the ordered sequence is what pins it.
+  const days = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  assert.deepEqual(
+    days.map((day) => my[`weekday.${day}` as MessageKey]),
+    ["နွေ", "လာ", "ဂါ", "ဟူး", "ကြာ", "သော", "နေ"],
+  );
+});
+
 test("month names and the label template are translated", () => {
   // The month heading is a template plus a name, so it needs both halves:
   // twelve Burmese names and a `month.year` that puts the year where Burmese

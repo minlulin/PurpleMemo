@@ -2831,8 +2831,12 @@ export const my: Record<MessageKey, string> = {
   "weekday.mon": "လာ",
   "weekday.tue": "ဂါ",
   "weekday.wed": "ဟူး",
-  "weekday.thu": "တေး",
-  "weekday.fri": "ကြာ",
+  // Each abbreviation is the day's distinguishing syllable: ကြာသပတေး → ကြာ,
+  // သောကြာ → သော, စနေ → နေ. Thursday and Friday share a syllable (ကြာ), so
+  // reading down the column is not enough to spot a shift — Sunday..Saturday
+  // must be spelled out in order.
+  "weekday.thu": "ကြာ",
+  "weekday.fri": "သော",
   "weekday.sat": "နေ",
 
   "onboarding.title": "Purple Memo မှ ကြိုဆိုပါသည်",
