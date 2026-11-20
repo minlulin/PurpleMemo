@@ -1,7 +1,7 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 41 tables at `PRAGMA user_version = 13`: 40 regular tables + the
+//! 41 tables at `PRAGMA user_version = 14`: 40 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
 //! shadow tables are FTS internals, not part of the 40).
 //!
@@ -31,7 +31,7 @@
 use std::sync::OnceLock;
 
 /// The schema version this build expects and stamps.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -133,7 +133,7 @@ CREATE INDEX idx_reminders_fired_at ON reminders(fired, remind_at);
 ///   `WHERE archived = 0 ORDER BY pinned DESC, updated_at DESC, id DESC`.
 ///   Without it SQLite materialises the whole table and sorts it.
 /// * `idx_photos_created` — the gallery grid, newest first.
-/// * `idx_memories_date` — the month feed and On-this-day scans.
+/// * `idx_memories_date` — the month feed and the upcoming list.
 /// * `idx_habit_logs_date` — the habit month grid and the dashboard tick.
 /// * `idx_income_cat_date` / `idx_expense_cat_date` — per-category spend for a
 ///   month: the equality column first, then the range the summary filters on.
@@ -578,6 +578,23 @@ CREATE INDEX idx_income_wallet_date ON income_entries(wallet_id, entry_date, id,
 CREATE INDEX idx_expense_wallet_date ON expense_entries(wallet_id, entry_date, id, amount_cents);
 "#;
 
+/// Schema v13 → v14: the "On this day" filter stops scanning `memories`.
+///
+/// The card shows the memories whose month-day matches today's, in ANY year —
+/// the one date filter a range cannot express, which is why
+/// `memories.ts::onThisDay` cannot follow the range rule `dates.ts` states for
+/// every other date query. `substr(memory_date, 6, 5)` does that job and used
+/// to force a full `SCAN memories` on every visit to the page.
+///
+/// An **expression index**, not a generated column: SQLite matches it against
+/// the identical expression in a WHERE clause, so the row shape — and with it
+/// the backup payload, whose import writes back the columns it exported — is
+/// unchanged. The coupling is the spelling: the predicate must stay
+/// `substr(memory_date, 6, 5) = ?` exactly, or the planner cannot use it.
+pub const MIGRATION_13_14: &str = r#"
+CREATE INDEX idx_memories_month_day ON memories(substr(memory_date, 6, 5));
+"#;
+
 pub const BASELINE_SQL: &str = r#"
 -- ============================================================
 -- Notes & collections
@@ -993,6 +1010,9 @@ CREATE UNIQUE INDEX idx_photo_refs_unique
 CREATE INDEX idx_notes_browse ON notes(archived, pinned DESC, updated_at DESC, id DESC);
 CREATE INDEX idx_photos_created ON photos(created_at);
 CREATE INDEX idx_memories_date ON memories(memory_date);
+-- On-this-day filters a month-day across every year (see MIGRATION_13_14): an
+-- expression index, so the row shape and the backup payload are unchanged.
+CREATE INDEX idx_memories_month_day ON memories(substr(memory_date, 6, 5));
 CREATE INDEX idx_habit_logs_date ON habit_logs(log_date);
 CREATE INDEX idx_income_cat_date ON income_entries(category_id, entry_date);
 CREATE INDEX idx_expense_cat_date ON expense_entries(category_id, entry_date);

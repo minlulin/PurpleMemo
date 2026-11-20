@@ -780,6 +780,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         10 => Some(schema::MIGRATION_10_11),
         11 => Some(schema::MIGRATION_11_12),
         12 => Some(schema::MIGRATION_12_13),
+        13 => Some(schema::MIGRATION_13_14),
         _ => None,
     }
 }
@@ -2227,6 +2228,7 @@ mod tests {
             "idx_shopping_order",
             "idx_income_wallet_date",
             "idx_expense_wallet_date",
+            "idx_memories_month_day",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -2369,6 +2371,7 @@ mod tests {
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 1i64)
             .expect("stamp v1");
         conn.execute_batch(
@@ -2608,6 +2611,7 @@ mod tests {
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 6i64)
             .expect("stamp v6");
         conn.execute_batch(
@@ -2772,6 +2776,7 @@ mod tests {
             .expect("apply baseline");
         strip_sync_storage(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 7i64)
             .expect("stamp v7");
         conn.execute_batch(
@@ -2975,6 +2980,7 @@ mod tests {
         strip_uid_aliases(&conn);
         strip_tombstone_gc_log(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.execute_batch(
             "DROP INDEX idx_trash_items_entity;
              DROP INDEX idx_trash_items_deleted;
@@ -3179,6 +3185,13 @@ mod tests {
         .expect("strip the v13 wallet indexes");
     }
 
+    /// Remove the v14 expression index so a fixture can be an honest pre-v14
+    /// database.
+    fn strip_month_day_index(conn: &Connection) {
+        conn.execute_batch("DROP INDEX IF EXISTS idx_memories_month_day;")
+            .expect("strip the v14 month-day index");
+    }
+
     /// `EXPLAIN QUERY PLAN` for `sql`, one `detail` line per node, joined.
     ///
     /// A plan describes the shape a statement is compiled to, not the rows it
@@ -3205,8 +3218,31 @@ mod tests {
         conn.execute_batch(schema::BASELINE_SQL)
             .expect("apply baseline");
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 12i64)
             .expect("stamp v12");
+        (dir, conn)
+    }
+
+    /// A database that looks exactly like a version-13 install: the current
+    /// baseline minus the v14 month-day index, stamped 13. The wallet indexes
+    /// stay — they are what v13 added, and this fixture is past that step.
+    fn seeded_v13(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_month_day_index(&conn);
+        conn.pragma_update(None, "user_version", 13i64)
+            .expect("stamp v13");
+        conn.execute_batch(
+            "INSERT INTO memories (title, memory_date, note, created_at)
+               VALUES ('Pre-v14 memory', '2026-02-14', 'body', '2026-02-14'),
+                      ('Another year', '2025-02-14', 'body', '2025-02-14'),
+                      ('Other day', '2026-02-15', 'body', '2026-02-15');",
+        )
+        .expect("seed pre-v14 memories");
         (dir, conn)
     }
 
@@ -3259,6 +3295,71 @@ mod tests {
             )
             .contains("idx_income_wallet_date"),
             "the migrated database seeks the ledger, exactly like a fresh one"
+        );
+    }
+
+    #[test]
+    fn migration_13_to_14_adds_the_month_day_index_and_keeps_every_row() {
+        let (_dir, conn) = seeded_v13("migrate-13-14");
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_memories_month_day'"
+            ),
+            0,
+            "the fixture must start at v13"
+        );
+        assert_eq!(
+            scalar_i64(&conn, "SELECT count(*) FROM memories"),
+            3,
+            "the fixture carries rows for the plan below"
+        );
+
+        init_schema(&conn).expect("migrate 13 -> 14");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(table_count(&conn), 41, "an index is not a table");
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_memories_month_day'"
+            ),
+            1,
+            "the v14 index must exist after the migration"
+        );
+        // An index is additive: every memory is still there, and the card's
+        // query now seeks.
+        assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM memories"), 3);
+        let plan = query_plan(
+            &conn,
+            "SELECT * FROM memories WHERE substr(memory_date, 6, 5) = '02-14' ORDER BY memory_date",
+        );
+        assert!(plan.contains("idx_memories_month_day"), "plan: {plan}");
+    }
+
+    #[test]
+    fn on_this_day_seeks_without_changing_the_row_shape() {
+        // `memories.ts::onThisDay`, spelled exactly as the repository spells it:
+        // an expression index is matched by the expression, so this is also the
+        // test that catches a rewrite of the predicate.
+        let (_dir, conn) = open_baseline("on-this-day-plan");
+        let sql =
+            "SELECT * FROM memories WHERE substr(memory_date, 6, 5) = '02-14' ORDER BY memory_date";
+        let plan = query_plan(&conn, sql);
+        assert!(plan.contains("idx_memories_month_day"), "plan: {plan}");
+        assert!(!plan.contains("SCAN memories"), "still a scan: {plan}");
+        // The fix is an INDEX, not a column: `SELECT *` must return the row as
+        // the backup payload exports it, with no derived column to write back.
+        assert_eq!(
+            scalar_i64(
+                &conn,
+                "SELECT count(*) FROM pragma_table_info('memories') WHERE name = 'month_day'"
+            ),
+            0,
+            "the month-day is indexed, never stored on the row"
         );
     }
 
@@ -3330,6 +3431,7 @@ mod tests {
         strip_uid_aliases(&conn);
         strip_tombstone_gc_log(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.execute_batch(
             "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
                VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v11 note', 'body', '', '2026-01-01', '2026-01-01');
@@ -3451,6 +3553,7 @@ mod tests {
             .expect("apply baseline");
         strip_tombstone_gc_log(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.execute_batch(
             "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
                VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v12 note', 'body', '', '2026-01-01', '2026-01-01');
@@ -3730,6 +3833,7 @@ mod tests {
             // carries, or the real 7 -> 8 step collides with them.
             strip_sync_storage(&conn);
             strip_wallet_indexes(&conn);
+            strip_month_day_index(&conn);
             conn.pragma_update(None, "user_version", 1i64)
                 .expect("stamp v1");
             conn.execute_batch(
@@ -3860,6 +3964,7 @@ mod tests {
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 2i64)
             .expect("stamp v2");
         conn.execute_batch(
@@ -3918,6 +4023,7 @@ mod tests {
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 3i64)
             .expect("stamp v3");
         (dir, conn)
@@ -4003,6 +4109,7 @@ mod tests {
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
         strip_wallet_indexes(&conn);
+        strip_month_day_index(&conn);
         conn.pragma_update(None, "user_version", 4i64)
             .expect("stamp v4");
         conn.execute_batch(

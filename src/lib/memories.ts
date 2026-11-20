@@ -97,7 +97,18 @@ export function createMemoriesRepo(
       );
     },
 
-    /** Entries on today's month-day, any year (On-this-day). */
+    /**
+     * Entries on today's month-day, any year (On-this-day).
+     *
+     * Every other date filter here is a range (`dates.ts` explains why:
+     * `substr` on the column cannot use an index), but "the same day in any
+     * year" is the one filter a range cannot express. The fix is the other
+     * indexable form: `idx_memories_month_day` (schema v14) is an expression
+     * index on exactly `substr(memory_date, 6, 5)`, and SQLite matches it by
+     * the expression's spelling — so this predicate must stay written exactly
+     * like this, and a "tidier" `month_day = ?` would silently go back to a
+     * full scan.
+     */
     async onThisDay(today = todayLocal()): Promise<MemoryRow[]> {
       return driver.query<MemoryRow>(
         "SELECT * FROM memories WHERE substr(memory_date, 6, 5) = ? ORDER BY memory_date",
