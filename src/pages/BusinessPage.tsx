@@ -708,7 +708,7 @@ function JobsView({
                         )
                       }
                     >
-                      <option value="">{t("business.jobs.walletPick")}</option>
+                      <option value="">{t("business.walletPick")}</option>
                       {wallets.map((w) => (
                         <option key={w.id} value={String(w.id)}>
                           {w.name}
@@ -1534,9 +1534,7 @@ function PayablesView({
                               )
                             }
                           >
-                            <option value="">
-                              {t("business.jobs.walletPick")}
-                            </option>
+                            <option value="">{t("business.walletPick")}</option>
                             {wallets.map((w) => (
                               <option key={w.id} value={String(w.id)}>
                                 {w.name}
