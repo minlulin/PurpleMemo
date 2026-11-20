@@ -60,7 +60,7 @@ const ENTITY_LABELS: Record<PhotoRefEntity, MessageKey> = {
   memory: "gallery.entity.memory",
   job: "gallery.entity.job",
 };
-const ENTITY_KEYS: PhotoRefEntity[] = ["note", "memory", "job"];
+const ENTITY_KEYS = Object.keys(ENTITY_LABELS) as PhotoRefEntity[];
 
 function bytesUrl(bytes: Uint8Array): string {
   return URL.createObjectURL(new Blob([bytes as BlobPart]));
@@ -376,23 +376,14 @@ export default function GalleryPage() {
     }
   };
 
-  const pickerRows = (): {
-    key: PhotoRefEntity;
-    rows: { id: number; title: string }[];
-  }[] => [
-    {
-      key: "note",
-      rows: notes.map((n) => ({ id: n.id, title: n.title })),
-    },
-    {
-      key: "memory",
-      rows: memories.map((m) => ({ id: m.id, title: m.title })),
-    },
-    {
-      key: "job",
-      rows: jobs.map((j) => ({ id: j.id, title: j.title })),
-    },
-  ];
+  const pickerRows = (): Record<
+    PhotoRefEntity,
+    { id: number; title: string }[]
+  > => ({
+    note: notes.map((n) => ({ id: n.id, title: n.title })),
+    memory: memories.map((m) => ({ id: m.id, title: m.title })),
+    job: jobs.map((j) => ({ id: j.id, title: j.title })),
+  });
 
   return (
     <div className="budget-page">
@@ -621,13 +612,11 @@ export default function GalleryPage() {
                 }
               >
                 <option value="">{t("gallery.choose")}</option>
-                {pickerRows()
-                  .find((p) => p.key === linkDraft.type)
-                  ?.rows.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.title || `#${r.id}`}
-                    </option>
-                  ))}
+                {pickerRows()[linkDraft.type].map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.title || `#${r.id}`}
+                  </option>
+                ))}
               </select>
               <button
                 type="submit"
