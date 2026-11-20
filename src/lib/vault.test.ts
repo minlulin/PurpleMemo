@@ -161,6 +161,49 @@ test("getItem with a wrong password fails even when the key is cached", async ()
   await assert.rejects(vault.getItem(id, "wrong-password"));
 });
 
+test("a lock landing mid-save is not undone by addItem's key cache (F3)", async () => {
+  const mock = createMockDriver();
+  let vault: ReturnType<typeof createVaultRepo>;
+  // The auto-lock timer fires whenever it likes, and `lockVault` is
+  // synchronous. Model the one interleaving that matters: the lock lands at
+  // the id lookup, which is an await between addItem's batch and the cache
+  // write that follows it.
+  let locked = false;
+  const driver = {
+    ...mock,
+    query: (sql: string, params?: unknown[]) => {
+      if (!locked && /^SELECT id FROM "vault_items"/.test(sql)) {
+        locked = true;
+        vault.lockVault();
+      }
+      return mock.query(sql, params);
+    },
+  } as unknown as MockDriver;
+  vault = createVaultRepo(driver);
+  stageAdd(driver, 1);
+
+  const id = await vault.addItem("email", "s3cret", "correct-horse");
+  assert.equal(locked, true, "the lock landed inside addItem, not after it");
+
+  // A warm cache answers this from memory: one query, the row. A cold one has
+  // to read the salt and derive the key again — which is the proof the key did
+  // not survive the lock.
+  const row = rowFromInsert(driver);
+  driver.pushResults([[row], [{ salt: row.salt }]]);
+  const got = await vault.getItem(id, "correct-horse");
+  assert.equal(got?.plaintext, "s3cret");
+  const saltReads = driver
+    .callsTo("query")
+    .filter((call) =>
+      /SELECT salt FROM vault_items/.test(call.args[0] as string),
+    );
+  assert.equal(
+    saltReads.length,
+    1,
+    "the key was derived again, not cached behind the lock",
+  );
+});
+
 test("changePassword with a wrong old password writes nothing", async () => {
   const driver = createMockDriver();
   const vault = createVaultRepo(driver);

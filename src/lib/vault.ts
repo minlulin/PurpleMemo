@@ -431,6 +431,13 @@ export function createVaultRepo(
       plaintext: string,
       password: string,
     ): Promise<number> {
+      // The same generation guard {@link deriveItemKey} uses (B4, F3): this
+      // path derives a key, awaits the batch, the id lookup and a PBKDF2 tag,
+      // and `lockVault` is synchronous — without the counter a lock landing in
+      // any of those awaits clears the cache and then this key is written back
+      // behind it, leaving a decrypting `CryptoKey` cached while the vault
+      // reports itself locked.
+      const generation = keyGeneration;
       const salt = randomSaltB64();
       const key = await deriveVaultKey(password, salt);
       const cipher = await encryptWithKey(key, plaintext);
@@ -464,13 +471,12 @@ export function createVaultRepo(
         ...ops,
       ]);
       const id = await readRowId(driver, "vault_items", uid);
-      keyCache.set(id, {
-        salt,
-        key,
-        // This key was just used to encrypt the item, so the tag is the
-        // password it really came from — not a guess (review P3-19).
-        tag: await deriveVaultTag(password, salt),
-      });
+      // This key was just used to encrypt the item, so the tag is the password
+      // it really came from — not a guess (review P3-19). Derived BEFORE the
+      // check so no await sits between the generation comparison and the set:
+      // a lock during the tag's own PBKDF2 would otherwise slip through it.
+      const tag = await deriveVaultTag(password, salt);
+      if (generation === keyGeneration) keyCache.set(id, { salt, key, tag });
       return id;
     },
 
