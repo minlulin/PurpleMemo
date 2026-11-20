@@ -21,6 +21,7 @@
 // failed sync leaves them listed rather than dropping them.
 
 import { invoke } from "@tauri-apps/api/core";
+import { getLocale, translate } from "./i18n.ts";
 import { nextReminderAt, type ReminderOutcome } from "./tasks.ts";
 import type { ReminderRow } from "./types.ts";
 
@@ -64,12 +65,18 @@ export function reminderSyncRows(
   rows: ReminderRow[],
   preview: boolean,
 ): ReminderSyncRow[] {
+  // The bridge posts these words on a locked screen, so they come from the
+  // catalogue in the language the interface is set to — the same
+  // `session.*` keys the desktop ticker is handed by the shell.
+  const locale = getLocale();
   return rows
     .filter((row) => row.fired === 0)
     .map((row) => ({
       id: row.id,
-      title: preview ? `Reminder: ${row.title}` : "Reminder due",
-      body: preview ? row.note : "Open Purple Memo to see the reminder.",
+      title: preview
+        ? translate(locale, "session.previewTitle", { title: row.title })
+        : translate(locale, "session.dueTitle"),
+      body: preview ? row.note : translate(locale, "session.dueBody"),
       due: row.remind_at,
     }));
 }

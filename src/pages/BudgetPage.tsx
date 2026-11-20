@@ -910,7 +910,7 @@ function EntriesView() {
             <label>
               {t("budget.category")}
               <select
-                aria-label="Category"
+                aria-label={t("budget.category")}
                 value={categoryId === "" ? "" : String(categoryId)}
                 onChange={(e) =>
                   setCategoryId(
@@ -929,7 +929,7 @@ function EntriesView() {
             <label>
               {t("budget.wallet")}
               <select
-                aria-label="Wallet"
+                aria-label={t("budget.wallet")}
                 value={walletId === "" ? "" : String(walletId)}
                 onChange={(e) =>
                   setWalletId(
@@ -1786,7 +1786,7 @@ function RecurringView() {
               )
             }
           >
-            <option value="">Choose…</option>
+            <option value="">{t("budget.choose")}</option>
             {expenseCats.map((c) => (
               <option key={c.id} value={String(c.id)}>
                 {c.name}
@@ -1806,7 +1806,7 @@ function RecurringView() {
               )
             }
           >
-            <option value="">Choose…</option>
+            <option value="">{t("budget.choose")}</option>
             {wallets.map((w) => (
               <option key={w.id} value={String(w.id)}>
                 {w.name}

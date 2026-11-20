@@ -702,7 +702,7 @@ test("the panel prints the offer so a camera-less phone can paste it", () => {
   // The QR is not a carrier a camera-less phone can read: the same string has
   // to be on screen, selectable, and copyable (§11.1 manual entry).
   assert.match(panel, /pairing-offer-text/, "the offer string is rendered");
-  assert.match(panel, /Copy pairing string/, "and it can be copied");
+  assert.match(panel, /t\("pairing\.copy"\)/, "and it can be copied");
   assert.match(
     panel,
     /navigator\.clipboard\.writeText\(text\)/,

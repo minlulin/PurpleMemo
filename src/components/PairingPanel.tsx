@@ -18,13 +18,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { pairingRepo } from "../data/app.ts";
 import type { PairingIdentityStatus } from "../data/driver.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import {
   clockStillMatters,
   identityRecovery,
   type PairingPanelState,
+  type PanelPhase,
   type PinWrite,
   panelPhase,
-  panelPhaseLabel,
   panelView,
   pendingConfirmation,
 } from "../lib/sync/pairingPanel.ts";
@@ -33,8 +34,28 @@ import type { PeerRow } from "../lib/sync/store.ts";
 import { ConfirmButton } from "./ConfirmButton.tsx";
 import { useT } from "./useTranslation.ts";
 
+/**
+ * The panel's own words for a phase. The protocol's `panelPhaseLabel` and
+ * `panelPhaseMessage` stay English for the protocol and its tests; this is
+ * the screen's translation of exactly the same states.
+ */
+const PHASE_LABEL_KEYS: Record<Exclude<PanelPhase, "active">, MessageKey> = {
+  expired: "pairing.phase.expired",
+  used: "pairing.phase.used",
+  locked: "pairing.phase.locked",
+  closed: "pairing.phase.closed",
+};
+
+const PHASE_MESSAGE_KEYS: Record<Exclude<PanelPhase, "active">, MessageKey> = {
+  expired: "pairing.reason.expired",
+  used: "pairing.reason.used",
+  locked: "pairing.reason.locked",
+  closed: "pairing.reason.closed",
+};
+
 /** The QR's modules, drawn from the same matrix the round-trip test decodes. */
 function QrCode({ payload }: { payload: string }) {
+  const t = useT();
   const matrix = qrMatrix(payload);
   const side = matrix.size + QR_QUIET_ZONE * 2;
   const cells: { x: number; y: number }[] = [];
@@ -48,7 +69,7 @@ function QrCode({ payload }: { payload: string }) {
       className="pairing-qr"
       viewBox={`0 0 ${side} ${side}`}
       role="img"
-      aria-label="Pairing QR code"
+      aria-label={t("pairing.qrAria")}
       shapeRendering="crispEdges"
     >
       {/* A QR is black on white by definition — modules are never a brand
@@ -267,6 +288,11 @@ export function PairingPanel() {
   const pending = state === null ? null : pendingConfirmation(state, peers);
   const recovery = identityRecovery(identity);
   const rePairingPeer = pending?.existing?.deviceId ?? null;
+  const phaseLabel = (phase: PanelPhase): string =>
+    phase === "active" ? "" : t(PHASE_LABEL_KEYS[phase]);
+  const phaseReason = (phase: PanelPhase): string | null =>
+    phase === "active" ? null : t(PHASE_MESSAGE_KEYS[phase]);
+  const phaseNote = view === null ? null : phaseReason(view.phase);
 
   // The count belongs to the phone being staged, so it is read whenever a
   // different device is staged — never guessed from this window's own state.
@@ -309,9 +335,7 @@ export function PairingPanel() {
 
   return (
     <div className="pairing-panel">
-      <p className="muted">
-        Listens on your local network only while this panel is open.
-      </p>
+      <p className="muted">{t("pairing.listenNotice")}</p>
       {error !== null ? (
         <p className="pairing-error" role="alert">
           {error}
@@ -322,33 +346,31 @@ export function PairingPanel() {
           is never offered for replacement — only a key that is gone or can
           no longer be opened (§11.2, N2). */}
       {recovery.needed ? (
-        <section aria-label="Replace this device's pairing key">
+        <section aria-label={t("pairing.replaceSectionAria")}>
           <p>
-            <strong>This device's pairing key is gone or unreadable.</strong>
+            <strong>{t("pairing.keyGoneTitle")}</strong>
           </p>
           {recovery.note !== null ? (
             <p className="pairing-error" role="alert">
               {recovery.note}
             </p>
           ) : null}
-          <p className="muted">
-            Your data stays on this device. Every paired phone must pair again.
-          </p>
+          <p className="muted">{t("pairing.dataStays")}</p>
           <div className="pairing-actions">
             <ConfirmButton
-              what="this device's pairing key"
+              what={t("pairing.replaceWhat")}
               className="btn btn-danger"
               disabled={busy}
               onConfirm={replaceIdentity}
             >
-              Replace this device's pairing key
+              {t("pairing.replace")}
             </ConfirmButton>
           </div>
         </section>
       ) : null}
       {recovery.rePairRequired && !recovery.needed ? (
         <p className="muted" role="status">
-          A phone that paired before must pair again with a fresh code.
+          {t("pairing.rePairRequired")}
         </p>
       ) : null}
 
@@ -359,7 +381,7 @@ export function PairingPanel() {
           disabled={busy}
           onClick={() => void open()}
         >
-          {busy ? "Opening…" : "Show a pairing code"}
+          {busy ? t("pairing.opening") : t("pairing.open")}
         </button>
       ) : (
         <>
@@ -372,9 +394,7 @@ export function PairingPanel() {
               <figure className="pairing-offer">
                 <QrCode payload={view.payload} />
                 <figcaption>
-                  <p className="muted">
-                    No camera? Paste this string on the phone instead.
-                  </p>
+                  <p className="muted">{t("pairing.noCamera")}</p>
                   <code className="pairing-offer-text" ref={offerTextRef}>
                     {view.payload}
                   </code>
@@ -383,42 +403,44 @@ export function PairingPanel() {
                     className="btn"
                     onClick={() => void copyOffer(view.payload ?? "")}
                   >
-                    {copied ? "Copied" : "Copy pairing string"}
+                    {copied ? t("pairing.copied") : t("pairing.copy")}
                   </button>
                 </figcaption>
               </figure>
             ) : null}
             <dl className="pairing-facts">
               <div>
-                <dt>Pairing code</dt>
+                <dt>{t("pairing.code")}</dt>
                 <dd className="pairing-code">
                   {/* The phase's own word, never a hardcoded "expired": a
                       locked, used or unreachable code says what it is (N3). */}
-                  {view.code ?? panelPhaseLabel(view.phase)}
+                  {view.code ?? phaseLabel(view.phase)}
                 </dd>
               </div>
               <div>
-                <dt>Code lifetime</dt>
+                <dt>{t("pairing.lifetime")}</dt>
                 <dd>
                   {view.phase === "active"
-                    ? `${view.remainingSeconds} s left`
-                    : (view.reason ?? "closed")}
+                    ? t("pairing.secondsLeft", {
+                        seconds: view.remainingSeconds,
+                      })
+                    : phaseReason(view.phase)}
                 </dd>
               </div>
               <div>
-                <dt>Listening on</dt>
+                <dt>{t("pairing.listeningOn")}</dt>
                 <dd>
                   {view.listenerRunning
-                    ? (view.endpoint ?? "a local port")
-                    : "closed"}
+                    ? (view.endpoint ?? t("pairing.localPort"))
+                    : t("pairing.closed")}
                 </dd>
               </div>
               {pin !== null ? (
                 <div>
-                  <dt>Paired phone</dt>
+                  <dt>{t("pairing.pairedPhone")}</dt>
                   <dd className="pairing-fingerprint">
                     {pin.peer.fingerprint ?? pin.peer.deviceId}
-                    {pin.repinned ? " (re-paired)" : ""}
+                    {pin.repinned ? ` ${t("pairing.rePaired")}` : ""}
                   </dd>
                 </div>
               ) : null}
@@ -426,17 +448,28 @@ export function PairingPanel() {
                   applied by this panel — its state is the person's receipt. */}
               {view.upload !== null ? (
                 <div>
-                  <dt>Phone upload</dt>
+                  <dt>{t("pairing.upload")}</dt>
                   <dd>
                     {view.upload.state === "receiving"
-                      ? `Receiving… (${view.upload.ops} record(s) so far)`
+                      ? t("pairing.receivingRecords", {
+                          count: view.upload.ops,
+                        })
                       : view.upload.state === "staged"
-                        ? `${view.upload.ops} record(s) received — applying…`
+                        ? t("pairing.recordsReceived", {
+                            count: view.upload.ops,
+                          })
                         : view.upload.state === "applying"
-                          ? "Applying…"
+                          ? t("pairing.applying")
                           : view.upload.state === "applied"
-                            ? `${view.upload.inserted ?? 0} added, ${view.upload.alreadyKnown ?? 0} already here`
-                            : `Failed — ${view.upload.note ?? "the apply did not commit"}`}
+                            ? t("pairing.uploadApplied", {
+                                inserted: view.upload.inserted ?? 0,
+                                alreadyKnown: view.upload.alreadyKnown ?? 0,
+                              })
+                            : t("pairing.failed", {
+                                detail:
+                                  view.upload.note ??
+                                  t("pairing.applyNotCommitted"),
+                              })}
                   </dd>
                 </div>
               ) : null}
@@ -444,17 +477,31 @@ export function PairingPanel() {
                   panel's engine merges, and the phone's position comes back. */}
               {view.sync !== null ? (
                 <div>
-                  <dt>Phone sync</dt>
+                  <dt>{t("pairing.sync")}</dt>
                   <dd>
                     {view.sync.state === "receiving"
-                      ? `Receiving… (${view.sync.ops} change(s) so far)`
+                      ? t("pairing.receivingChanges", {
+                          count: view.sync.ops,
+                        })
                       : view.sync.state === "staged"
-                        ? `${view.sync.ops} change(s) received — applying…`
+                        ? t("pairing.changesReceived", {
+                            count: view.sync.ops,
+                          })
                         : view.sync.state === "applying"
-                          ? "Applying…"
+                          ? t("pairing.applying")
                           : view.sync.state === "applied"
-                            ? `${view.sync.ops} change(s) applied${view.sync.applied === null ? "" : `, phone has everything through ${view.sync.applied}`}`
-                            : `Failed — ${view.sync.note ?? "the apply did not commit"}`}
+                            ? `${t("pairing.changesApplied", { count: view.sync.ops })}${
+                                view.sync.applied === null
+                                  ? ""
+                                  : t("pairing.phoneThrough", {
+                                      applied: view.sync.applied,
+                                    })
+                              }`
+                            : t("pairing.failed", {
+                                detail:
+                                  view.sync.note ??
+                                  t("pairing.applyNotCommitted"),
+                              })}
                   </dd>
                 </div>
               ) : null}
@@ -462,7 +509,7 @@ export function PairingPanel() {
                   proceed — the reason, not a silent stall. */}
               {view.note !== null ? (
                 <div>
-                  <dt>Snapshot</dt>
+                  <dt>{t("pairing.snapshot")}</dt>
                   <dd>{view.note}</dd>
                 </div>
               ) : null}
@@ -471,42 +518,45 @@ export function PairingPanel() {
 
           {/* Nothing is pinned until this block is confirmed (§11.1, N1). */}
           {pending !== null && pin === null ? (
-            <section aria-label="Confirm this phone">
+            <section aria-label={t("pairing.confirmSectionAria")}>
               <p>
-                <strong>Confirm this phone</strong>
+                <strong>{t("pairing.confirmTitle")}</strong>
               </p>
               <dl className="pairing-facts">
                 <div>
-                  <dt>This desktop's fingerprint</dt>
+                  <dt>{t("pairing.localFingerprint")}</dt>
                   <dd className="pairing-fingerprint">
                     {pending.localFingerprint}
                   </dd>
                 </div>
                 <div>
-                  <dt>The phone's fingerprint</dt>
+                  <dt>{t("pairing.peerFingerprint")}</dt>
                   <dd className="pairing-fingerprint">
                     {pending.peer.fingerprint ?? pending.peer.deviceId}
                   </dd>
                 </div>
                 {pending.existing !== null ? (
                   <div>
-                    <dt>Already paired</dt>
+                    <dt>{t("pairing.alreadyPaired")}</dt>
                     <dd>
-                      Re-pairing existing phone{" "}
-                      {pending.existing.displayName ||
-                        pending.existing.deviceId}{" "}
-                      — this replaces its pinned key
-                      {pending.existing.fingerprint !== null
-                        ? ` (currently ${pending.existing.fingerprint})`
-                        : ""}
-                      .
+                      {t("pairing.rePairing", {
+                        name:
+                          pending.existing.displayName ||
+                          pending.existing.deviceId,
+                        current:
+                          pending.existing.fingerprint !== null
+                            ? t("pairing.currently", {
+                                fingerprint: pending.existing.fingerprint,
+                              })
+                            : "",
+                      })}
                     </dd>
                   </div>
                 ) : null}
               </dl>
               {pending.helloReceived ? null : (
                 <p className="muted" role="status">
-                  Waiting for the phone…
+                  {t("pairing.waitingPhone")}
                 </p>
               )}
               {/* §11.4: a re-pair zeroes the cursors, so anything this
@@ -544,7 +594,7 @@ export function PairingPanel() {
                   }
                   onClick={() => void trust()}
                 >
-                  Trust matching fingerprint
+                  {t("pairing.trust")}
                 </button>
                 <button
                   type="button"
@@ -552,19 +602,16 @@ export function PairingPanel() {
                   disabled={busy}
                   onClick={() => void close()}
                 >
-                  Reject
+                  {t("pairing.reject")}
                 </button>
               </div>
             </section>
           ) : null}
 
-          <p className="muted">
-            Compare the fingerprints on both screens before trusting. Nothing
-            pairs until you press Trust.
-          </p>
-          {view.phase !== "active" && view.reason !== null ? (
+          <p className="muted">{t("pairing.compare")}</p>
+          {phaseNote !== null ? (
             <p className="pairing-error" role="alert">
-              {view.reason}
+              {phaseNote}
             </p>
           ) : null}
           {pending === null || pin !== null ? (
@@ -578,7 +625,7 @@ export function PairingPanel() {
                   disabled={busy}
                   onClick={() => void open()}
                 >
-                  Show a fresh code
+                  {t("pairing.freshCode")}
                 </button>
               ) : null}
               <button
@@ -587,7 +634,7 @@ export function PairingPanel() {
                 disabled={busy}
                 onClick={() => void close()}
               >
-                Stop pairing
+                {t("pairing.stop")}
               </button>
             </div>
           ) : null}

@@ -80,6 +80,10 @@ test("the Shopping namespace is translated, not copied from English", () => {
   assertNamespaceTranslated("shopping.", 18);
 });
 
+test("the Pairing namespace is translated, not copied from English", () => {
+  assertNamespaceTranslated("pairing.", 55);
+});
+
 test("the Gallery namespace is translated, not copied from English", () => {
   assertNamespaceTranslated("gallery.", 24);
 });
