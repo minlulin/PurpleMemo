@@ -111,6 +111,26 @@ export interface OutboxEntry {
   baseCounter?: number;
 }
 
+/**
+ * A condition a mutation's sync record must still satisfy (§6.1).
+ *
+ * A conditional write — "insert this row only while the capture is still
+ * open" — can legitimately insert nothing, and recording an op for a row this
+ * device does not hold would send a peer a create for a record that never
+ * existed here. The guard is evaluated in the SAME statements that record the
+ * op and the row stamp, so the choice is made by the transaction, not by a
+ * read before it.
+ *
+ * `sql` must be a SELECT (it is wrapped in `EXISTS`), and `params` are its
+ * bound values, appended after each statement's own. Deletes are not
+ * supported: their tombstone has its own rule (§5.1) and no caller needs a
+ * conditional one yet.
+ */
+export interface OutboxGuard {
+  sql: string;
+  params?: readonly unknown[];
+}
+
 function nowIso(now: Date): string {
   return now.toISOString();
 }
@@ -217,28 +237,50 @@ function tombstoneStatement(
 export function outboxStatements(
   entries: readonly OutboxEntry[],
   now: Date = new Date(),
+  guard?: OutboxGuard,
 ): BatchStatement[] {
   const stamp = nowIso(now);
   const statements: BatchStatement[] = [];
+  const guardParams = guard?.params ?? [];
   for (const entry of entries) {
     assertSyncTable(entry.table);
+    if (guard !== undefined && entry.kind === "delete") {
+      throw new Error(
+        "a guarded outbox entry may not be a delete: a conditional delete needs its own tombstone rule",
+      );
+    }
     const opId = crypto.randomUUID();
+    // The clock still advances when the guard fails: a sequence gap is
+    // harmless (§1.3), and skipping the bump would need the guard to be read
+    // into TypeScript — the stale counter these subselects exist to avoid.
     statements.push(bumpClock(stamp));
+    const outboxParams = [
+      opId,
+      entry.table,
+      entry.uid,
+      entry.kind,
+      entry.baseCounter ?? 0,
+      JSON.stringify(entry.fieldStamps ?? {}),
+      JSON.stringify(entry.fields ?? {}),
+      stamp,
+    ];
     statements.push({
-      sql: `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+      // Guarded: an INSERT … SELECT that produces no row when the condition
+      // no longer holds, so the op and the write it describes agree by
+      // construction — the same SELECT form SQLite uses for any conditional
+      // insert, with the guard's own params appended after ours.
+      sql:
+        guard === undefined
+          ? `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
             VALUES ((SELECT device_id FROM sync_state WHERE id = 1),
                     (SELECT last_seq FROM sync_state WHERE id = 1),
-                    ?, ?, ?, ?, ?, (SELECT lamport FROM sync_state WHERE id = 1), ?, ?, ?)`,
-      params: [
-        opId,
-        entry.table,
-        entry.uid,
-        entry.kind,
-        entry.baseCounter ?? 0,
-        JSON.stringify(entry.fieldStamps ?? {}),
-        JSON.stringify(entry.fields ?? {}),
-        stamp,
-      ],
+                    ?, ?, ?, ?, ?, (SELECT lamport FROM sync_state WHERE id = 1), ?, ?, ?)`
+          : `INSERT INTO sync_outbox (device_id, seq, op_id, entity_table, entity_uid, op, base_counter, counter, field_stamps, payload, created_at)
+            SELECT (SELECT device_id FROM sync_state WHERE id = 1),
+                   (SELECT last_seq FROM sync_state WHERE id = 1),
+                   ?, ?, ?, ?, ?, (SELECT lamport FROM sync_state WHERE id = 1), ?, ?, ?
+            WHERE EXISTS (${guard.sql})`,
+      params: [...outboxParams, ...guardParams],
     });
     // §4.2/§8.4: the durable stamp of the value this row now holds. Written
     // with the mutation, in the same batch (§6.1), because `sync_outbox` is
@@ -262,17 +304,34 @@ export function outboxStatements(
               entry.fields ?? {},
               entry.fieldStamps,
             );
+            const stampParams = [
+              entry.table,
+              entry.uid,
+              opId,
+              ...stamps.params,
+              stamp,
+            ];
+            // Unguarded stays the VALUES form: an INSERT … SELECT with an
+            // upsert is ambiguous unless a WHERE follows the SELECT, so the
+            // SELECT form exists only where the guard supplies one.
+            const insertSql =
+              guard === undefined
+                ? `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+                   VALUES (?, ?, (SELECT lamport FROM sync_state WHERE id = 1),
+                           (SELECT device_id FROM sync_state WHERE id = 1), ?, ${stamps.sql}, ?)`
+                : `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
+                   SELECT ?, ?, (SELECT lamport FROM sync_state WHERE id = 1),
+                          (SELECT device_id FROM sync_state WHERE id = 1), ?, ${stamps.sql}, ?
+                   WHERE EXISTS (${guard.sql})`;
             return {
-              sql: `INSERT INTO sync_row_stamps (entity_table, entity_uid, counter, device_id, op_id, field_stamps, updated_at)
-                    VALUES (?, ?, (SELECT lamport FROM sync_state WHERE id = 1),
-                            (SELECT device_id FROM sync_state WHERE id = 1), ?, ${stamps.sql}, ?)
+              sql: `${insertSql}
                     ON CONFLICT(entity_table, entity_uid) DO UPDATE SET
                       counter = excluded.counter,
                       device_id = excluded.device_id,
                       op_id = excluded.op_id,
                       field_stamps = excluded.field_stamps,
                       updated_at = excluded.updated_at`,
-              params: [entry.table, entry.uid, opId, ...stamps.params, stamp],
+              params: [...stampParams, ...guardParams],
             };
           })(),
     );

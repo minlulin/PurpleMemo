@@ -21,7 +21,9 @@ import type { BatchStatement, DataDriver } from "../data/driver.ts";
 import { todayLocal } from "./dates.ts";
 import { JOURNAL_BLOCK_SEPARATOR } from "./drafts.ts";
 import { type MessageKey, type MessageParams, translate } from "./i18n.ts";
+import { outboxStatements } from "./sync/store.ts";
 import type { InboxRow, InboxStatus, InboxTarget } from "./types.ts";
+import { newUid } from "./uid.ts";
 
 /** What a capture can become. `journal` updates today's entry instead. */
 export const INBOX_TARGETS: InboxTarget[] = ["note", "task", "journal"];
@@ -108,22 +110,26 @@ export function journalBlock(body: string): string {
  */
 const OPEN_CLAIM = "SELECT 1 FROM inbox_items WHERE id = ? AND status = 'open'";
 
+/**
+ * The claim, and the LAST statement of every conversion.
+ *
+ * `converted_id` is resolved from the target's own identity rather than from
+ * `last_insert_rowid()`: the sync statements between the target insert and
+ * this claim insert rows of their own, so "the last insert" would name an
+ * outbox or stamp row. The uid (or the journal date) is the one thing in the
+ * batch that names the target without depending on statement order.
+ */
 function claimStatement(
   type: InboxTarget,
-  extraParams: unknown[],
+  idSelect: string,
+  idSelectParams: readonly unknown[],
+  inboxId: number,
 ): BatchStatement {
-  // `converted_id` is taken from the connection's last insert rather than
-  // returned: a batch hands back no rows, and the two statements above it in
-  // this same transaction have already inserted the target.
   return {
     sql: `UPDATE inbox_items
-          SET status = 'converted', converted_type = ?, converted_id = ${
-            type === "journal"
-              ? "(SELECT id FROM journal_entries WHERE entry_date = ?)"
-              : "last_insert_rowid()"
-          }
+          SET status = 'converted', converted_type = ?, converted_id = ${idSelect}
           WHERE id = ? AND status = 'open'`,
-    params: [type, ...extraParams],
+    params: [type, ...idSelectParams, inboxId],
   };
 }
 
@@ -138,28 +144,69 @@ export function convertStatements(
   entryDate: string = todayLocal(),
 ): BatchStatement[] {
   const today = todayLocal();
+  // A converted capture produces an ordinary record, so it carries the same
+  // things every other create path gives one: a uid minted by the device that
+  // creates it, a create op and the row stamp, all in this batch (§6.1).
+  // Without them the note existed only on this machine — invisible to a
+  // snapshot (`WHERE uid IS NOT NULL`), and unrecordable by any later edit.
   if (target === "note") {
+    const uid = newUid();
+    const title = inboxTitle(body);
+    const fields = {
+      title,
+      content: body,
+      tags: "",
+      collection_uid: null,
+      pinned: 0,
+      archived: 0,
+      created_at: today,
+      updated_at: today,
+    };
     return [
       {
-        sql: `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at)
-              SELECT ?, ?, '', NULL, 0, 0, ?, ?
+        sql: `INSERT INTO notes (title, content, tags, collection_id, pinned, archived, created_at, updated_at, uid)
+              SELECT ?, ?, '', NULL, 0, 0, ?, ?, ?
               WHERE EXISTS (${OPEN_CLAIM})`,
-        params: [inboxTitle(body), body, today, today, id],
+        params: [title, body, today, today, uid, id],
       },
-      claimStatement("note", [id]),
+      // The op and the stamp come BEFORE the claim, because both are gated on
+      // the same "still open" condition the insert is (§6.1). Ordering is what
+      // makes a lost race write nothing at all: a capture already converted by
+      // another call inserts no row, records no op, stamps nothing, and the
+      // claim itself matches no row.
+      ...outboxStatements(
+        [{ table: "notes", uid, kind: "create", fields }],
+        undefined,
+        { sql: OPEN_CLAIM, params: [id] },
+      ),
+      claimStatement("note", "(SELECT id FROM notes WHERE uid = ?)", [uid], id),
     ];
   }
   if (target === "task") {
     // No due date and no repeat are inferred from a capture — the plan's
     // decision: a task is just the captured text, and the user schedules it.
+    const uid = newUid();
+    const fields = {
+      title: body,
+      due_date: null,
+      done: 0,
+      repeat: "none" as const,
+      note: "",
+      created_at: today,
+    };
     return [
       {
-        sql: `INSERT INTO tasks (title, due_date, done, repeat, note, created_at)
-              SELECT ?, NULL, 0, 'none', '', ?
+        sql: `INSERT INTO tasks (title, due_date, done, repeat, note, created_at, uid)
+              SELECT ?, NULL, 0, 'none', '', ?, ?
               WHERE EXISTS (${OPEN_CLAIM})`,
-        params: [body, today, id],
+        params: [body, today, uid, id],
       },
-      claimStatement("task", [id]),
+      ...outboxStatements(
+        [{ table: "tasks", uid, kind: "create", fields }],
+        undefined,
+        { sql: OPEN_CLAIM, params: [id] },
+      ),
+      claimStatement("task", "(SELECT id FROM tasks WHERE uid = ?)", [uid], id),
     ];
   }
   if (target === "journal") {
@@ -184,7 +231,12 @@ export function convertStatements(
           JOURNAL_BLOCK_SEPARATOR,
         ],
       },
-      claimStatement("journal", [entryDate, id]),
+      claimStatement(
+        "journal",
+        "(SELECT id FROM journal_entries WHERE entry_date = ?)",
+        [entryDate],
+        id,
+      ),
     ];
   }
   throw new Error(`Unknown capture target ${target}.`);

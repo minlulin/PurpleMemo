@@ -33,6 +33,7 @@ import {
   targetKey,
 } from "./inbox.ts";
 import type { InboxRow } from "./types.ts";
+import { isUid } from "./uid.ts";
 
 // ---------------------------------------------------------------------------
 // A real SQLite database behind the DataDriver interface
@@ -90,6 +91,48 @@ CREATE TABLE journal_entries (
   content    TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- The sync record a converted note/task also writes (§6.1): its outbox op,
+-- the row stamp, and the one identity row the subselects read from. Same
+-- shape as schema.rs, trimmed to the columns these statements touch.
+CREATE TABLE sync_state (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id        TEXT NOT NULL CHECK (length(device_id) = 36),
+  data_generation  INTEGER NOT NULL DEFAULT 1,
+  lamport          INTEGER NOT NULL DEFAULT 0,
+  last_seq         INTEGER NOT NULL DEFAULT 0,
+  re_pair_required INTEGER NOT NULL DEFAULT 0,
+  updated_at       TEXT NOT NULL
+);
+INSERT INTO sync_state (id, device_id, updated_at)
+  VALUES (1, '11111111-1111-4111-8111-111111111111', '2026-10-18T00:00:00Z');
+
+CREATE TABLE sync_outbox (
+  id           INTEGER PRIMARY KEY,
+  device_id    TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  op_id        TEXT NOT NULL UNIQUE,
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  op           TEXT NOT NULL,
+  base_counter INTEGER NOT NULL DEFAULT 0,
+  counter      INTEGER NOT NULL,
+  field_stamps TEXT NOT NULL DEFAULT '{}',
+  payload      TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL,
+  UNIQUE (device_id, seq)
+);
+
+CREATE TABLE sync_row_stamps (
+  entity_table TEXT NOT NULL,
+  entity_uid   TEXT NOT NULL,
+  counter      INTEGER NOT NULL CHECK (counter >= 0),
+  device_id    TEXT NOT NULL,
+  op_id        TEXT NOT NULL,
+  field_stamps TEXT NOT NULL DEFAULT '{}',
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (entity_table, entity_uid)
 );
 `;
 
@@ -209,20 +252,36 @@ test("the inbox and the notes flow share one journal separator", () => {
 // The statements themselves
 // ---------------------------------------------------------------------------
 
-test("a conversion is ONE batch, and every statement is claimed on status", () => {
+test("a conversion is ONE batch: the target, its sync record and the claim", () => {
   for (const target of INBOX_TARGETS) {
     const statements = convertStatements(7, target, "a thought", "2026-10-18");
+    // note/task: insert + clock bump + outbox + stamp + claim. A journal entry
+    // is not a synced record, so it is still the upsert and the claim.
+    const expected = target === "journal" ? 2 : 5;
     assert.equal(
       statements.length,
-      2,
-      `${target}: expected a write and a claim`,
+      expected,
+      `${target}: expected ${expected} statements`,
     );
-    for (const s of statements) {
-      assert.match(s.sql, /status = 'open'/, `${target}: unclaimed statement`);
-    }
-    const claim = statements[1];
+    const claim = statements.at(-1);
     assert.match(claim?.sql ?? "", /^UPDATE inbox_items/);
     assert.match(claim?.sql ?? "", /converted_type = \?/);
+    assert.equal(
+      claim?.params?.at(-1),
+      7,
+      `${target}: the claim names the capture`,
+    );
+    // Everything that writes the target or its sync record is gated on the
+    // same claim. The clock bump is the one unconditional statement: a
+    // sequence gap is harmless, and reading the counter here would be stale.
+    for (const statement of statements) {
+      if (/sync_state/.test(statement.sql)) continue;
+      assert.match(
+        statement.sql,
+        /status = 'open'/,
+        `${target}: ungated statement`,
+      );
+    }
   }
 });
 
@@ -307,6 +366,127 @@ test("a note conversion records the note it created", async () => {
   assert.equal(notes[0]?.title, "buy milk");
   assert.equal(notes[0]?.content, "buy milk\nand eggs");
   assert.deepEqual(await repo.listOpen(), [], "the capture left the inbox");
+});
+
+test("a converted note carries an identity, a create op and a row stamp", async () => {
+  const driver = sqliteDriver();
+  const repo = createInboxRepo(driver);
+  await repo.convert(await repo.create("buy milk"), "note");
+
+  const [note] = rows<{ id: number; uid: string | null }>(
+    driver.db,
+    "SELECT id, uid FROM notes",
+  );
+  assert.ok(isUid(note?.uid), `the note carries a uuid, got ${note?.uid}`);
+
+  const ops = rows<{
+    entity_table: string;
+    entity_uid: string;
+    op: string;
+    payload: string;
+  }>(
+    driver.db,
+    "SELECT entity_table, entity_uid, op, payload FROM sync_outbox",
+  );
+  assert.equal(ops.length, 1, "one op for the one create");
+  assert.equal(ops[0]?.entity_table, "notes");
+  assert.equal(ops[0]?.entity_uid, note?.uid);
+  assert.equal(ops[0]?.op, "create");
+  const payload = JSON.parse(ops[0]?.payload ?? "{}");
+  assert.equal(payload.title, "buy milk");
+  assert.equal(payload.content, "buy milk");
+  assert.equal(payload.collection_uid, null, "no collection, named as such");
+
+  const stamps = rows<{
+    entity_table: string;
+    entity_uid: string;
+    field_stamps: string;
+  }>(
+    driver.db,
+    "SELECT entity_table, entity_uid, field_stamps FROM sync_row_stamps",
+  );
+  assert.equal(stamps.length, 1, "one stamp for the one row");
+  assert.equal(stamps[0]?.entity_table, "notes");
+  assert.equal(stamps[0]?.entity_uid, note?.uid);
+  const fieldStamps = JSON.parse(stamps[0]?.field_stamps ?? "{}");
+  assert.ok(fieldStamps.title, "the title field is stamped");
+  assert.ok(fieldStamps.content, "the content field is stamped");
+});
+
+test("a converted task carries an identity, a create op and a row stamp", async () => {
+  const driver = sqliteDriver();
+  const repo = createInboxRepo(driver);
+  await repo.convert(await repo.create("call supplier"), "task");
+
+  const [task] = rows<{ uid: string | null }>(
+    driver.db,
+    "SELECT uid FROM tasks",
+  );
+  assert.ok(isUid(task?.uid), `the task carries a uuid, got ${task?.uid}`);
+  const ops = rows<{
+    entity_table: string;
+    entity_uid: string;
+    payload: string;
+  }>(driver.db, "SELECT entity_table, entity_uid, payload FROM sync_outbox");
+  assert.equal(ops.length, 1);
+  assert.equal(ops[0]?.entity_table, "tasks");
+  assert.equal(ops[0]?.entity_uid, task?.uid);
+  const payload = JSON.parse(ops[0]?.payload ?? "{}");
+  assert.equal(payload.title, "call supplier");
+  assert.equal(payload.due_date, null, "no inferred due date");
+  assert.equal(payload.repeat, "none");
+  assert.equal(
+    rows<{ entity_uid: string }>(
+      driver.db,
+      "SELECT entity_uid FROM sync_row_stamps",
+    )[0]?.entity_uid,
+    task?.uid,
+  );
+});
+
+test("a lost race records no op or stamp for the target it did not create", async () => {
+  const driver = sqliteDriver();
+  const id = 1;
+  driver.db
+    .prepare(
+      "INSERT INTO inbox_items (id, body, status, created_at) VALUES (?, ?, 'open', ?)",
+    )
+    .run(id, "a thought", "2026-10-18");
+  // This caller built its batch while the capture was open…
+  const statements = convertStatements(id, "note", "a thought", "2026-10-18");
+  // …and another caller converted it before the batch ran. That is the one
+  // interleaving the `status = 'open'` guard exists to survive.
+  driver.db
+    .prepare(
+      "UPDATE inbox_items SET status = 'converted', converted_type = 'note', converted_id = 99 WHERE id = ?",
+    )
+    .run(id);
+
+  await driver.batch(statements);
+
+  assert.equal(
+    rows(driver.db, "SELECT id FROM notes").length,
+    0,
+    "no second note",
+  );
+  assert.equal(
+    rows(driver.db, "SELECT id FROM sync_outbox").length,
+    0,
+    "no op for a row this device never held",
+  );
+  assert.equal(
+    rows(driver.db, "SELECT * FROM sync_row_stamps").length,
+    0,
+    "no stamp for a row this device never held",
+  );
+  assert.equal(
+    rows<{ converted_id: number }>(
+      driver.db,
+      "SELECT converted_id FROM inbox_items",
+    )[0]?.converted_id,
+    99,
+    "the winner's target stands",
+  );
 });
 
 test("a second conversion of the same capture produces no second target", async () => {
@@ -530,8 +710,12 @@ test("the repository sends one batch per conversion", async () => {
     "the target write and the claim are one batch",
   );
   const statements = first(batches, "batch").args[0] as BatchStatement[];
-  assert.equal(statements.length, 2);
-  assert.deepEqual(statements[1]?.params, ["task", 3]);
+  const claim = statements.at(-1);
+  assert.match(claim?.sql ?? "", /^UPDATE inbox_items/);
+  // The insert carries the uid the claim and the op both name.
+  const uid = statements[0]?.params?.[2];
+  assert.ok(isUid(uid), "the task insert carries a uuid");
+  assert.deepEqual(claim?.params, ["task", uid, 3]);
 });
 
 test("a converted capture is answered from the row, without writing", async () => {
