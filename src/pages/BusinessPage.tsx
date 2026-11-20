@@ -19,6 +19,7 @@ import {
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import type { SearchResult } from "../lib/globalSearch.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import {
   formatMMK,
   fromCents,
@@ -35,12 +36,12 @@ import type {
 
 type BusinessView = "jobs" | "receivable" | "payables" | "history" | "shops";
 
-const VIEWS: { key: BusinessView; label: string }[] = [
-  { key: "jobs", label: "Jobs" },
-  { key: "receivable", label: "Receivable" },
-  { key: "payables", label: "Payables" },
-  { key: "history", label: "History" },
-  { key: "shops", label: "Shops" },
+const VIEWS: { key: BusinessView; labelKey: MessageKey }[] = [
+  { key: "jobs", labelKey: "business.view.jobs" },
+  { key: "receivable", labelKey: "business.view.receivable" },
+  { key: "payables", labelKey: "business.view.payables" },
+  { key: "history", labelKey: "business.view.history" },
+  { key: "shops", labelKey: "business.view.shops" },
 ];
 
 export default function BusinessPage({
@@ -50,6 +51,7 @@ export default function BusinessPage({
   searchTarget?: SearchResult | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [view, setView] = useState<BusinessView>("jobs");
 
   useEffect(() => {
@@ -71,15 +73,12 @@ export default function BusinessPage({
               <IconBusiness className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Business Tracker</h2>
-              <p className="page-subtitle">
-                Customer jobs, receivables, repair warranties &amp; supplier
-                payables
-              </p>
+              <h2 className="editor-title">{t("business.title")}</h2>
+              <p className="page-subtitle">{t("business.subtitle")}</p>
             </div>
           </div>
         </div>
-        <nav className="budget-viewnav" aria-label="Business views">
+        <nav className="budget-viewnav" aria-label={t("business.viewsAria")}>
           {VIEWS.map((v) => (
             <button
               key={v.key}
@@ -88,7 +87,7 @@ export default function BusinessPage({
               aria-current={activeView === v.key ? "page" : undefined}
               onClick={() => setView(v.key)}
             >
-              {v.label}
+              {t(v.labelKey)}
             </button>
           ))}
         </nav>
@@ -127,8 +126,12 @@ export default function BusinessPage({
         />
       ) : (
         <p className="muted">
-          The {VIEWS.find((v) => v.key === activeView)?.label} view lands in a
-          later P3c task.
+          {t("business.viewTodo", {
+            view: t(
+              VIEWS.find((v) => v.key === activeView)?.labelKey ??
+                "business.view.jobs",
+            ),
+          })}
         </p>
       )}
     </div>
@@ -137,6 +140,7 @@ export default function BusinessPage({
 
 /** Shops directory with per-customer receivable totals. */
 function ShopsView() {
+  const t = useT();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -248,7 +252,7 @@ function ShopsView() {
   };
 
   return (
-    <section className="budget-manage" aria-label="Shops">
+    <section className="budget-manage" aria-label={t("business.shops.aria")}>
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -257,12 +261,12 @@ function ShopsView() {
       ) : null}
 
       <div className="dash-card-head">
-        <h3 className="side-heading">Customer &amp; Supplier Directory</h3>
+        <h3 className="side-heading">{t("business.shops.heading")}</h3>
         <span className="badge">{rows.length}</span>
       </div>
 
       {rows.length === 0 ? (
-        <EmptyState>No shops yet — add one below.</EmptyState>
+        <EmptyState>{t("business.shops.empty")}</EmptyState>
       ) : (
         <ul className="budget-list">
           {rows.map((s) => (
@@ -271,7 +275,7 @@ function ShopsView() {
                 <>
                   <input
                     className="input"
-                    aria-label="Shop name"
+                    aria-label={t("business.shops.nameAria")}
                     value={editDraft.name}
                     onChange={(e) =>
                       setEditDraft({ ...editDraft, name: e.target.value })
@@ -279,8 +283,8 @@ function ShopsView() {
                   />
                   <input
                     className="input"
-                    aria-label="Shop phone"
-                    placeholder="Phone"
+                    aria-label={t("business.shops.phoneAria")}
+                    placeholder={t("business.shops.phonePlaceholder")}
                     value={editDraft.phone}
                     onChange={(e) =>
                       setEditDraft({ ...editDraft, phone: e.target.value })
@@ -288,8 +292,8 @@ function ShopsView() {
                   />
                   <input
                     className="input"
-                    aria-label="Shop address"
-                    placeholder="Address"
+                    aria-label={t("business.shops.addressAria")}
+                    placeholder={t("business.shops.addressPlaceholder")}
                     value={editDraft.address}
                     onChange={(e) =>
                       setEditDraft({ ...editDraft, address: e.target.value })
@@ -297,8 +301,8 @@ function ShopsView() {
                   />
                   <input
                     className="input"
-                    aria-label="Shop notes"
-                    placeholder="Notes"
+                    aria-label={t("business.shops.notesAria")}
+                    placeholder={t("business.shops.notesPlaceholder")}
                     value={editDraft.notes}
                     onChange={(e) =>
                       setEditDraft({ ...editDraft, notes: e.target.value })
@@ -311,14 +315,14 @@ function ShopsView() {
                       disabled={saving || editDraft.name.trim().length === 0}
                       onClick={() => void saveEdit()}
                     >
-                      Save
+                      {t("business.save")}
                     </button>
                     <button
                       type="button"
                       className="btn"
                       onClick={() => setEditingId(null)}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   </span>
                 </>
@@ -340,7 +344,9 @@ function ShopsView() {
                   <div className="row-end">
                     {s.remaining_cents > 0 ? (
                       <span className="badge badge-warn figure">
-                        owes {formatMMK(s.remaining_cents)}
+                        {t("business.owes", {
+                          amount: formatMMK(s.remaining_cents),
+                        })}
                       </span>
                     ) : null}
                     <span className="row-actions">
@@ -351,14 +357,16 @@ function ShopsView() {
                             className="btn btn-ghost"
                             onClick={() => startEdit(s)}
                           >
-                            Edit
+                            {t("business.edit")}
                           </button>
                           <ConfirmButton
                             className="btn btn-ghost"
-                            what={`shop ${s.name}`}
+                            what={t("business.shops.deleteWhat", {
+                              name: s.name,
+                            })}
                             onConfirm={() => removeShop(s.id)}
                           >
-                            Delete
+                            {t("common.delete")}
                           </ConfirmButton>
                         </>
                       ) : null}
@@ -378,37 +386,37 @@ function ShopsView() {
           void addShop();
         }}
       >
-        <h2 className="side-heading">New shop</h2>
+        <h2 className="side-heading">{t("business.shops.new")}</h2>
         <div className="form-grid">
           <label>
-            Name
+            {t("business.shops.nameField")}
             <input
               value={draft.name}
-              placeholder="e.g. Aung Electronics"
+              placeholder={t("business.shops.namePlaceholder")}
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             />
           </label>
           <label>
-            Phone (optional)
+            {t("business.shops.phoneField")}
             <input
               value={draft.phone}
-              placeholder="09…"
+              placeholder={t("business.shops.dialPlaceholder")}
               onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
             />
           </label>
           <label>
-            Address (optional)
+            {t("business.shops.addressField")}
             <input
               value={draft.address}
-              placeholder="Street / township"
+              placeholder={t("business.shops.streetPlaceholder")}
               onChange={(e) => setDraft({ ...draft, address: e.target.value })}
             />
           </label>
           <label>
-            Notes (optional)
+            {t("business.shops.notesField")}
             <input
               value={draft.notes}
-              placeholder="Customer or supplier note"
+              placeholder={t("business.shops.notesFieldPlaceholder")}
               onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
             />
           </label>
@@ -419,7 +427,7 @@ function ShopsView() {
             className="btn btn-primary"
             disabled={saving || !nameOk}
           >
-            Add shop
+            {t("business.shops.add")}
           </button>
         </div>
       </form>
@@ -612,7 +620,7 @@ function JobsView({
   };
 
   return (
-    <section className="budget-manage" aria-label="Open jobs">
+    <section className="budget-manage" aria-label={t("business.jobs.aria")}>
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -621,12 +629,12 @@ function JobsView({
       ) : null}
 
       <div className="dash-card-head">
-        <h3 className="side-heading">Open Jobs &amp; Work Orders</h3>
+        <h3 className="side-heading">{t("business.jobs.heading")}</h3>
         <span className="badge">{jobs.length}</span>
       </div>
 
       {jobs.length === 0 ? (
-        <EmptyState>No open jobs — create one below.</EmptyState>
+        <EmptyState>{t("business.jobs.empty")}</EmptyState>
       ) : (
         <ul className="budget-list">
           {jobs.map((j) => (
@@ -649,16 +657,25 @@ function JobsView({
                           : "badge"
                       }
                     >
-                      {inWarranty(j, todayLocal())
-                        ? `warranty until ${warrantyEndDate(j)}`
-                        : `warranty ended ${warrantyEndDate(j)}`}
+                      {t(
+                        inWarranty(j, todayLocal())
+                          ? "business.jobs.warrantyUntil"
+                          : "business.jobs.warrantyEnded",
+                        { date: warrantyEndDate(j) ?? "" },
+                      )}
                     </span>
                   ) : null}
                 </span>
                 <span className="row-sub figure">
-                  Paid {formatMMK(j.paid_cents)} / {formatMMK(j.total_cents)} ·{" "}
+                  {t("business.jobs.paidOf", {
+                    paid: formatMMK(j.paid_cents),
+                    total: formatMMK(j.total_cents),
+                  })}
+                  {" · "}
                   <b className="amount-expense">
-                    {formatMMK(j.remaining_cents)} left
+                    {t("business.jobs.left", {
+                      amount: formatMMK(j.remaining_cents),
+                    })}
                   </b>
                   {j.note ? ` — ${j.note}` : ""}
                 </span>
@@ -668,7 +685,9 @@ function JobsView({
                   <>
                     <input
                       className="input"
-                      aria-label={`Payment amount for ${j.title}`}
+                      aria-label={t("business.jobs.payAmountAria", {
+                        title: j.title,
+                      })}
                       inputMode="decimal"
                       placeholder="0.00"
                       value={payAmount}
@@ -681,7 +700,7 @@ function JobsView({
                     />
                     <select
                       className="select"
-                      aria-label="Payment wallet"
+                      aria-label={t("business.jobs.payWalletAria")}
                       value={payWallet === "" ? "" : String(payWallet)}
                       onChange={(e) =>
                         setPayWallet(
@@ -689,7 +708,7 @@ function JobsView({
                         )
                       }
                     >
-                      <option value="">Wallet…</option>
+                      <option value="">{t("business.jobs.walletPick")}</option>
                       {wallets.map((w) => (
                         <option key={w.id} value={String(w.id)}>
                           {w.name}
@@ -707,14 +726,16 @@ function JobsView({
                       }
                       onClick={() => void pay(j.id)}
                     >
-                      {payingId === j.id ? "Saving…" : "Save payment"}
+                      {payingId === j.id
+                        ? t("business.saving")
+                        : t("business.jobs.savePayment")}
                     </button>
                     <button
                       type="button"
                       className="btn"
                       onClick={() => setPayFor(null)}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   </>
                 ) : (
@@ -727,7 +748,7 @@ function JobsView({
                       setPayWallet("");
                     }}
                   >
-                    Record payment
+                    {t("business.jobs.recordPayment")}
                   </button>
                 )}
                 <button
@@ -735,20 +756,21 @@ function JobsView({
                   className="btn btn-ghost"
                   onClick={() => startEditJob(j)}
                 >
-                  Edit
+                  {t("business.edit")}
                 </button>
                 {/* Its recorded payments stay in the Budget (cash basis), so
                     the confirm says what the delete does and does not do. */}
                 <ConfirmButton
                   className="btn btn-ghost"
-                  what={
+                  what={t(
                     j.paid_cents > 0
-                      ? `job “${j.title}” (payments already received stay in the Budget)`
-                      : `job “${j.title}”`
-                  }
+                      ? "business.jobs.deletePaidWhat"
+                      : "business.jobs.deleteWhat",
+                    { title: j.title },
+                  )}
                   onConfirm={() => removeJob(j.id)}
                 >
-                  Delete
+                  {t("common.delete")}
                 </ConfirmButton>
               </span>
             </li>
@@ -764,27 +786,29 @@ function JobsView({
         }}
       >
         <h2 className="side-heading">
-          {editing === null ? "New job" : `Edit job — ${editing.title}`}
+          {editing === null
+            ? t("business.jobs.new")
+            : t("business.jobs.edit", { title: editing.title })}
         </h2>
         <div className="form-grid">
           <label>
-            Title
+            {t("business.jobs.titleField")}
             <input
               value={title}
-              placeholder="e.g. Fix inverter board"
+              placeholder={t("business.jobs.titlePlaceholder")}
               onChange={(e) => setTitle(e.target.value)}
             />
           </label>
           <label>
-            Customer shop (optional)
+            {t("business.jobs.shopField")}
             <select
-              aria-label="Customer shop"
+              aria-label={t("business.jobs.shopAria")}
               value={shopId === "" ? "" : String(shopId)}
               onChange={(e) =>
                 setShopId(e.target.value === "" ? "" : Number(e.target.value))
               }
             >
-              <option value="">None</option>
+              <option value="">{t("business.none")}</option>
               {shops.map((s) => (
                 <option key={s.id} value={String(s.id)}>
                   {s.name}
@@ -793,7 +817,7 @@ function JobsView({
             </select>
           </label>
           <label>
-            Total amount
+            {t("business.jobs.amountField")}
             <span className="input-affix">
               <input
                 inputMode="decimal"
@@ -810,11 +834,11 @@ function JobsView({
             </span>
           </label>
           <label>
-            Job date
+            {t("business.jobs.dateField")}
             <span className="input-icon-wrap">
               <input
                 type="date"
-                aria-label="Job date"
+                aria-label={t("business.jobs.dateAria")}
                 value={jobDate}
                 onChange={(e) => setJobDate(e.target.value)}
               />
@@ -822,19 +846,19 @@ function JobsView({
             </span>
           </label>
           <label>
-            Warranty days (optional — repair jobs)
+            {t("business.jobs.warrantyField")}
             <input
               inputMode="numeric"
-              placeholder="e.g. 30"
+              placeholder={t("business.jobs.warrantyPlaceholder")}
               value={warrantyDays}
               onChange={(e) => setWarrantyDays(e.target.value)}
             />
           </label>
           <label>
-            Note (optional)
+            {t("business.jobs.noteField")}
             <input
               value={note}
-              placeholder="Serial or repair note"
+              placeholder={t("business.jobs.notePlaceholder")}
               onChange={(e) => setNote(e.target.value)}
             />
           </label>
@@ -851,7 +875,11 @@ function JobsView({
               !jobDate
             }
           >
-            {saving ? "Saving…" : editing === null ? "Add job" : "Save changes"}
+            {saving
+              ? t("business.saving")
+              : editing === null
+                ? t("business.jobs.add")
+                : t("business.saveChanges")}
           </button>
           {editing !== null ? (
             <button
@@ -859,7 +887,7 @@ function JobsView({
               className="btn btn-ghost"
               onClick={cancelEditJob}
             >
-              Cancel edit
+              {t("business.cancelEdit")}
             </button>
           ) : null}
         </div>
@@ -870,6 +898,7 @@ function JobsView({
 
 /** Receivable grouped per customer with totals. */
 function ReceivableView() {
+  const t = useT();
   const [rows, setRows] = useState<ShopReceivableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -917,7 +946,10 @@ function ReceivableView() {
   const total = rows.reduce((s, r) => s + r.remaining_cents, 0);
 
   return (
-    <section className="budget-manage" aria-label="Receivable by customer">
+    <section
+      className="budget-manage"
+      aria-label={t("business.receivable.aria")}
+    >
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -926,21 +958,23 @@ function ReceivableView() {
       ) : null}
       {voucherError ? (
         <p className="limit-warn" role="status">
-          Could not copy voucher: {voucherError}
+          {t("business.receivable.copyError", { error: voucherError })}
         </p>
       ) : null}
 
       {rows.length === 0 ? (
-        <EmptyState>Nothing outstanding — no receivables.</EmptyState>
+        <EmptyState>{t("business.receivable.empty")}</EmptyState>
       ) : (
         <>
           <div className="summary-figures">
             <div>
-              <span className="muted">Total outstanding</span>
+              <span className="muted">{t("business.receivable.total")}</span>
               <span className="figure amount-expense">{formatMMK(total)}</span>
             </div>
             <div>
-              <span className="muted">Customers owing</span>
+              <span className="muted">
+                {t("business.receivable.customers")}
+              </span>
               <span className="figure">{rows.length}</span>
             </div>
           </div>
@@ -963,7 +997,9 @@ function ReceivableView() {
                         className="btn"
                         onClick={() => void copyVoucher(r.id)}
                       >
-                        {copiedId === r.id ? "Copied ✓" : "Copy voucher"}
+                        {copiedId === r.id
+                          ? t("business.receivable.copied")
+                          : t("business.receivable.copy")}
                       </button>
                     ) : null}
                   </span>
@@ -971,10 +1007,7 @@ function ReceivableView() {
               </li>
             ))}
           </ul>
-          <p className="muted">
-            Record partial payments from the Jobs view; a job joins History (and
-            books Business income) when fully paid.
-          </p>
+          <p className="muted">{t("business.receivable.note")}</p>
         </>
       )}
     </section>
@@ -1080,7 +1113,7 @@ function HistoryView({
   };
 
   return (
-    <section className="budget-manage" aria-label="Job history">
+    <section className="budget-manage" aria-label={t("business.history.aria")}>
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -1089,12 +1122,12 @@ function HistoryView({
       ) : null}
 
       <div className="dash-card-head">
-        <h3 className="side-heading">Completed Jobs</h3>
+        <h3 className="side-heading">{t("business.history.heading")}</h3>
         <span className="badge badge-success">{jobs.length}</span>
       </div>
 
       {jobs.length === 0 ? (
-        <EmptyState>No completed jobs yet.</EmptyState>
+        <EmptyState>{t("business.history.empty")}</EmptyState>
       ) : (
         <ul className="budget-list">
           {jobs.map((j) => (
@@ -1115,7 +1148,9 @@ function HistoryView({
                 {editing === j.id ? (
                   <span className="inline-form">
                     <input
-                      aria-label={`Title for job ${j.id}`}
+                      aria-label={t("business.history.titleAria", {
+                        id: j.id,
+                      })}
                       value={draft.title}
                       onChange={(e) =>
                         setDraft({ ...draft, title: e.target.value })
@@ -1123,7 +1158,9 @@ function HistoryView({
                     />
                     <select
                       className="select"
-                      aria-label={`Customer shop for job ${j.id}`}
+                      aria-label={t("business.history.shopAria", {
+                        id: j.id,
+                      })}
                       value={draft.shopId === null ? "" : String(draft.shopId)}
                       onChange={(e) =>
                         setDraft({
@@ -1135,7 +1172,7 @@ function HistoryView({
                         })
                       }
                     >
-                      <option value="">No shop</option>
+                      <option value="">{t("business.history.noShop")}</option>
                       {shops.map((s) => (
                         <option key={s.id} value={String(s.id)}>
                           {s.name}
@@ -1144,14 +1181,18 @@ function HistoryView({
                     </select>
                     <input
                       type="date"
-                      aria-label={`Job date for job ${j.id}`}
+                      aria-label={t("business.history.dateAria", {
+                        id: j.id,
+                      })}
                       value={draft.jobDate}
                       onChange={(e) =>
                         setDraft({ ...draft, jobDate: e.target.value })
                       }
                     />
                     <input
-                      aria-label={`Note for job ${j.id}`}
+                      aria-label={t("business.history.noteAria", {
+                        id: j.id,
+                      })}
                       value={draft.note}
                       onChange={(e) =>
                         setDraft({ ...draft, note: e.target.value })
@@ -1162,14 +1203,14 @@ function HistoryView({
                       className="btn btn-primary"
                       onClick={() => void saveEditJob(j.id, draft)}
                     >
-                      Save
+                      {t("business.save")}
                     </button>
                     <button
                       type="button"
                       className="btn btn-ghost"
                       onClick={() => setEditing(null)}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   </span>
                 ) : null}
@@ -1196,15 +1237,15 @@ function HistoryView({
                       });
                     }}
                   >
-                    Edit
+                    {t("business.edit")}
                   </button>
                 )}
                 <ConfirmButton
                   className="btn btn-ghost"
-                  what={`job “${j.title}” — payments already received stay in the Budget`}
+                  what={t("business.history.deleteWhat", { title: j.title })}
                   onConfirm={() => removeJob(j.id)}
                 >
-                  Delete
+                  {t("common.delete")}
                 </ConfirmButton>
               </span>
             </li>
@@ -1387,7 +1428,7 @@ function PayablesView({
   };
 
   return (
-    <section className="budget-manage" aria-label="Payables">
+    <section className="budget-manage" aria-label={t("business.payables.aria")}>
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -1396,19 +1437,19 @@ function PayablesView({
       ) : null}
 
       <div className="dash-card-head">
-        <h3 className="side-heading">Supplier Payables</h3>
+        <h3 className="side-heading">{t("business.payables.heading")}</h3>
         <label className="check-label">
           <input
             type="checkbox"
             checked={showPaid}
             onChange={(e) => setShowPaid(e.target.checked)}
           />{" "}
-          Show paid
+          {t("business.payables.showPaid")}
         </label>
       </div>
 
       {payables.length === 0 ? (
-        <EmptyState>No payables — add one below.</EmptyState>
+        <EmptyState>{t("business.payables.empty")}</EmptyState>
       ) : (
         <ul className="budget-list">
           {payables.map((p) => {
@@ -1428,19 +1469,25 @@ function PayablesView({
                   <span className="row-title">
                     <b>{p.title}</b>
                     <span className="chip">{shopName(p.shop_id)}</span>
-                    {p.paid === 1 ? <span className="badge">Paid</span> : null}
+                    {p.paid === 1 ? (
+                      <span className="badge">
+                        {t("business.payables.paidBadge")}
+                      </span>
+                    ) : null}
                     {status === "overdue" ? (
                       <span className="badge badge-danger" role="status">
-                        Overdue
+                        {t("business.payables.overdue")}
                       </span>
                     ) : status === "due" ? (
                       <span className="badge badge-warn" role="status">
-                        Due today
+                        {t("business.payables.dueToday")}
                       </span>
                     ) : null}
                   </span>
                   <span className="row-sub">
-                    {p.due_date ? `due ${p.due_date}` : "No due date"}
+                    {p.due_date
+                      ? t("business.payables.due", { date: p.due_date })
+                      : t("business.payables.noDue")}
                     {p.note ? ` — ${p.note}` : ""}
                   </span>
                 </div>
@@ -1454,7 +1501,7 @@ function PayablesView({
                         <>
                           <select
                             className="select"
-                            aria-label="Expense category"
+                            aria-label={t("business.payables.payCategoryAria")}
                             value={
                               payCategory === "" ? "" : String(payCategory)
                             }
@@ -1466,7 +1513,9 @@ function PayablesView({
                               )
                             }
                           >
-                            <option value="">Category…</option>
+                            <option value="">
+                              {t("business.payables.categoryPick")}
+                            </option>
                             {expenseCats.map((c) => (
                               <option key={c.id} value={String(c.id)}>
                                 {c.name}
@@ -1475,7 +1524,7 @@ function PayablesView({
                           </select>
                           <select
                             className="select"
-                            aria-label="Paid from wallet"
+                            aria-label={t("business.payables.payWalletAria")}
                             value={payWallet === "" ? "" : String(payWallet)}
                             onChange={(e) =>
                               setPayWallet(
@@ -1485,7 +1534,9 @@ function PayablesView({
                               )
                             }
                           >
-                            <option value="">Wallet…</option>
+                            <option value="">
+                              {t("business.jobs.walletPick")}
+                            </option>
                             {wallets.map((w) => (
                               <option key={w.id} value={String(w.id)}>
                                 {w.name}
@@ -1502,14 +1553,16 @@ function PayablesView({
                             }
                             onClick={() => void pay(p.id)}
                           >
-                            {payingId === p.id ? "Saving…" : "Confirm paid"}
+                            {payingId === p.id
+                              ? t("business.saving")
+                              : t("business.payables.confirmPaid")}
                           </button>
                           <button
                             type="button"
                             className="btn"
                             onClick={() => setPayFor(null)}
                           >
-                            Cancel
+                            {t("common.cancel")}
                           </button>
                         </>
                       ) : (
@@ -1522,7 +1575,7 @@ function PayablesView({
                             setPayWallet("");
                           }}
                         >
-                          Mark paid
+                          {t("business.payables.markPaid")}
                         </button>
                       )}
                     </span>
@@ -1538,18 +1591,19 @@ function PayablesView({
                       className="btn btn-ghost"
                       onClick={() => startEditPayable(p)}
                     >
-                      Edit
+                      {t("business.edit")}
                     </button>
                     <ConfirmButton
                       className="btn btn-ghost"
-                      what={
+                      what={t(
                         p.paid === 1
-                          ? `payable “${p.title}” — its expense stays in the Budget`
-                          : `payable “${p.title}”`
-                      }
+                          ? "business.payables.deletePaidWhat"
+                          : "business.payables.deleteWhat",
+                        { title: p.title },
+                      )}
                       onConfirm={() => removePayable(p.id)}
                     >
-                      Delete
+                      {t("common.delete")}
                     </ConfirmButton>
                   </span>
                 </div>
@@ -1567,19 +1621,21 @@ function PayablesView({
         }}
       >
         <h2 className="side-heading">
-          {editing === null ? "New payable" : `Edit payable — ${editing.title}`}
+          {editing === null
+            ? t("business.payables.new")
+            : t("business.payables.edit", { title: editing.title })}
         </h2>
         <div className="form-grid">
           <label>
-            Title
+            {t("business.payables.titleField")}
             <input
               value={title}
-              placeholder="e.g. Parts supplier"
+              placeholder={t("business.payables.titlePlaceholder")}
               onChange={(e) => setTitle(e.target.value)}
             />
           </label>
           <label>
-            Amount
+            {t("business.payables.amountField")}
             <span className="input-affix">
               <input
                 inputMode="decimal"
@@ -1596,15 +1652,15 @@ function PayablesView({
             </span>
           </label>
           <label>
-            Supplier shop (optional)
+            {t("business.payables.shopField")}
             <select
-              aria-label="Supplier shop"
+              aria-label={t("business.payables.shopAria")}
               value={shopId === "" ? "" : String(shopId)}
               onChange={(e) =>
                 setShopId(e.target.value === "" ? "" : Number(e.target.value))
               }
             >
-              <option value="">None</option>
+              <option value="">{t("business.none")}</option>
               {shops.map((s) => (
                 <option key={s.id} value={String(s.id)}>
                   {s.name}
@@ -1613,11 +1669,11 @@ function PayablesView({
             </select>
           </label>
           <label>
-            Due date (optional)
+            {t("business.payables.dueField")}
             <span className="input-icon-wrap">
               <input
                 type="date"
-                aria-label="Due date"
+                aria-label={t("business.payables.dueAria")}
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
               />
@@ -1626,7 +1682,7 @@ function PayablesView({
           </label>
         </div>
         <label>
-          Note (optional)
+          {t("business.payables.noteField")}
           <input value={note} onChange={(e) => setNote(e.target.value)} />
         </label>
         <div className="row-actions">
@@ -1638,10 +1694,10 @@ function PayablesView({
             }
           >
             {saving
-              ? "Saving…"
+              ? t("business.saving")
               : editing === null
-                ? "Add payable"
-                : "Save changes"}
+                ? t("business.payables.add")
+                : t("business.saveChanges")}
           </button>
           {editing !== null ? (
             <button
@@ -1649,7 +1705,7 @@ function PayablesView({
               className="btn btn-ghost"
               onClick={cancelEditPayable}
             >
-              Cancel edit
+              {t("business.cancelEdit")}
             </button>
           ) : null}
         </div>

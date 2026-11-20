@@ -5,6 +5,12 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createMockDriver } from "../data/mock-driver.ts";
 import {
+  type Locale,
+  type MessageKey,
+  type MessageParams,
+  translateFor,
+} from "./i18n.ts";
+import {
   buildMonthGrid,
   createJournalRepo,
   monthLabel,
@@ -68,10 +74,19 @@ test("every emitted week has a dated cell to key on (D12)", () => {
   );
 });
 
-test("monthLabel renders the English month name", () => {
-  assert.equal(monthLabel("2026-10"), "October 2026");
-  assert.equal(monthLabel("2026-01"), "January 2026");
-  assert.equal(monthLabel("nope"), "");
+test("monthLabel renders the month in the active language", () => {
+  // F6's follow-up: the heading used to come from an English array no matter
+  // what the page said around it, so a Burmese Budget showed “October 2026”.
+  const inLocale =
+    (locale: Locale) => (key: MessageKey, params?: MessageParams) =>
+      translateFor(locale, key, params);
+  assert.equal(monthLabel("2026-10", inLocale("en")), "October 2026");
+  assert.equal(monthLabel("2026-01", inLocale("en")), "January 2026");
+  // Burmese puts the year first and names the month in Burmese script. The
+  // year digits stay as stored — the rest of the app prints amounts in ASCII
+  // digits too, so the heading does not switch numbering mid-sentence.
+  assert.equal(monthLabel("2026-10", inLocale("my")), "2026 ခုနှစ် အောက်တိုဘာလ");
+  assert.equal(monthLabel("nope", inLocale("en")), "");
 });
 
 test("upsertEntry refuses impossible calendar dates before writing", async () => {

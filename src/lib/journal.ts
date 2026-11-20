@@ -7,23 +7,27 @@ import {
   monthRange,
   todayLocal,
 } from "./dates.ts";
+import type { MessageKey, MessageParams } from "./i18n.ts";
 import { createTrashRepo } from "./trash.ts";
 import type { JournalEntryRow } from "./types.ts";
 
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-] as const;
+const MONTH_KEYS = [
+  "month.01",
+  "month.02",
+  "month.03",
+  "month.04",
+  "month.05",
+  "month.06",
+  "month.07",
+  "month.08",
+  "month.09",
+  "month.10",
+  "month.11",
+  "month.12",
+] as const satisfies readonly MessageKey[];
+
+/** Render a message in the caller's locale — `useT()` inside a component. */
+type MonthTranslator = (key: MessageKey, params?: MessageParams) => string;
 
 /** One cell of the month grid: a date with its entry marker, or a blank. */
 export type MonthGridCell = { date: string; hasEntry: boolean } | null;
@@ -66,14 +70,20 @@ export function weekRowKey(week: MonthGridCell[]): string {
   throw new Error("buildMonthGrid emitted a week with no dated cell");
 }
 
-/** English month label for the grid header ("October 2026"), "" if invalid. */
-export function monthLabel(yearMonth: string): string {
+/**
+ * Month label for a grid or list header ("October 2026"), "" if invalid.
+ *
+ * The month name and the word order around the year both come from the
+ * catalogue: Burmese reads "၂၀၂၆ ခုနှစ် အောက်တိုဘာလ", so the page cannot be
+ * translated while the heading stays English — F6's month-label follow-up.
+ */
+export function monthLabel(yearMonth: string, t: MonthTranslator): string {
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(yearMonth);
   const month = match?.[2];
   const year = match?.[1];
   if (month === undefined || year === undefined) return "";
-  const name = MONTH_NAMES[Number(month) - 1];
-  return name === undefined ? "" : `${name} ${year}`;
+  const key = MONTH_KEYS[Number(month) - 1];
+  return key === undefined ? "" : t("month.year", { month: t(key), year });
 }
 
 export function createJournalRepo(

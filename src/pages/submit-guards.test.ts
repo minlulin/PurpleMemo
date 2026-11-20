@@ -129,14 +129,14 @@ const GUARDS: {
     handler: "addJob",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
-    label: "Saving…",
+    labelKey: "business.saving",
   },
   {
     page: "BusinessPage.tsx",
     handler: "pay",
     busy: "payingId === jobId",
     cleared: "setPayingId(null)",
-    label: "Saving…",
+    labelKey: "business.saving",
   },
   // The payable view's own `pay`, declared further down the same file. Its
   // guard reads `payableId`, so asserting it against the job handler's body
@@ -149,14 +149,14 @@ const GUARDS: {
     busy: "payingId === payableId",
     cleared: "setPayingId(null)",
     raised: "setPayingId(payableId)",
-    label: "Saving…",
+    labelKey: "business.saving",
   },
   {
     page: "BusinessPage.tsx",
     handler: "addPayable",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
-    label: "Saving…",
+    labelKey: "business.saving",
   },
   {
     page: "LoansPage.tsx",
@@ -858,13 +858,13 @@ test("an in-flight submit says so on the button, not just by going grey", () => 
     }
   }
   // The per-row payment buttons all say the same thing, which is deliberate:
-  // one wording for one kind of action.
-  for (const page of ["LoansPage.tsx", "BusinessPage.tsx"]) {
-    assert.ok(
-      readPage(page).includes('"Saving…"'),
-      `${page} must label its in-flight payment button`,
-    );
-  }
+  // one wording for one kind of action. BusinessPage now says it through
+  // `business.saving` (covered by the labelKey branch above), LoansPage still
+  // says it literally.
+  assert.ok(
+    readPage("LoansPage.tsx").includes('"Saving…"'),
+    "LoansPage must label its in-flight payment button",
+  );
 });
 
 // -- The draft discard path (review P2-6) ------------------------------------------

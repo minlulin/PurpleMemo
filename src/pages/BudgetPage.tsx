@@ -1039,7 +1039,7 @@ function MonthView() {
     };
   }, [yearMonth]);
 
-  const label = monthLabel(yearMonth);
+  const label = monthLabel(yearMonth, t);
 
   return (
     <section className="budget-month" aria-label={t("budget.month.title")}>
@@ -1333,7 +1333,7 @@ function YearView() {
                     key={m.yearMonth}
                     className={empty ? "is-empty" : undefined}
                   >
-                    <th scope="row">{monthLabel(m.yearMonth)}</th>
+                    <th scope="row">{monthLabel(m.yearMonth, t)}</th>
                     <td className="figure">{formatMMK(m.incomeCents)}</td>
                     <td className="figure">{formatMMK(m.expenseCents)}</td>
                     <td
@@ -1428,7 +1428,7 @@ function LimitsView() {
         >
           <IconChevronLeft className="icon" />
         </button>
-        <h2 className="side-heading month-label">{monthLabel(yearMonth)}</h2>
+        <h2 className="side-heading month-label">{monthLabel(yearMonth, t)}</h2>
         <button
           type="button"
           className="btn btn-icon"

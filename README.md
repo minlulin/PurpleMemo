@@ -67,14 +67,16 @@ typed catalogue: every key carries both translations, and a missing one is a
 compile error rather than a blank label.
 
 That coverage is not yet the whole app. The shell, lock screen, Settings, Tasks,
-Notes, Contacts, Inbox, search, Trash, Vault, Budget, the import/export dialogs
-and the phone UI read from the catalogue. **Business, Loans, Habits, Shopping,
-Gallery, Memories, Journal and Exports are English-only for now** — their text
-lives in the pages, not in the catalogue. This is a known gap rather than a bug:
-finishing it means a namespace per page, and until a page has one the language
-switch cannot reach its text. Budget's namespace (`budget.*`) is the first page
-migrated this way; `src/lib/i18n.test.ts` fails if one of its keys still reads
-English.
+Notes, Contacts, Inbox, search, Trash, Vault, Budget, Business, the shared month
+headings, the import/export dialogs and the phone UI read from the catalogue.
+**Loans, Habits, Shopping, Gallery, Memories, Journal and Exports are
+English-only for now** — their text lives in the pages, not in the catalogue.
+This is a known gap rather than a bug: finishing it means a namespace per page,
+and until a page has one the language switch cannot reach its text. Budget
+(`budget.*`) and Business (`business.*`) are the pages migrated this way;
+`src/lib/i18n.test.ts` fails if a key in either namespace still reads English,
+and month/year headings come from `month.*` so a Burmese page does not show an
+English month name.
 
 ## Development
 

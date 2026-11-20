@@ -16,6 +16,7 @@ import {
   markdownUrlTransform,
 } from "../components/MarkdownLink.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { journalRepo, settingsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import {
@@ -45,6 +46,7 @@ export default function JournalPage({
   focusDate?: string | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [month, setMonth] = useState(() => yearMonthOf(todayLocal()));
   const [entryDates, setEntryDates] = useState<string[]>([]);
   const [activeDate, setActiveDate] = useState(() => todayLocal());
@@ -283,7 +285,7 @@ export default function JournalPage({
     () => buildMonthGrid(month, entryDates),
     [month, entryDates],
   );
-  const label = monthLabel(month);
+  const label = monthLabel(month, t);
   const entrySet = useMemo(() => new Set(entryDates), [entryDates]);
   const readableActiveDate = new Date(
     `${activeDate}T00:00:00`,

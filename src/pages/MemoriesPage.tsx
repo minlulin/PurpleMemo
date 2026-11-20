@@ -13,6 +13,7 @@ import {
   IconMemories,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
@@ -165,6 +166,7 @@ export default function MemoriesPage({
   focusId?: number | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [view, setView] = useState<MemoryView>("upcoming");
   const [upcoming, setUpcoming] = useState<MemoryRow[]>([]);
   const [onThisDay, setOnThisDay] = useState<MemoryRow[]>([]);
@@ -478,7 +480,7 @@ export default function MemoriesPage({
                   <IconChevronLeft className="icon" />
                 </button>
                 <h3 className="side-heading month-label">
-                  {monthLabel(feedMonth)}
+                  {monthLabel(feedMonth, t)}
                 </h3>
                 <button
                   type="button"

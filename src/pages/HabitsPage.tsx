@@ -13,6 +13,7 @@ import {
   IconPlus,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -30,6 +31,7 @@ interface HabitProgress {
 const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 
 export default function HabitsPage() {
+  const t = useT();
   /**
    * The day the loaded week and the check-in buttons are read against (C2 —
    * the TasksPage B8 shape): state, so the "Done today" state and the log rows
@@ -323,7 +325,7 @@ export default function HabitsPage() {
                           <IconChevronLeft className="icon" />
                         </button>
                         <span className="side-heading month-label">
-                          {monthLabel(gridMonth)}
+                          {monthLabel(gridMonth, t)}
                         </span>
                         <button
                           type="button"
@@ -338,7 +340,10 @@ export default function HabitsPage() {
 
                       <table className="month-grid">
                         <caption className="visually-hidden">
-                          {monthLabel(gridMonth)} for {h.name}
+                          {t("month.gridCaption", {
+                            month: monthLabel(gridMonth, t),
+                            name: h.name,
+                          })}
                         </caption>
                         <thead>
                           <tr className="week-row week-head">
