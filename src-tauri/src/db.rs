@@ -779,6 +779,7 @@ fn migration_step(from: i64) -> Option<&'static str> {
         9 => Some(schema::MIGRATION_9_10),
         10 => Some(schema::MIGRATION_10_11),
         11 => Some(schema::MIGRATION_11_12),
+        12 => Some(schema::MIGRATION_12_13),
         _ => None,
     }
 }
@@ -2224,6 +2225,8 @@ mod tests {
             "idx_jobs_shop",
             "idx_payables_paid_due",
             "idx_shopping_order",
+            "idx_income_wallet_date",
+            "idx_expense_wallet_date",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -2365,6 +2368,7 @@ mod tests {
         // A pre-v8 fixture must not keep the v8 tables the baseline now
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
+        strip_wallet_indexes(&conn);
         conn.pragma_update(None, "user_version", 1i64)
             .expect("stamp v1");
         conn.execute_batch(
@@ -2603,6 +2607,7 @@ mod tests {
         // A pre-v8 fixture must not keep the v8 tables the baseline now
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
+        strip_wallet_indexes(&conn);
         conn.pragma_update(None, "user_version", 6i64)
             .expect("stamp v6");
         conn.execute_batch(
@@ -2766,6 +2771,7 @@ mod tests {
         conn.execute_batch(schema::BASELINE_SQL)
             .expect("apply baseline");
         strip_sync_storage(&conn);
+        strip_wallet_indexes(&conn);
         conn.pragma_update(None, "user_version", 7i64)
             .expect("stamp v7");
         conn.execute_batch(
@@ -2968,6 +2974,7 @@ mod tests {
             .expect("apply baseline");
         strip_uid_aliases(&conn);
         strip_tombstone_gc_log(&conn);
+        strip_wallet_indexes(&conn);
         conn.execute_batch(
             "DROP INDEX idx_trash_items_entity;
              DROP INDEX idx_trash_items_deleted;
@@ -3161,6 +3168,154 @@ mod tests {
         .expect("strip the v12 GC log");
     }
 
+    /// Remove the v13 wallet indexes so a fixture can be an honest pre-v13
+    /// database. Every fixture here starts from the current baseline, so a step
+    /// that creates an index the baseline already carries would collide.
+    fn strip_wallet_indexes(conn: &Connection) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_income_wallet_date;
+             DROP INDEX IF EXISTS idx_expense_wallet_date;",
+        )
+        .expect("strip the v13 wallet indexes");
+    }
+
+    /// `EXPLAIN QUERY PLAN` for `sql`, one `detail` line per node, joined.
+    ///
+    /// A plan describes the shape a statement is compiled to, not the rows it
+    /// finds: it is the same on an empty fixture and on a decade of entries,
+    /// which is what makes "this query seeks" testable without timing it.
+    fn query_plan(conn: &Connection, sql: &str) -> String {
+        let mut statement = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("prepare the query plan");
+        statement
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("run the query plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect the query plan")
+            .join(" | ")
+    }
+
+    /// A database that looks exactly like a version-12 install: the current
+    /// baseline minus the v13 wallet indexes, stamped 12.
+    fn seeded_v12(tag: &str) -> (TempDir, Connection) {
+        let dir = TempDir::new(tag);
+        let key = mint_key_hex().expect("mint key");
+        let conn = open_encrypted_db(&dir.db_path(), &key).expect("open encrypted db");
+        conn.execute_batch(schema::BASELINE_SQL)
+            .expect("apply baseline");
+        strip_wallet_indexes(&conn);
+        conn.pragma_update(None, "user_version", 12i64)
+            .expect("stamp v12");
+        (dir, conn)
+    }
+
+    #[test]
+    fn migration_12_to_13_adds_the_wallet_indexes_and_touches_no_row() {
+        let (_dir, conn) = seeded_v12("migrate-12-13");
+        // The fixture really is v12: neither index exists to be found.
+        for name in ["idx_income_wallet_date", "idx_expense_wallet_date"] {
+            assert_eq!(
+                scalar_i64(
+                    &conn,
+                    &format!(
+                        "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='{name}'"
+                    )
+                ),
+                0,
+                "the fixture must start at v12"
+            );
+        }
+
+        init_schema(&conn).expect("migrate 12 -> 13");
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, schema::SCHEMA_VERSION);
+        assert_eq!(table_count(&conn), 41, "an index is not a table");
+        for name in ["idx_income_wallet_date", "idx_expense_wallet_date"] {
+            assert_eq!(
+                scalar_i64(
+                    &conn,
+                    &format!(
+                        "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='{name}'"
+                    )
+                ),
+                1,
+                "{name} must exist after the migration"
+            );
+        }
+        // The seeded ledger is untouched, and each table still answers the
+        // query the index exists for.
+        assert!(
+            scalar_i64(&conn, "SELECT count(*) FROM wallets") > 0,
+            "the seeded wallets survive"
+        );
+        assert!(
+            query_plan(
+                &conn,
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM income_entries WHERE wallet_id = 1"
+            )
+            .contains("idx_income_wallet_date"),
+            "the migrated database seeks the ledger, exactly like a fresh one"
+        );
+    }
+
+    #[test]
+    fn wallet_ledger_queries_seek_instead_of_scanning() {
+        // The statements `budget.ts` actually issues: the balance pair, the
+        // per-wallet list the share ticker reads, the wallet ledger's first
+        // page and the delete check.
+        let (_dir, conn) = open_baseline("wallet-index-plans");
+        for (sql, index) in [
+            (
+                "SELECT (SELECT SUM(amount_cents) FROM income_entries WHERE wallet_id = 1), (SELECT SUM(amount_cents) FROM expense_entries WHERE wallet_id = 1)",
+                "idx_income_wallet_date",
+            ),
+            (
+                "SELECT w.id, (SELECT SUM(amount_cents) FROM expense_entries WHERE wallet_id = w.id) FROM wallets w",
+                "idx_expense_wallet_date",
+            ),
+            (
+                "SELECT id, amount_cents FROM income_entries WHERE wallet_id = 1 ORDER BY entry_date DESC, id DESC LIMIT 50",
+                "idx_income_wallet_date",
+            ),
+            (
+                "SELECT count(*) FROM expense_entries WHERE wallet_id = 1",
+                "idx_expense_wallet_date",
+            ),
+        ] {
+            let plan = query_plan(&conn, sql);
+            assert!(plan.contains(index), "{sql}\nplan: {plan}");
+            assert!(
+                !plan.contains("SCAN income_entries") && !plan.contains("SCAN expense_entries"),
+                "{sql} still scans the ledger: {plan}"
+            );
+        }
+        // Covering, not merely seeking: a balance reads `amount_cents` out of
+        // the index and never visits the row, which is what the measured
+        // difference between the two- and four-column forms turned on.
+        for sql in [
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM income_entries WHERE wallet_id = 1",
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM expense_entries WHERE wallet_id = 1",
+            "SELECT count(*) FROM expense_entries WHERE wallet_id = 1",
+        ] {
+            let plan = query_plan(&conn, sql);
+            assert!(plan.contains("COVERING INDEX"), "{sql}\nplan: {plan}");
+        }
+        // The ledger's order comes out of the index, so the first page is not
+        // sorted as well as sought.
+        assert!(
+            !query_plan(
+                &conn,
+                "SELECT id FROM expense_entries WHERE wallet_id = 1 ORDER BY entry_date DESC, id DESC LIMIT 50"
+            )
+            .contains("TEMP B-TREE"),
+            "the wallet ledger must not sort what the index already orders"
+        );
+    }
+
     /// A populated version-10 database: the shipped baseline minus the v11
     /// aliases table (and its index), stamped 10, holding real sync storage —
     /// a peer, an outbox row, a tombstone and a row stamp. The rows are the
@@ -3174,6 +3329,7 @@ mod tests {
             .expect("apply baseline");
         strip_uid_aliases(&conn);
         strip_tombstone_gc_log(&conn);
+        strip_wallet_indexes(&conn);
         conn.execute_batch(
             "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
                VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v11 note', 'body', '', '2026-01-01', '2026-01-01');
@@ -3294,6 +3450,7 @@ mod tests {
         conn.execute_batch(schema::BASELINE_SQL)
             .expect("apply baseline");
         strip_tombstone_gc_log(&conn);
+        strip_wallet_indexes(&conn);
         conn.execute_batch(
             "INSERT INTO notes (uid, title, content, tags, created_at, updated_at)
                VALUES ('22222222-2222-4222-8222-222222222222', 'Pre-v12 note', 'body', '', '2026-01-01', '2026-01-01');
@@ -3572,6 +3729,7 @@ mod tests {
             // A pre-v8 fixture must not keep the v8 tables the baseline now
             // carries, or the real 7 -> 8 step collides with them.
             strip_sync_storage(&conn);
+            strip_wallet_indexes(&conn);
             conn.pragma_update(None, "user_version", 1i64)
                 .expect("stamp v1");
             conn.execute_batch(
@@ -3701,6 +3859,7 @@ mod tests {
         // A pre-v8 fixture must not keep the v8 tables the baseline now
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
+        strip_wallet_indexes(&conn);
         conn.pragma_update(None, "user_version", 2i64)
             .expect("stamp v2");
         conn.execute_batch(
@@ -3758,6 +3917,7 @@ mod tests {
         // A pre-v8 fixture must not keep the v8 tables the baseline now
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
+        strip_wallet_indexes(&conn);
         conn.pragma_update(None, "user_version", 3i64)
             .expect("stamp v3");
         (dir, conn)
@@ -3842,6 +4002,7 @@ mod tests {
         // A pre-v8 fixture must not keep the v8 tables the baseline now
         // carries, or the real 7 -> 8 step collides with them.
         strip_sync_storage(&conn);
+        strip_wallet_indexes(&conn);
         conn.pragma_update(None, "user_version", 4i64)
             .expect("stamp v4");
         conn.execute_batch(

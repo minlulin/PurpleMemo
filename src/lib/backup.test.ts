@@ -1815,8 +1815,8 @@ test("a v9-era Trash fixture restores into the v10 schema and round-trips unchan
   const schemaVersion = shippedSchemaVersion();
   assert.equal(
     schemaVersion,
-    12,
-    "the Trash widening is the v10 step; v11 and v12 add only sync bookkeeping",
+    13,
+    "the Trash widening is the v10 step; v11 and v12 add only sync bookkeeping, v13 only indexes",
   );
   driver.db.exec(`PRAGMA user_version = ${schemaVersion}`);
 

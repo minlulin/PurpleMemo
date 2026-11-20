@@ -1,7 +1,7 @@
 //! Schema versions, the baseline DDL, and one migration per version step
 //!
 //!
-//! 41 tables at `PRAGMA user_version = 12`: 40 regular tables + the
+//! 41 tables at `PRAGMA user_version = 13`: 40 regular tables + the
 //! `notes_fts` FTS5 virtual table (its `_data`/`_idx`/`_docsize`/`_config`
 //! shadow tables are FTS internals, not part of the 40).
 //!
@@ -31,7 +31,7 @@
 use std::sync::OnceLock;
 
 /// The schema version this build expects and stamps.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// Relationships between notes, tasks and contacts.
 ///
@@ -550,6 +550,34 @@ CREATE TABLE sync_tombstone_gc_log (
 CREATE INDEX idx_sync_tombstone_gc_log_uid ON sync_tombstone_gc_log(entity_uid);
 "#;
 
+/// Schema v12 → v13: the wallet indexes both ledger tables were missing.
+///
+/// Every wallet figure is filtered on `wallet_id` — `walletBalanceCents`, the
+/// per-wallet correlated subqueries of `listWalletBalances`, the wallet ledger
+/// view and the "can this wallet be deleted" count — and neither ledger table
+/// had an index starting there, so every one of them full-scanned.
+///
+/// Four columns, each with a job:
+///
+/// * `wallet_id` is the filter, so the query seeks instead of scanning;
+/// * `entry_date`, `id` are the wallet ledger's sort
+///   (`ORDER BY entry_date DESC, id DESC`). Read in reverse, the index delivers
+///   that order, so the newest page needs no temp B-tree;
+/// * `amount_cents` makes the balance sums and the delete check **covering**,
+///   so they never visit the table row for a matching entry.
+///
+/// Measured on 20k entries per table: the two-column form the audit proposed
+/// made a single wallet's balance *slower* (616us -> 826us) — a seek that still
+/// fetches every matching row — while this one is 149us, the correlated wallet
+/// list goes from 8.3ms to 1.5ms, and the ledger page from 1.6ms to 16us.
+///
+/// Additive: no row is rewritten, no stamp or op is touched, and a fresh
+/// install gets the same two indexes from the baseline.
+pub const MIGRATION_12_13: &str = r#"
+CREATE INDEX idx_income_wallet_date ON income_entries(wallet_id, entry_date, id, amount_cents);
+CREATE INDEX idx_expense_wallet_date ON expense_entries(wallet_id, entry_date, id, amount_cents);
+"#;
+
 pub const BASELINE_SQL: &str = r#"
 -- ============================================================
 -- Notes & collections
@@ -971,6 +999,12 @@ CREATE INDEX idx_expense_cat_date ON expense_entries(category_id, entry_date);
 CREATE INDEX idx_jobs_shop ON jobs(shop_id);
 CREATE INDEX idx_payables_paid_due ON payables(paid, due_date);
 CREATE INDEX idx_shopping_order ON shopping_items(list_id, sort_order);
+
+-- The wallet side of the ledger (see MIGRATION_12_13): wallet_id filters, the
+-- ledger sorts by entry_date then id within one wallet, and amount_cents makes
+-- the balance sums covering.
+CREATE INDEX idx_income_wallet_date ON income_entries(wallet_id, entry_date, id, amount_cents);
+CREATE INDEX idx_expense_wallet_date ON expense_entries(wallet_id, entry_date, id, amount_cents);
 
 
 -- Cross-device identity (docs/ANDROID_DESIGN.md, UID contract). One UUID v4
