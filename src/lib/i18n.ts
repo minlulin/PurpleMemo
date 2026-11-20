@@ -1416,6 +1416,44 @@ export const en = {
   "memories.missing":
     "That memory no longer exists — it may have been deleted.",
 
+  // Exports — the readable-copy page. The field-mapping rows themselves stay
+  // English: they are the same text the archive writes into EXPORT-FIELDS.md,
+  // so translating them here would describe a file the user cannot read.
+  "exports.title": "Exports",
+  "exports.subtitle":
+    "Human-readable Markdown, CSV and vCard in one ZIP archive",
+  "exports.chooseOne": "Choose at least one group to export.",
+  "exports.saveTitle": "Save Purple Memo readable export",
+  "exports.zipFilter": "ZIP archive",
+  "exports.saved":
+    "Readable export saved to {path} - {files} files ({notes} notes, {journal} journal entries, {finance} finance rows, {tasks} tasks, {contacts} contacts).",
+  "exports.building": "Building archive...",
+  "exports.export": "Export readable ZIP",
+  "exports.whatToExport": "What to export",
+  "exports.readableCopy":
+    "This is a readable copy, not a restorable backup. Photo files, Vault ciphertext, settings and Trash are never included.",
+  "exports.oneFile":
+    "One UTF-8 ZIP file. CSV uses RFC 4180 quoting and CRLF; Markdown and vCard text keep their Unicode.",
+  "exports.fieldMapping": "Field mapping",
+  "exports.sameTable":
+    "The same table is written into every archive as EXPORT-FIELDS.md.",
+  "exports.source": "Source",
+  "exports.fields": "Fields",
+  "exports.destination": "Destination",
+  "exports.notes": "Notes",
+  "exports.group.notes": "Notes",
+  "exports.group.notesBlurb":
+    "Markdown files with front matter, tags, collections and archive state",
+  "exports.group.journal": "Journal",
+  "exports.group.journalBlurb": "One Markdown file per day under journal/yyyy/",
+  "exports.group.finance": "Finance CSV",
+  "exports.group.financeBlurb": "Income, expenses, loans, jobs and payables",
+  "exports.group.tasks": "Tasks CSV",
+  "exports.group.tasksBlurb":
+    "Actionable to-dos, due dates and repeat schedules",
+  "exports.group.contacts": "Contacts",
+  "exports.group.contactsBlurb": "vCard 4.0 and CSV address book",
+
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
   // Burmese page does not show "October 2026" under Burmese tabs.
@@ -2995,6 +3033,39 @@ export const my: Record<MessageKey, string> = {
   "memories.noBirthdaysToday": "ယနေ့ မွေးနေ့ မရှိပါ။",
   "memories.all": "အမှတ်တရ အားလုံး",
   "memories.missing": "ထို အမှတ်တရ မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+
+  "exports.title": "တင်ပို့မှုများ",
+  "exports.subtitle": "Markdown၊ CSV နှင့် vCard ကို ZIP တစ်ခုတည်းအဖြစ် လူဖတ်နိုင်သော ဖိုင်များ",
+  "exports.chooseOne": "တင်ပို့ရန် အနည်းဆုံး အမျိုးအစား တစ်ခု ရွေးပါ။",
+  "exports.saveTitle": "Purple Memo ဖတ်နိုင်သော တင်ပို့ချက် သိမ်းမည်",
+  "exports.zipFilter": "ZIP ဖိုင်",
+  "exports.saved":
+    "ဖတ်နိုင်သော တင်ပို့ချက်ကို {path} တွင် သိမ်းပြီး — ဖိုင် {files} ခု (မှတ်စု {notes}၊ ဂျာနယ် မှတ်တမ်း {journal}၊ ငွေရေးကြေးရေး အတန်း {finance}၊ လုပ်ငန်း {tasks}၊ ဆက်သွယ်ရန် {contacts})။",
+  "exports.building": "ဖိုင်စု တည်ဆောက်နေသည်...",
+  "exports.export": "ဖတ်နိုင်သော ZIP တင်ပို့မည်",
+  "exports.whatToExport": "မည်သည့်အရာ တင်ပို့မည်",
+  "exports.readableCopy":
+    "ဤသည် ဖတ်ရန်သာ ဖြစ်ပြီး ပြန်လည်ထည့်သွင်းနိုင်သော အရန်သိမ်း မဟုတ်ပါ။ ဓာတ်ပုံဖိုင်များ၊ Vault စာဝှက်စာ၊ ဆက်တင်များနှင့် အမှိုက်ပုံးကို ဘယ်တော့မှ မထည့်ပါ။",
+  "exports.oneFile":
+    "UTF-8 ZIP ဖိုင် တစ်ခု။ CSV သည် RFC 4180 ကိုးကားခြင်းနှင့် CRLF ကို သုံးသည်။ Markdown နှင့် vCard စာသားများ ယူနီကုဒ် အတိုင်း ကျန်သည်။",
+  "exports.fieldMapping": "ကွက်လပ် ဆက်စပ်မှု",
+  "exports.sameTable": "ဤဇယားကို EXPORT-FIELDS.md အဖြစ် ဖိုင်စုတိုင်းတွင် ရေးထည့်သည်။",
+  "exports.source": "ရင်းမြစ်",
+  "exports.fields": "ကွက်လပ်များ",
+  "exports.destination": "သွားရာ နေရာ",
+  "exports.notes": "မှတ်ချက်များ",
+  "exports.group.notes": "မှတ်စုများ",
+  "exports.group.notesBlurb":
+    "Front matter၊ တဂ်များ၊ စုစည်းမှုများနှင့် မော်ကွန်းအခြေအနေ ပါသော Markdown ဖိုင်များ",
+  "exports.group.journal": "ဂျာနယ်",
+  "exports.group.journalBlurb": "journal/yyyy/ အောက်တွင် တစ်ရက်လျှင် Markdown ဖိုင် တစ်ခု",
+  "exports.group.finance": "ငွေရေးကြေးရေး CSV",
+  "exports.group.financeBlurb": "ဝင်ငွေ၊ အသုံးစရိတ်၊ ချေးငွေ၊ အလုပ်များနှင့် ပေးချေရမည့်များ",
+  "exports.group.tasks": "လုပ်ငန်း CSV",
+  "exports.group.tasksBlurb":
+    "လုပ်ဆောင်ရမည့်အရာများ၊ ကျသင့်ရက်များနှင့် ထပ်ခါတလဲလဲ အစီအစဉ်များ",
+  "exports.group.contacts": "ဆက်သွယ်ရန်များ",
+  "exports.group.contactsBlurb": "vCard 4.0 နှင့် CSV လိပ်စာစာအုပ်",
 
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.

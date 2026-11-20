@@ -10,6 +10,7 @@ import {
   IconWallet,
 } from "../components/icons.tsx";
 import { useToast } from "../components/Toast.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { exportsRepo } from "../data/app.ts";
 import { localISODateTime, todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -19,47 +20,48 @@ import {
   type ExportGroup,
   type ExportSelection,
 } from "../lib/exports.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 
 const GROUPS: {
   key: ExportGroup;
-  label: string;
-  blurb: string;
+  labelKey: MessageKey;
+  blurbKey: MessageKey;
   icon: typeof IconNotes;
 }[] = [
   {
     key: "notes",
-    label: "Notes",
-    blurb:
-      "Markdown files with front matter, tags, collections and archive state",
+    labelKey: "exports.group.notes",
+    blurbKey: "exports.group.notesBlurb",
     icon: IconNotes,
   },
   {
     key: "journal",
-    label: "Journal",
-    blurb: "One Markdown file per day under journal/yyyy/",
+    labelKey: "exports.group.journal",
+    blurbKey: "exports.group.journalBlurb",
     icon: IconJournal,
   },
   {
     key: "finance",
-    label: "Finance CSV",
-    blurb: "Income, expenses, loans, jobs and payables",
+    labelKey: "exports.group.finance",
+    blurbKey: "exports.group.financeBlurb",
     icon: IconWallet,
   },
   {
     key: "tasks",
-    label: "Tasks CSV",
-    blurb: "Actionable to-dos, due dates and repeat schedules",
+    labelKey: "exports.group.tasks",
+    blurbKey: "exports.group.tasksBlurb",
     icon: IconTasks,
   },
   {
     key: "contacts",
-    label: "Contacts",
-    blurb: "vCard 4.0 and CSV address book",
+    labelKey: "exports.group.contacts",
+    blurbKey: "exports.group.contactsBlurb",
     icon: IconContacts,
   },
 ];
 
 export default function ExportsPage() {
+  const t = useT();
   const toast = useToast();
   const [selection, setSelection] =
     useState<ExportSelection>(ALL_EXPORT_GROUPS);
@@ -82,7 +84,7 @@ export default function ExportsPage() {
     if (busyRef.current) return;
     setError(null);
     if (!Object.values(selection).some(Boolean)) {
-      setError("Choose at least one group to export.");
+      setError(t("exports.chooseOne"));
       return;
     }
     busyRef.current = true;
@@ -90,9 +92,9 @@ export default function ExportsPage() {
     try {
       const defaultDay = todayLocal();
       const path = await save({
-        title: "Save Purple Memo readable export",
+        title: t("exports.saveTitle"),
         defaultPath: `purple-memo-readable-${defaultDay}.zip`,
-        filters: [{ name: "ZIP archive", extensions: ["zip"] }],
+        filters: [{ name: t("exports.zipFilter"), extensions: ["zip"] }],
       });
       if (path === null) return;
       // ONE clock for the whole export (G14). `today` used to be read before
@@ -119,7 +121,15 @@ export default function ExportsPage() {
         counts.jobs +
         counts.payables;
       toast.success(
-        `Readable export saved to ${path} - ${fileCount} files (${counts.notes} notes, ${counts.journal} journal entries, ${financeRows} finance rows, ${counts.tasks} tasks, ${counts.contacts} contacts).`,
+        t("exports.saved", {
+          path,
+          files: fileCount,
+          notes: counts.notes,
+          journal: counts.journal,
+          finance: financeRows,
+          tasks: counts.tasks,
+          contacts: counts.contacts,
+        }),
       );
     } catch (e) {
       setError(errText(e));
@@ -138,10 +148,8 @@ export default function ExportsPage() {
               <IconDownload className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Exports</h2>
-              <p className="page-subtitle">
-                Human-readable Markdown, CSV and vCard in one ZIP archive
-              </p>
+              <h2 className="editor-title">{t("exports.title")}</h2>
+              <p className="page-subtitle">{t("exports.subtitle")}</p>
             </div>
           </div>
         </div>
@@ -155,12 +163,9 @@ export default function ExportsPage() {
 
       <section className="settings-section" aria-labelledby="export-groups">
         <h3 className="settings-heading" id="export-groups">
-          What to export
+          {t("exports.whatToExport")}
         </h3>
-        <p className="muted">
-          This is a readable copy, not a restorable backup. Photo files, Vault
-          ciphertext, settings and Trash are never included.
-        </p>
+        <p className="muted">{t("exports.readableCopy")}</p>
         <div className="exports-group-grid">
           {GROUPS.map((group) => {
             const Icon = group.icon;
@@ -179,8 +184,10 @@ export default function ExportsPage() {
                   <Icon className="icon" />
                 </span>
                 <span>
-                  <span className="exports-group-title">{group.label}</span>
-                  <span className="muted">{group.blurb}</span>
+                  <span className="exports-group-title">
+                    {t(group.labelKey)}
+                  </span>
+                  <span className="muted">{t(group.blurbKey)}</span>
                 </span>
               </label>
             );
@@ -199,34 +206,29 @@ export default function ExportsPage() {
                 for the whole export. */}
             {busy ? (
               <>
-                <IconSpinner className="icon" /> Building archive...
+                <IconSpinner className="icon" /> {t("exports.building")}
               </>
             ) : (
-              "Export readable ZIP"
+              t("exports.export")
             )}
           </button>
-          <span className="muted">
-            One UTF-8 ZIP file. CSV uses RFC 4180 quoting and CRLF; Markdown and
-            vCard text keep their Unicode.
-          </span>
+          <span className="muted">{t("exports.oneFile")}</span>
         </div>
       </section>
 
       <section className="settings-section" aria-labelledby="export-fields">
         <h3 className="settings-heading" id="export-fields">
-          Field mapping
+          {t("exports.fieldMapping")}
         </h3>
-        <p className="muted">
-          The same table is written into every archive as EXPORT-FIELDS.md.
-        </p>
+        <p className="muted">{t("exports.sameTable")}</p>
         <div className="exports-table-wrap">
           <table className="exports-table">
             <thead>
               <tr>
-                <th scope="col">Source</th>
-                <th scope="col">Fields</th>
-                <th scope="col">Destination</th>
-                <th scope="col">Notes</th>
+                <th scope="col">{t("exports.source")}</th>
+                <th scope="col">{t("exports.fields")}</th>
+                <th scope="col">{t("exports.destination")}</th>
+                <th scope="col">{t("exports.notes")}</th>
               </tr>
             </thead>
             <tbody>

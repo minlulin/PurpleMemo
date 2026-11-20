@@ -66,18 +66,18 @@ The interface ships in English and Burmese (`my`). `src/lib/i18n.ts` holds one
 typed catalogue: every key carries both translations, and a missing one is a
 compile error rather than a blank label.
 
-That coverage is not yet the whole app. The shell, lock screen, Settings, Tasks,
+That coverage now spans the interface. The shell, lock screen, Settings, Tasks,
 Notes, Contacts, Inbox, search, Trash, Vault, Budget, Business, Loans, Habits,
-Shopping, Gallery, Journal, Memories, the shared month and weekday headings,
-the import/export dialogs and the phone UI read from the catalogue. **The
-Exports page is English-only for now** — their text lives in the pages, not in the
-catalogue. This is a known gap rather than a bug: finishing it means a
-namespace per page, and until a page has one the language switch cannot reach
-its text. Budget (`budget.*`), Business (`business.*`), Loans (`loans.*`),
-Habits (`habits.*`), Shopping (`shopping.*`), Gallery (`gallery.*`), Journal
-(`journal.*`) and Memories (`memories.*`) are the pages migrated this way; `src/lib/i18n.test.ts` fails if a key in those namespaces still reads
-English, and month/year headings come from `month.*`/`weekday.*` so a Burmese
-page does not show English calendar chrome.
+Shopping, Gallery, Journal, Memories, Exports, the shared month and weekday
+headings, the import/export dialogs and the phone UI read from the catalogue.
+Budget (`budget.*`), Business (`business.*`), Loans (`loans.*`), Habits
+(`habits.*`), Shopping (`shopping.*`), Gallery (`gallery.*`), Journal
+(`journal.*`), Memories (`memories.*`) and Exports (`exports.*`) are the pages
+migrated this way; `src/lib/i18n.test.ts` fails if a key in those namespaces
+still reads English, and month/year headings come from `month.*`/`weekday.*`
+so a Burmese page does not show English calendar chrome. One table stays
+English by design: the Exports field mapping is the same text the archive
+writes into `EXPORT-FIELDS.md`.
 
 ## Development
 
