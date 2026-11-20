@@ -30,13 +30,13 @@ const GROUPS: {
 }[] = [
   {
     key: "notes",
-    labelKey: "exports.group.notes",
+    labelKey: "nav.notes",
     blurbKey: "exports.group.notesBlurb",
     icon: IconNotes,
   },
   {
     key: "journal",
-    labelKey: "exports.group.journal",
+    labelKey: "nav.journal",
     blurbKey: "exports.group.journalBlurb",
     icon: IconJournal,
   },
@@ -54,7 +54,7 @@ const GROUPS: {
   },
   {
     key: "contacts",
-    labelKey: "exports.group.contacts",
+    labelKey: "nav.contacts",
     blurbKey: "exports.group.contactsBlurb",
     icon: IconContacts,
   },

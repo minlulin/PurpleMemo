@@ -1441,17 +1441,14 @@ export const en = {
   "exports.fields": "Fields",
   "exports.destination": "Destination",
   "exports.notes": "Notes",
-  "exports.group.notes": "Notes",
   "exports.group.notesBlurb":
     "Markdown files with front matter, tags, collections and archive state",
-  "exports.group.journal": "Journal",
   "exports.group.journalBlurb": "One Markdown file per day under journal/yyyy/",
   "exports.group.finance": "Finance CSV",
   "exports.group.financeBlurb": "Income, expenses, loans, jobs and payables",
   "exports.group.tasks": "Tasks CSV",
   "exports.group.tasksBlurb":
     "Actionable to-dos, due dates and repeat schedules",
-  "exports.group.contacts": "Contacts",
   "exports.group.contactsBlurb": "vCard 4.0 and CSV address book",
 
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
@@ -3054,17 +3051,14 @@ export const my: Record<MessageKey, string> = {
   "exports.fields": "ကွက်လပ်များ",
   "exports.destination": "သွားရာ နေရာ",
   "exports.notes": "မှတ်ချက်များ",
-  "exports.group.notes": "မှတ်စုများ",
   "exports.group.notesBlurb":
     "Front matter၊ တဂ်များ၊ စုစည်းမှုများနှင့် မော်ကွန်းအခြေအနေ ပါသော Markdown ဖိုင်များ",
-  "exports.group.journal": "ဂျာနယ်",
   "exports.group.journalBlurb": "journal/yyyy/ အောက်တွင် တစ်ရက်လျှင် Markdown ဖိုင် တစ်ခု",
   "exports.group.finance": "ငွေရေးကြေးရေး CSV",
   "exports.group.financeBlurb": "ဝင်ငွေ၊ အသုံးစရိတ်၊ ချေးငွေ၊ အလုပ်များနှင့် ပေးချေရမည့်များ",
   "exports.group.tasks": "လုပ်ငန်း CSV",
   "exports.group.tasksBlurb":
     "လုပ်ဆောင်ရမည့်အရာများ၊ ကျသင့်ရက်များနှင့် ထပ်ခါတလဲလဲ အစီအစဉ်များ",
-  "exports.group.contacts": "ဆက်သွယ်ရန်များ",
   "exports.group.contactsBlurb": "vCard 4.0 နှင့် CSV လိပ်စာစာအုပ်",
 
   // Months — the year comes first in Burmese, so the template carries that
