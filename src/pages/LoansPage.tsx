@@ -7,9 +7,11 @@ import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { IconCalendar, IconLoans } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import { loansRepo } from "../data/app.ts";
 import { todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import {
   formatMMK,
   fromCents,
@@ -21,11 +23,16 @@ import { useDayRollover } from "../lib/useDayRollover.ts";
 
 type LoanListItem = LoanRow & { state: LoanState; remaining_cents: number };
 
-const STATE_LABEL: Record<LoanState, string> = {
-  open: "Open",
-  partial: "Partial",
-  overdue: "Overdue",
-  closed: "Closed",
+const STATE_LABEL_KEY: Record<LoanState, MessageKey> = {
+  open: "loans.state.open",
+  partial: "loans.state.partial",
+  overdue: "loans.state.overdue",
+  closed: "loans.state.closed",
+};
+
+const DIRECTION_LABEL_KEY: Record<LoanDirection, MessageKey> = {
+  lent: "loans.direction.lent",
+  borrowed: "loans.direction.borrowed",
 };
 
 const STATE_BADGE: Record<LoanState, string> = {
@@ -42,6 +49,7 @@ export default function LoansPage({
   focusId?: number | null;
   focusToken?: number;
 }) {
+  const t = useT();
   const [loans, setLoans] = useState<LoanListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +123,7 @@ export default function LoansPage({
     if (focusId === null || loading) return;
     const row = document.getElementById(`search-target-loan-${focusId}`);
     if (row) row.scrollIntoView({ block: "nearest" });
-    else setError("That loan no longer exists — it may have been deleted.");
+    else setError(t("loans.missing"));
     if (row) setError(null);
   }, [focusId, focusToken, loading]);
 
@@ -223,11 +231,8 @@ export default function LoansPage({
               <IconLoans className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Loans &amp; Debts</h2>
-              <p className="page-subtitle">
-                Money lent and borrowed with automatic repayment &amp; due-state
-                tracking
-              </p>
+              <h2 className="editor-title">{t("loans.title")}</h2>
+              <p className="page-subtitle">{t("loans.subtitle")}</p>
             </div>
           </div>
         </div>
@@ -235,24 +240,24 @@ export default function LoansPage({
 
       <div className="summary-figures">
         <div>
-          <span className="muted">Lent (Owed to you)</span>
+          <span className="muted">{t("loans.lentTotal")}</span>
           <span className="figure amount-income">
             {formatMMK(lentRemaining)}
           </span>
         </div>
         <div>
-          <span className="muted">Borrowed (You owe)</span>
+          <span className="muted">{t("loans.borrowedTotal")}</span>
           <span className="figure amount-expense">
             {formatMMK(borrowedRemaining)}
           </span>
         </div>
         <div>
-          <span className="muted">Active Loans</span>
+          <span className="muted">{t("loans.activeCount")}</span>
           <span className="figure">{activeCount}</span>
         </div>
       </div>
 
-      <section className="budget-manage" aria-label="Loans">
+      <section className="budget-manage" aria-label={t("loans.aria")}>
         {loading ? <Skeleton count={3} /> : null}
         {error ? (
           <p className="alert alert-error" role="alert">
@@ -261,12 +266,12 @@ export default function LoansPage({
         ) : null}
 
         <div className="dash-card-head">
-          <h3 className="side-heading">Loan Ledger</h3>
+          <h3 className="side-heading">{t("loans.heading")}</h3>
           <span className="badge">{loans.length}</span>
         </div>
 
         {loans.length === 0 ? (
-          <EmptyState>No loans yet — add one below.</EmptyState>
+          <EmptyState>{t("loans.empty")}</EmptyState>
         ) : (
           <ul className="budget-list">
             {loans.map((l) => (
@@ -287,19 +292,25 @@ export default function LoansPage({
                           : "badge badge-warn"
                       }
                     >
-                      {l.direction}
+                      {t(DIRECTION_LABEL_KEY[l.direction])}
                     </span>
                     <span className={STATE_BADGE[l.state]} role="status">
-                      {STATE_LABEL[l.state]}
+                      {t(STATE_LABEL_KEY[l.state])}
                     </span>
                   </span>
                   <span className="row-sub figure">
-                    Repaid {formatMMK(l.repaid_cents)} /{" "}
-                    {formatMMK(l.amount_cents)}
+                    {t("loans.repaid", {
+                      repaid: formatMMK(l.repaid_cents),
+                      total: formatMMK(l.amount_cents),
+                    })}
                     {l.state !== "closed"
-                      ? ` · ${formatMMK(l.remaining_cents)} left`
+                      ? ` · ${t("loans.left", {
+                          amount: formatMMK(l.remaining_cents),
+                        })}`
                       : ""}
-                    {l.due_date ? ` · due ${l.due_date}` : ""}
+                    {l.due_date
+                      ? ` · ${t("loans.due", { date: l.due_date })}`
+                      : ""}
                     {l.note ? ` — ${l.note}` : ""}
                   </span>
                 </div>
@@ -309,7 +320,9 @@ export default function LoansPage({
                       <>
                         <input
                           className="input"
-                          aria-label={`Repayment amount for ${l.counterparty}`}
+                          aria-label={t("loans.repayAmountAria", {
+                            name: l.counterparty,
+                          })}
                           inputMode="decimal"
                           placeholder="0.00"
                           value={repayAmount}
@@ -331,14 +344,16 @@ export default function LoansPage({
                           }
                           onClick={() => void repay(l.id)}
                         >
-                          {payingId === l.id ? "Saving…" : "Save"}
+                          {payingId === l.id
+                            ? t("loans.saving")
+                            : t("loans.save")}
                         </button>
                         <button
                           type="button"
                           className="btn"
                           onClick={() => setRepayFor(null)}
                         >
-                          Cancel
+                          {t("common.cancel")}
                         </button>
                       </>
                     ) : (
@@ -352,7 +367,7 @@ export default function LoansPage({
                           );
                         }}
                       >
-                        Record repayment
+                        {t("loans.recordRepayment")}
                       </button>
                     )
                   ) : null}
@@ -361,18 +376,19 @@ export default function LoansPage({
                     className="btn btn-ghost"
                     onClick={() => startEditLoan(l)}
                   >
-                    Edit
+                    {t("common.edit")}
                   </button>
                   <ConfirmButton
                     className="btn btn-ghost"
-                    what={
+                    what={t(
                       l.repaid_cents > 0
-                        ? `loan for ${l.counterparty} — repayments already recorded stay`
-                        : `loan for ${l.counterparty}`
-                    }
+                        ? "loans.deleteRepaidWhat"
+                        : "loans.deleteWhat",
+                      { name: l.counterparty },
+                    )}
                     onConfirm={() => remove(l.id)}
                   >
-                    Delete
+                    {t("common.delete")}
                   </ConfirmButton>
                 </span>
               </li>
@@ -390,18 +406,20 @@ export default function LoansPage({
           <div className="dash-card-head">
             <h2 className="side-heading">
               {editing === null
-                ? "New loan"
-                : `Edit loan — ${editing.counterparty}`}
+                ? t("loans.new")
+                : t("loans.edit", { name: editing.counterparty })}
             </h2>
             <fieldset className="kind-toggle">
-              <legend className="visually-hidden">Loan direction</legend>
+              <legend className="visually-hidden">
+                {t("loans.directionLegend")}
+              </legend>
               <button
                 type="button"
                 className={direction === "lent" ? "btn is-on" : "btn"}
                 aria-pressed={direction === "lent"}
                 onClick={() => setDirection("lent")}
               >
-                Lent
+                {t("loans.direction.lent")}
               </button>
               <button
                 type="button"
@@ -409,21 +427,21 @@ export default function LoansPage({
                 aria-pressed={direction === "borrowed"}
                 onClick={() => setDirection("borrowed")}
               >
-                Borrowed
+                {t("loans.direction.borrowed")}
               </button>
             </fieldset>
           </div>
           <div className="form-grid">
             <label>
-              Counterparty
+              {t("loans.counterpartyField")}
               <input
                 value={counterparty}
-                placeholder="e.g. U Kyaw"
+                placeholder={t("loans.counterpartyPlaceholder")}
                 onChange={(e) => setCounterparty(e.target.value)}
               />
             </label>
             <label>
-              Amount
+              {t("loans.amountField")}
               <span className="input-affix">
                 <input
                   inputMode="decimal"
@@ -440,11 +458,11 @@ export default function LoansPage({
               </span>
             </label>
             <label>
-              Due date (optional)
+              {t("loans.dueField")}
               <span className="input-icon-wrap">
                 <input
                   type="date"
-                  aria-label="Due date"
+                  aria-label={t("loans.dueAria")}
                   value={dueDate}
                   onChange={(e) => setDueDate(e.target.value)}
                 />
@@ -452,10 +470,10 @@ export default function LoansPage({
               </span>
             </label>
             <label>
-              Note (optional)
+              {t("loans.noteField")}
               <input
                 value={note}
-                placeholder="Optional note"
+                placeholder={t("loans.notePlaceholder")}
                 onChange={(e) => setNote(e.target.value)}
               />
             </label>
@@ -469,10 +487,10 @@ export default function LoansPage({
               }
             >
               {saving
-                ? "Saving…"
+                ? t("loans.saving")
                 : editing === null
-                  ? "Add loan"
-                  : "Save changes"}
+                  ? t("loans.add")
+                  : t("loans.saveChanges")}
             </button>
             {editing !== null ? (
               <button
@@ -480,7 +498,7 @@ export default function LoansPage({
                 className="btn btn-ghost"
                 onClick={cancelEditLoan}
               >
-                Cancel edit
+                {t("loans.cancelEdit")}
               </button>
             ) : null}
           </div>

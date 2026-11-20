@@ -124,16 +124,7 @@ export default function BusinessPage({
           }
           focusToken={focusToken}
         />
-      ) : (
-        <p className="muted">
-          {t("business.viewTodo", {
-            view: t(
-              VIEWS.find((v) => v.key === activeView)?.labelKey ??
-                "business.view.jobs",
-            ),
-          })}
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -357,7 +348,7 @@ function ShopsView() {
                             className="btn btn-ghost"
                             onClick={() => startEdit(s)}
                           >
-                            {t("business.edit")}
+                            {t("common.edit")}
                           </button>
                           <ConfirmButton
                             className="btn btn-ghost"
@@ -756,7 +747,7 @@ function JobsView({
                   className="btn btn-ghost"
                   onClick={() => startEditJob(j)}
                 >
-                  {t("business.edit")}
+                  {t("common.edit")}
                 </button>
                 {/* Its recorded payments stay in the Budget (cash basis), so
                     the confirm says what the delete does and does not do. */}
@@ -1237,7 +1228,7 @@ function HistoryView({
                       });
                     }}
                   >
-                    {t("business.edit")}
+                    {t("common.edit")}
                   </button>
                 )}
                 <ConfirmButton
@@ -1589,7 +1580,7 @@ function PayablesView({
                       className="btn btn-ghost"
                       onClick={() => startEditPayable(p)}
                     >
-                      {t("business.edit")}
+                      {t("common.edit")}
                     </button>
                     <ConfirmButton
                       className="btn btn-ghost"

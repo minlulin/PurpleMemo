@@ -163,14 +163,14 @@ const GUARDS: {
     handler: "addLoan",
     busy: "savingRef.current",
     cleared: "setSaving(false)",
-    label: "Saving…",
+    labelKey: "loans.saving",
   },
   {
     page: "LoansPage.tsx",
     handler: "repay",
     busy: "payingId === id",
     cleared: "setPayingId(null)",
-    label: "Saving…",
+    labelKey: "loans.saving",
   },
   // Quick capture. Capture and conversion are the two writes here. The
   // conversion LOCK is deliberately global — one row's click locks the list's
@@ -858,12 +858,13 @@ test("an in-flight submit says so on the button, not just by going grey", () => 
     }
   }
   // The per-row payment buttons all say the same thing, which is deliberate:
-  // one wording for one kind of action. BusinessPage now says it through
-  // `business.saving` (covered by the labelKey branch above), LoansPage still
-  // says it literally.
+  // one wording for one kind of action. Every page now says it through its own
+  // namespace (`business.saving`, `loans.saving`), so this test no longer
+  // pins a literal — the labelKey branch above covers the wording, and the
+  // catalogue test proves the Burmese beside it.
   assert.ok(
-    readPage("LoansPage.tsx").includes('"Saving…"'),
-    "LoansPage must label its in-flight payment button",
+    !readPage("LoansPage.tsx").includes('"Saving…"'),
+    "LoansPage must not hard-code the in-flight label again",
   );
 });
 

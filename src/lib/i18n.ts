@@ -43,6 +43,7 @@ export function localeFromLanguageTag(tag: string | null | undefined): Locale {
 export const en = {
   "common.cancel": "Cancel",
   "common.delete": "Delete",
+  "common.edit": "Edit",
   "common.close": "Close",
   "common.closeDialog": "Close dialog",
   "common.tryAgain": "Try again",
@@ -1133,7 +1134,6 @@ export const en = {
   "business.view.payables": "Payables",
   "business.view.history": "History",
   "business.view.shops": "Shops",
-  "business.viewTodo": "The {view} view lands in a later P3c task.",
   "business.jobMissing":
     "That job is no longer in this view — it may have changed or been deleted.",
   "business.payableMissing":
@@ -1141,7 +1141,6 @@ export const en = {
 
   "business.saving": "Saving…",
   "business.save": "Save",
-  "business.edit": "Edit",
   "business.none": "None",
   "business.saveChanges": "Save changes",
   "business.cancelEdit": "Cancel edit",
@@ -1251,6 +1250,49 @@ export const en = {
   "business.payables.dueAria": "Due date",
   "business.payables.noteField": "Note (optional)",
   "business.payables.add": "Add payable",
+
+  // Loans — the third page on the catalogue (F6). Direction and state are
+  // derived in the page, so the badge words live here rather than in a
+  // Record of English labels.
+  "loans.title": "Loans & Debts",
+  "loans.subtitle":
+    "Money lent and borrowed with automatic repayment & due-state tracking",
+  "loans.lentTotal": "Lent (Owed to you)",
+  "loans.borrowedTotal": "Borrowed (You owe)",
+  "loans.activeCount": "Active Loans",
+  "loans.aria": "Loans",
+  "loans.heading": "Loan Ledger",
+  "loans.empty": "No loans yet — add one below.",
+  "loans.missing": "That loan no longer exists — it may have been deleted.",
+  "loans.direction.lent": "lent",
+  "loans.direction.borrowed": "borrowed",
+  "loans.state.open": "Open",
+  "loans.state.partial": "Partial",
+  "loans.state.overdue": "Overdue",
+  "loans.state.closed": "Closed",
+  "loans.repaid": "Repaid {repaid} / {total}",
+  "loans.left": "{amount} left",
+  "loans.due": "due {date}",
+  "loans.repayAmountAria": "Repayment amount for {name}",
+  "loans.save": "Save",
+  "loans.saving": "Saving…",
+  "loans.recordRepayment": "Record repayment",
+  "loans.deleteRepaidWhat":
+    "loan for {name} — repayments already recorded stay",
+  "loans.deleteWhat": "loan for {name}",
+  "loans.new": "New loan",
+  "loans.edit": "Edit loan — {name}",
+  "loans.directionLegend": "Loan direction",
+  "loans.counterpartyField": "Counterparty",
+  "loans.counterpartyPlaceholder": "e.g. U Kyaw",
+  "loans.amountField": "Amount",
+  "loans.dueField": "Due date (optional)",
+  "loans.dueAria": "Due date",
+  "loans.noteField": "Note (optional)",
+  "loans.notePlaceholder": "Optional note",
+  "loans.add": "Add loan",
+  "loans.saveChanges": "Save changes",
+  "loans.cancelEdit": "Cancel edit",
 
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
@@ -1497,6 +1539,7 @@ export type MessageKey = keyof typeof en;
 export const my: Record<MessageKey, string> = {
   "common.cancel": "ပယ်ဖျက်",
   "common.delete": "ဖျက်မည်",
+  "common.edit": "ပြင်မည်",
   "common.close": "ပိတ်မည်",
   "common.closeDialog": "ဒိုင်ယာလော့ဂ်ကို ပိတ်မည်",
   "common.tryAgain": "ထပ်စမ်းကြည့်မည်",
@@ -2558,7 +2601,7 @@ export const my: Record<MessageKey, string> = {
   "business.view.payables": "ပေးရန်ကျန်ငွေ",
   "business.view.history": "မှတ်တမ်း",
   "business.view.shops": "ဆိုင်များ",
-  "business.viewTodo": "{view} မြင်ကွင်းကို နောက်ထပ် P3c အဆင့်တွင် ထည့်သွင်းပါမည်။",
+
   "business.jobMissing":
     "ထို အလုပ် ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
   "business.payableMissing":
@@ -2566,7 +2609,6 @@ export const my: Record<MessageKey, string> = {
 
   "business.saving": "သိမ်းနေသည်…",
   "business.save": "သိမ်းမည်",
-  "business.edit": "ပြင်မည်",
   "business.none": "မရှိ",
   "business.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
   "business.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
@@ -2674,6 +2716,48 @@ export const my: Record<MessageKey, string> = {
   "business.payables.dueAria": "ကျသင့်ရက်",
   "business.payables.noteField": "မှတ်စု (မဖြစ်မနေ မဟုတ်)",
   "business.payables.add": "ပေးရန်ကျန်ငွေ ထည့်မည်",
+
+  // Loans — mirrors the English block above key for key ({repaid}, {total},
+  // {amount}, {date}, {name}).
+  "loans.title": "ချေးငွေနှင့် အကြွေး",
+  "loans.subtitle":
+    "ချေးထားခြင်းနှင့် ချေးယူထားခြင်း — ပြန်ဆပ်မှုနှင့် ကျသင့်ရက် အခြေအနေကို အလိုအလျောက် ခြေရာခံသည်",
+  "loans.lentTotal": "ချေးထားသည် (သင့်ထံ ရရန်)",
+  "loans.borrowedTotal": "ချေးယူထားသည် (သင် ပေးရန်)",
+  "loans.activeCount": "လက်ရှိ ချေးငွေများ",
+  "loans.aria": "ချေးငွေများ",
+  "loans.heading": "ချေးငွေ စာရင်း",
+  "loans.empty": "ချေးငွေ မရှိသေးပါ — အောက်တွင် တစ်ခု ထည့်ပါ။",
+  "loans.missing": "ထို ချေးငွေ မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+  "loans.direction.lent": "ချေးထားသည်",
+  "loans.direction.borrowed": "ချေးယူထားသည်",
+  "loans.state.open": "ဖွင့်ထား",
+  "loans.state.partial": "တစိတ်တပိုင်း ဆပ်ပြီး",
+  "loans.state.overdue": "ရက်လွန်",
+  "loans.state.closed": "ပိတ်ပြီး",
+  "loans.repaid": "ပြန်ဆပ်ပြီး {repaid} / {total}",
+  "loans.left": "{amount} ကျန်",
+  "loans.due": "ကျသင့်ရက် {date}",
+  "loans.repayAmountAria": "{name} အတွက် ပြန်ဆပ်မည့် ပမာဏ",
+  "loans.save": "သိမ်းမည်",
+  "loans.saving": "သိမ်းနေသည်…",
+  "loans.recordRepayment": "ပြန်ဆပ်မှု မှတ်မည်",
+  "loans.deleteRepaidWhat":
+    "{name} အတွက် ချေးငွေ — မှတ်ထားပြီးသော ပြန်ဆပ်မှုများ ကျန်ရစ်မည်",
+  "loans.deleteWhat": "{name} အတွက် ချေးငွေ",
+  "loans.new": "ချေးငွေ အသစ်",
+  "loans.edit": "ချေးငွေ ပြင်မည် — {name}",
+  "loans.directionLegend": "ချေးငွေ အမျိုးအစား",
+  "loans.counterpartyField": "တစ်ဖက်လူ",
+  "loans.counterpartyPlaceholder": "ဥပမာ ဦးကျော်",
+  "loans.amountField": "ပမာဏ",
+  "loans.dueField": "ကျသင့်ရက် (မဖြစ်မနေ မဟုတ်)",
+  "loans.dueAria": "ကျသင့်ရက်",
+  "loans.noteField": "မှတ်စု (မဖြစ်မနေ မဟုတ်)",
+  "loans.notePlaceholder": "မှတ်စု",
+  "loans.add": "ချေးငွေ ထည့်မည်",
+  "loans.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
+  "loans.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
 
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.

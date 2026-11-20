@@ -68,6 +68,10 @@ test("the Business namespace is translated, not copied from English", () => {
   assertNamespaceTranslated("business.", 90);
 });
 
+test("the Loans namespace is translated, not copied from English", () => {
+  assertNamespaceTranslated("loans.", 30);
+});
+
 test("month names and the label template are translated", () => {
   // The month heading is a template plus a name, so it needs both halves:
   // twelve Burmese names and a `month.year` that puts the year where Burmese
