@@ -13,9 +13,25 @@ import {
 import {
   buildMonthGrid,
   createJournalRepo,
+  DAY_LABEL_KEYS,
   monthLabel,
   weekRowKey,
 } from "./journal.ts";
+
+test("the shared day headings are Sunday-first and complete", () => {
+  // Journal and Habits both render this list; a duplicate or a missing day
+  // would shift a column on both pages at once, which the grid tests (dates,
+  // not headings) cannot see.
+  assert.deepEqual(DAY_LABEL_KEYS, [
+    "weekday.sun",
+    "weekday.mon",
+    "weekday.tue",
+    "weekday.wed",
+    "weekday.thu",
+    "weekday.fri",
+    "weekday.sat",
+  ]);
+});
 
 test("October 2026 grid: Sunday-start, 4 leading blanks, 5 full weeks", () => {
   const weeks = buildMonthGrid("2026-10", []);

@@ -26,19 +26,13 @@ import {
   saveJournalDraft,
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
-import type { MessageKey } from "../lib/i18n.ts";
-import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
+import {
+  buildMonthGrid,
+  DAY_LABEL_KEYS,
+  monthLabel,
+  weekRowKey,
+} from "../lib/journal.ts";
 import { useDayRollover } from "../lib/useDayRollover.ts";
-
-const DAY_LABEL_KEYS = [
-  "weekday.sun",
-  "weekday.mon",
-  "weekday.tue",
-  "weekday.wed",
-  "weekday.thu",
-  "weekday.fri",
-  "weekday.sat",
-] as const satisfies readonly MessageKey[];
 
 export default function JournalPage({
   focusDate = null,

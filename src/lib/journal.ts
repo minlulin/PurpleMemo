@@ -26,6 +26,21 @@ const MONTH_KEYS = [
   "month.12",
 ] as const satisfies readonly MessageKey[];
 
+/**
+ * The month grids' day headings, Sunday-first. Shared by Journal and Habits:
+ * both render the same seven columns, so a second copy would be a second
+ * place to forget a day.
+ */
+export const DAY_LABEL_KEYS = [
+  "weekday.sun",
+  "weekday.mon",
+  "weekday.tue",
+  "weekday.wed",
+  "weekday.thu",
+  "weekday.fri",
+  "weekday.sat",
+] as const satisfies readonly MessageKey[];
+
 /** Render a message in the caller's locale — `useT()` inside a component. */
 type MonthTranslator = (key: MessageKey, params?: MessageParams) => string;
 
