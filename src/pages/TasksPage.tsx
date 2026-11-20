@@ -386,7 +386,7 @@ export default function TasksPage({
                       disabled={busyRow !== null}
                       onConfirm={() => remove(task.id)}
                     >
-                      {t("tasks.moveToTrash")}
+                      {t("common.moveToTrash")}
                     </ConfirmButton>
                   </span>
                 </li>

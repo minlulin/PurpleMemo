@@ -324,7 +324,7 @@ function NoteEditor(p: EditorProps) {
           what={t("notes.deleteWhat")}
           onConfirm={p.onDelete}
         >
-          {t("notes.moveToTrash")}
+          {t("common.moveToTrash")}
         </ConfirmButton>
       </div>
     </>

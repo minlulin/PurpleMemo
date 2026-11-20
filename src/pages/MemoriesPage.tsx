@@ -13,22 +13,23 @@ import {
   IconMemories,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { useT } from "../components/useTranslation.ts";
+import { useLocale, useT } from "../components/useTranslation.ts";
 import { contactsRepo, memoriesRepo } from "../data/app.ts";
 import { birthdayLabel } from "../lib/contacts.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { monthLabel } from "../lib/journal.ts";
 import type { ContactRow, MemoryRow } from "../lib/types.ts";
 import { useDayRollover } from "../lib/useDayRollover.ts";
 
 type MemoryView = "upcoming" | "onthisday" | "month" | "all";
 
-const VIEWS: { key: MemoryView; label: string }[] = [
-  { key: "upcoming", label: "Upcoming" },
-  { key: "onthisday", label: "On this day" },
-  { key: "month", label: "Month" },
-  { key: "all", label: "All" },
+const VIEWS: { key: MemoryView; labelKey: MessageKey }[] = [
+  { key: "upcoming", labelKey: "memories.view.upcoming" },
+  { key: "onthisday", labelKey: "memories.view.onthisday" },
+  { key: "month", labelKey: "memories.view.month" },
+  { key: "all", labelKey: "memories.view.all" },
 ];
 
 interface MemoryFormProps {
@@ -46,6 +47,7 @@ interface MemoryFormProps {
 }
 
 function MemoryForm(p: MemoryFormProps) {
+  const t = useT();
   return (
     <form
       className="entry-form"
@@ -55,20 +57,20 @@ function MemoryForm(p: MemoryFormProps) {
       }}
     >
       <h3 className="side-heading">
-        {p.editing ? "Edit memory" : "New memory"}
+        {p.editing ? t("memories.editTitle") : t("memories.newTitle")}
       </h3>
       <div className="form-grid">
         <label>
-          Title
+          {t("memories.titleLabel")}
           <input
             className="input"
             value={p.title}
-            placeholder="What happened?"
+            placeholder={t("memories.titlePlaceholder")}
             onChange={(e) => p.onTitle(e.target.value)}
           />
         </label>
         <label>
-          Date
+          {t("memories.dateLabel")}
           <span className="input-icon-wrap">
             <input
               className="input"
@@ -81,11 +83,11 @@ function MemoryForm(p: MemoryFormProps) {
         </label>
       </div>
       <label>
-        Note
+        {t("memories.noteLabel")}
         <textarea
           className="textarea"
           rows={3}
-          placeholder="Optional reflection or story…"
+          placeholder={t("memories.notePlaceholder")}
           value={p.note}
           onChange={(e) => p.onNote(e.target.value)}
         />
@@ -98,11 +100,11 @@ function MemoryForm(p: MemoryFormProps) {
             p.saving || p.title.trim().length === 0 || p.date.length === 0
           }
         >
-          {p.editing ? "Save changes" : "Add memory"}
+          {p.editing ? t("common.saveChanges") : t("memories.add")}
         </button>
         {p.editing ? (
           <button type="button" className="btn" onClick={p.onCancel}>
-            Cancel
+            {t("common.cancel")}
           </button>
         ) : null}
       </div>
@@ -119,7 +121,9 @@ interface MemoryListProps {
 }
 
 function MemoryList(p: MemoryListProps) {
-  if (p.items.length === 0) return <EmptyState>Nothing here.</EmptyState>;
+  const t = useT();
+  if (p.items.length === 0)
+    return <EmptyState>{t("memories.empty")}</EmptyState>;
   return (
     <ul className="budget-list">
       {p.items.map((m) => (
@@ -143,14 +147,14 @@ function MemoryList(p: MemoryListProps) {
               className={p.editingId === m.id ? "btn is-on" : "btn btn-ghost"}
               onClick={() => p.onEdit(m)}
             >
-              Edit
+              {t("common.edit")}
             </button>
             <ConfirmButton
               className="btn btn-ghost"
-              what="memory to Trash"
+              what={t("memories.deleteWhat")}
               onConfirm={() => p.onDelete(m)}
             >
-              Move to Trash
+              {t("common.moveToTrash")}
             </ConfirmButton>
           </span>
         </li>
@@ -167,6 +171,7 @@ export default function MemoriesPage({
   focusToken?: number;
 }) {
   const t = useT();
+  const locale = useLocale();
   const [view, setView] = useState<MemoryView>("upcoming");
   const [upcoming, setUpcoming] = useState<MemoryRow[]>([]);
   const [onThisDay, setOnThisDay] = useState<MemoryRow[]>([]);
@@ -255,7 +260,7 @@ export default function MemoriesPage({
     if (focusId === null || loading) return;
     setView("all");
     if (!allRef.current.some((memory) => memory.id === focusId)) {
-      setError("That memory no longer exists — it may have been deleted.");
+      setError(t("memories.missing"));
     } else setError(null);
   }, [focusId, focusToken, loading]);
 
@@ -357,15 +362,12 @@ export default function MemoriesPage({
               <IconMemories className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Memories &amp; Milestones</h2>
-              <p className="page-subtitle">
-                Important dates, anniversaries, on-this-day flashbacks &amp;
-                contact birthdays
-              </p>
+              <h2 className="editor-title">{t("memories.title")}</h2>
+              <p className="page-subtitle">{t("memories.subtitle")}</p>
             </div>
           </div>
         </div>
-        <nav className="budget-viewnav" aria-label="Memory views">
+        <nav className="budget-viewnav" aria-label={t("memories.viewsAria")}>
           {VIEWS.map((v) => (
             <button
               key={v.key}
@@ -374,7 +376,7 @@ export default function MemoriesPage({
               aria-current={view === v.key ? "page" : undefined}
               onClick={() => setView(v.key)}
             >
-              {v.label}
+              {t(v.labelKey)}
             </button>
           ))}
         </nav>
@@ -392,7 +394,7 @@ export default function MemoriesPage({
           {view === "upcoming" ? (
             <div className="budget-manage">
               <div className="dash-card-head">
-                <h3 className="side-heading">Next 14 days</h3>
+                <h3 className="side-heading">{t("memories.next14")}</h3>
                 <span className="badge">{upcoming.length}</span>
               </div>
               <MemoryList
@@ -405,14 +407,14 @@ export default function MemoriesPage({
               <div className="contact-section">
                 <div className="dash-card-head">
                   <h3 className="side-heading">
-                    Birthdays in the next 14 days
+                    {t("memories.birthdaysNext14")}
                   </h3>
                   <span className="badge badge-accent">
                     {upcomingBirthdays.length}
                   </span>
                 </div>
                 {upcomingBirthdays.length === 0 ? (
-                  <p className="muted">No upcoming birthdays.</p>
+                  <p className="muted">{t("memories.noUpcomingBirthdays")}</p>
                 ) : (
                   <ul className="budget-list">
                     {upcomingBirthdays.map((c) => (
@@ -421,7 +423,7 @@ export default function MemoriesPage({
                           <b>{c.name}</b>
                         </span>
                         <span className="badge badge-accent">
-                          {c.birthday ? birthdayLabel(c.birthday) : ""}
+                          {c.birthday ? birthdayLabel(c.birthday, locale) : ""}
                         </span>
                       </li>
                     ))}
@@ -432,7 +434,7 @@ export default function MemoriesPage({
           ) : view === "onthisday" ? (
             <div className="budget-manage">
               <div className="dash-card-head">
-                <h3 className="side-heading">On this day (any year)</h3>
+                <h3 className="side-heading">{t("memories.onThisDay")}</h3>
                 <span className="badge">{onThisDay.length}</span>
               </div>
               <MemoryList
@@ -444,13 +446,15 @@ export default function MemoriesPage({
               />
               <div className="contact-section">
                 <div className="dash-card-head">
-                  <h3 className="side-heading">Birthdays today</h3>
+                  <h3 className="side-heading">
+                    {t("memories.birthdaysToday")}
+                  </h3>
                   <span className="badge badge-accent">
                     {todaysBirthdays.length}
                   </span>
                 </div>
                 {todaysBirthdays.length === 0 ? (
-                  <p className="muted">No birthdays today.</p>
+                  <p className="muted">{t("memories.noBirthdaysToday")}</p>
                 ) : (
                   <ul className="budget-list">
                     {todaysBirthdays.map((c) => (
@@ -459,7 +463,7 @@ export default function MemoriesPage({
                           <b>{c.name}</b>
                         </span>
                         <span className="badge badge-accent">
-                          {c.birthday ? birthdayLabel(c.birthday) : ""}
+                          {c.birthday ? birthdayLabel(c.birthday, locale) : ""}
                         </span>
                       </li>
                     ))}
@@ -473,8 +477,8 @@ export default function MemoriesPage({
                 <button
                   type="button"
                   className="btn btn-icon"
-                  aria-label="Previous month"
-                  title="Previous month"
+                  aria-label={t("month.previous")}
+                  title={t("month.previous")}
                   onClick={() => showMonth(shiftYearMonth(feedMonth, -1))}
                 >
                   <IconChevronLeft className="icon" />
@@ -485,8 +489,8 @@ export default function MemoriesPage({
                 <button
                   type="button"
                   className="btn btn-icon"
-                  aria-label="Next month"
-                  title="Next month"
+                  aria-label={t("month.next")}
+                  title={t("month.next")}
                   onClick={() => showMonth(shiftYearMonth(feedMonth, 1))}
                 >
                   <IconChevronRight className="icon" />
@@ -496,7 +500,7 @@ export default function MemoriesPage({
                   className="btn"
                   onClick={() => showMonth(yearMonthOf(todayLocal()))}
                 >
-                  This month
+                  {t("memories.thisMonth")}
                 </button>
               </div>
               <MemoryList
@@ -510,7 +514,7 @@ export default function MemoriesPage({
           ) : (
             <div className="budget-manage">
               <div className="dash-card-head">
-                <h3 className="side-heading">All memories</h3>
+                <h3 className="side-heading">{t("memories.all")}</h3>
                 <span className="badge">{all.length}</span>
               </div>
               <MemoryList

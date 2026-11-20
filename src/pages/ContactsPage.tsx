@@ -601,7 +601,7 @@ export default function ContactsPage(p: ContactsPageProps) {
                     what={t("contacts.deleteWhat")}
                     onConfirm={() => removeContact(selectedContact.id)}
                   >
-                    <IconTrash className="icon" /> {t("contacts.moveToTrash")}
+                    <IconTrash className="icon" /> {t("common.moveToTrash")}
                   </ConfirmButton>
                 </div>
               </div>

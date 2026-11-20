@@ -440,7 +440,7 @@ export default function JournalPage({
             what={t("journal.deleteWhat")}
             onConfirm={() => handleDelete()}
           >
-            {t("journal.moveToTrash")}
+            {t("common.moveToTrash")}
           </ConfirmButton>
         </div>
 
