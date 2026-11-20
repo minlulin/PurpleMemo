@@ -416,7 +416,7 @@ const GUARDS: {
     busy: "savingRef.current",
     cleared: "savingRef.current = false",
     raised: "savingRef.current = true",
-    label: "Saving…",
+    labelKey: "journal.saving",
   },
   {
     page: "MemoriesPage.tsx",
@@ -900,7 +900,7 @@ test("a draft can never be discarded while a save is in flight", () => {
     );
     assert.match(
       src,
-      /title=(?:"Discard the unsaved draft[^"]*"|\{t\("notes\.discardTitle"\)\})\s*\n\s*disabled=\{(p\.)?saving\}/,
+      /title=(?:"Discard the unsaved draft[^"]*"|\{t\("(?:notes|journal)\.discardTitle"\)\})\s*\n\s*disabled=\{(p\.)?saving\}/,
       `${page}: the Discard button must be disabled while saving`,
     );
   }

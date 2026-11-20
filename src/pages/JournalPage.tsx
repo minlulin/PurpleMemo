@@ -16,7 +16,7 @@ import {
   markdownUrlTransform,
 } from "../components/MarkdownLink.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { useT } from "../components/useTranslation.ts";
+import { usePlural, useT } from "../components/useTranslation.ts";
 import { journalRepo, settingsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import {
@@ -26,18 +26,19 @@ import {
   saveJournalDraft,
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
 import { useDayRollover } from "../lib/useDayRollover.ts";
 
-const WEEKDAY_HEADS = [
-  "Sun",
-  "Mon",
-  "Tue",
-  "Wed",
-  "Thu",
-  "Fri",
-  "Sat",
-] as const;
+const DAY_LABEL_KEYS = [
+  "weekday.sun",
+  "weekday.mon",
+  "weekday.tue",
+  "weekday.wed",
+  "weekday.thu",
+  "weekday.fri",
+  "weekday.sat",
+] as const satisfies readonly MessageKey[];
 
 export default function JournalPage({
   focusDate = null,
@@ -47,6 +48,7 @@ export default function JournalPage({
   focusToken?: number;
 }) {
   const t = useT();
+  const plural = usePlural();
   const [month, setMonth] = useState(() => yearMonthOf(todayLocal()));
   const [entryDates, setEntryDates] = useState<string[]>([]);
   const [activeDate, setActiveDate] = useState(() => todayLocal());
@@ -298,22 +300,22 @@ export default function JournalPage({
 
   return (
     <div className="feature-split">
-      <aside className="feature-side" aria-label="Month grid">
+      <aside className="feature-side" aria-label={t("journal.monthGrid")}>
         <div className="dash-card-head">
           <div className="dash-card-title">
             <IconCalendar className="icon" />
-            <span className="side-heading">Calendar</span>
+            <span className="side-heading">{t("journal.calendar")}</span>
           </div>
           <span className="badge badge-accent">
-            {entryDates.length} {entryDates.length === 1 ? "entry" : "entries"}
+            {plural("journal.entries", entryDates.length)}
           </span>
         </div>
         <div className="month-nav">
           <button
             type="button"
             className="btn btn-icon"
-            aria-label="Previous month"
-            title="Previous month"
+            aria-label={t("month.previous")}
+            title={t("month.previous")}
             onClick={() => setMonth((m) => shiftYearMonth(m, -1))}
           >
             <IconChevronLeft className="icon" />
@@ -322,8 +324,8 @@ export default function JournalPage({
           <button
             type="button"
             className="btn btn-icon"
-            aria-label="Next month"
-            title="Next month"
+            aria-label={t("month.next")}
+            title={t("month.next")}
             onClick={() => setMonth((m) => shiftYearMonth(m, 1))}
           >
             <IconChevronRight className="icon" />
@@ -333,9 +335,9 @@ export default function JournalPage({
           <caption className="visually-hidden">{label}</caption>
           <thead>
             <tr className="week-row week-head">
-              {WEEKDAY_HEADS.map((d) => (
-                <th key={d} className="day-head" scope="col">
-                  {d.slice(0, 1)}
+              {DAY_LABEL_KEYS.map((key) => (
+                <th key={key} className="day-head" scope="col">
+                  {t(key)}
                 </th>
               ))}
             </tr>
@@ -390,19 +392,19 @@ export default function JournalPage({
           type="button"
           className="btn"
           onClick={() => {
-            const t = todayLocal();
-            setActiveDate(t);
-            setMonth(yearMonthOf(t));
+            const day = todayLocal();
+            setActiveDate(day);
+            setMonth(yearMonthOf(day));
           }}
         >
-          Today
+          {t("journal.today")}
         </button>
       </aside>
 
-      <section className="notes-main" aria-label="Journal entry">
+      <section className="notes-main" aria-label={t("journal.entryAria")}>
         {searchMissing && focusDate === activeDate ? (
           <p className="alert alert-error" role="status">
-            That journal entry no longer exists — it may have been deleted.
+            {t("journal.missing")}
           </p>
         ) : null}
         <div className="notes-toolbar">
@@ -411,24 +413,24 @@ export default function JournalPage({
             <h2 className="entry-date figure">{activeDate}</h2>
             <span className="badge">{readableActiveDate}</span>
             {entrySet.has(activeDate) ? (
-              <span className="badge badge-accent">Saved</span>
+              <span className="badge badge-accent">{t("journal.saved")}</span>
             ) : null}
           </div>
           <span className="toolbar-spacer" />
           {dirty && (
             <span className="badge badge-warn" aria-live="polite">
-              Unsaved draft
+              {t("journal.unsaved")}
             </span>
           )}
           {dirty && (
             <button
               type="button"
               className="btn"
-              title="Discard the unsaved draft and reload the saved entry"
+              title={t("journal.discardTitle")}
               disabled={saving}
               onClick={handleDiscardDraft}
             >
-              Discard draft
+              {t("journal.discard")}
             </button>
           )}
           <button
@@ -437,14 +439,14 @@ export default function JournalPage({
             disabled={saving || loading}
             onClick={() => void handleSave()}
           >
-            {saving ? "Saving…" : "Save entry"}
+            {saving ? t("journal.saving") : t("journal.save")}
           </button>
           <ConfirmButton
             className="btn btn-danger"
-            what="journal entry to Trash"
+            what={t("journal.deleteWhat")}
             onConfirm={() => handleDelete()}
           >
-            Move to Trash
+            {t("journal.moveToTrash")}
           </ConfirmButton>
         </div>
 
@@ -457,31 +459,35 @@ export default function JournalPage({
         {loading ? (
           <div className="editor-split journal-split">
             <div className="editor-pane-box">
-              <span className="editor-pane-label">Daily reflection</span>
+              <span className="editor-pane-label">
+                {t("journal.reflection")}
+              </span>
               <Skeleton variant="card" />
             </div>
             <div className="editor-pane-box">
-              <span className="editor-pane-label">History</span>
+              <span className="editor-pane-label">{t("journal.history")}</span>
               <Skeleton count={4} />
             </div>
           </div>
         ) : (
           <div className="editor-split journal-split">
             <div className="editor-pane-box">
-              <span className="editor-pane-label">Daily reflection</span>
+              <span className="editor-pane-label">
+                {t("journal.reflection")}
+              </span>
               <textarea
                 className="textarea editor-input"
                 value={content}
                 onChange={(e) => editContent(e.target.value)}
-                placeholder="Write today's entry in markdown…"
-                aria-label="Journal entry content (markdown)"
+                placeholder={t("journal.placeholder")}
+                aria-label={t("journal.contentAria")}
               />
             </div>
             <div className="editor-pane-box">
-              <span className="editor-pane-label">Live preview</span>
+              <span className="editor-pane-label">{t("journal.preview")}</span>
               <div className="editor-preview markdown" aria-live="polite">
                 {content.trim().length === 0 ? (
-                  <p className="empty-state">Live preview appears here.</p>
+                  <p className="empty-state">{t("journal.previewEmpty")}</p>
                 ) : (
                   // One scope per entry: the preview stays mounted while the
                   // date changes, and each day's `#introduction` must be its

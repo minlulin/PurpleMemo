@@ -1363,6 +1363,31 @@ export const en = {
   "gallery.memoryNumber": "Memory #{id}",
   "gallery.jobNumber": "Job #{id}",
 
+  // Journal — one entry per day. Its day headings and month navigation are
+  // the shared `weekday.*` / `month.*` chrome, so only the page's own text is
+  // here.
+  "journal.calendar": "Calendar",
+  "journal.monthGrid": "Month grid",
+  "journal.today": "Today",
+  "journal.entryAria": "Journal entry",
+  "journal.missing":
+    "That journal entry no longer exists — it may have been deleted.",
+  "journal.saved": "Saved",
+  "journal.unsaved": "Unsaved draft",
+  "journal.discard": "Discard draft",
+  "journal.discardTitle":
+    "Discard the unsaved draft and reload the saved entry",
+  "journal.save": "Save entry",
+  "journal.saving": "Saving…",
+  "journal.deleteWhat": "journal entry to Trash",
+  "journal.moveToTrash": "Move to Trash",
+  "journal.reflection": "Daily reflection",
+  "journal.history": "History",
+  "journal.placeholder": "Write today's entry in markdown…",
+  "journal.contentAria": "Journal entry content (markdown)",
+  "journal.preview": "Live preview",
+  "journal.previewEmpty": "Live preview appears here.",
+
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
   // Burmese page does not show "October 2026" under Burmese tabs.
@@ -2899,6 +2924,26 @@ export const my: Record<MessageKey, string> = {
   "gallery.memoryNumber": "အမှတ်တရ #{id}",
   "gallery.jobNumber": "အလုပ် #{id}",
 
+  "journal.calendar": "ပြက္ခဒိန်",
+  "journal.monthGrid": "လ ဇယားကွက်",
+  "journal.today": "ယနေ့",
+  "journal.entryAria": "ဂျာနယ် မှတ်တမ်း",
+  "journal.missing": "ထို ဂျာနယ် မှတ်တမ်း မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+  "journal.saved": "သိမ်းပြီး",
+  "journal.unsaved": "မသိမ်းရသေးသော မူကြမ်း",
+  "journal.discard": "မူကြမ်း ပယ်ဖျက်",
+  "journal.discardTitle": "မသိမ်းရသေးသော မူကြမ်းကို ပယ်ပြီး သိမ်းထားသည့် မှတ်တမ်းကို ပြန်ဖွင့်မည်",
+  "journal.save": "မှတ်တမ်း သိမ်းမည်",
+  "journal.saving": "သိမ်းနေသည်…",
+  "journal.deleteWhat": "အမှိုက်ပုံးသို့ ပို့မည့် ဂျာနယ် မှတ်တမ်း",
+  "journal.moveToTrash": "အမှိုက်ပုံးသို့ ပို့မည်",
+  "journal.reflection": "နေ့စဉ် ဆင်ခြင်မှတ်စု",
+  "journal.history": "မှတ်တမ်း ရာဇဝင်",
+  "journal.placeholder": "ယနေ့ မှတ်တမ်းကို markdown ဖြင့် ရေးပါ…",
+  "journal.contentAria": "ဂျာနယ် မှတ်တမ်း အကြောင်းအရာ (markdown)",
+  "journal.preview": "တိုက်ရိုက် အစမ်းကြည့်ရှုမှု",
+  "journal.previewEmpty": "တိုက်ရိုက် အစမ်းကြည့်ရှုမှုကို ဤနေရာတွင် ပြမည်။",
+
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.
   "month.01": "ဇန်နဝါရီ",
@@ -3200,6 +3245,10 @@ export const enPlurals = {
     one: "{count} contact imported",
     other: "{count} contacts imported",
   },
+  "journal.entries": {
+    one: "{count} entry",
+    other: "{count} entries",
+  },
   "settings.autoLockMinutes": {
     one: "{count} minute",
     other: "{count} minutes",
@@ -3253,6 +3302,10 @@ export const myPlurals: Record<PluralKey, PluralForms> = {
   "contacts.imported": {
     one: "ဆက်သွယ်ရန် {count} ခု တင်သွင်းပြီး",
     other: "ဆက်သွယ်ရန် {count} ခု တင်သွင်းပြီး",
+  },
+  "journal.entries": {
+    one: "မှတ်တမ်း {count} ခု",
+    other: "မှတ်တမ်း {count} ခု",
   },
   "settings.autoLockMinutes": {
     one: "{count} မိနစ်",
