@@ -80,6 +80,10 @@ test("the Shopping namespace is translated, not copied from English", () => {
   assertNamespaceTranslated("shopping.", 18);
 });
 
+test("the Gallery namespace is translated, not copied from English", () => {
+  assertNamespaceTranslated("gallery.", 24);
+});
+
 test("weekday headings are abbreviated in Burmese, not left in English", () => {
   // Two-letter abbreviations are the case a translation pass forgets, so they
   // get their own assertion rather than riding along with the Habits page.

@@ -22,6 +22,7 @@ import {
   IconTrash,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { useT } from "../components/useTranslation.ts";
 import {
   businessRepo,
   galleryRepo,
@@ -35,6 +36,7 @@ import {
   createThumbUrlBook,
   photoExtFromName,
 } from "../lib/gallery.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { createLoadGuard } from "../lib/loads.ts";
 import { makeThumbnail } from "../lib/thumbs.ts";
 import type {
@@ -53,17 +55,19 @@ import type {
  */
 const THUMB_CONCURRENCY = 4;
 
-const ENTITY_LABELS: { key: PhotoRefEntity; label: string }[] = [
-  { key: "note", label: "Note" },
-  { key: "memory", label: "Memory" },
-  { key: "job", label: "Job" },
-];
+const ENTITY_LABELS: Record<PhotoRefEntity, MessageKey> = {
+  note: "gallery.entity.note",
+  memory: "gallery.entity.memory",
+  job: "gallery.entity.job",
+};
+const ENTITY_KEYS: PhotoRefEntity[] = ["note", "memory", "job"];
 
 function bytesUrl(bytes: Uint8Array): string {
   return URL.createObjectURL(new Blob([bytes as BlobPart]));
 }
 
 export default function GalleryPage() {
+  const t = useT();
   const [photos, setPhotos] = useState<PhotoRow[]>([]);
   /** Grid object URLs — one small thumbnail per photo. */
   const [thumbs, setThumbs] = useState<Map<number, string>>(new Map());
@@ -323,10 +327,17 @@ export default function GalleryPage() {
 
   const titleOf = (type: PhotoRefEntity, id: number): string => {
     if (type === "note")
-      return notes.find((n) => n.id === id)?.title ?? `Note #${id}`;
+      return (
+        notes.find((n) => n.id === id)?.title ?? t("gallery.noteNumber", { id })
+      );
     if (type === "memory")
-      return memories.find((m) => m.id === id)?.title ?? `Memory #${id}`;
-    return jobs.find((j) => j.id === id)?.title ?? `Job #${id}`;
+      return (
+        memories.find((m) => m.id === id)?.title ??
+        t("gallery.memoryNumber", { id })
+      );
+    return (
+      jobs.find((j) => j.id === id)?.title ?? t("gallery.jobNumber", { id })
+    );
   };
 
   const addingLinkRef = useRef(false);
@@ -367,22 +378,18 @@ export default function GalleryPage() {
 
   const pickerRows = (): {
     key: PhotoRefEntity;
-    label: string;
     rows: { id: number; title: string }[];
   }[] => [
     {
       key: "note",
-      label: "Note",
       rows: notes.map((n) => ({ id: n.id, title: n.title })),
     },
     {
       key: "memory",
-      label: "Memory",
       rows: memories.map((m) => ({ id: m.id, title: m.title })),
     },
     {
       key: "job",
-      label: "Job",
       rows: jobs.map((j) => ({ id: j.id, title: j.title })),
     },
   ];
@@ -396,18 +403,15 @@ export default function GalleryPage() {
               <IconGallery className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Photo Gallery</h2>
-              <p className="page-subtitle">
-                Content-addressed local photo library linked to notes, memories
-                &amp; jobs
-              </p>
+              <h2 className="editor-title">{t("gallery.title")}</h2>
+              <p className="page-subtitle">{t("gallery.subtitle")}</p>
             </div>
           </div>
         </div>
         <div className="page-actions">
           <label className="btn btn-primary">
             <IconPlus className="icon" />
-            {saving ? "Saving…" : "Add photos"}
+            {saving ? t("gallery.saving") : t("gallery.add")}
             <input
               className="visually-hidden"
               type="file"
@@ -431,7 +435,7 @@ export default function GalleryPage() {
 
       <section className="settings-section">
         <div className="dash-card-head">
-          <h3 className="side-heading">Stored Photos</h3>
+          <h3 className="side-heading">{t("gallery.stored")}</h3>
           <span className="badge">{photos.length}</span>
         </div>
         {loading ? (
@@ -445,9 +449,7 @@ export default function GalleryPage() {
             ))}
           </div>
         ) : photos.length === 0 ? (
-          <EmptyState>
-            No photos yet — use “Add photos” to store one.
-          </EmptyState>
+          <EmptyState>{t("gallery.empty")}</EmptyState>
         ) : (
           <div className="photo-grid">
             {photos.map((photo) => {
@@ -464,7 +466,12 @@ export default function GalleryPage() {
                   onClick={() => void select(photo)}
                 >
                   {url ? (
-                    <img src={url} alt={photo.note || `Photo ${photo.id}`} />
+                    <img
+                      src={url}
+                      alt={
+                        photo.note || t("gallery.photoNumber", { id: photo.id })
+                      }
+                    />
                   ) : (
                     <span className="muted">…</span>
                   )}
@@ -482,21 +489,21 @@ export default function GalleryPage() {
         <Dialog labelledBy="photo-inspector-title" onClose={closeInspector}>
           <div className="modal-head">
             <h3 className="side-heading" id="photo-inspector-title">
-              Photo Inspector
+              {t("gallery.inspector")}
             </h3>
             <div className="editor-row">
               <ConfirmButton
                 className="btn btn-danger"
-                what="photo"
+                what={t("gallery.deleteWhat")}
                 onConfirm={() => removePhoto(selected)}
               >
-                <IconTrash className="icon" /> Delete photo
+                <IconTrash className="icon" /> {t("gallery.delete")}
               </ConfirmButton>
               <button
                 type="button"
                 className="btn btn-icon"
-                aria-label="Close photo inspector"
-                title="Close"
+                aria-label={t("gallery.closeInspector")}
+                title={t("common.close")}
                 // biome-ignore lint/a11y/noAutofocus: the dialog's first stop
                 autoFocus
                 onClick={closeInspector}
@@ -511,20 +518,24 @@ export default function GalleryPage() {
             <img
               className="photo-full"
               src={full.url}
-              alt={selected.note || `Photo ${selected.id}`}
+              alt={
+                selected.note || t("gallery.photoNumber", { id: selected.id })
+              }
             />
           ) : thumbs.get(selected.id) ? (
             <img
               className="photo-full"
               src={thumbs.get(selected.id)}
-              alt={selected.note || `Photo ${selected.id}`}
+              alt={
+                selected.note || t("gallery.photoNumber", { id: selected.id })
+              }
             />
           ) : null}
           <div className="inline-form">
             <input
               className="input"
-              placeholder="Caption or note…"
-              aria-label="Photo note"
+              placeholder={t("gallery.notePlaceholder")}
+              aria-label={t("gallery.noteAria")}
               value={edit.note}
               onChange={(e) => setEdit({ ...edit, note: e.target.value })}
             />
@@ -532,7 +543,7 @@ export default function GalleryPage() {
               <input
                 className="input"
                 type="date"
-                aria-label="Taken date"
+                aria-label={t("gallery.takenAria")}
                 value={edit.takenDate}
                 onChange={(e) =>
                   setEdit({ ...edit, takenDate: e.target.value })
@@ -545,22 +556,21 @@ export default function GalleryPage() {
               className="btn btn-primary"
               onClick={() => void saveMeta()}
             >
-              Save
+              {t("common.save")}
             </button>
           </div>
 
           <div className="contact-section">
-            <h3 className="side-heading">Linked to</h3>
+            <h3 className="side-heading">{t("gallery.linkedTo")}</h3>
             {selectedRefs.length === 0 ? (
-              <p className="muted">Not linked to anything yet.</p>
+              <p className="muted">{t("gallery.notLinked")}</p>
             ) : (
               <ul className="budget-list">
                 {selectedRefs.map((ref) => (
                   <li key={ref.id} className="budget-row">
                     <span>
                       <span className="chip">
-                        {ENTITY_LABELS.find((l) => l.key === ref.entity_type)
-                          ?.label ?? ref.entity_type}
+                        {t(ENTITY_LABELS[ref.entity_type])}
                       </span>{" "}
                       <b>{titleOf(ref.entity_type, ref.entity_id)}</b>
                     </span>
@@ -569,7 +579,7 @@ export default function GalleryPage() {
                       className="btn btn-ghost"
                       onClick={() => void removeLink(ref)}
                     >
-                      Unlink
+                      {t("gallery.unlink")}
                     </button>
                   </li>
                 ))}
@@ -584,7 +594,7 @@ export default function GalleryPage() {
             >
               <select
                 className="select"
-                aria-label="Link type"
+                aria-label={t("gallery.linkType")}
                 value={linkDraft.type}
                 onChange={(e) =>
                   setLinkDraft({
@@ -593,15 +603,15 @@ export default function GalleryPage() {
                   })
                 }
               >
-                {ENTITY_LABELS.map((l) => (
-                  <option key={l.key} value={l.key}>
-                    {l.label}
+                {ENTITY_KEYS.map((key) => (
+                  <option key={key} value={key}>
+                    {t(ENTITY_LABELS[key])}
                   </option>
                 ))}
               </select>
               <select
                 className="select"
-                aria-label="Link target"
+                aria-label={t("gallery.linkTarget")}
                 value={linkDraft.id === "" ? "" : String(linkDraft.id)}
                 onChange={(e) =>
                   setLinkDraft({
@@ -610,7 +620,7 @@ export default function GalleryPage() {
                   })
                 }
               >
-                <option value="">Choose…</option>
+                <option value="">{t("gallery.choose")}</option>
                 {pickerRows()
                   .find((p) => p.key === linkDraft.type)
                   ?.rows.map((r) => (
@@ -624,7 +634,7 @@ export default function GalleryPage() {
                 className="btn"
                 disabled={linkDraft.id === "" || addingLink}
               >
-                Link
+                {t("gallery.link")}
               </button>
             </form>
           </div>

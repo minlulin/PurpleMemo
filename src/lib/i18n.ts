@@ -1331,6 +1331,38 @@ export const en = {
   "shopping.itemMissing":
     "That shopping item no longer exists — it may have been deleted.",
 
+  // Gallery — the sixth page on the catalogue (F6). The photo titles, notes
+  // and dates are user data; what is here is the chrome around them, plus the
+  // numbered fallback an untitled photo or an unlinked row shows.
+  "gallery.title": "Photo Gallery",
+  "gallery.subtitle":
+    "Content-addressed local photo library linked to notes, memories & jobs",
+  "gallery.add": "Add photos",
+  "gallery.saving": "Saving…",
+  "gallery.stored": "Stored Photos",
+  "gallery.empty": "No photos yet — use “Add photos” to store one.",
+  "gallery.inspector": "Photo Inspector",
+  "gallery.deleteWhat": "photo",
+  "gallery.delete": "Delete photo",
+  "gallery.closeInspector": "Close photo inspector",
+  "gallery.notePlaceholder": "Caption or note…",
+  "gallery.noteAria": "Photo note",
+  "gallery.takenAria": "Taken date",
+  "gallery.linkedTo": "Linked to",
+  "gallery.notLinked": "Not linked to anything yet.",
+  "gallery.unlink": "Unlink",
+  "gallery.linkType": "Link type",
+  "gallery.linkTarget": "Link target",
+  "gallery.choose": "Choose…",
+  "gallery.link": "Link",
+  "gallery.entity.note": "Note",
+  "gallery.entity.memory": "Memory",
+  "gallery.entity.job": "Job",
+  "gallery.photoNumber": "Photo {id}",
+  "gallery.noteNumber": "Note #{id}",
+  "gallery.memoryNumber": "Memory #{id}",
+  "gallery.jobNumber": "Job #{id}",
+
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
   // Burmese page does not show "October 2026" under Burmese tabs.
@@ -2838,6 +2870,34 @@ export const my: Record<MessageKey, string> = {
   "shopping.newItemPlaceholder": "ပစ္စည်း ထည့်မည် (ဥပမာ ဆန် 5kg)",
   "shopping.addItem": "ပစ္စည်း ထည့်မည်",
   "shopping.itemMissing": "ထို ဈေးဝယ် ပစ္စည်း မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+
+  "gallery.title": "ဓာတ်ပုံ စုစည်းမှု",
+  "gallery.subtitle": "မှတ်စု၊ အမှတ်တရနှင့် အလုပ်များနှင့် ချိတ်ဆက်ထားသော စက်တွင်း ဓာတ်ပုံ စာကြည့်တိုက်",
+  "gallery.add": "ဓာတ်ပုံများ ထည့်မည်",
+  "gallery.saving": "သိမ်းနေသည်…",
+  "gallery.stored": "သိမ်းထားသော ဓာတ်ပုံများ",
+  "gallery.empty": "ဓာတ်ပုံ မရှိသေးပါ — သိမ်းရန် “ဓာတ်ပုံများ ထည့်မည်” ကို သုံးပါ။",
+  "gallery.inspector": "ဓာတ်ပုံ အသေးစိတ်",
+  "gallery.deleteWhat": "ဓာတ်ပုံ",
+  "gallery.delete": "ဓာတ်ပုံ ဖျက်မည်",
+  "gallery.closeInspector": "ဓာတ်ပုံ အသေးစိတ် ပိတ်မည်",
+  "gallery.notePlaceholder": "ဖော်ပြချက် သို့မဟုတ် မှတ်စု…",
+  "gallery.noteAria": "ဓာတ်ပုံ မှတ်စု",
+  "gallery.takenAria": "ရိုက်ကူးသည့် ရက်",
+  "gallery.linkedTo": "ချိတ်ဆက်ထားသည်",
+  "gallery.notLinked": "မည်သည့်အရာနှင့်မျှ မချိတ်ဆက်ရသေးပါ။",
+  "gallery.unlink": "ချိတ်ဆက်မှု ဖြုတ်မည်",
+  "gallery.linkType": "ချိတ်ဆက်မှု အမျိုးအစား",
+  "gallery.linkTarget": "ချိတ်ဆက်မည့် အရာ",
+  "gallery.choose": "ရွေးပါ…",
+  "gallery.link": "ချိတ်ဆက်မည်",
+  "gallery.entity.note": "မှတ်စု",
+  "gallery.entity.memory": "အမှတ်တရ",
+  "gallery.entity.job": "အလုပ်",
+  "gallery.photoNumber": "ဓာတ်ပုံ {id}",
+  "gallery.noteNumber": "မှတ်စု #{id}",
+  "gallery.memoryNumber": "အမှတ်တရ #{id}",
+  "gallery.jobNumber": "အလုပ် #{id}",
 
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.
