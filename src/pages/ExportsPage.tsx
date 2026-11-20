@@ -10,7 +10,7 @@ import {
   IconWallet,
 } from "../components/icons.tsx";
 import { useToast } from "../components/Toast.tsx";
-import { useT } from "../components/useTranslation.ts";
+import { useLocale, useT } from "../components/useTranslation.ts";
 import { exportsRepo } from "../data/app.ts";
 import { localISODateTime, todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
@@ -62,6 +62,7 @@ const GROUPS: {
 
 export default function ExportsPage() {
   const t = useT();
+  const locale = useLocale();
   const toast = useToast();
   const [selection, setSelection] =
     useState<ExportSelection>(ALL_EXPORT_GROUPS);
@@ -109,6 +110,7 @@ export default function ExportsPage() {
         selection,
         today,
         exportedAt,
+        locale,
       );
       await exportsRepo.save(path, bytes);
       // Finance reported as its own count (G6): it used to be omitted, so a
@@ -237,7 +239,7 @@ export default function ExportsPage() {
                   <th scope="row">{row.source}</th>
                   <td>{row.fields}</td>
                   <td>{row.destination}</td>
-                  <td>{row.notes}</td>
+                  <td>{t(row.notesKey)}</td>
                 </tr>
               ))}
             </tbody>

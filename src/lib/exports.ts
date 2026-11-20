@@ -1,6 +1,7 @@
 import { strToU8, zip, zipSync } from "fflate";
 import type { DataDriver } from "../data/driver.ts";
 import { isValidISODate } from "./dates.ts";
+import { type Locale, type MessageKey, translate } from "./i18n.ts";
 import { createLoansRepo } from "./loans.ts";
 import { outstandingCents } from "./money.ts";
 import { createNotesRepo, parseTags } from "./notes.ts";
@@ -123,7 +124,8 @@ export interface FieldMappingRow {
   source: string;
   fields: string;
   destination: string;
-  notes: string;
+  /** The prose column in the catalogue; the other three name schema rows and paths. */
+  notesKey: MessageKey;
 }
 
 export const EXPORT_FIELD_MAPPING: FieldMappingRow[] = [
@@ -131,116 +133,103 @@ export const EXPORT_FIELD_MAPPING: FieldMappingRow[] = [
     source: "collections",
     fields: "id, name",
     destination: "notes/<id>-<slug>.md front matter",
-    notes:
-      "The collection name is written as text; collections with no notes export no file.",
+    notesKey: "exports.mapping.collections",
   },
   {
     source: "notes",
     fields:
       "id, title, content, tags, collection_id, pinned, archived, created_at, updated_at",
     destination: "notes/<id>-<slug>.md",
-    notes:
-      "Every row in the table, archived rows included. Tags are an array. Trash rows are excluded.",
+    notesKey: "exports.mapping.notes",
   },
   {
     source: "photo_refs + photos",
     fields: "rel_path",
     destination: "notes front matter attachments",
-    notes:
-      "Reference paths only. Photo bytes are not part of a readable export; they are only in a backup archive.",
+    notesKey: "exports.mapping.photoRefs",
   },
   {
     source: "journal_entries",
     fields: "id, entry_date, content, created_at, updated_at",
     destination: "journal/<yyyy>/<yyyy-mm-dd>.md",
-    notes: "Every row; one file per calendar day.",
+    notesKey: "exports.mapping.journal",
   },
   {
     source: "income_entries",
     fields:
       "id, entry_date, amount_cents, amount, category, wallet, note, created_at",
     destination: "finance/income.csv",
-    notes: "amount is decimal major units; amount_cents is the stored integer.",
+    notesKey: "exports.mapping.amountDecimal",
   },
   {
     source: "expense_entries",
     fields:
       "id, entry_date, amount_cents, amount, category, wallet, note, created_at",
     destination: "finance/expenses.csv",
-    notes: "amount is decimal major units; amount_cents is the stored integer.",
+    notesKey: "exports.mapping.amountDecimal",
   },
   {
     source: "loans",
     fields:
       "id, counterparty, direction, amount_cents, amount, repaid_cents, repaid, remaining_cents, remaining, due_date, state, note, created_at",
     destination: "finance/loans.csv",
-    notes:
-      "state is derived at export time from repaid_cents, amount_cents and due_date.",
+    notesKey: "exports.mapping.loans",
   },
   {
     source: "jobs + shops",
     fields:
       "id, title, shop, total_cents, total, paid_cents, paid, remaining_cents, remaining, job_date, warranty_days, status, note, created_at",
     destination: "finance/jobs.csv",
-    notes:
-      "shop is the shop name, or empty when the job has none. Remaining never goes below zero.",
+    notesKey: "exports.mapping.jobs",
   },
   {
     source: "payables + shops",
     fields:
       "id, title, shop, amount_cents, amount, due_date, paid, note, created_at",
     destination: "finance/payables.csv",
-    notes:
-      "Paid and unpaid rows are both exported; paid stays the stored 0/1 flag.",
+    notesKey: "exports.mapping.payables",
   },
   {
     source: "tasks",
     fields: "id, title, due_date, done, repeat, note, created_at",
     destination: "tasks.csv",
-    notes:
-      "Open and completed tasks are both exported; columns match the Tasks CSV importer.",
+    notesKey: "exports.mapping.tasks",
   },
   {
     source: "contacts, contact_channels, contact_tags",
     fields: "id, name, address, birthday, notes, created_at, channels, tags",
     destination: "contacts.vcf, contacts.csv",
-    notes:
-      "vCard 4.0 cards plus a semicolon-joined CSV matching the Contacts CSV importer; channels keep primary order.",
+    notesKey: "exports.mapping.contacts",
   },
   {
     source: "wallets, income_categories, expense_categories, shops",
     fields: "id, name",
     destination: "referenced by name in finance CSVs",
-    notes:
-      "Reference tables are not separate files; a renamed row exports under its current name.",
+    notesKey: "exports.mapping.referenceTables",
   },
   {
     source: "trash_items",
     fields: "-",
     destination: "-",
-    notes:
-      "Deliberately excluded from readable exports. Trash stays recoverable in the app and is included in backup archives.",
+    notesKey: "exports.mapping.trash",
   },
   {
     source: "vault_items",
     fields: "-",
     destination: "-",
-    notes:
-      "Deliberately excluded. Vault contents are ciphertext and are covered by backup archives instead.",
+    notesKey: "exports.mapping.vault",
   },
   {
     source: "habits, reminders, shopping, memories, gallery",
     fields: "-",
     destination: "-",
-    notes:
-      "Not part of the readable export set; they remain available through backup archives.",
+    notesKey: "exports.mapping.notIncluded",
   },
   {
     source: "settings",
     fields: "-",
     destination: "-",
-    notes:
-      "Never exported: theme, PIN, security question and notification preferences are local app state.",
+    notesKey: "exports.mapping.settings",
   },
 ];
 
@@ -694,17 +683,26 @@ export function contactsVcard(contacts: ExportContact[]): string {
   return contacts.map(contactVcard).join("");
 }
 
-export function fieldMappingMarkdown(): string {
-  const header = "| Source | Fields | Destination | Notes |";
+/**
+ * The mapping table shown on the Exports page and written into every archive.
+ *
+ * `locale` is the interface language the archive was built in. The schema
+ * names, column names and destination paths stay literal — they are what the
+ * CSV headers and file tree actually say — while the prose Notes column comes
+ * from the catalogue, so a Burmese archive does not carry an English
+ * explanation beside a Burmese README.
+ */
+export function fieldMappingMarkdown(locale: Locale = "en"): string {
+  const header = `| ${translate(locale, "exports.source")} | ${translate(locale, "exports.fields")} | ${translate(locale, "exports.destination")} | ${translate(locale, "exports.notes")} |`;
   const divider = "| --- | --- | --- | --- |";
   const rows = EXPORT_FIELD_MAPPING.map(
     (row) =>
-      `| ${row.source} | ${row.fields} | ${row.destination} | ${row.notes} |`,
+      `| ${row.source} | ${row.fields} | ${row.destination} | ${translate(locale, row.notesKey)} |`,
   );
   return [
-    "# Purple Memo readable export - field mapping",
+    `# ${translate(locale, "exports.archive.title")}`,
     "",
-    "Every stored table is either mapped below or named as deliberately excluded.",
+    translate(locale, "exports.archive.intro"),
     "",
     header,
     divider,
@@ -716,33 +714,30 @@ export function fieldMappingMarkdown(): string {
 export function readmeText(
   selection: ExportSelection,
   exportedAt: string,
+  locale: Locale = "en",
 ): string {
   const groups: string[] = [];
-  if (selection.notes)
-    groups.push("notes/ - Markdown notes with YAML front matter");
-  if (selection.journal) groups.push("journal/ - Markdown journal entries");
+  if (selection.notes) groups.push(translate(locale, "exports.readme.notes"));
+  if (selection.journal)
+    groups.push(translate(locale, "exports.readme.journal"));
   if (selection.finance)
-    groups.push("finance/ - income, expenses, loans, jobs, payables CSV");
-  if (selection.tasks)
-    groups.push("tasks.csv - tasks & repeating schedules CSV");
+    groups.push(translate(locale, "exports.readme.finance"));
+  if (selection.tasks) groups.push(translate(locale, "exports.readme.tasks"));
   if (selection.contacts)
-    groups.push("contacts.vcf + contacts.csv - vCard 4.0 and CSV address book");
+    groups.push(translate(locale, "exports.readme.contacts"));
   return [
-    "Purple Memo readable export",
-    `Generated: ${exportedAt}`,
+    translate(locale, "exports.readme.title"),
+    translate(locale, "exports.readme.generated", { date: exportedAt }),
     "",
-    "Contents:",
+    translate(locale, "exports.readme.contents"),
     ...groups.map((line) => `- ${line}`),
-    "- EXPORT-FIELDS.md - field-by-field inclusion mapping",
+    `- ${translate(locale, "exports.readme.fields")}`,
     "",
-    "Text is UTF-8. CSV files use RFC 4180 quoting with CRLF line endings.",
-    "A CSV text value that starts with =, +, -, @, tab or carriage return is",
-    "prefixed with an apostrophe so spreadsheets treat it as text, never a formula.",
-    "Money appears twice: amount_cents is the stored integer, amount is decimal",
-    "major units with a dot separator. Dates are ISO yyyy-mm-dd.",
+    translate(locale, "exports.readme.encoding"),
+    translate(locale, "exports.readme.formula"),
+    translate(locale, "exports.readme.money"),
     "",
-    "Photo bytes, Vault ciphertext, settings and Trash are not in this export.",
-    "Use a backup archive when you need a complete, restorable copy.",
+    translate(locale, "exports.readme.excluded"),
     "",
   ].join("\n");
 }
@@ -751,6 +746,7 @@ export function buildExportFiles(
   data: ExportData,
   selection: ExportSelection,
   exportedAt: string,
+  locale: Locale = "en",
 ): ExportBundle {
   const collectionNames = new Map(
     data.collections.map((collection) => [collection.id, collection.name]),
@@ -831,9 +827,12 @@ export function buildExportFiles(
   }
   files.push({
     path: "EXPORT-FIELDS.md",
-    text: fieldMappingMarkdown(),
+    text: fieldMappingMarkdown(locale),
   });
-  files.push({ path: "README.txt", text: readmeText(selection, exportedAt) });
+  files.push({
+    path: "README.txt",
+    text: readmeText(selection, exportedAt, locale),
+  });
   files.sort((a, b) => a.path.localeCompare(b.path));
   return { files, counts };
 }
@@ -916,9 +915,10 @@ export function createExportsRepo(driver: DataDriver, repos: ExportRepos = {}) {
       selection: ExportSelection,
       today: string,
       exportedAt: string,
+      locale: Locale = "en",
     ): Promise<{ bytes: Uint8Array; counts: ExportCounts; fileCount: number }> {
       const data = await this.collect(today, selection);
-      const bundle = buildExportFiles(data, selection, exportedAt);
+      const bundle = buildExportFiles(data, selection, exportedAt, locale);
       return {
         bytes: await buildExportArchive(bundle.files),
         counts: bundle.counts,

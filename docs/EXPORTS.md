@@ -31,6 +31,9 @@ from `backup_save_file`; an export is never passed off as a backup.
   and UTF-8 line folding at 75 octets; month-day birthdays use `BDAY:--MM-DD`)
   and `contacts.csv` (semicolon-separated channels and tags matching the
   Contacts CSV importer).
+- `README.txt` and the prose in `EXPORT-FIELDS.md` are written in the interface
+  language active at export time. Schema names, column names and destination
+  paths stay literal, because they name what the archive actually contains.
 
 ## Field-by-field inclusion
 

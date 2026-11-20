@@ -364,6 +364,24 @@ test("the archive contains every selected file and omits unselected groups", asy
   assert.equal(notesOnly.counts.contacts, 0);
 });
 
+test("the archive's prose follows the locale while schema names stay literal", () => {
+  const bundle = buildExportFiles(
+    fixture(),
+    ALL_EXPORT_GROUPS,
+    "2026-10-20",
+    "my",
+  );
+  const files = new Map(bundle.files.map((file) => [file.path, file.text]));
+  const readme = files.get("README.txt") ?? "";
+  const fields = files.get("EXPORT-FIELDS.md") ?? "";
+  assert.match(readme, /ဖတ်နိုင်သော ထုတ်ယူချက်/);
+  assert.match(fields, /ဒေတာကွက် ဆက်စပ်မှု/);
+  // Table and column names are what the CSV headers actually say, and the
+  // destination is a real path; only the prose around them is translated.
+  assert.match(fields, /\| collections \| id, name \|/);
+  assert.match(fields, /finance\/income\.csv/);
+});
+
 test("field mapping names every exported table and every deliberate exclusion", () => {
   const sources = EXPORT_FIELD_MAPPING.map((row) => row.source).join("\n");
   for (const table of [

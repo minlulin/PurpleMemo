@@ -76,9 +76,10 @@ from the catalogue. Budget (`budget.*`), Business (`business.*`), Loans
 (`exports.*`) and the pairing panel (`pairing.*`) are the pages migrated this
 way; `src/lib/i18n.test.ts` fails if a key in those namespaces
 still reads English, and month/year headings come from `month.*`/`weekday.*`
-so a Burmese page does not show English calendar chrome. One table stays
-English by design: the Exports field mapping is the same text the archive
-writes into `EXPORT-FIELDS.md`.
+so a Burmese page does not show English calendar chrome. The Exports field
+mapping follows the same rule as the page: schema names, column names and
+destination paths stay literal, while its Notes column and the archive's
+`README.txt`/`EXPORT-FIELDS.md` prose are translated into the active locale.
 
 ## Development
 
