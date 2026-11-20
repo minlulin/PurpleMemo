@@ -134,13 +134,6 @@ export interface ReminderOutcome {
 }
 
 /**
- * Statements that settle a tick's due reminders, in the order given.
- *
- * Pure so the two shapes stay visible and testable: `fired = 1` for a
- * one-shot reminder, `remind_at` + `fired = 0` for a repeating one (same rules
- * as `markReminderFired` / `rescheduleReminder`).
- */
-/**
  * The one task-list SELECT, mirroring `noteListQuery` in notes.ts:
  * `listTasks` and `openTasks` had written the same
  * open-task query twice, so an ORDER BY tuned for one silently missed the
@@ -157,6 +150,13 @@ export function taskListQuery(includeDone: boolean): string {
     : "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date NULLS LAST, id";
 }
 
+/**
+ * Statements that settle a tick's due reminders, in the order given.
+ *
+ * Pure so the two shapes stay visible and testable: `fired = 1` for a
+ * one-shot reminder, `remind_at` + `fired = 0` for a repeating one (same rules
+ * as `markReminderFired` / `rescheduleReminder`).
+ */
 export function reminderSettleStatements(
   outcomes: ReminderOutcome[],
 ): BatchStatement[] {
