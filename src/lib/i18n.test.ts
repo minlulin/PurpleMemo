@@ -36,6 +36,29 @@ test("both catalogues cover exactly the same keys", () => {
   assert.deepEqual(missingMessageKeys("en"), []);
 });
 
+test("the Budget namespace is translated, not copied from English", () => {
+  // F6, page one: Budget reads from the catalogue now, and key parity alone
+  // cannot see a value that was pasted back in English. Every budget.* value
+  // that carries words must be Burmese — a namespace that exists but still
+  // reads English is the same gap with more steps.
+  const keys = (Object.keys(en) as MessageKey[]).filter((key) =>
+    key.startsWith("budget."),
+  );
+  assert.ok(
+    keys.length >= 100,
+    `the Budget namespace should cover the page (${keys.length} keys)`,
+  );
+  for (const key of keys) {
+    const english = en[key];
+    // A template of placeholders and punctuation ("{kind} “{name}”") holds no
+    // words of its own, so it is legitimately the same in both languages.
+    const words = english.replace(/\{[^}]*\}/g, "");
+    if (!/[A-Za-z]{2,}/.test(words)) continue;
+    assert.notEqual(my[key], english, `${key} is still the English text`);
+    assert.match(my[key], /[\u1000-\u109F]/, `${key} has no Burmese text`);
+  }
+});
+
 test("placeholders match between the two languages", () => {
   // A translator who drops `{count}` turns a sentence into a dead end; one who
   // invents `{name}` renders the braces. Both are caught here, per key.

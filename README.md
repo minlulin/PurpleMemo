@@ -67,12 +67,14 @@ typed catalogue: every key carries both translations, and a missing one is a
 compile error rather than a blank label.
 
 That coverage is not yet the whole app. The shell, lock screen, Settings, Tasks,
-Notes, Contacts, Inbox, search, Trash, Vault, the import/export dialogs and the
-phone UI read from the catalogue. **Budget, Business, Loans, Habits, Shopping,
+Notes, Contacts, Inbox, search, Trash, Vault, Budget, the import/export dialogs
+and the phone UI read from the catalogue. **Business, Loans, Habits, Shopping,
 Gallery, Memories, Journal and Exports are English-only for now** — their text
 lives in the pages, not in the catalogue. This is a known gap rather than a bug:
 finishing it means a namespace per page, and until a page has one the language
-switch cannot reach its text.
+switch cannot reach its text. Budget's namespace (`budget.*`) is the first page
+migrated this way; `src/lib/i18n.test.ts` fails if one of its keys still reads
+English.
 
 ## Development
 
@@ -85,6 +87,10 @@ clone runs the same gate as the release:
   `npm install` instead of somewhere inside the gate.
 - `rust-toolchain.toml` makes rustup install that toolchain and its `clippy`
   and `rustfmt` components on first use.
+- `scripts/check-versions.mjs` (in the gate) fails when `engines.node` and
+  `.nvmrc` name different Node versions, or when Cargo's `rust-version` and
+  the toolchain's `channel` disagree — a stale pin would otherwise change what
+  npm and clippy accept without anyone noticing.
 - Android builds additionally need the targets and NDK in
   [`docs/ANDROID_TOOLCHAIN.md`](docs/ANDROID_TOOLCHAIN.md); `npm run
   check:android` uses `aarch64-linux-android`.

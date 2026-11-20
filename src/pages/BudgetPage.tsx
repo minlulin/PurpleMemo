@@ -13,6 +13,7 @@ import {
   IconWallet,
 } from "../components/icons.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
+import { type Translate, useT } from "../components/useTranslation.ts";
 import { budgetRepo } from "../data/app.ts";
 import {
   cleanName,
@@ -32,6 +33,7 @@ import {
   yearMonthOf,
 } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { monthLabel } from "../lib/journal.ts";
 import {
   formatMMK,
@@ -55,17 +57,34 @@ type BudgetView =
   | "recurring"
   | "manage";
 
-const VIEWS: { key: BudgetView; label: string }[] = [
-  { key: "entries", label: "Entries" },
-  { key: "month", label: "Month" },
-  { key: "year", label: "Year" },
-  { key: "limits", label: "Limits" },
-  { key: "recurring", label: "Recurring" },
-  { key: "manage", label: "Manage" },
+const VIEWS: { key: BudgetView; labelKey: MessageKey }[] = [
+  { key: "entries", labelKey: "budget.view.entries" },
+  { key: "month", labelKey: "budget.view.month" },
+  { key: "year", labelKey: "budget.view.year" },
+  { key: "limits", labelKey: "budget.view.limits" },
+  { key: "recurring", labelKey: "budget.view.recurring" },
+  { key: "manage", labelKey: "budget.view.manage" },
 ];
+
+/**
+ * The lower-case noun for a kind, in the active locale. One rename/delete
+ * control serves wallets and both category kinds, and its noun lands inside a
+ * confirm label ("Delete wallet “Cash”"), so it is translated rather than
+ * built from the code name.
+ */
+function kindNoun(t: Translate, kind: "wallet" | "expense" | "income"): string {
+  return t(
+    kind === "wallet"
+      ? "budget.kind.wallet"
+      : kind === "expense"
+        ? "budget.kind.expense"
+        : "budget.kind.income",
+  );
+}
 
 export default function BudgetPage() {
   const [view, setView] = useState<BudgetView>("entries");
+  const t = useT();
 
   return (
     <div className="budget-page">
@@ -76,15 +95,12 @@ export default function BudgetPage() {
               <IconBudget className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Budget Tracker</h2>
-              <p className="page-subtitle">
-                Cash-basis personal finance, wallet balances &amp; monthly
-                category caps
-              </p>
+              <h2 className="editor-title">{t("budget.title")}</h2>
+              <p className="page-subtitle">{t("budget.subtitle")}</p>
             </div>
           </div>
         </div>
-        <nav className="budget-viewnav" aria-label="Budget views">
+        <nav className="budget-viewnav" aria-label={t("budget.viewsAria")}>
           {VIEWS.map((v) => (
             <button
               key={v.key}
@@ -93,7 +109,7 @@ export default function BudgetPage() {
               aria-current={view === v.key ? "page" : undefined}
               onClick={() => setView(v.key)}
             >
-              {v.label}
+              {t(v.labelKey)}
             </button>
           ))}
         </nav>
@@ -113,8 +129,11 @@ export default function BudgetPage() {
         <ManageView />
       ) : (
         <p className="budget-todo">
-          The {VIEWS.find((v) => v.key === view)?.label} view is part of the
-          in-progress P3b build-out.
+          {t("budget.viewTodo", {
+            view: t(
+              VIEWS.find((v) => v.key === view)?.labelKey ?? "budget.title",
+            ),
+          })}
         </p>
       )}
     </div>
@@ -123,6 +142,7 @@ export default function BudgetPage() {
 
 /** Wallets + balances, expense/income categories, and their create forms. */
 function ManageView() {
+  const t = useT();
   const [wallets, setWallets] = useState<WalletRow[]>([]);
   const [balances, setBalances] = useState<Map<number, number>>(new Map());
   const [expenseCats, setExpenseCats] = useState<ExpenseCategoryRow[]>([]);
@@ -299,7 +319,7 @@ function ManageView() {
     editing?.kind === kind && editing.id === id ? (
       <span className="inline-form">
         <input
-          aria-label={`New name for ${kind} ${id}`}
+          aria-label={t("budget.renameAria", { kind: kindNoun(t, kind), id })}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
@@ -309,14 +329,14 @@ function ManageView() {
           disabled={!cleanName(draft)}
           onClick={() => void saveRename()}
         >
-          Save name
+          {t("budget.saveName")}
         </button>
         <button
           type="button"
           className="btn btn-ghost"
           onClick={() => setEditing(null)}
         >
-          Cancel
+          {t("common.cancel")}
         </button>
       </span>
     ) : (
@@ -334,29 +354,28 @@ function ManageView() {
             startRename(kind, id, row?.name ?? "");
           }}
         >
-          Rename
+          {t("budget.rename")}
         </button>
         <ConfirmButton
           className="btn btn-ghost"
-          what={`${kind} “${
-            kind === "wallet"
-              ? (wallets.find((w) => w.id === id)?.name ?? "")
-              : kind === "expense"
-                ? (expenseCats.find((c) => c.id === id)?.name ?? "")
-                : (incomeCats.find((c) => c.id === id)?.name ?? "")
-          }”`}
+          what={t("budget.deleteWhat", {
+            kind: kindNoun(t, kind),
+            name:
+              kind === "wallet"
+                ? (wallets.find((w) => w.id === id)?.name ?? "")
+                : kind === "expense"
+                  ? (expenseCats.find((c) => c.id === id)?.name ?? "")
+                  : (incomeCats.find((c) => c.id === id)?.name ?? ""),
+          })}
           onConfirm={() => removeRow(kind, id)}
         >
-          Delete
+          {t("common.delete")}
         </ConfirmButton>
       </span>
     );
 
   return (
-    <section
-      className="budget-manage"
-      aria-label="Manage wallets and categories"
-    >
+    <section className="budget-manage" aria-label={t("budget.manage.title")}>
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -364,16 +383,16 @@ function ManageView() {
         </p>
       ) : null}
 
-      <section aria-label="Wallets" className="surface-card">
+      <section aria-label={t("budget.walletsHeading")} className="surface-card">
         <div className="dash-card-head">
           <div className="dash-card-title">
             <IconWallet className="icon" />
-            <h2 className="side-heading">Wallets &amp; Accounts</h2>
+            <h2 className="side-heading">{t("budget.walletsHeading")}</h2>
           </div>
           <span className="badge">{wallets.length}</span>
         </div>
         {wallets.length === 0 ? (
-          <p className="muted">No wallets yet — add one below.</p>
+          <p className="muted">{t("budget.noWallets")}</p>
         ) : (
           <div className="wallet-grid">
             {wallets.map((w) => (
@@ -399,8 +418,8 @@ function ManageView() {
           }}
         >
           <input
-            aria-label="New wallet name"
-            placeholder="New wallet name (e.g. KBZ Pay)"
+            aria-label={t("budget.newWalletAria")}
+            placeholder={t("budget.walletNamePlaceholder")}
             value={walletDraft}
             onChange={(e) => setWalletDraft(e.target.value)}
           />
@@ -409,25 +428,25 @@ function ManageView() {
             className="btn btn-primary"
             disabled={!cleanName(walletDraft) || addingWallet}
           >
-            Add wallet
+            {t("budget.addWallet")}
           </button>
         </form>
       </section>
 
       <div className="summary-breakdowns">
-        <section aria-label="Expense categories">
+        <section aria-label={t("budget.expenseCategories")}>
           <div className="dash-card-head">
-            <h2 className="side-heading">Expense categories</h2>
+            <h2 className="side-heading">{t("budget.expenseCategories")}</h2>
             <span className="badge">{expenseCats.length}</span>
           </div>
           {expenseCats.length === 0 ? (
-            <p className="muted">No expense categories yet — add one below.</p>
+            <p className="muted">{t("budget.noExpenseCategories")}</p>
           ) : (
             <ul className="budget-list">
               {expenseCats.map((c) => (
                 <li key={c.id} className="budget-row">
                   <span>{c.name}</span>
-                  <span className="badge">Expense</span>
+                  <span className="badge">{t("budget.expense")}</span>
                   {renameControls("expense", c.id)}
                 </li>
               ))}
@@ -441,8 +460,8 @@ function ManageView() {
             }}
           >
             <input
-              aria-label="New expense category name"
-              placeholder="New expense category"
+              aria-label={t("budget.newExpenseCategoryAria")}
+              placeholder={t("budget.newExpenseCategoryPlaceholder")}
               value={expenseDraft}
               onChange={(e) => setExpenseDraft(e.target.value)}
             />
@@ -451,24 +470,26 @@ function ManageView() {
               className="btn btn-primary"
               disabled={!cleanName(expenseDraft) || addingExpense}
             >
-              Add category
+              {t("budget.addCategory")}
             </button>
           </form>
         </section>
 
-        <section aria-label="Income categories">
+        <section aria-label={t("budget.incomeCategories")}>
           <div className="dash-card-head">
-            <h2 className="side-heading">Income categories</h2>
+            <h2 className="side-heading">{t("budget.incomeCategories")}</h2>
             <span className="badge">{incomeCats.length}</span>
           </div>
           {incomeCats.length === 0 ? (
-            <p className="muted">No income categories yet — add one below.</p>
+            <p className="muted">{t("budget.noIncomeCategories")}</p>
           ) : (
             <ul className="budget-list">
               {incomeCats.map((c) => (
                 <li key={c.id} className="budget-row">
                   <span>{c.name}</span>
-                  <span className="badge badge-success">Income</span>
+                  <span className="badge badge-success">
+                    {t("budget.income")}
+                  </span>
                   {renameControls("income", c.id)}
                 </li>
               ))}
@@ -482,8 +503,8 @@ function ManageView() {
             }}
           >
             <input
-              aria-label="New income category name"
-              placeholder="New income category"
+              aria-label={t("budget.newIncomeCategoryAria")}
+              placeholder={t("budget.newIncomeCategoryPlaceholder")}
               value={incomeDraft}
               onChange={(e) => setIncomeDraft(e.target.value)}
             />
@@ -492,7 +513,7 @@ function ManageView() {
               className="btn btn-primary"
               disabled={!cleanName(incomeDraft) || addingIncome}
             >
-              Add category
+              {t("budget.addCategory")}
             </button>
           </form>
         </section>
@@ -503,6 +524,7 @@ function ManageView() {
 
 /** Daily entries: day navigation, income/expense entry form + CRUD, limit warning. */
 function EntriesView() {
+  const t = useT();
   const [date, setDate] = useState(() => todayLocal());
   const [entries, setEntries] = useState<DayEntry[]>([]);
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -705,14 +727,14 @@ function EntriesView() {
     .reduce((sum, e) => sum + e.amount_cents, 0);
 
   return (
-    <section className="budget-entries" aria-label="Daily entries">
+    <section className="budget-entries" aria-label={t("budget.entries.title")}>
       <div className="dash-card-head">
         <div className="day-nav">
           <button
             type="button"
             className="btn btn-icon"
-            aria-label="Previous day"
-            title="Previous day"
+            aria-label={t("budget.previousDay")}
+            title={t("budget.previousDay")}
             onClick={() => setDate(addDays(date, -1))}
           >
             <IconChevronLeft className="icon" />
@@ -720,7 +742,7 @@ function EntriesView() {
           <span className="input-icon-wrap">
             <input
               type="date"
-              aria-label="Entry date"
+              aria-label={t("budget.entryDateAria")}
               value={date}
               onChange={(e) => setDate(e.target.value)}
             />
@@ -729,8 +751,8 @@ function EntriesView() {
           <button
             type="button"
             className="btn btn-icon"
-            aria-label="Next day"
-            title="Next day"
+            aria-label={t("budget.nextDay")}
+            title={t("budget.nextDay")}
             onClick={() => setDate(addDays(date, 1))}
           >
             <IconChevronRight className="icon" />
@@ -740,15 +762,15 @@ function EntriesView() {
             className="btn"
             onClick={() => setDate(todayLocal())}
           >
-            Today
+            {t("budget.today")}
           </button>
         </div>
         <div className="row-actions">
           <span className="badge badge-success figure">
-            In +{formatMMK(dayIn)}
+            {t("budget.inBadge", { amount: formatMMK(dayIn) })}
           </span>
           <span className="badge badge-danger figure">
-            Out −{formatMMK(dayOut)}
+            {t("budget.outBadge", { amount: formatMMK(dayOut) })}
           </span>
         </div>
       </div>
@@ -761,13 +783,15 @@ function EntriesView() {
       ) : null}
 
       <div className="split-workspace-grid">
-        <section aria-label={`Entries for ${date}`}>
+        <section aria-label={t("budget.entriesFor", { date })}>
           <div className="dash-card-head">
-            <h3 className="side-heading">Transactions on {date}</h3>
+            <h3 className="side-heading">
+              {t("budget.transactionsOn", { date })}
+            </h3>
             <span className="badge">{entries.length}</span>
           </div>
           {entries.length === 0 ? (
-            <EmptyState>No transactions recorded for this day.</EmptyState>
+            <EmptyState>{t("budget.noTransactions")}</EmptyState>
           ) : (
             <ul className="budget-list">
               {entries.map((e) => (
@@ -796,14 +820,16 @@ function EntriesView() {
                         className="btn btn-ghost"
                         onClick={() => startEdit(e)}
                       >
-                        Edit
+                        {t("budget.edit")}
                       </button>
                       <ConfirmButton
                         className="btn btn-ghost"
-                        what={`${e.kind} entry`}
+                        what={t("budget.deleteEntryWhat", {
+                          kind: kindNoun(t, e.kind),
+                        })}
                         onConfirm={() => remove(e)}
                       >
-                        Delete
+                        {t("common.delete")}
                       </ConfirmButton>
                     </span>
                   </div>
@@ -822,10 +848,12 @@ function EntriesView() {
         >
           <div className="dash-card-head">
             <h2 className="side-heading">
-              {editing ? "Edit transaction" : "New transaction"}
+              {t(editing ? "budget.editTransaction" : "budget.newTransaction")}
             </h2>
             <fieldset className="kind-toggle">
-              <legend className="visually-hidden">Entry kind</legend>
+              <legend className="visually-hidden">
+                {t("budget.entryKind")}
+              </legend>
               {/* Enabled while editing since P2-9: switching kind now converts
                   the entry in place (see `convertEntry`) instead of forcing a
                   delete and a retype. The category list is re-pointed at the
@@ -840,7 +868,7 @@ function EntriesView() {
                   setCategoryId("");
                 }}
               >
-                Income
+                {t("budget.income")}
               </button>
               <button
                 type="button"
@@ -851,13 +879,13 @@ function EntriesView() {
                   setCategoryId("");
                 }}
               >
-                Expense
+                {t("budget.expense")}
               </button>
             </fieldset>
           </div>
 
           <label>
-            Amount
+            {t("budget.amount")}
             <span className="input-affix">
               <input
                 inputMode="decimal"
@@ -875,12 +903,12 @@ function EntriesView() {
           </label>
           {amountRaw.trim() !== "" && !isPartialAmount(amountRaw) ? (
             <p className="limit-warn" role="status">
-              Enter a valid amount — digits with up to 2 decimals.
+              {t("budget.invalidAmount")}
             </p>
           ) : null}
           <div className="form-grid">
             <label>
-              Category
+              {t("budget.category")}
               <select
                 aria-label="Category"
                 value={categoryId === "" ? "" : String(categoryId)}
@@ -890,7 +918,7 @@ function EntriesView() {
                   )
                 }
               >
-                <option value="">Choose…</option>
+                <option value="">{t("budget.choose")}</option>
                 {categories.map((c) => (
                   <option key={c.id} value={String(c.id)}>
                     {c.name}
@@ -899,7 +927,7 @@ function EntriesView() {
               </select>
             </label>
             <label>
-              Wallet
+              {t("budget.wallet")}
               <select
                 aria-label="Wallet"
                 value={walletId === "" ? "" : String(walletId)}
@@ -909,7 +937,7 @@ function EntriesView() {
                   )
                 }
               >
-                <option value="">Choose…</option>
+                <option value="">{t("budget.choose")}</option>
                 {wallets.map((w) => (
                   <option key={w.id} value={String(w.id)}>
                     {w.name}
@@ -919,10 +947,10 @@ function EntriesView() {
             </label>
           </div>
           <label>
-            Note
+            {t("budget.note")}
             <input
               value={note}
-              placeholder="Optional description"
+              placeholder={t("budget.notePlaceholder")}
               onChange={(e) => setNote(e.target.value)}
             />
           </label>
@@ -937,9 +965,15 @@ function EntriesView() {
               }
               role="status"
             >
-              {limitInfo.status === "exceeded"
-                ? `Limit exceeded: ${formatMMK(limitInfo.spentCents)} of ${formatMMK(limitInfo.limitCents)} already spent this month.`
-                : `Approaching limit: ${formatMMK(limitInfo.spentCents)} of ${formatMMK(limitInfo.limitCents)} spent this month.`}
+              {t(
+                limitInfo.status === "exceeded"
+                  ? "budget.limitExceeded"
+                  : "budget.limitApproaching",
+                {
+                  spent: formatMMK(limitInfo.spentCents),
+                  limit: formatMMK(limitInfo.limitCents),
+                },
+              )}
             </p>
           ) : null}
           <div className="row-actions">
@@ -954,11 +988,11 @@ function EntriesView() {
                 walletId === ""
               }
             >
-              {editing ? "Update entry" : "Save entry"}
+              {t(editing ? "budget.updateEntry" : "budget.saveEntry")}
             </button>
             {editing ? (
               <button type="button" className="btn" onClick={resetForm}>
-                Cancel
+                {t("common.cancel")}
               </button>
             ) : null}
           </div>
@@ -970,6 +1004,7 @@ function EntriesView() {
 
 /** Monthly summary: totals + per-category breakdown, month navigation. */
 function MonthView() {
+  const t = useT();
   const [yearMonth, setYearMonth] = useState(() => yearMonthOf(todayLocal()));
   const [display, setDisplay] = useState<ReturnType<
     typeof monthSummaryDisplay
@@ -1007,13 +1042,13 @@ function MonthView() {
   const label = monthLabel(yearMonth);
 
   return (
-    <section className="budget-month" aria-label="Monthly summary">
+    <section className="budget-month" aria-label={t("budget.month.title")}>
       <div className="day-nav">
         <button
           type="button"
           className="btn btn-icon"
-          aria-label="Previous month"
-          title="Previous month"
+          aria-label={t("budget.previousMonth")}
+          title={t("budget.previousMonth")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, -1))}
         >
           <IconChevronLeft className="icon" />
@@ -1022,8 +1057,8 @@ function MonthView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label="Next month"
-          title="Next month"
+          aria-label={t("budget.nextMonth")}
+          title={t("budget.nextMonth")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, 1))}
         >
           <IconChevronRight className="icon" />
@@ -1033,7 +1068,7 @@ function MonthView() {
           className="btn"
           onClick={() => setYearMonth(yearMonthOf(todayLocal()))}
         >
-          This month
+          {t("budget.thisMonth")}
         </button>
       </div>
 
@@ -1048,19 +1083,19 @@ function MonthView() {
         <>
           <div className="summary-figures">
             <div>
-              <span className="muted">Income</span>
+              <span className="muted">{t("budget.income")}</span>
               <span className="figure amount-income">
                 +{formatMMK(display.incomeCents)}
               </span>
             </div>
             <div>
-              <span className="muted">Expense</span>
+              <span className="muted">{t("budget.expense")}</span>
               <span className="figure amount-expense">
                 −{formatMMK(display.expenseCents)}
               </span>
             </div>
             <div>
-              <span className="muted">Net Cashflow</span>
+              <span className="muted">{t("budget.netCashflow")}</span>
               <span
                 className={`figure${
                   display.netCents > 0
@@ -1075,15 +1110,17 @@ function MonthView() {
             </div>
           </div>
           <div className="summary-breakdowns">
-            <section aria-label="Expense by category">
+            <section aria-label={t("budget.expenseByCategory")}>
               <div className="dash-card-head">
-                <h3 className="side-heading">Expenses by category</h3>
+                <h3 className="side-heading">
+                  {t("budget.expensesByCategory")}
+                </h3>
                 <span className="badge badge-danger">
                   {display.expenseRows.length}
                 </span>
               </div>
               {display.expenseRows.length === 0 ? (
-                <p className="muted">No expenses this month.</p>
+                <p className="muted">{t("budget.noExpenses")}</p>
               ) : (
                 <ul className="budget-list">
                   {display.expenseRows.map((r) => {
@@ -1119,15 +1156,15 @@ function MonthView() {
                 </ul>
               )}
             </section>
-            <section aria-label="Income by category">
+            <section aria-label={t("budget.incomeByCategory")}>
               <div className="dash-card-head">
-                <h3 className="side-heading">Income by category</h3>
+                <h3 className="side-heading">{t("budget.incomeByCategory")}</h3>
                 <span className="badge badge-success">
                   {display.incomeRows.length}
                 </span>
               </div>
               {display.incomeRows.length === 0 ? (
-                <p className="muted">No income this month.</p>
+                <p className="muted">{t("budget.noIncome")}</p>
               ) : (
                 <ul className="budget-list">
                   {display.incomeRows.map((r) => {
@@ -1172,6 +1209,7 @@ function MonthView() {
 
 /** Yearly summary: year totals + per-month income/expense/net rows. */
 function YearView() {
+  const t = useT();
   const [year, setYear] = useState(() => todayLocal().slice(0, 4));
   const [display, setDisplay] = useState<ReturnType<typeof yearDisplay> | null>(
     null,
@@ -1208,13 +1246,13 @@ function YearView() {
   };
 
   return (
-    <section className="budget-year" aria-label="Yearly summary">
+    <section className="budget-year" aria-label={t("budget.year.title")}>
       <div className="day-nav">
         <button
           type="button"
           className="btn btn-icon"
-          aria-label="Previous year"
-          title="Previous year"
+          aria-label={t("budget.previousYear")}
+          title={t("budget.previousYear")}
           onClick={() => shiftYear(-1)}
         >
           <IconChevronLeft className="icon" />
@@ -1223,8 +1261,8 @@ function YearView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label="Next year"
-          title="Next year"
+          aria-label={t("budget.nextYear")}
+          title={t("budget.nextYear")}
           onClick={() => shiftYear(1)}
         >
           <IconChevronRight className="icon" />
@@ -1234,7 +1272,7 @@ function YearView() {
           className="btn"
           onClick={() => setYear(currentYear)}
         >
-          This year
+          {t("budget.thisYear")}
         </button>
       </div>
 
@@ -1249,19 +1287,19 @@ function YearView() {
         <>
           <div className="summary-figures">
             <div>
-              <span className="muted">Annual Income</span>
+              <span className="muted">{t("budget.annualIncome")}</span>
               <span className="figure amount-income">
                 +{formatMMK(display.totalIncomeCents)}
               </span>
             </div>
             <div>
-              <span className="muted">Annual Expense</span>
+              <span className="muted">{t("budget.annualExpense")}</span>
               <span className="figure amount-expense">
                 −{formatMMK(display.totalExpenseCents)}
               </span>
             </div>
             <div>
-              <span className="muted">Annual Net</span>
+              <span className="muted">{t("budget.annualNet")}</span>
               <span
                 className={
                   display.netCents > 0
@@ -1276,13 +1314,15 @@ function YearView() {
             </div>
           </div>
           <table className="year-table year-table-row-hover">
-            <caption className="visually-hidden">Months of {year}</caption>
+            <caption className="visually-hidden">
+              {t("budget.monthsOf", { year })}
+            </caption>
             <thead>
               <tr>
-                <th scope="col">Month</th>
-                <th scope="col">Income</th>
-                <th scope="col">Expense</th>
-                <th scope="col">Net</th>
+                <th scope="col">{t("budget.monthColumn")}</th>
+                <th scope="col">{t("budget.income")}</th>
+                <th scope="col">{t("budget.expense")}</th>
+                <th scope="col">{t("budget.net")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1320,6 +1360,7 @@ function YearView() {
 
 /** Expense limits: per-category monthly cap with 80%/exceeded warnings. */
 function LimitsView() {
+  const t = useT();
   const [yearMonth, setYearMonth] = useState(() => yearMonthOf(todayLocal()));
   const [rows, setRows] = useState<ReturnType<typeof limitDisplayRows>>([]);
   const [drafts, setDrafts] = useState<Map<number, string>>(new Map());
@@ -1376,13 +1417,13 @@ function LimitsView() {
   };
 
   return (
-    <section className="budget-limits" aria-label="Expense limits">
+    <section className="budget-limits" aria-label={t("budget.limits.title")}>
       <div className="day-nav">
         <button
           type="button"
           className="btn btn-icon"
-          aria-label="Previous month"
-          title="Previous month"
+          aria-label={t("budget.previousMonth")}
+          title={t("budget.previousMonth")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, -1))}
         >
           <IconChevronLeft className="icon" />
@@ -1391,8 +1432,8 @@ function LimitsView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label="Next month"
-          title="Next month"
+          aria-label={t("budget.nextMonth")}
+          title={t("budget.nextMonth")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, 1))}
         >
           <IconChevronRight className="icon" />
@@ -1407,9 +1448,7 @@ function LimitsView() {
       ) : null}
 
       {rows.length === 0 ? (
-        <p className="muted">
-          No expense categories — add one in Manage to set limits.
-        </p>
+        <p className="muted">{t("budget.limits.empty")}</p>
       ) : (
         <ul className="budget-list">
           {rows.map((r) => {
@@ -1435,17 +1474,33 @@ function LimitsView() {
                         }
                         role="status"
                       >
-                        {r.status === "exceeded" ? "Exceeded" : "80%+"}
+                        {t(
+                          r.status === "exceeded"
+                            ? "budget.limits.exceeded"
+                            : "budget.limits.warn",
+                        )}
                       </span>
                     ) : r.limitCents !== null ? (
-                      <span className="badge badge-success">On track</span>
+                      <span className="badge badge-success">
+                        {t("budget.limits.onTrack")}
+                      </span>
                     ) : null}
                   </span>
                   <span className="muted figure">
-                    spent {formatMMK(r.spentCents)}
-                    {r.limitCents !== null
-                      ? ` of ${formatMMK(r.limitCents)}${r.percent !== null ? ` (${r.percent}%)` : ""}`
-                      : " — no limit set"}
+                    {r.limitCents === null
+                      ? t("budget.limits.spentOnly", {
+                          amount: formatMMK(r.spentCents),
+                        })
+                      : r.percent === null
+                        ? t("budget.limits.spent", {
+                            amount: formatMMK(r.spentCents),
+                            limit: formatMMK(r.limitCents),
+                          })
+                        : t("budget.limits.spentPercent", {
+                            amount: formatMMK(r.spentCents),
+                            limit: formatMMK(r.limitCents),
+                            percent: r.percent,
+                          })}
                   </span>
                   {r.limitCents !== null ? (
                     <div className="progress-track" aria-hidden="true">
@@ -1458,9 +1513,9 @@ function LimitsView() {
                 </div>
                 <span className="inline-form">
                   <input
-                    aria-label={`Monthly limit for ${r.name}`}
+                    aria-label={t("budget.limits.capAria", { name: r.name })}
                     inputMode="decimal"
-                    placeholder="Monthly cap (MMK)"
+                    placeholder={t("budget.limits.capPlaceholder")}
                     value={drafts.get(r.categoryId) ?? ""}
                     onChange={(e) => {
                       const next = new Map(drafts);
@@ -1474,15 +1529,15 @@ function LimitsView() {
                     disabled={parseMMK(drafts.get(r.categoryId) ?? "") === null}
                     onClick={() => void saveLimit(r.categoryId)}
                   >
-                    Set limit
+                    {t("budget.limits.set")}
                   </button>
                   {r.limitCents !== null ? (
                     <ConfirmButton
                       className="btn btn-ghost"
-                      what={`spending limit for ${r.name}`}
+                      what={t("budget.limits.removeWhat", { name: r.name })}
                       onConfirm={() => removeLimit(r.categoryId)}
                     >
-                      Remove
+                      {t("budget.limits.remove")}
                     </ConfirmButton>
                   ) : null}
                 </span>
@@ -1497,6 +1552,7 @@ function LimitsView() {
 
 /** Recurring payments: rules list, mark-paid with capped catch-up. */
 function RecurringView() {
+  const t = useT();
   const [rules, setRules] = useState<RecurringPaymentRow[]>([]);
   const [expenseCats, setExpenseCats] = useState<ExpenseCategoryRow[]>([]);
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -1584,9 +1640,13 @@ function RecurringView() {
         ...(typeof categoryId !== "number" ? ["category"] : []),
         ...(typeof walletId !== "number" ? ["wallet"] : []),
       ];
-      setError(
-        `“${rule.title}” has no ${missing.join(" or ")} of its own — choose a fallback ${missing.join(" and ")} above, or edit the rule.`,
-      );
+      const missingKey: MessageKey =
+        missing.length === 2
+          ? "budget.recurring.bookingMissingBoth"
+          : missing[0] === "category"
+            ? "budget.recurring.bookingMissingCategory"
+            : "budget.recurring.bookingMissingWallet";
+      setError(t(missingKey, { title: rule.title }));
       return null;
     }
     return { categoryId, walletId };
@@ -1688,7 +1748,10 @@ function RecurringView() {
   };
 
   return (
-    <section className="budget-recurring" aria-label="Recurring payments">
+    <section
+      className="budget-recurring"
+      aria-label={t("budget.recurring.title")}
+    >
       {loading ? <Skeleton count={3} /> : null}
       {error ? (
         <p className="alert alert-error" role="alert">
@@ -1703,7 +1766,7 @@ function RecurringView() {
             checked={showInactive}
             onChange={(e) => setShowInactive(e.target.checked)}
           />{" "}
-          Show paused
+          {t("budget.recurring.showPaused")}
         </label>
         <span className="toolbar-spacer" />
         {/* Both fallback pickers are now unselected by default and only apply to
@@ -1712,10 +1775,10 @@ function RecurringView() {
             consulted only for some rules is how the silent Food/Cash booking
             went unnoticed. */}
         <label className="muted">
-          Fallback category (rules with none){" "}
+          {t("budget.recurring.fallbackCategory")}{" "}
           <select
             className="select"
-            aria-label="Fallback expense category"
+            aria-label={t("budget.recurring.fallbackCategoryAria")}
             value={fallbackCategoryId === "" ? "" : String(fallbackCategoryId)}
             onChange={(e) =>
               setFallbackCategoryId(
@@ -1732,10 +1795,10 @@ function RecurringView() {
           </select>
         </label>
         <label className="muted">
-          Fallback wallet (rules with none){" "}
+          {t("budget.recurring.fallbackWallet")}{" "}
           <select
             className="select"
-            aria-label="Fallback wallet"
+            aria-label={t("budget.recurring.fallbackWalletAria")}
             value={fallbackWalletId === "" ? "" : String(fallbackWalletId)}
             onChange={(e) =>
               setFallbackWalletId(
@@ -1754,7 +1817,7 @@ function RecurringView() {
       </div>
 
       {rules.length === 0 ? (
-        <EmptyState>No recurring payments yet — add one below.</EmptyState>
+        <EmptyState>{t("budget.recurring.empty")}</EmptyState>
       ) : (
         <ul className="budget-list">
           {rules.map((r) => {
@@ -1765,15 +1828,22 @@ function RecurringView() {
                   <span className="row-title">
                     <b>{r.title}</b>
                     <span className="chip">{r.frequency}</span>
-                    {r.active ? null : <span className="badge">Paused</span>}
+                    {r.active ? null : (
+                      <span className="badge">
+                        {t("budget.recurring.paused")}
+                      </span>
+                    )}
                     {d.overdue ? (
                       <span className="badge badge-danger" role="status">
-                        Overdue
+                        {t("budget.recurring.overdue")}
                       </span>
                     ) : null}
                   </span>
                   <span className="muted figure">
-                    {formatMMK(r.amount_cents)} · next due {r.next_due_date}
+                    {t("budget.recurring.nextDue", {
+                      amount: formatMMK(r.amount_cents),
+                      date: r.next_due_date,
+                    })}
                   </span>
                 </div>
                 <span className="row-actions">
@@ -1784,15 +1854,21 @@ function RecurringView() {
                     onClick={() => void markPaid(r)}
                   >
                     {d.occurrences.length > 1
-                      ? `Mark paid (${d.occurrences.length} occurrences)`
-                      : "Mark paid"}
+                      ? t("budget.recurring.markPaidMany", {
+                          count: d.occurrences.length,
+                        })
+                      : t("budget.recurring.markPaid")}
                   </button>
                   <button
                     type="button"
                     className="btn btn-ghost"
                     onClick={() => void setActive(r, !r.active)}
                   >
-                    {r.active ? "Pause" : "Resume"}
+                    {t(
+                      r.active
+                        ? "budget.recurring.pause"
+                        : "budget.recurring.resume",
+                    )}
                   </button>
                   {/* Pause was the only escape hatch before P2-9, so a rule
                       created by mistake stayed in the list forever. */}
@@ -1801,14 +1877,14 @@ function RecurringView() {
                     className="btn btn-ghost"
                     onClick={() => startEditRule(r)}
                   >
-                    Edit
+                    {t("budget.edit")}
                   </button>
                   <ConfirmButton
                     className="btn btn-ghost"
-                    what={`recurring rule “${r.title}” — expenses it already booked stay in the Budget`}
+                    what={t("budget.recurring.deleteWhat", { title: r.title })}
                     onConfirm={() => removeRule(r.id)}
                   >
-                    Delete
+                    {t("common.delete")}
                   </ConfirmButton>
                 </span>
               </li>
@@ -1826,20 +1902,20 @@ function RecurringView() {
       >
         <h2 className="side-heading">
           {editing === null
-            ? "New recurring payment"
-            : `Edit rule — ${editing.title}`}
+            ? t("budget.recurring.newTitle")
+            : t("budget.recurring.editTitle", { title: editing.title })}
         </h2>
         <div className="form-grid">
           <label>
-            Title
+            {t("budget.recurring.titleField")}
             <input
               value={title}
-              placeholder="e.g. Apartment Rent"
+              placeholder={t("budget.recurring.titlePlaceholder")}
               onChange={(e) => setTitle(e.target.value)}
             />
           </label>
           <label>
-            Amount
+            {t("budget.amount")}
             <span className="input-affix">
               <input
                 inputMode="decimal"
@@ -1856,26 +1932,30 @@ function RecurringView() {
             </span>
           </label>
           <label>
-            Frequency
+            {t("budget.recurring.frequency")}
             <select
-              aria-label="Frequency"
+              aria-label={t("budget.recurring.frequency")}
               value={frequency}
               onChange={(e) =>
                 setFrequency(e.target.value as RecurringFrequency)
               }
             >
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
-              <option value="quarterly">Quarterly</option>
-              <option value="yearly">Yearly</option>
+              <option value="weekly">{t("budget.recurring.freqWeekly")}</option>
+              <option value="monthly">
+                {t("budget.recurring.freqMonthly")}
+              </option>
+              <option value="quarterly">
+                {t("budget.recurring.freqQuarterly")}
+              </option>
+              <option value="yearly">{t("budget.recurring.freqYearly")}</option>
             </select>
           </label>
           <label>
-            Next due date
+            {t("budget.recurring.nextDueDate")}
             <span className="input-icon-wrap">
               <input
                 type="date"
-                aria-label="Next due date"
+                aria-label={t("budget.recurring.nextDueDate")}
                 value={nextDue}
                 onChange={(e) => setNextDue(e.target.value)}
               />
@@ -1883,9 +1963,9 @@ function RecurringView() {
             </span>
           </label>
           <label>
-            Category (optional — falls back when marking paid)
+            {t("budget.recurring.categoryOptional")}
             <select
-              aria-label="Rule category"
+              aria-label={t("budget.recurring.ruleCategoryAria")}
               value={ruleCategory === "" ? "" : String(ruleCategory)}
               onChange={(e) =>
                 setRuleCategory(
@@ -1893,7 +1973,7 @@ function RecurringView() {
                 )
               }
             >
-              <option value="">None</option>
+              <option value="">{t("budget.recurring.none")}</option>
               {expenseCats.map((c) => (
                 <option key={c.id} value={String(c.id)}>
                   {c.name}
@@ -1902,9 +1982,9 @@ function RecurringView() {
             </select>
           </label>
           <label>
-            Wallet (optional — falls back when marking paid)
+            {t("budget.recurring.walletOptional")}
             <select
-              aria-label="Rule wallet"
+              aria-label={t("budget.recurring.ruleWalletAria")}
               value={ruleWallet === "" ? "" : String(ruleWallet)}
               onChange={(e) =>
                 setRuleWallet(
@@ -1912,7 +1992,7 @@ function RecurringView() {
                 )
               }
             >
-              <option value="">None</option>
+              <option value="">{t("budget.recurring.none")}</option>
               {wallets.map((w) => (
                 <option key={w.id} value={String(w.id)}>
                   {w.name}
@@ -1933,7 +2013,11 @@ function RecurringView() {
               !nextDue
             }
           >
-            {editing === null ? "Add rule" : "Save changes"}
+            {t(
+              editing === null
+                ? "budget.recurring.addRule"
+                : "budget.recurring.saveChanges",
+            )}
           </button>
           {editing !== null ? (
             <button
@@ -1941,7 +2025,7 @@ function RecurringView() {
               className="btn btn-ghost"
               onClick={cancelEditRule}
             >
-              Cancel edit
+              {t("budget.recurring.cancelEdit")}
             </button>
           ) : null}
         </div>

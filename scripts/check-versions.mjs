@@ -117,4 +117,67 @@ for (const limit of SHARED_LIMITS) {
   }
 }
 
-console.log(`check-versions: OK — all three manifests agree on ${pkg}`);
+// --- Pinned toolchains ---------------------------------------------------------
+// `.nvmrc` and `rust-toolchain.toml` are what a fresh clone actually installs;
+// `engines.node` and `rust-version` are what npm, the gate and clippy believe.
+// They drifted apart once (F10), and a stale `rust-version` quietly changes
+// which clippy lints run, so the pairs are asserted rather than remembered.
+
+function readText(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (e) {
+    console.error(
+      `check-versions: FAILED — cannot read ${path}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    process.exit(1);
+  }
+}
+
+const nvmNode = readText(".nvmrc").trim().split(/\r?\n/)[0].trim();
+const enginesNode = readJson("package.json").engines?.node ?? "";
+if (!nvmNode) {
+  console.error("check-versions: FAILED — .nvmrc names no Node version");
+  process.exit(1);
+}
+if (enginesNode !== `>=${nvmNode}`) {
+  console.error(
+    "check-versions: FAILED — the pinned Node versions disagree:\n" +
+      `  .nvmrc: ${nvmNode}\n` +
+      `  package.json engines.node: ${enginesNode || "(missing)"}\n` +
+      `  Set engines.node to ">=${nvmNode}" so npm enforces the version` +
+      " the gate runs on (README, Development).",
+  );
+  process.exit(1);
+}
+
+const toolchainChannel = /^\s*channel\s*=\s*"([^"]+)"\s*$/m.exec(
+  readText("rust-toolchain.toml"),
+)?.[1];
+const cargoRustVersion = /^rust-version\s*=\s*"([^"]+)"\s*$/m.exec(
+  readText("src-tauri/Cargo.toml"),
+)?.[1];
+if (!toolchainChannel || !cargoRustVersion) {
+  console.error(
+    "check-versions: FAILED — cannot read the pinned Rust version:\n" +
+      `  rust-toolchain.toml [toolchain] channel: ${toolchainChannel ?? "(missing)"}\n` +
+      `  src-tauri/Cargo.toml rust-version: ${cargoRustVersion ?? "(missing)"}\n` +
+      "  A rename must update this check too.",
+  );
+  process.exit(1);
+}
+if (toolchainChannel !== cargoRustVersion) {
+  console.error(
+    "check-versions: FAILED — the pinned Rust versions disagree:\n" +
+      `  rust-toolchain.toml: ${toolchainChannel}\n` +
+      `  src-tauri/Cargo.toml rust-version: ${cargoRustVersion}\n` +
+      "  Bump both together: clippy checks against rust-version while the" +
+      " gate builds with the toolchain.",
+  );
+  process.exit(1);
+}
+
+console.log(
+  `check-versions: OK — all three manifests agree on ${pkg}; ` +
+    `Node ${nvmNode} and Rust ${toolchainChannel} are pinned on both sides`,
+);
