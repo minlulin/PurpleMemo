@@ -1047,8 +1047,8 @@ function MonthView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label={t("budget.previousMonth")}
-          title={t("budget.previousMonth")}
+          aria-label={t("month.previous")}
+          title={t("month.previous")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, -1))}
         >
           <IconChevronLeft className="icon" />
@@ -1057,8 +1057,8 @@ function MonthView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label={t("budget.nextMonth")}
-          title={t("budget.nextMonth")}
+          aria-label={t("month.next")}
+          title={t("month.next")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, 1))}
         >
           <IconChevronRight className="icon" />
@@ -1422,8 +1422,8 @@ function LimitsView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label={t("budget.previousMonth")}
-          title={t("budget.previousMonth")}
+          aria-label={t("month.previous")}
+          title={t("month.previous")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, -1))}
         >
           <IconChevronLeft className="icon" />
@@ -1432,8 +1432,8 @@ function LimitsView() {
         <button
           type="button"
           className="btn btn-icon"
-          aria-label={t("budget.nextMonth")}
-          title={t("budget.nextMonth")}
+          aria-label={t("month.next")}
+          title={t("month.next")}
           onClick={() => setYearMonth(shiftYearMonth(yearMonth, 1))}
         >
           <IconChevronRight className="icon" />

@@ -17,6 +17,7 @@ import { useT } from "../components/useTranslation.ts";
 import { habitsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { buildMonthGrid, monthLabel, weekRowKey } from "../lib/journal.ts";
 import { createLoadGuard } from "../lib/loads.ts";
 import type { HabitRow } from "../lib/types.ts";
@@ -28,7 +29,15 @@ interface HabitProgress {
   week: { date: string; done: boolean }[];
 }
 
-const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
+const DAY_LABEL_KEYS = [
+  "weekday.sun",
+  "weekday.mon",
+  "weekday.tue",
+  "weekday.wed",
+  "weekday.thu",
+  "weekday.fri",
+  "weekday.sat",
+] as const satisfies readonly MessageKey[];
 
 export default function HabitsPage() {
   const t = useT();
@@ -175,11 +184,8 @@ export default function HabitsPage() {
               <IconHabits className="icon" />
             </span>
             <div>
-              <h2 className="editor-title">Habits &amp; Streaks</h2>
-              <p className="page-subtitle">
-                Build daily consistency with check-ins over the last 7 days and
-                monthly history
-              </p>
+              <h2 className="editor-title">{t("habits.title")}</h2>
+              <p className="page-subtitle">{t("habits.subtitle")}</p>
             </div>
           </div>
         </div>
@@ -191,8 +197,8 @@ export default function HabitsPage() {
           }}
         >
           <input
-            aria-label="New habit name"
-            placeholder="e.g. Read 20 minutes"
+            aria-label={t("habits.newNameAria")}
+            placeholder={t("habits.namePlaceholder")}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
@@ -201,7 +207,7 @@ export default function HabitsPage() {
             className="btn btn-primary"
             disabled={saving || name.trim().length === 0}
           >
-            <IconPlus className="icon" /> Add habit
+            <IconPlus className="icon" /> {t("habits.add")}
           </button>
         </form>
       </header>
@@ -221,7 +227,7 @@ export default function HabitsPage() {
 
       {habits.length === 0 ? (
         <section className="settings-section">
-          <EmptyState>No habits yet — add one above.</EmptyState>
+          <EmptyState>{t("habits.empty")}</EmptyState>
         </section>
       ) : (
         <div className="dashboard-grid">
@@ -238,7 +244,10 @@ export default function HabitsPage() {
                       <b>{h.name}</b>
                     </span>
                     <span className="row-sub figure">
-                      streak {p?.current ?? 0} · best {p?.best ?? 0}
+                      {t("habits.streak", {
+                        current: p?.current ?? 0,
+                        best: p?.best ?? 0,
+                      })}
                     </span>
                   </div>
                   <span className="row-actions">
@@ -249,22 +258,24 @@ export default function HabitsPage() {
                       disabled={toggling}
                       onClick={() => void toggle(h.id, todayLocal())}
                     >
-                      {doneToday ? "Done today ✓" : "Mark done today"}
+                      {doneToday
+                        ? t("habits.doneToday")
+                        : t("habits.markDoneToday")}
                     </button>
                     {/* Cascades to every `habit_logs` row, so the streak history
                         goes with it and cannot be rebuilt (review P2-10). */}
                     <ConfirmButton
                       className="btn btn-ghost"
-                      what={`habit “${h.name}” and its streak history`}
+                      what={t("habits.deleteWhat", { name: h.name })}
                       onConfirm={() => removeHabit(h.id)}
                     >
-                      Delete
+                      {t("common.delete")}
                     </ConfirmButton>
                   </span>
                 </div>
 
                 <div className="habit-week-block">
-                  <span className="editor-pane-label">Last 7 days</span>
+                  <span className="editor-pane-label">{t("habits.last7")}</span>
                   <div className="habit-week-strip">
                     {(p?.week ?? []).map((d) => {
                       const dayIdx = new Date(`${d.date}T00:00:00`).getDay();
@@ -280,7 +291,11 @@ export default function HabitsPage() {
                           disabled={toggling}
                           onClick={() => void toggle(h.id, d.date)}
                         >
-                          <span>{DAY_LABELS[dayIdx]}</span>
+                          <span>
+                            {DAY_LABEL_KEYS[dayIdx] === undefined
+                              ? ""
+                              : t(DAY_LABEL_KEYS[dayIdx])}
+                          </span>
                           <span>{d.done ? "✓" : Number(d.date.slice(8))}</span>
                         </button>
                       );
@@ -290,7 +305,9 @@ export default function HabitsPage() {
 
                 <div className="habit-month-toggle">
                   <div className="month-nav">
-                    <span className="editor-pane-label">Month history</span>
+                    <span className="editor-pane-label">
+                      {t("habits.monthHistory")}
+                    </span>
                     <button
                       type="button"
                       className="btn btn-ghost"
@@ -309,7 +326,7 @@ export default function HabitsPage() {
                       ) : (
                         <IconChevronRight className="icon" />
                       )}
-                      {open ? "Hide" : "Show"} month
+                      {open ? t("habits.hideMonth") : t("habits.showMonth")}
                     </button>
                   </div>
                   {open ? (
@@ -318,8 +335,8 @@ export default function HabitsPage() {
                         <button
                           type="button"
                           className="btn btn-icon"
-                          aria-label="Previous month"
-                          title="Previous month"
+                          aria-label={t("month.previous")}
+                          title={t("month.previous")}
                           onClick={() => shiftMonth(-1)}
                         >
                           <IconChevronLeft className="icon" />
@@ -330,8 +347,8 @@ export default function HabitsPage() {
                         <button
                           type="button"
                           className="btn btn-icon"
-                          aria-label="Next month"
-                          title="Next month"
+                          aria-label={t("month.next")}
+                          title={t("month.next")}
                           onClick={() => shiftMonth(1)}
                         >
                           <IconChevronRight className="icon" />
@@ -347,9 +364,9 @@ export default function HabitsPage() {
                         </caption>
                         <thead>
                           <tr className="week-row week-head">
-                            {DAY_LABELS.map((l) => (
-                              <th key={l} className="day-head" scope="col">
-                                {l}
+                            {DAY_LABEL_KEYS.map((key) => (
+                              <th key={key} className="day-head" scope="col">
+                                {t(key)}
                               </th>
                             ))}
                           </tr>

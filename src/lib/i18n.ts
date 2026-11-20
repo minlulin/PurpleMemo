@@ -1294,6 +1294,25 @@ export const en = {
   "loans.saveChanges": "Save changes",
   "loans.cancelEdit": "Cancel edit",
 
+  // Habits — the fourth page on the catalogue (F6). The week strip, the
+  // streak line and the grid's month toggle all read from here; the month
+  // headings and weekday names come from `month.*` and `weekday.*`.
+  "habits.title": "Habits & Streaks",
+  "habits.subtitle":
+    "Build daily consistency with check-ins over the last 7 days and monthly history",
+  "habits.newNameAria": "New habit name",
+  "habits.namePlaceholder": "e.g. Read 20 minutes",
+  "habits.add": "Add habit",
+  "habits.empty": "No habits yet — add one above.",
+  "habits.streak": "streak {current} · best {best}",
+  "habits.doneToday": "Done today ✓",
+  "habits.markDoneToday": "Mark done today",
+  "habits.deleteWhat": "habit “{name}” and its streak history",
+  "habits.last7": "Last 7 days",
+  "habits.monthHistory": "Month history",
+  "habits.showMonth": "Show month",
+  "habits.hideMonth": "Hide month",
+
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
   // Burmese page does not show "October 2026" under Burmese tabs.
@@ -1311,6 +1330,20 @@ export const en = {
   "month.12": "December",
   "month.year": "{month} {year}",
   "month.gridCaption": "{month} for {name}",
+  // Month navigation is shared chrome (Budget's month/limits views and the
+  // Habits grid), not one page's namespace.
+  "month.previous": "Previous month",
+  "month.next": "Next month",
+
+  // Weekday headings for the month grid. Abbreviations, so they are keys
+  // rather than echoed locale data.
+  "weekday.sun": "Su",
+  "weekday.mon": "Mo",
+  "weekday.tue": "Tu",
+  "weekday.wed": "We",
+  "weekday.thu": "Th",
+  "weekday.fri": "Fr",
+  "weekday.sat": "Sa",
 
   "onboarding.title": "Welcome to Purple Memo",
   "onboarding.intro": "A quick note on what this app can and cannot do.",
@@ -1455,8 +1488,6 @@ export const en = {
   "budget.saveEntry": "Save entry",
 
   "budget.month.title": "Monthly summary",
-  "budget.previousMonth": "Previous month",
-  "budget.nextMonth": "Next month",
   "budget.thisMonth": "This month",
   "budget.netCashflow": "Net Cashflow",
   "budget.expenseByCategory": "Expense by category",
@@ -2759,6 +2790,24 @@ export const my: Record<MessageKey, string> = {
   "loans.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
   "loans.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
 
+  // Habits — mirrors the English block above key for key ({current}, {best},
+  // {name}). Numbers stay as stored, the way amounts do elsewhere.
+  "habits.title": "အလေ့အထနှင့် ဆက်တိုက်မှု",
+  "habits.subtitle":
+    "နောက်ဆုံး 7 ရက် မှတ်တမ်းတင်မှုနှင့် လစဉ် မှတ်တမ်းဖြင့် နေ့စဉ် စဉ်ဆက်မပြတ် လုပ်ဆောင်မှု တည်ဆောက်ပါ",
+  "habits.newNameAria": "အလေ့အထ အမည် အသစ်",
+  "habits.namePlaceholder": "ဥပမာ မိနစ် 20 ဖတ်မည်",
+  "habits.add": "အလေ့အထ ထည့်မည်",
+  "habits.empty": "အလေ့အထ မရှိသေးပါ — အပေါ်တွင် တစ်ခု ထည့်ပါ။",
+  "habits.streak": "ဆက်တိုက် {current} ရက် · အကောင်းဆုံး {best} ရက်",
+  "habits.doneToday": "ယနေ့ ပြီးပြီ ✓",
+  "habits.markDoneToday": "ယနေ့ ပြီးပြီဟု မှတ်မည်",
+  "habits.deleteWhat": "အလေ့အထ “{name}” နှင့် ၎င်း၏ ဆက်တိုက်မှု မှတ်တမ်း",
+  "habits.last7": "နောက်ဆုံး 7 ရက်",
+  "habits.monthHistory": "လစဉ် မှတ်တမ်း",
+  "habits.showMonth": "လ ပြမည်",
+  "habits.hideMonth": "လ ဖျောက်မည်",
+
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.
   "month.01": "ဇန်နဝါရီ",
@@ -2775,6 +2824,16 @@ export const my: Record<MessageKey, string> = {
   "month.12": "ဒီဇင်ဘာ",
   "month.year": "{year} ခုနှစ် {month}လ",
   "month.gridCaption": "{name} အတွက် {month}",
+  "month.previous": "ယမန်လ",
+  "month.next": "နောက်လ",
+
+  "weekday.sun": "နွေ",
+  "weekday.mon": "လာ",
+  "weekday.tue": "ဂါ",
+  "weekday.wed": "ဟူး",
+  "weekday.thu": "တေး",
+  "weekday.fri": "ကြာ",
+  "weekday.sat": "နေ",
 
   "onboarding.title": "Purple Memo မှ ကြိုဆိုပါသည်",
   "onboarding.intro": "ဤအက်ပ်က ဘာလုပ်နိုင်သည်၊ ဘာမလုပ်နိုင်သည်ကို အမြန်ရှင်းပြချက်။",
@@ -2915,8 +2974,6 @@ export const my: Record<MessageKey, string> = {
   "budget.saveEntry": "မှတ်တမ်း သိမ်းမည်",
 
   "budget.month.title": "လစဉ် အနှစ်ချုပ်",
-  "budget.previousMonth": "ယမန်လ",
-  "budget.nextMonth": "နောက်လ",
   "budget.thisMonth": "ယခုလ",
   "budget.netCashflow": "အသားတင် ငွေစီးဆင်းမှု",
   "budget.expenseByCategory": "အမျိုးအစားအလိုက် အသုံးစရိတ်",

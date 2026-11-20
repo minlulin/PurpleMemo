@@ -72,11 +72,21 @@ test("the Loans namespace is translated, not copied from English", () => {
   assertNamespaceTranslated("loans.", 30);
 });
 
+test("the Habits namespace is translated, not copied from English", () => {
+  assertNamespaceTranslated("habits.", 14);
+});
+
+test("weekday headings are abbreviated in Burmese, not left in English", () => {
+  // Two-letter abbreviations are the case a translation pass forgets, so they
+  // get their own assertion rather than riding along with the Habits page.
+  assertNamespaceTranslated("weekday.", 7);
+});
+
 test("month names and the label template are translated", () => {
   // The month heading is a template plus a name, so it needs both halves:
   // twelve Burmese names and a `month.year` that puts the year where Burmese
   // puts it. A page-level namespace test cannot see either.
-  assertNamespaceTranslated("month.", 14);
+  assertNamespaceTranslated("month.", 16);
   for (let n = 1; n <= 12; n += 1) {
     const key = `month.${String(n).padStart(2, "0")}` as MessageKey;
     assert.notEqual(my[key], en[key], `${key} is still the English month`);
