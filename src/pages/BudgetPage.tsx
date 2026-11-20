@@ -1068,7 +1068,7 @@ function MonthView() {
           className="btn"
           onClick={() => setYearMonth(yearMonthOf(todayLocal()))}
         >
-          {t("budget.thisMonth")}
+          {t("month.this")}
         </button>
       </div>
 

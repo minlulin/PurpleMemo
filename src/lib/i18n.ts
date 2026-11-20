@@ -1412,7 +1412,6 @@ export const en = {
   "memories.onThisDay": "On this day (any year)",
   "memories.birthdaysToday": "Birthdays today",
   "memories.noBirthdaysToday": "No birthdays today.",
-  "memories.thisMonth": "This month",
   "memories.all": "All memories",
   "memories.missing":
     "That memory no longer exists — it may have been deleted.",
@@ -1438,6 +1437,7 @@ export const en = {
   // Habits grid), not one page's namespace.
   "month.previous": "Previous month",
   "month.next": "Next month",
+  "month.this": "This month",
 
   // Weekday headings for the month grid. Abbreviations, so they are keys
   // rather than echoed locale data.
@@ -1592,7 +1592,6 @@ export const en = {
   "budget.saveEntry": "Save entry",
 
   "budget.month.title": "Monthly summary",
-  "budget.thisMonth": "This month",
   "budget.netCashflow": "Net Cashflow",
   "budget.expenseByCategory": "Expense by category",
   "budget.expensesByCategory": "Expenses by category",
@@ -2994,7 +2993,6 @@ export const my: Record<MessageKey, string> = {
   "memories.onThisDay": "ယနေ့ ဤနေ့ (မည်သည့်နှစ်မဆို)",
   "memories.birthdaysToday": "ယနေ့ မွေးနေ့များ",
   "memories.noBirthdaysToday": "ယနေ့ မွေးနေ့ မရှိပါ။",
-  "memories.thisMonth": "ယခုလ",
   "memories.all": "အမှတ်တရ အားလုံး",
   "memories.missing": "ထို အမှတ်တရ မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
 
@@ -3016,6 +3014,7 @@ export const my: Record<MessageKey, string> = {
   "month.gridCaption": "{name} အတွက် {month}",
   "month.previous": "ယမန်လ",
   "month.next": "နောက်လ",
+  "month.this": "ယခုလ",
 
   "weekday.sun": "နွေ",
   "weekday.mon": "လာ",
@@ -3168,7 +3167,6 @@ export const my: Record<MessageKey, string> = {
   "budget.saveEntry": "မှတ်တမ်း သိမ်းမည်",
 
   "budget.month.title": "လစဉ် အနှစ်ချုပ်",
-  "budget.thisMonth": "ယခုလ",
   "budget.netCashflow": "အသားတင် ငွေစီးဆင်းမှု",
   "budget.expenseByCategory": "အမျိုးအစားအလိုက် အသုံးစရိတ်",
   "budget.expensesByCategory": "အမျိုးအစားအလိုက် အသုံးစရိတ်များ",

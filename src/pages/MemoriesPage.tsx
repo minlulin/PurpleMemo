@@ -500,7 +500,7 @@ export default function MemoriesPage({
                   className="btn"
                   onClick={() => showMonth(yearMonthOf(todayLocal()))}
                 >
-                  {t("memories.thisMonth")}
+                  {t("month.this")}
                 </button>
               </div>
               <MemoryList
