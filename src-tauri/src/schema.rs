@@ -232,9 +232,9 @@ pub const UID_V4_SQL: &str = "lower(hex(randomblob(4)) || '-' || hex(randomblob(
 /// above), backfill every existing row with its own v4, then make duplicates
 /// impossible.
 ///
-/// Built once and cached (`OnceLock`, not `LazyLock`: the crate pins an MSRV
-/// older than 1.80). Returned as `&'static str` because that is what
-/// `db::migration_step` hands to the migration runner.
+/// Built once and cached in a `OnceLock`, which keeps the one-time construction
+/// explicit. Returned as `&'static str` because that is what `db::migration_step`
+/// hands to the migration runner.
 pub fn migration_6_7() -> &'static str {
     static SQL: OnceLock<String> = OnceLock::new();
     SQL.get_or_init(|| {

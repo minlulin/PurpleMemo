@@ -139,7 +139,7 @@ pub fn from_hex(text: &str) -> Option<Vec<u8>> {
     let lowercase_hex = text
         .bytes()
         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    if text.len() % 2 != 0 || !lowercase_hex {
+    if !text.len().is_multiple_of(2) || !lowercase_hex {
         return None;
     }
     let mut out = Vec::with_capacity(text.len() / 2);

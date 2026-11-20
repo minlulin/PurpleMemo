@@ -1120,18 +1120,12 @@ fn strip_leading_noise(mut sql: &str) -> Option<&str> {
 }
 
 /// Consume `keyword` (case-insensitively) from the front of `sql`, returning
-/// what follows it. Hand-rolled rather than `split_at_checked` to stay inside
-/// the crate's 1.77 MSRV.
+/// what follows it. `split_at_checked` refuses a split that would land inside a
+/// character, which is the whole guard this needs (stable since 1.80, available
+/// at the toolchain the crate declares).
 fn strip_keyword<'a>(sql: &'a str, keyword: &str) -> Option<&'a str> {
-    if !sql.is_char_boundary(keyword.len()) {
-        return None;
-    }
-    let (head, tail) = sql.split_at(keyword.len());
-    if head.eq_ignore_ascii_case(keyword) {
-        Some(tail)
-    } else {
-        None
-    }
+    let (head, tail) = sql.split_at_checked(keyword.len())?;
+    head.eq_ignore_ascii_case(keyword).then_some(tail)
 }
 
 /// Transaction-control statements. `batch` wraps its statements in

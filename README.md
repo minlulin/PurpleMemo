@@ -60,14 +60,28 @@ desktop over the local network and exchanges changes in both directions (see
 [`docs/ANDROID_SYNC_PROTOCOL.md`](docs/ANDROID_SYNC_PROTOCOL.md)). The old
 read-only LAN share was removed on 2026-11-16 — pairing supersedes it.
 
+## Languages
+
+The interface ships in English and Burmese (`my`). `src/lib/i18n.ts` holds one
+typed catalogue: every key carries both translations, and a missing one is a
+compile error rather than a blank label.
+
+That coverage is not yet the whole app. The shell, lock screen, Settings, Tasks,
+Notes, Contacts, Inbox, search, Trash, Vault, the import/export dialogs and the
+phone UI read from the catalogue. **Budget, Business, Loans, Habits, Shopping,
+Gallery, Memories, Journal and Exports are English-only for now** — their text
+lives in the pages, not in the catalogue. This is a known gap rather than a bug:
+finishing it means a namespace per page, and until a page has one the language
+switch cannot reach its text.
+
 ## Development
 
 Requires **Node.js 26.13.1** and **Rust 1.95.0**. Both are pinned so a fresh
 clone runs the same gate as the release:
 
 - `.nvmrc` selects the Node version (`nvm use`, `fnm use`, or the equivalent
-  your version manager reads). `package.json` still declares `>=24` and
-  `engine-strict=true` in `.npmrc` enforces it, so an older Node fails at
+  your version manager reads). `package.json` declares `>=26.13.1` and
+  `engine-strict=true` in `.npmrc` enforces it, so any other Node fails at
   `npm install` instead of somewhere inside the gate.
 - `rust-toolchain.toml` makes rustup install that toolchain and its `clippy`
   and `rustfmt` components on first use.

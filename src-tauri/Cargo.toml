@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Personal offline notebook and life/money manager"
 authors = ["minlulin"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.95.0"
 
 [lib]
 name = "purple_memo_lib"
