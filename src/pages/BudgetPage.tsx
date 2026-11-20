@@ -1973,7 +1973,7 @@ function RecurringView() {
                 )
               }
             >
-              <option value="">{t("budget.recurring.none")}</option>
+              <option value="">{t("common.none")}</option>
               {expenseCats.map((c) => (
                 <option key={c.id} value={String(c.id)}>
                   {c.name}
@@ -1992,7 +1992,7 @@ function RecurringView() {
                 )
               }
             >
-              <option value="">{t("budget.recurring.none")}</option>
+              <option value="">{t("common.none")}</option>
               {wallets.map((w) => (
                 <option key={w.id} value={String(w.id)}>
                   {w.name}
@@ -2016,7 +2016,7 @@ function RecurringView() {
             {t(
               editing === null
                 ? "budget.recurring.addRule"
-                : "budget.recurring.saveChanges",
+                : "common.saveChanges",
             )}
           </button>
           {editing !== null ? (
@@ -2025,7 +2025,7 @@ function RecurringView() {
               className="btn btn-ghost"
               onClick={cancelEditRule}
             >
-              {t("budget.recurring.cancelEdit")}
+              {t("common.cancelEdit")}
             </button>
           ) : null}
         </div>

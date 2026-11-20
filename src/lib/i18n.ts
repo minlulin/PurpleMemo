@@ -45,6 +45,9 @@ export const en = {
   "common.delete": "Delete",
   "common.edit": "Edit",
   "common.save": "Save",
+  "common.saveChanges": "Save changes",
+  "common.cancelEdit": "Cancel edit",
+  "common.none": "None",
   "common.close": "Close",
   "common.closeDialog": "Close dialog",
   "common.tryAgain": "Try again",
@@ -270,10 +273,6 @@ export const en = {
     "Nothing to show in {section} yet — its data screens arrive in the next build stage.",
   "mobile.compose.body": "The {what} form is not part of this build stage yet.",
   "mobile.addItem": "Add item",
-  "mobile.markDone": "Mark done",
-  "mobile.markNotDone": "Mark not done",
-  "mobile.markBought": "Mark bought",
-  "mobile.markNotBought": "Mark not bought",
   "mobile.markDoneOf": "Mark done: {title}",
   "mobile.markNotDoneOf": "Mark not done: {title}",
   "mobile.markBoughtOf": "Mark bought: {title}",
@@ -624,8 +623,6 @@ export const en = {
   "search.type.shoppingItem": "Shopping item",
 
   "settings.language": "Language",
-  "settings.languageHint":
-    "Changes the interface only. Stored dates, amounts and records keep their existing formats.",
   "settings.closeToTray": "Minimize to tray on close",
   "settings.closeToTrayHint":
     "Closing the window keeps Purple Memo running in the system tray, so reminders keep firing while it looks closed. Turn this off to make closing quit the app instead.",
@@ -1141,9 +1138,6 @@ export const en = {
     "That payable is no longer in this view — it may have changed or been deleted.",
 
   "business.saving": "Saving…",
-  "business.none": "None",
-  "business.saveChanges": "Save changes",
-  "business.cancelEdit": "Cancel edit",
 
   "business.owes": "owes {amount}",
   // Shared by the job payment form and the payable payment form — same control,
@@ -1290,8 +1284,6 @@ export const en = {
   "loans.noteField": "Note (optional)",
   "loans.notePlaceholder": "Optional note",
   "loans.add": "Add loan",
-  "loans.saveChanges": "Save changes",
-  "loans.cancelEdit": "Cancel edit",
 
   // Habits — the fourth page on the catalogue (F6). The week strip, the
   // streak line and the grid's month toggle all read from here; the month
@@ -1579,10 +1571,7 @@ export const en = {
   "budget.recurring.walletOptional":
     "Wallet (optional — falls back when marking paid)",
   "budget.recurring.ruleWalletAria": "Rule wallet",
-  "budget.recurring.none": "None",
   "budget.recurring.addRule": "Add rule",
-  "budget.recurring.saveChanges": "Save changes",
-  "budget.recurring.cancelEdit": "Cancel edit",
   "budget.recurring.bookingMissingCategory":
     "“{title}” has no category of its own — choose a fallback category above, or edit the rule.",
   "budget.recurring.bookingMissingWallet":
@@ -1598,6 +1587,9 @@ export const my: Record<MessageKey, string> = {
   "common.delete": "ဖျက်မည်",
   "common.edit": "ပြင်မည်",
   "common.save": "သိမ်းမည်",
+  "common.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
+  "common.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
+  "common.none": "မရှိ",
   "common.close": "ပိတ်မည်",
   "common.closeDialog": "ဒိုင်ယာလော့ဂ်ကို ပိတ်မည်",
   "common.tryAgain": "ထပ်စမ်းကြည့်မည်",
@@ -1812,10 +1804,6 @@ export const my: Record<MessageKey, string> = {
     "{section} တွင် ပြသရန် မရှိသေးပါ — ၎င်း၏ ဒေတာစာမျက်နှာများ နောက်အဆင့်တွင် လာမည်။",
   "mobile.compose.body": "{what} ဖောင်သည် ဤအဆင့်တွင် မပါဝင်သေးပါ။",
   "mobile.addItem": "ပစ္စည်းထည့်ရန်",
-  "mobile.markDone": "ပြီးစီးအဖြစ် မှတ်ရန်",
-  "mobile.markNotDone": "မပြီးစီးအဖြစ် ပြန်ထားရန်",
-  "mobile.markBought": "ဝယ်ပြီးအဖြစ် မှတ်ရန်",
-  "mobile.markNotBought": "မဝယ်ရသေးအဖြစ် ပြန်ထားရန်",
   "mobile.markDoneOf": "{title} — ပြီးစီးအဖြစ် မှတ်ရန်",
   "mobile.markNotDoneOf": "{title} — မပြီးစီးအဖြစ် ပြန်ထားရန်",
   "mobile.markBoughtOf": "{title} — ဝယ်ပြီးအဖြစ် မှတ်ရန်",
@@ -2155,8 +2143,6 @@ export const my: Record<MessageKey, string> = {
   "search.type.shoppingItem": "ဈေးဝယ်ပစ္စည်း",
 
   "settings.language": "ဘာသာစကား",
-  "settings.languageHint":
-    "အင်တာဖေ့စ်ကိုသာ ပြောင်းလဲသည်။ သိမ်းဆည်းထားသော ရက်စွဲများ၊ ပမာဏများနှင့် မှတ်တမ်းများသည် လက်ရှိပုံစံအတိုင်း ရှိနေပါမည်။",
   "settings.closeToTray": "ပိတ်လိုက်ပါက Tray တွင် ချုံ့ထားမည်",
   "settings.closeToTrayHint":
     "စာမျက်နှာ ပိတ်လိုက်ပါက Purple Memo သည် စနစ် tray တွင် ဆက်လက်အလုပ်လုပ်နေဆဲဖြစ်၍ ပိတ်ထားသည့်အတိုင်းပင် သတိပေးချက်များ ဆက်လက်ပေါ်လာနိုင်ပါသည်။ ဤခလုတ်ကို ပိတ်လိုက်ပါက စာမျက်နှာ ပိတ်လိုက်တိုင်း အက်ပ်လည်း ပိတ်သွားပါမည်။",
@@ -2666,9 +2652,6 @@ export const my: Record<MessageKey, string> = {
     "ထို ပေးရန်ကျန်ငွေ ဤ မြင်ကွင်းတွင် မရှိတော့ပါ — ပြောင်းလဲခြင်း သို့မဟုတ် ဖျက်ခြင်း ဖြစ်နိုင်သည်။",
 
   "business.saving": "သိမ်းနေသည်…",
-  "business.none": "မရှိ",
-  "business.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
-  "business.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
 
   "business.owes": "{amount} ပေးရန်ကျန်",
   "business.walletPick": "ပိုက်ဆံအိတ်…",
@@ -2812,8 +2795,6 @@ export const my: Record<MessageKey, string> = {
   "loans.noteField": "မှတ်စု (မဖြစ်မနေ မဟုတ်)",
   "loans.notePlaceholder": "မှတ်စု",
   "loans.add": "ချေးငွေ ထည့်မည်",
-  "loans.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
-  "loans.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
 
   // Habits — mirrors the English block above key for key ({current}, {best},
   // {name}). Numbers stay as stored, the way amounts do elsewhere.
@@ -3093,10 +3074,7 @@ export const my: Record<MessageKey, string> = {
   "budget.recurring.walletOptional":
     "ပိုက်ဆံအိတ် (မဖြစ်မနေ မဟုတ် — ပေးချေပြီးအဖြစ် မှတ်သောအခါ အရန်သင့်ကို သုံးမည်)",
   "budget.recurring.ruleWalletAria": "စည်းမျဉ်း ပိုက်ဆံအိတ်",
-  "budget.recurring.none": "မရှိ",
   "budget.recurring.addRule": "စည်းမျဉ်း ထည့်မည်",
-  "budget.recurring.saveChanges": "ပြောင်းလဲမှုများ သိမ်းမည်",
-  "budget.recurring.cancelEdit": "ပြင်ဆင်မှု ပယ်ဖျက်",
   "budget.recurring.bookingMissingCategory":
     "“{title}” တွင် ကိုယ်ပိုင် အမျိုးအစား မရှိပါ — အပေါ်တွင် အရန်သင့် အမျိုးအစား ရွေးပါ သို့မဟုတ် စည်းမျဉ်းကို ပြင်ပါ။",
   "budget.recurring.bookingMissingWallet":

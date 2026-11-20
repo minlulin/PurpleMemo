@@ -799,7 +799,7 @@ function JobsView({
                 setShopId(e.target.value === "" ? "" : Number(e.target.value))
               }
             >
-              <option value="">{t("business.none")}</option>
+              <option value="">{t("common.none")}</option>
               {shops.map((s) => (
                 <option key={s.id} value={String(s.id)}>
                   {s.name}
@@ -870,7 +870,7 @@ function JobsView({
               ? t("business.saving")
               : editing === null
                 ? t("business.jobs.add")
-                : t("business.saveChanges")}
+                : t("common.saveChanges")}
           </button>
           {editing !== null ? (
             <button
@@ -878,7 +878,7 @@ function JobsView({
               className="btn btn-ghost"
               onClick={cancelEditJob}
             >
-              {t("business.cancelEdit")}
+              {t("common.cancelEdit")}
             </button>
           ) : null}
         </div>
@@ -1649,7 +1649,7 @@ function PayablesView({
                 setShopId(e.target.value === "" ? "" : Number(e.target.value))
               }
             >
-              <option value="">{t("business.none")}</option>
+              <option value="">{t("common.none")}</option>
               {shops.map((s) => (
                 <option key={s.id} value={String(s.id)}>
                   {s.name}
@@ -1686,7 +1686,7 @@ function PayablesView({
               ? t("business.saving")
               : editing === null
                 ? t("business.payables.add")
-                : t("business.saveChanges")}
+                : t("common.saveChanges")}
           </button>
           {editing !== null ? (
             <button
@@ -1694,7 +1694,7 @@ function PayablesView({
               className="btn btn-ghost"
               onClick={cancelEditPayable}
             >
-              {t("business.cancelEdit")}
+              {t("common.cancelEdit")}
             </button>
           ) : null}
         </div>

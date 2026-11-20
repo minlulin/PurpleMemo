@@ -490,7 +490,7 @@ export default function LoansPage({
                 ? t("loans.saving")
                 : editing === null
                   ? t("loans.add")
-                  : t("loans.saveChanges")}
+                  : t("common.saveChanges")}
             </button>
             {editing !== null ? (
               <button
@@ -498,7 +498,7 @@ export default function LoansPage({
                 className="btn btn-ghost"
                 onClick={cancelEditLoan}
               >
-                {t("loans.cancelEdit")}
+                {t("common.cancelEdit")}
               </button>
             ) : null}
           </div>
