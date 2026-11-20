@@ -16,7 +16,7 @@ import {
   markdownUrlTransform,
 } from "../components/MarkdownLink.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
-import { usePlural, useT } from "../components/useTranslation.ts";
+import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
 import { journalRepo, settingsRepo } from "../data/app.ts";
 import { shiftYearMonth, todayLocal, yearMonthOf } from "../lib/dates.ts";
 import {
@@ -26,6 +26,7 @@ import {
   saveJournalDraft,
 } from "../lib/drafts.ts";
 import { errText } from "../lib/errors.ts";
+import { formatLongDate } from "../lib/format.ts";
 import {
   buildMonthGrid,
   DAY_LABEL_KEYS,
@@ -43,6 +44,7 @@ export default function JournalPage({
 }) {
   const t = useT();
   const plural = usePlural();
+  const locale = useLocale();
   const [month, setMonth] = useState(() => yearMonthOf(todayLocal()));
   const [entryDates, setEntryDates] = useState<string[]>([]);
   const [activeDate, setActiveDate] = useState(() => todayLocal());
@@ -283,14 +285,7 @@ export default function JournalPage({
   );
   const label = monthLabel(month, t);
   const entrySet = useMemo(() => new Set(entryDates), [entryDates]);
-  const readableActiveDate = new Date(
-    `${activeDate}T00:00:00`,
-  ).toLocaleDateString(undefined, {
-    weekday: "long",
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  const readableActiveDate = formatLongDate(locale, activeDate);
 
   return (
     <div className="feature-split">
