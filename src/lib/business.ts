@@ -635,13 +635,21 @@ export function createBusinessRepo(driver: DataDriver) {
     },
 
     // -- Payables -----------------------------------------------------------
+    /**
+     * Dated payables first, undated last.
+     *
+     * `due_date NULLS LAST` rather than `due_date IS NULL, due_date` (F7): the
+     * same order, but only the column form lets `idx_payables_paid_due` deliver
+     * it. The unpaid list is the one the app reads, and it now seeks and comes
+     * out ordered instead of seeking and sorting every row.
+     */
     async listPayables(includePaid = false): Promise<PayableRow[]> {
       return includePaid
         ? driver.query<PayableRow>(
-            "SELECT * FROM payables ORDER BY due_date IS NULL, due_date, id",
+            "SELECT * FROM payables ORDER BY due_date NULLS LAST, id",
           )
         : driver.query<PayableRow>(
-            "SELECT * FROM payables WHERE paid = 0 ORDER BY due_date IS NULL, due_date, id",
+            "SELECT * FROM payables WHERE paid = 0 ORDER BY due_date NULLS LAST, id",
           );
     },
 

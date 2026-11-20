@@ -144,12 +144,17 @@ export interface ReminderOutcome {
  * The one task-list SELECT, mirroring `noteListQuery` in notes.ts:
  * `listTasks` and `openTasks` had written the same
  * open-task query twice, so an ORDER BY tuned for one silently missed the
- * other. `due_date IS NULL` first keeps undated tasks at the bottom.
+ * other.
+ *
+ * `due_date NULLS LAST` keeps undated tasks at the bottom in the same order
+ * `due_date IS NULL, due_date` did — but an expression is not something
+ * `idx_tasks_due` can deliver, so the old spelling made SQLite build a temp
+ * B-tree over every task on each list read (F7). `NULLS LAST` is index order.
  */
 export function taskListQuery(includeDone: boolean): string {
   return includeDone
-    ? "SELECT * FROM tasks ORDER BY due_date IS NULL, due_date, id"
-    : "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date IS NULL, due_date, id";
+    ? "SELECT * FROM tasks ORDER BY due_date NULLS LAST, id"
+    : "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date NULLS LAST, id";
 }
 
 export function reminderSettleStatements(
@@ -336,10 +341,9 @@ export function createTasksRepo(
     },
 
     /**
-     * Every open task — the dashboard's list (plan §A.3). Plain date order
-     * already yields the display order for free: overdue first, then soon,
-     * then ok, then no-date last (`due_date IS NULL` sorts nulls to the end
-     * in SQLite).
+     * Every open task — the dashboard's list (plan §A.3). The list query's
+     * `due_date NULLS LAST` yields the display order for free: overdue first,
+     * then soon, then ok, then no-date last — in index order, not sorted.
      */
     async openTasks(): Promise<TaskRow[]> {
       return driver.query<TaskRow>(taskListQuery(false));

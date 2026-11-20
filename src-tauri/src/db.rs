@@ -3364,6 +3364,33 @@ mod tests {
     }
 
     #[test]
+    fn due_date_order_comes_from_the_index_not_a_sort() {
+        // "Dated first, undated last" used to be written `due_date IS NULL,
+        // due_date`: the same order, but an expression cannot come out of an
+        // index, so every read built a temp B-tree over the whole table. The
+        // column form with `NULLS LAST` is the same order in index form (F7).
+        let (_dir, conn) = open_baseline("due-date-order-plans");
+        for (sql, index) in [
+            (
+                "SELECT * FROM tasks WHERE done = 0 ORDER BY due_date NULLS LAST, id",
+                "idx_tasks_due",
+            ),
+            (
+                "SELECT * FROM tasks ORDER BY due_date NULLS LAST, id",
+                "idx_tasks_due",
+            ),
+            (
+                "SELECT * FROM payables WHERE paid = 0 ORDER BY due_date NULLS LAST, id",
+                "idx_payables_paid_due",
+            ),
+        ] {
+            let plan = query_plan(&conn, sql);
+            assert!(plan.contains(index), "{sql}\nplan: {plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{sql} still sorts: {plan}");
+        }
+    }
+
+    #[test]
     fn wallet_ledger_queries_seek_instead_of_scanning() {
         // The statements `budget.ts` actually issues: the balance pair, the
         // per-wallet list the share ticker reads, the wallet ledger's first
