@@ -91,26 +91,32 @@ static WATCHDOG_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// the other side sees that decision instead of racing it.
 static WATCHDOG_EXIT: Mutex<()> = Mutex::new(());
 
-/// The most recent boot failure's cause, kept where the renderer can read it.
+/// Where this process's boot stands, kept where the renderer can read it.
 ///
-/// `report_boot_failure` puts the failure in a native dialog and in
-/// `boot-error.log`, but on the phone the renderer's error screen is the
-/// surface the user actually reaches — and without this it has nothing to
-/// show but its own first failed query ("state not managed …"), which names
-/// the symptom and hides the cause (F13). Every successful `boot` clears it,
-/// so a stale cause can never be presented as the current one.
-static BOOT_FAILURE: Mutex<Option<String>> = Mutex::new(None);
-
-fn record_boot_failure(message: Option<String>) {
-    *BOOT_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = message;
+/// Two F13 lessons live here. First, the WebView can be live and issuing
+/// reads half a second before the database key is even unwrapped — a read
+/// in that window fails with "state not managed" and the renderer's error
+/// screen used to latch it for the whole session, so the renderer waits
+/// for this to leave `Pending` before its first read. Second, when boot
+/// does fail, `report_boot_failure`'s dialog is not the surface the phone
+/// reaches; the recorded cause is what its error screen shows instead of
+/// its own first failed query's symptom.
+#[derive(Clone)]
+pub(crate) enum BootPhase {
+    Pending,
+    Ready,
+    Failed(String),
 }
 
-/// The recorded boot failure, if the last boot attempt failed.
-pub(crate) fn recorded_boot_failure() -> Option<String> {
-    BOOT_FAILURE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+static BOOT_PHASE: Mutex<BootPhase> = Mutex::new(BootPhase::Pending);
+
+fn record_boot_phase(phase: BootPhase) {
+    *BOOT_PHASE.lock().unwrap_or_else(|e| e.into_inner()) = phase;
+}
+
+/// Where boot stands now.
+pub(crate) fn boot_phase() -> BootPhase {
+    BOOT_PHASE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Retire every armed watchdog. Called the moment a wait state ends and when
@@ -186,7 +192,7 @@ pub fn run() {
             commands::backup_import_end,
             commands::close_to_tray_set,
             commands::ui_locale_set,
-            commands::boot_failure,
+            commands::boot_status,
             commands::boot_retry,
             commands::export_save_file,
             commands::pairing_local,
@@ -383,10 +389,10 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     app.manage(pairing_listener::PairingListenerState::with_lifecycle(
         lifecycle,
     ));
-    // The database is open and managed: any boot failure recorded by an
-    // earlier attempt in this process is over, and the renderer's error
-    // screen must not present it as current (F13).
-    record_boot_failure(None);
+    // The database is open and managed: boot has settled, and a failure
+    // recorded by an earlier attempt in this process is over — the
+    // renderer's error screen must not present it as current (F13).
+    record_boot_phase(BootPhase::Ready);
     Ok(())
 }
 
@@ -523,7 +529,7 @@ fn report_boot_failure(app: &tauri::AppHandle, failure: &db::KeyLoadError) {
     // The log keeps the English cause and the English hint: it is read on a
     // bug report, often on another machine, and it is the one place the
     // diagnostic must read the same whatever the interface language is (D7).
-    record_boot_failure(Some(failure.message().to_string()));
+    record_boot_phase(BootPhase::Failed(failure.message().to_string()));
     let logged = if failure.is_missing_key_for_existing_db() {
         // The credential store is reachable but empty — the keyring hint
         // would blame the wrong thing.
@@ -1405,23 +1411,26 @@ mod tray_tests {
         publish_close_to_tray(true);
     }
 
-    /// F13: the recorded boot failure is what the renderer's error screen
-    /// shows and retries from, so the record must hold exactly the last
-    /// failure's cause — and a successful boot must clear it, or a recovered
-    /// app would keep presenting a cause that is no longer current.
+    /// F13: the boot phase is what the renderer's first read waits on and
+    /// its error screen shows, so the record must track the transitions
+    /// exactly — a failure carries its cause, a later failure replaces it,
+    /// and a successful boot settles at ready, or a recovered app would
+    /// keep presenting a cause that is no longer current.
     #[test]
-    fn the_boot_failure_record_holds_the_last_failure_and_clears() {
-        use super::{record_boot_failure, recorded_boot_failure};
-        record_boot_failure(Some("first cause".to_string()));
-        assert_eq!(recorded_boot_failure().as_deref(), Some("first cause"));
-        record_boot_failure(Some("second cause".to_string()));
-        assert_eq!(
-            recorded_boot_failure().as_deref(),
-            Some("second cause"),
+    fn the_boot_phase_record_tracks_failure_and_recovery() {
+        use super::{boot_phase, record_boot_phase, BootPhase};
+        record_boot_phase(BootPhase::Failed("first cause".to_string()));
+        assert!(matches!(boot_phase(), BootPhase::Failed(c) if c == "first cause"));
+        record_boot_phase(BootPhase::Failed("second cause".to_string()));
+        assert!(
+            matches!(boot_phase(), BootPhase::Failed(c) if c == "second cause"),
             "a later failure replaces the earlier cause"
         );
-        record_boot_failure(None);
-        assert_eq!(recorded_boot_failure(), None, "a successful boot clears it");
+        record_boot_phase(BootPhase::Ready);
+        assert!(
+            matches!(boot_phase(), BootPhase::Ready),
+            "a successful boot settles at ready"
+        );
     }
 
     #[test]

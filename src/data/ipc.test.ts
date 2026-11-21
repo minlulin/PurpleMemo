@@ -58,7 +58,7 @@ test("every command the driver invokes is registered in Rust", () => {
   // `_commit`/`_pull`/`_applied`/`_status` phone-side, `pairing_sync_take`/
   // `_outcome` panel-side) — 42 — plus the close handler's mirror
   // (`close_to_tray_set`, D1) — 43 — plus the interface language
-  // (`ui_locale_set`, D7) — 44 — plus the boot-failure pair (`boot_failure`,
+  // (`ui_locale_set`, D7) — 44 — plus the boot pair (`boot_status`,
   // `boot_retry`, F13) — 46.
   // Bump deliberately, with the change that adds the command —
   // the count is what catches a command dropped from BOTH sides at once.

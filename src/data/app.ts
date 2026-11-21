@@ -34,7 +34,7 @@ import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
 import { createTrashRepo } from "../lib/trash.ts";
 import { createVaultRepo } from "../lib/vault.ts";
-import { createTauriDriver } from "./driver.ts";
+import { type BootStatus, createTauriDriver } from "./driver.ts";
 
 const driver = createTauriDriver();
 
@@ -53,20 +53,45 @@ export function publishUiLocale(locale: Locale): void {
 }
 
 /**
- * The cause of the last failed boot, if Rust recorded one (F13).
+ * Where Rust's boot stands (F13).
  *
- * The shell's error screen asks when its own settings read fails: a recorded
- * failure means Rust never opened the database and its cause is the honest
- * thing to show, while no record means the read failure is the renderer's
- * own. A failed query answers `null` — indistinguishable from "no failure",
- * which is the safe direction: the screen falls back to its ordinary text
- * and its ordinary retry.
+ * A driver without the call, or a failed query, answers `"ready"`: the wait
+ * below then does not block and the shell behaves exactly as it did before
+ * the handshake existed — the safe direction, since a phantom wait would be
+ * worse than the race it replaces.
  */
-export async function readBootFailure(): Promise<string | null> {
+export async function readBootStatus(): Promise<BootStatus> {
   try {
-    return (await driver.bootFailure?.()) ?? null;
+    return (await driver.bootStatus?.()) ?? { state: "ready", error: null };
   } catch {
-    return null;
+    return { state: "ready", error: null };
+  }
+}
+
+/** How long the shell's first read waits for boot to settle (F13). */
+export const BOOT_WAIT_TIMEOUT_MS = 15_000;
+const BOOT_WAIT_POLL_MS = 150;
+
+/**
+ * Wait until Rust's boot leaves `"pending"` (F13), or the budget runs out.
+ *
+ * The WebView can be live and issuing reads half a second before the
+ * database key is even unwrapped (the Keystore call alone took 244 ms in
+ * the captured launch), and a read issued in that window fails with "state
+ * not managed" — which the error screen then latched for the whole
+ * session. Waiting for the recorded phase turns that race into a
+ * handshake. A budget expiry returns the still-pending status and the
+ * caller proceeds to its ordinary read, whose failure path is unchanged.
+ */
+export async function waitForBoot(
+  timeoutMs: number = BOOT_WAIT_TIMEOUT_MS,
+): Promise<BootStatus> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = await readBootStatus();
+    if (status.state !== "pending") return status;
+    if (Date.now() >= deadline) return status;
+    await new Promise((resolve) => setTimeout(resolve, BOOT_WAIT_POLL_MS));
   }
 }
 

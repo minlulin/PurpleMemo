@@ -700,24 +700,47 @@ pub fn ui_locale_set(app: tauri::AppHandle, locale: String) -> CmdResult<()> {
     Ok(())
 }
 
-/// The cause of the last failed boot, if there was one (F13).
+/// Where Rust's boot stands, for the renderer's first read and its error
+/// screen (F13).
 ///
-/// The boot-failure dialog is the desktop's surface for this; on the phone
-/// the renderer's error screen is what the user reaches, and without the
-/// recorded cause it can only quote its own first failed query ("state not
-/// managed …"), which names the symptom and hides the reason. `None` means
-/// the last boot attempt succeeded — a renderer read failure is then its
-/// own, and its ordinary retry applies.
+/// `state` is `"pending"` while boot is still running, `"ready"` once the
+/// database is open and managed, or `"failed"` — with `error` carrying the
+/// cause — when it is not. The renderer waits out `pending` before its
+/// first read: the WebView can be live half a second before the database
+/// key is even unwrapped, and a read issued in that window fails with
+/// "state not managed" and used to latch the error screen for the session.
+/// And when boot has failed, the recorded cause is the honest thing for
+/// that screen to show — the boot-failure dialog is the desktop's surface,
+/// not the phone's.
+#[derive(Debug, Clone, Serialize)]
+pub struct BootStatus {
+    pub state: &'static str,
+    pub error: Option<String>,
+}
+
 #[tauri::command]
-pub fn boot_failure() -> CmdResult<Option<String>> {
-    Ok(crate::recorded_boot_failure())
+pub fn boot_status() -> CmdResult<BootStatus> {
+    Ok(match crate::boot_phase() {
+        crate::BootPhase::Pending => BootStatus {
+            state: "pending",
+            error: None,
+        },
+        crate::BootPhase::Ready => BootStatus {
+            state: "ready",
+            error: None,
+        },
+        crate::BootPhase::Failed(cause) => BootStatus {
+            state: "failed",
+            error: Some(cause),
+        },
+    })
 }
 
 /// Re-run boot from the renderer's error screen (F13): the same retry the
 /// boot-failure dialog's Retry button runs, reachable on the phone where
 /// that dialog is not the surface the user gets. On success the database
 /// state is managed and the window is reloaded; on failure the new cause is
-/// recorded for `boot_failure` and the dialog path runs as before.
+/// recorded for `boot_status` and the dialog path runs as before.
 #[tauri::command]
 pub fn boot_retry(app: tauri::AppHandle) -> CmdResult<()> {
     crate::retry_boot(app);

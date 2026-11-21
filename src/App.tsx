@@ -53,12 +53,13 @@ import {
   localDeviceId,
   pairingRepo,
   publishUiLocale,
-  readBootFailure,
+  readBootStatus,
   retryBoot,
   settingsRepo,
   tasksRepo,
   trashRepo,
   vaultRepo,
+  waitForBoot,
 } from "./data/app.ts";
 import {
   ANDROID_REMINDER_SYNC_MS,
@@ -596,35 +597,47 @@ function AppShell() {
       setBoot((b) => ({ ...b, ready: true, error }));
       // F13: when Rust's boot is what failed, its recorded cause is the
       // honest error for the screen — this read's own error only names the
-      // symptom ("state not managed …"). Async and best-effort: no record
-      // leaves the screen exactly as it was.
-      void readBootFailure().then((cause) => setBootFailure(cause));
+      // symptom ("state not managed …"). Async and best-effort: no recorded
+      // failure leaves the screen exactly as it was.
+      void readBootStatus().then((status) =>
+        setBootFailure(status.state === "failed" ? status.error : null),
+      );
       return { ok: false, error };
     }
   }, []);
 
   useEffect(() => {
-    void loadSecurity();
+    // F13: the first read waits for Rust's boot to settle. The WebView can
+    // be live half a second before the database key is even unwrapped, and
+    // a read issued in that window fails with "state not managed" — which
+    // this shell then showed as a database error for the whole session,
+    // even though boot succeeded moments later. Later reads (unlock,
+    // settings changes, retries) call `loadSecurity` directly: boot has
+    // long settled by then.
+    void (async () => {
+      await waitForBoot();
+      await loadSecurity();
+    })();
   }, [loadSecurity]);
 
   /**
    * Try again after a recorded boot failure (F13): ask Rust to run boot
-   * again — the retry its own boot-failure dialog offers — then poll the
-   * security read until the database answers. A successful boot also
+   * again — the retry its own boot-failure dialog offers — then wait for
+   * the recorded phase to settle and read once. A successful boot also
    * reloads the window, which restarts this shell on the managed state, so
-   * the poll is the fallback for a window that stays up. If the attempt
-   * fails too, Rust records the new cause and the screen re-reads it.
+   * the read is the fallback for a window that stays up. If the attempt
+   * fails too, Rust records the new cause and the screen shows it.
    */
   const retryAfterBootFailure = useCallback(async (): Promise<void> => {
     setRetrying(true);
     try {
       await retryBoot();
-      for (let attempt = 0; attempt < 25; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-        const reload = await loadSecurity();
-        if (reload.ok) return;
+      const status = await waitForBoot();
+      if (status.state === "failed") {
+        setBootFailure(status.error);
+        return;
       }
-      setBootFailure(await readBootFailure());
+      await loadSecurity();
     } catch {
       // The retry could not even be invoked; the recorded cause (if any)
       // is still the screen's text, and the button below is live again.

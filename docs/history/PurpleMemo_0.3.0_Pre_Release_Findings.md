@@ -170,7 +170,7 @@ The numbers now in the docs (versionCode 2000, `0.2.0`, APK SHA-256
 only evidence that the file handed over is the file checked. Publish that block
 in the release body.
 
-## F13 — a reminder that fires with the app closed leaves the workspace unable to open its database · **open, blocker; root-cause class identified 2026-11-21**
+## F13 — a reminder that fires with the app closed leaves the workspace unable to open its database · **root cause found (startup race, not database damage); fix landed on dev, device proof pending with F3/F4**
 
 Found by the §4 run above, on 0.2.0. After the reminder fired while no process
 existed, every launch showed:
@@ -185,25 +185,13 @@ together with `Try again` and `Lock workspace`. `Try again` repeats the error;
 `am force-stop` (both `LaunchState: COLD`) reproduced it, so the workspace was
 still unopenable at the end of the run, five relaunches in.
 
-What the log says, from the read-only capture on 2026-11-21 (recorded in
-`docs/history/PurpleMemo_F13_Evidence_Report.md`): the process unpacks the
-database key and the pairing key with the Android Keystore (`unwrapped the
-database key with the Android Keystore`, then `unwrapped the pairing key with
-the Android Keystore`) — it is auto-unlocking, never asking for the PIN — and
-the frontend's `db_query` then finds no managed state.
-
-The earlier reading of this — that the launch path built the app without
-`tauri_plugin_sql` — is disproved by the error text itself. "state not managed
-for field `state` on command `db_query`" is Tauri core's `State` extractor
-message (`tauri/src/state.rs:64`), so the command was routed and the plugin was
-registered; only the app's own `db::AppState` was missing. The same capture
-logs no `Purple Memo failed to start` line and no `purple-memo:` line at all,
-while the `RustStdoutStderr` channel is demonstrably live and the main window
-is never hidden — so boot did not fail. It reached the pairing check, which
-runs only after the database is opened and its schema initialized, and the one
-step left is `.manage()`. That points at a startup ordering race between the
-webview's first read and Rust's boot — not a damaged key, an interrupted reset,
-or a corrupt database.
+What the log says: the process unpacks the database key and the pairing key
+with the Android Keystore (`unwrapped the database key with the Android
+Keystore`) — it is auto-unlocking, never asking for the PIN — and the frontend's
+`db_query` then finds no managed state, i.e. the SQL plugin was never registered
+in the app instance that ran. So this looks like the auto-unlock launch path
+building the app without `tauri_plugin_sql`, not a damaged file: the keystore
+unwrap succeeds, so the key is there.
 
 Why it blocks 0.3.0: it is exactly the scenario the checklist asks for — close
 the app, let a reminder fire, come back — and it ends with the workspace
@@ -211,12 +199,28 @@ unusable until the app data is cleared or the app reinstalled. Unconfirmed
 whether the encrypted database and its contents survive (nothing was cleared:
 the phone's data was left as found apart from the test reminder).
 
-Next step, not started: design the fix from the evidence report — the
-`db_query` / `manage` ordering is where it has to go — reproduce on a debug
-build, then re-run this checklist item on the 0.3.0 APK before treating F3 as
-closed. One cheap experiment first: if boot does reach `.manage()`, a single
-`Try again` on the idle app should open the workspace. That was deliberately
-not pressed during the capture, so the evidence stayed intact.
+Next step, not started: read the mobile unlock/startup path for the
+`db_query` / `manage` ordering, reproduce on a debug build, then re-run this
+checklist item on the 0.3.0 APK before treating F3 as closed.
+
+**Resolution (2026-11-21, evidence capture on the still-bricked install —
+see the F13 evidence report).** The logcat capture disproved the boot-failure
+framing: in a reproduced launch, `report_boot_failure` never ran, both keys
+unwrapped, the database opened, the schema initialized, and
+`surface_pairing_identity_loss` completed a real SQL query — boot reached the
+step before `app.manage(AppState)` with no fallible call remaining. The
+actual cause is a startup race: the WebView was live (first frame at
+41.404 s) roughly half a second before the database key existed (41.933 s;
+the Keystore binder call alone took 244 ms), the renderer's mount-effect
+read ran in that window, failed with the genuine "state not managed" error,
+and the error screen latched it for the session — nothing re-reads after
+boot settles. The database and its contents were never damaged. Two fixes
+landed on dev: `044040d` (Rust records a failed boot's cause and the error
+screen shows it and retries through Rust's boot retry) and the boot-status
+handshake (Rust records the boot phase — pending / ready / failed — behind
+`boot_status`; the renderer's first read waits for the phase to settle, so
+the race window no longer produces a latched error). Still to prove on the
+0.3.0 APK: this checklist item re-run (F3/F4).
 
 ---
 

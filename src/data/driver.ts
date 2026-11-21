@@ -169,6 +169,12 @@ export interface PairingListenerInfo {
 }
 
 /** This device's own pairing facts. The public key and fingerprint are public. */
+/** Where Rust's boot stands (F13); mirrors the Rust `BootStatus`. */
+export interface BootStatus {
+  state: "pending" | "ready" | "failed";
+  error: string | null;
+}
+
 export interface PairingLocalInfo {
   deviceId: string;
   generation: number;
@@ -495,15 +501,19 @@ export interface DataDriver {
    */
   uiLocaleSet?(locale: Locale): Promise<void>;
   /**
-   * Read the cause of the last failed boot, if Rust recorded one (F13).
+   * Read where Rust's boot stands (F13): `"pending"` while it is still
+   * running, `"ready"` once the database is open and managed, or `"failed"`
+   * with the recorded cause.
    *
-   * The shell's error screen asks this when its own settings read fails: a
-   * recorded boot failure means the database never opened and the real cause
-   * is Rust's, while no record means the read failure is the renderer's own.
+   * The shell waits out `"pending"` before its first read — the WebView can
+   * be live half a second before the database key is even unwrapped, and a
+   * read issued in that window fails with "state not managed" — and its
+   * error screen shows the recorded cause when boot is the thing that
+   * failed, instead of its own first failed query's symptom.
    *
-   * Optional like the locale call: only the shell's error path needs it.
+   * Optional like the locale call: only the shell's boot path needs it.
    */
-  bootFailure?(): Promise<string | null>;
+  bootStatus?(): Promise<BootStatus>;
   /**
    * Ask Rust to run boot again from the renderer's error screen (F13) — the
    * same retry the boot-failure dialog's Retry button runs, reachable on the
@@ -735,8 +745,8 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     syncCloseToTray: (enabled) => invoke("close_to_tray_set", { enabled }),
     // D7: the tray and the boot dialogs learn the language the same way.
     uiLocaleSet: (locale) => invoke("ui_locale_set", { locale }),
-    // F13: the boot-failure cause and retry, for the shell's error screen.
-    bootFailure: () => invoke("boot_failure"),
+    // F13: the boot status and retry, for the shell's boot path.
+    bootStatus: () => invoke("boot_status"),
     bootRetry: () => invoke("boot_retry"),
     // Pairing window (§11.5). One command site each, so the IPC surface this
     // file is pinned against lists every command exactly once.
