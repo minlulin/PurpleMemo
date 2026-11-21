@@ -88,7 +88,7 @@ The position, decided by the owner on 2026-11-16:
 2. **Green local gate** — run the complete check locally:
 
    ```bash
-   npm run verify        # hook + signing-key + version checks, biome, token-lint, dead code, tsc, JS + Rust tests, clippy, fmt, build
+   npm run verify        # hook + signing-key + version + android checks, biome, token-lint, dead code, tsc, JS + Rust tests, clippy, fmt, build
    ```
 
 3. **Bump the version in all three places** — they must agree:
@@ -114,6 +114,10 @@ The position, decided by the owner on 2026-11-16:
    EVP/CRYPTO/OPENSSL symbol count and the APK's own SHA-256. Keep that block
    beside `git rev-parse HEAD` and paste it into the release body — it is the
    only evidence that the file handed over is the file checked.
+
+   The gate also compiles the Android target and pins the manifest's
+   permissions (`docs/ANDROID_DISTRIBUTION.md` §3), so a break only the Android
+   target can see fails here rather than after the artefact is built.
 
    Then run the full gate, tag the commit and push — the pre-push hook runs it
    once more.

@@ -111,6 +111,22 @@ It skips, with a line saying so, when no APK exists: that is the normal state of
 a desktop checkout, and the gate stays green there. Pass `--apk <path>` (or set
 `PM_ANDROID_APK`) to check an artefact somewhere else.
 
+Two further Android steps run in the same gate, both about the build rather than
+the artefact:
+
+- `npm run check:android` compiles the Rust code for `aarch64-linux-android`,
+  which is the only way `cfg(target_os = "android")` code is compiled before an
+  APK build. It runs on a machine with the toolchain `docs/ANDROID_TOOLCHAIN.md`
+  describes — the release machine has it for the build above anyway — and skips,
+  naming the missing piece, on a checkout that cannot cross-compile.
+- `npm run check:android-manifest` reads the committed
+  `app/src/main/AndroidManifest.xml` and fails unless its `<uses-permission>`
+  set is exactly `INTERNET`, `CAMERA`, `POST_NOTIFICATIONS`,
+  `SCHEDULE_EXACT_ALARM` and `RECEIVE_BOOT_COMPLETED`. A permission missing from
+  the manifest makes a feature degrade silently instead of failing (CAMERA,
+  2026-11-11, left the QR scan reporting that it could not reach a camera), and
+  one that nothing needs is still granted to the WebView's origin.
+
 On the release machine one command is the whole check, and its output is the
 hand-off record — the signer, the certificate digest, the ABI set, the version,
 the undefined-OpenSSL-symbol count (0 when the library is whole, beside the
