@@ -565,6 +565,8 @@ export const en = {
     "Synced: {pushed} change(s) sent, {pulled} received.",
   "mobile.settings.syncNothing":
     "Already up to date — nothing was sent or received.",
+  "mobile.settings.syncReplaced":
+    "Sync replaced {count} of this phone's edits with the desktop's newer version. The replaced copies are in this phone's Trash, and this phone has no Trash screen yet.",
   "mobile.settings.syncUnconfirmed":
     "The desktop did not confirm in time. Your changes stay on this phone — sync again on the same network.",
   "mobile.settings.syncFailed": "The sync stopped:",
@@ -2325,6 +2327,8 @@ export const my: Record<MessageKey, string> = {
     "ထပ်တူပြုပြီးပါပြီ — ပြောင်းချက် {pushed} ခု ပို့ပြီး၊ {pulled} ခု လက်ခံရရှိပါသည်။",
   "mobile.settings.syncNothing":
     "အပ်ဒိတ်ဖြစ်ပြီးသားပါ — ပို့စရာလည်း မရှိ၊ လက်ခံစရာလည်း မရှိပါ။",
+  "mobile.settings.syncReplaced":
+    "ထပ်တူပြုမှုက ဤဖုန်း၏ တည်းဖြတ်ချက် {count} ခုကို ကွန်ပျူတာ၏ ပိုသစ်သော ဗားရှင်းဖြင့် အစားထိုးခဲ့သည်။ အစားထိုးခံရသော မိတ္တူများသည် ဤဖုန်း၏ အမှိုက်ပုံးထဲတွင် ရှိပြီး ဤဖုန်းတွင် အမှိုက်ပုံး မျက်နှာပြင် မရှိသေးပါ။",
   "mobile.settings.syncUnconfirmed":
     "ကွန်ပျူတာက အချိန်မီ အတည်မပြုနိုင်ပါ။ သင့်ပြောင်းချက်များ ဤဖုန်းတွင် ကျန်ရှိပါသည် — တူညီသော ကွန်ရက်တွင် ထပ်မံ ထပ်တူပြုပါ။",
   "mobile.settings.syncFailed": "ထပ်တူပြုခြင်း ရပ်တန့်ခဲ့သည်:",

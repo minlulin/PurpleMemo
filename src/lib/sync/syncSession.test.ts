@@ -33,6 +33,34 @@ import {
   pairStores as pair,
   peerOf as peer,
 } from "./testFerry.ts";
+import type { SyncFixture } from "./testSchema.ts";
+
+/**
+ * A desktop edit of `uid` at counter 2 — above the phone's own create (1), so
+ * the desktop's value wins and the phone's title is the losing value (§4,
+ * §13.2). Written as the wire writes it (§6.2): the ferry serves the desktop's
+ * outbox, so the op is staged there rather than through a repository.
+ */
+async function desktopEditAbove(
+  desktop: SyncFixture,
+  uid: string,
+): Promise<void> {
+  await desktop.driver.batch([
+    {
+      sql: `INSERT INTO sync_outbox
+              (device_id, seq, op_id, entity_table, entity_uid, op,
+               base_counter, counter, field_stamps, payload, created_at)
+            VALUES (?, 1, ?, 'notes', ?, 'update', 1, 2, '{}', ?, ?)`,
+      params: [
+        DESKTOP,
+        `${DESKTOP.slice(0, 8)}-op-1`,
+        uid,
+        JSON.stringify({ title: "Desktop title" }),
+        "2026-03-01T00:00:00.000Z",
+      ],
+    },
+  ]);
+}
 
 test("a phone note and a desktop task cross in one session and both stores converge", async () => {
   const { phone, desktop } = await pair();
@@ -84,6 +112,90 @@ test("a phone note and a desktop task cross in one session and both stores conve
     (await peer(phone, DESKTOP)).cursor_out,
     1,
     "the desktop acked the phone's push",
+  );
+});
+
+test("a replaced edit is named in the result, and its copy lands in this phone's Trash", async () => {
+  const { phone, desktop } = await pair();
+  await createNotesRepo(phone.driver).createNote({
+    title: "Phone title",
+    content: "mine",
+  });
+  const [note] = await phone.driver.query<{ uid: string }>(
+    "SELECT uid FROM notes WHERE title = ?",
+    ["Phone title"],
+  );
+  assert.ok(note?.uid, "the phone's note has a uid");
+
+  await desktopEditAbove(desktop, note.uid);
+
+  const wire = ferry(phone, desktop);
+  const outcome = await runSync(phone.driver, wire.phone, input, {
+    sleep: async () => undefined,
+  });
+
+  assert.equal(outcome.confirmed, true);
+  assert.equal(
+    outcome.replaced,
+    1,
+    "the session names the one edit the desktop replaced",
+  );
+  const [after] = await phone.driver.query<{ title: string }>(
+    "SELECT title FROM notes WHERE uid = ?",
+    [note.uid],
+  );
+  assert.equal(after?.title, "Desktop title", "the desktop's value won (§4)");
+  const [copy] = await phone.driver.query<{ snapshot: string }>(
+    "SELECT snapshot FROM trash_items",
+  );
+  assert.equal(
+    JSON.parse(copy?.snapshot ?? "{}").entity.title,
+    "Phone title",
+    "the phone's replaced value was archived here, not silently dropped",
+  );
+});
+
+test("a batch that cannot commit claims no replacement, and archives nothing", async () => {
+  const { phone, desktop } = await pair();
+  await createNotesRepo(phone.driver).createNote({
+    title: "Phone title",
+    content: "mine",
+  });
+  const [note] = await phone.driver.query<{ uid: string }>(
+    "SELECT uid FROM notes WHERE title = ?",
+    ["Phone title"],
+  );
+  assert.ok(note?.uid, "the phone's note has a uid");
+  await desktopEditAbove(desktop, note.uid);
+
+  const wire = ferry(phone, desktop);
+  // The compose succeeds; the phone's one transaction is what fails, so the
+  // copy and the winning value roll back together (§5.5).
+  const failing = {
+    ...wire.phone,
+    batch: async () => {
+      throw new Error("unreachable: the phone could not write the batch.");
+    },
+  };
+  const outcome = await runSync(phone.driver, failing, input, {
+    sleep: async () => undefined,
+  });
+
+  assert.equal(outcome.state, "refused");
+  assert.equal(
+    outcome.replaced,
+    0,
+    "a rolled-back batch cannot claim a replacement",
+  );
+  const [after] = await phone.driver.query<{ title: string }>(
+    "SELECT title FROM notes WHERE uid = ?",
+    [note.uid],
+  );
+  assert.equal(after?.title, "Phone title", "nothing was applied");
+  assert.equal(
+    await count(phone, "SELECT count(*) AS n FROM trash_items"),
+    0,
+    "the copy rolled back with the batch it belonged to",
   );
 });
 

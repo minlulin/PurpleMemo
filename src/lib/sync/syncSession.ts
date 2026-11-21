@@ -86,6 +86,12 @@ export interface SyncOutcome {
   pushed: number;
   /** Operations the desktop sent, across every batch. */
   pulled: number;
+  /**
+   * This device's own values the desktop's newer versions replaced, archived
+   * here as §13.2 copies. The phone has no Trash screen, so the card has to
+   * say it: otherwise a replaced edit looks like a record that vanished.
+   */
+  replaced: number;
   /** The highest seq this device applied of the desktop's. */
   appliedThrough: number;
   /** The desktop's acknowledged position, once a verdict settled it. */
@@ -99,6 +105,7 @@ const refuse = (code: string, message: string, pushed = 0): SyncOutcome => ({
   confirmed: false,
   pushed,
   pulled: 0,
+  replaced: 0,
   appliedThrough: 0,
   ackThrough: 0,
   state: "refused",
@@ -364,6 +371,7 @@ export async function runSync(
   const afterSeq = peer.cursor_in;
   let appliedThrough = afterSeq;
   let pulled = 0;
+  let replaced = 0;
   let batch = 0;
   // F-2: every pull batch of one held read carries the same vault pair; the
   // first one seen is the session's, applied once the pull completes.
@@ -376,6 +384,7 @@ export async function runSync(
       return {
         ...refuse("pull-refused", errorText(error), pushing.length),
         pulled,
+        replaced,
         appliedThrough,
         refusal: splitRefusal(errorText(error)),
       };
@@ -385,6 +394,7 @@ export async function runSync(
       return {
         ...refuse(read.refusal.code, read.refusal.message, pushing.length),
         pulled,
+        replaced,
         appliedThrough,
         refusal: read.refusal,
       };
@@ -393,6 +403,9 @@ export async function runSync(
     if (vaultMeta === null) vaultMeta = read.vaultMeta;
     if (read.ops.length > 0) {
       let statements: BatchStatement[];
+      // What this batch would replace, read only once it has committed: a
+      // rolled-back apply archived nothing, so it must report nothing.
+      const committing = { count: 0 };
       try {
         // The engine reads this device's rows and stamps through the driver,
         // so it needs the store — not just the transport's batch.
@@ -400,6 +413,7 @@ export async function runSync(
           peerId: input.desktopDeviceId,
           origin: "desktop",
           ops: read.ops,
+          replaced: committing,
         });
       } catch (error) {
         return {
@@ -419,6 +433,7 @@ export async function runSync(
           refusal: splitRefusal(errorText(error)),
         };
       }
+      replaced += committing.count;
       for (const op of read.ops) {
         if (op.seq > appliedThrough) appliedThrough = op.seq;
       }
@@ -440,6 +455,7 @@ export async function runSync(
       return {
         ...refuse("apply-refused", errorText(error), pushing.length),
         pulled,
+        replaced,
         appliedThrough,
         refusal: splitRefusal(errorText(error)),
       };
@@ -466,6 +482,7 @@ export async function runSync(
       confirmed: true,
       pushed: 0,
       pulled,
+      replaced,
       appliedThrough,
       ackThrough: peer.cursor_out,
       state: "applied",
@@ -485,6 +502,7 @@ export async function runSync(
       return {
         ...refuse("status-refused", errorText(error), pushing.length),
         pulled,
+        replaced,
         appliedThrough,
         refusal: splitRefusal(errorText(error)),
       };
@@ -512,6 +530,7 @@ export async function runSync(
         confirmed: true,
         pushed: pushing.length,
         pulled,
+        replaced,
         appliedThrough,
         ackThrough: status.throughSeq,
         state: "applied",
@@ -523,6 +542,7 @@ export async function runSync(
         confirmed: false,
         pushed: pushing.length,
         pulled,
+        replaced,
         appliedThrough,
         ackThrough: peer.cursor_out,
         state: "failed",
@@ -540,6 +560,7 @@ export async function runSync(
     confirmed: false,
     pushed: pushing.length,
     pulled,
+    replaced,
     appliedThrough,
     ackThrough: peer.cursor_out,
     state: "pending",

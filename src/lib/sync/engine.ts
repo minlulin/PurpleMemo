@@ -119,6 +119,13 @@ export interface ApplyRequest {
   origin: Origin;
   /** In `seq` order, as the sender's outbox hands them over (§7.6). */
   ops: readonly PeerOp[];
+  /**
+   * Filled with how many of this device's own values the batch replaces and
+   * archives as §13.2 copies. A property, not a callback: the number belongs to
+   * the batch, so the caller reads it only after its transaction commits — a
+   * batch that rolls back must not claim a replacement (§5.5).
+   */
+  replaced?: { count: number };
 }
 
 /** The row shape the stamp reads return, kept local so the merges read clean. */
@@ -1227,6 +1234,7 @@ export async function applyOps(
   const now = new Date().toISOString();
   const copies: BatchStatement[] = [];
   const effects: BatchStatement[] = [];
+  let replaced = 0;
   let highestSeq = 0;
   let highestCounter = 0;
 
@@ -1320,6 +1328,7 @@ export async function applyOps(
     if (outcome.held.length > 0) {
       // §5.5: the copy is written by the device that held the losing value,
       // in the winning apply's own transaction.
+      replaced += 1;
       copies.push(
         ...conflictCopyStatements(
           [
@@ -1348,5 +1357,8 @@ export async function applyOps(
     params: [highestCounter, now],
   };
 
+  if (replaced > 0 && request.replaced !== undefined) {
+    request.replaced.count = replaced;
+  }
   return applyStatements(peerId, highestSeq, [...copies, clock, ...effects]);
 }

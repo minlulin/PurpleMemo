@@ -26,9 +26,7 @@ The pairing key is per-install and stays on your machines.
 Notes and to-do lists (including task reminders), shopping lists and habits,
 Budget, Business and Loans, and the Vault — the Vault arrives on the phone only
 after you enter its password there. Deletes travel too, so a record removed on
-one device is removed on the other, and conflicts are resolved field by field
-rather than by overwriting a whole record. A record that loses a conflict is
-kept in Trash on the losing side rather than discarded silently.
+one device is removed on the other, and conflicts are resolved field by field rather than by overwriting a whole record. A record that loses a conflict is kept in Trash on the device that held it rather than discarded silently — visible on the desktop; the phone that ships with this release has no Trash screen yet, so its sync result names how many of its edits were replaced.
 
 Everything goes over your own local network: nothing is uploaded to a server,
 there is no account, and no cloud is involved.

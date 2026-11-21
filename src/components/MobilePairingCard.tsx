@@ -642,6 +642,13 @@ export function MobilePairingCard() {
                       })}
                 </p>
               ) : null}
+              {synced !== null && synced.replaced > 0 ? (
+                <p className="alert alert-warn" role="status">
+                  {t("mobile.settings.syncReplaced", {
+                    count: synced.replaced,
+                  })}
+                </p>
+              ) : null}
               {synced !== null && !synced.confirmed ? (
                 <p className="mobile-error" role="alert">
                   {synced.state === "pending"
