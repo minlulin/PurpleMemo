@@ -144,8 +144,12 @@ Rules of the gate:
   moved document leaves the source pointing at nothing for weeks.
 - The Android release APK, when one is present, is checked by
   `node scripts/check-android-apk.mjs`: signed (and not with the debug key),
-  arm64-only, and carrying the `versionCode` of the version in `package.json`.
-  With no APK it skips with a line, so a desktop clone runs the gate unchanged.
+  arm64-only, carrying the `versionCode` of the version in `package.json`, and
+  free of undefined `EVP_`/`CRYPTO_`/`OPENSSL_`/`SSL_` dynamic symbols in
+  `lib/arm64-v8a/libpurple_memo_lib.so` — the second failure class that shipped
+  once, read with the NDK's `llvm-readelf`, which the check requires rather
+  than skipping. With no APK it skips with a line, so a desktop clone runs the
+  gate unchanged.
 - Never use `git push --no-verify`. If the gate is red, fix it or revert —
   the gate's own output on your machine is the evidence.
 - Hosted CI is intentionally out of scope. Every clone must enable the hook

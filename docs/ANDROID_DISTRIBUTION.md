@@ -95,15 +95,27 @@ that produced it. It fails on
   `lib/arm64-v8a/libpurple_memo_lib.so`;
 - a `versionCode`/`versionName` that does not belong to the version in
   `package.json`, read through `app/tauri.properties` — the file the CLI
-  regenerates on every build, so a stale one cannot hand over an old code.
+  regenerates on every build, so a stale one cannot hand over an old code;
+- an undefined `EVP_`/`CRYPTO_`/`OPENSSL_`/`SSL_` dynamic symbol in
+  `lib/arm64-v8a/libpurple_memo_lib.so`, read with the NDK's `llvm-readelf`.
+  That is the failure class of 2026-11-18: the make shim archived `libcrypto.a`
+  without its crypto/evp objects, the Rust cdylib linked anyway, and the phone
+  was the first thing to notice with `dlopen: cannot locate symbol
+  "EVP_MAC_fetch"`. The check is narrow on purpose — the libc/libm/liblog
+  symbols a cdylib legitimately leaves to the loader are not failures. An APK
+  must never be handed over unverified, so a machine with no `llvm-readelf` to
+  find (`ANDROID_NDK_HOME`, the SDK's `ndk/*`, or a system `readelf`) fails
+  closed instead of skipping this check.
 
 It skips, with a line saying so, when no APK exists: that is the normal state of
 a desktop checkout, and the gate stays green there. Pass `--apk <path>` (or set
 `PM_ANDROID_APK`) to check an artefact somewhere else.
 
 On the release machine one command is the whole check, and its output is the
-hand-off record — the signer, the certificate digest, the ABI set, the version
-and the APK's own SHA-256, to keep beside `git rev-parse HEAD`:
+hand-off record — the signer, the certificate digest, the ABI set, the version,
+the undefined-OpenSSL-symbol count (0 when the library is whole, beside the
+number of undefined symbols scanned) and the APK's own SHA-256, to keep beside
+`git rev-parse HEAD`:
 
 ```bash
 npm run check:android-apk
