@@ -53,6 +53,8 @@ import {
   localDeviceId,
   pairingRepo,
   publishUiLocale,
+  readBootFailure,
+  retryBoot,
   settingsRepo,
   tasksRepo,
   trashRepo,
@@ -382,6 +384,17 @@ function AppShell() {
   const [resetAttempt, setResetAttempt] = useState<ResetAttempt | null>(null);
   /** A "Try again" on the boot-error screen is in flight (review P3-7). */
   const [retrying, setRetrying] = useState(false);
+  /**
+   * The cause Rust recorded for a failed boot, when there is one (F13).
+   *
+   * The error screen below was written for a renderer-side read failure —
+   * "the database is open, Rust never refused to boot" — but on the phone a
+   * failed boot reaches the same screen, and its own first query's error
+   * ("state not managed …") names the symptom, not the cause. When Rust has
+   * recorded a cause, the screen shows that instead and its Try again runs
+   * Rust's boot retry rather than re-reading settings that cannot answer.
+   */
+  const [bootFailure, setBootFailure] = useState<string | null>(null);
   const [page, setPage] = useState<PageKey>("dashboard");
   /**
    * Where a relationship click goes: a page AND the exact row to select.
@@ -558,6 +571,7 @@ function AppShell() {
       // normalise to `null` — recovery unavailable, lock screen fails closed —
       // and `pinResetBlocked` re-checks the shape before any write.
       const answerState = classifyPin(answerRaw);
+      setBootFailure(null);
       setBoot({
         ready: true,
         error: null,
@@ -580,12 +594,43 @@ function AppShell() {
       // display so switching language does not require re-reading the database.
       const error = errText(e);
       setBoot((b) => ({ ...b, ready: true, error }));
+      // F13: when Rust's boot is what failed, its recorded cause is the
+      // honest error for the screen — this read's own error only names the
+      // symptom ("state not managed …"). Async and best-effort: no record
+      // leaves the screen exactly as it was.
+      void readBootFailure().then((cause) => setBootFailure(cause));
       return { ok: false, error };
     }
   }, []);
 
   useEffect(() => {
     void loadSecurity();
+  }, [loadSecurity]);
+
+  /**
+   * Try again after a recorded boot failure (F13): ask Rust to run boot
+   * again — the retry its own boot-failure dialog offers — then poll the
+   * security read until the database answers. A successful boot also
+   * reloads the window, which restarts this shell on the managed state, so
+   * the poll is the fallback for a window that stays up. If the attempt
+   * fails too, Rust records the new cause and the screen re-reads it.
+   */
+  const retryAfterBootFailure = useCallback(async (): Promise<void> => {
+    setRetrying(true);
+    try {
+      await retryBoot();
+      for (let attempt = 0; attempt < 25; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        const reload = await loadSecurity();
+        if (reload.ok) return;
+      }
+      setBootFailure(await readBootFailure());
+    } catch {
+      // The retry could not even be invoked; the recorded cause (if any)
+      // is still the screen's text, and the button below is live again.
+    } finally {
+      setRetrying(false);
+    }
   }, [loadSecurity]);
 
   /**
@@ -917,7 +962,9 @@ function AppShell() {
       <div className="lock-wrap">
         <div className="entry-form vault-narrow">
           <p className="alert alert-error" role="alert">
-            {t("shell.error.readDb", { error: boot.error ?? "" })}
+            {bootFailure !== null
+              ? t("shell.error.bootFailed", { error: bootFailure })
+              : t("shell.error.readDb", { error: boot.error ?? "" })}
           </p>
           {/* Retry rather than "restart and hope" (review P3-7). This screen is
               the frontend's own failure to read the settings — the database is
@@ -931,15 +978,25 @@ function AppShell() {
               className="btn btn-primary"
               disabled={retrying}
               onClick={() => {
-                setRetrying(true);
-                void loadSecurity().finally(() => setRetrying(false));
+                if (bootFailure !== null) {
+                  // F13: the database never opened, so re-reading settings
+                  // cannot succeed — run Rust's boot retry instead.
+                  void retryAfterBootFailure();
+                } else {
+                  setRetrying(true);
+                  void loadSecurity().finally(() => setRetrying(false));
+                }
               }}
             >
               {retrying ? t("common.retrying") : t("common.tryAgain")}
             </button>
-            <button type="button" className="btn btn-ghost" onClick={lockNow}>
-              {t("shell.lock")}
-            </button>
+            {/* With a recorded boot failure there is no open workspace to
+                lock; the button only decorated the dead end (F13). */}
+            {bootFailure === null && (
+              <button type="button" className="btn btn-ghost" onClick={lockNow}>
+                {t("shell.lock")}
+              </button>
+            )}
           </div>
         </div>
       </div>

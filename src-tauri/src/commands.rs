@@ -700,6 +700,30 @@ pub fn ui_locale_set(app: tauri::AppHandle, locale: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// The cause of the last failed boot, if there was one (F13).
+///
+/// The boot-failure dialog is the desktop's surface for this; on the phone
+/// the renderer's error screen is what the user reaches, and without the
+/// recorded cause it can only quote its own first failed query ("state not
+/// managed …"), which names the symptom and hides the reason. `None` means
+/// the last boot attempt succeeded — a renderer read failure is then its
+/// own, and its ordinary retry applies.
+#[tauri::command]
+pub fn boot_failure() -> CmdResult<Option<String>> {
+    Ok(crate::recorded_boot_failure())
+}
+
+/// Re-run boot from the renderer's error screen (F13): the same retry the
+/// boot-failure dialog's Retry button runs, reachable on the phone where
+/// that dialog is not the surface the user gets. On success the database
+/// state is managed and the window is reloaded; on failure the new cause is
+/// recorded for `boot_failure` and the dialog path runs as before.
+#[tauri::command]
+pub fn boot_retry(app: tauri::AppHandle) -> CmdResult<()> {
+    crate::retry_boot(app);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn export_save_file(request: Request<'_>) -> CmdResult<()> {
     let encoded = header_str(&request, file_write::EXPORT_PATH_HEADER)?;

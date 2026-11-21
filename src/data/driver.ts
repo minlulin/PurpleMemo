@@ -494,6 +494,22 @@ export interface DataDriver {
    * Optional like the import lease: only the two locale call sites need it.
    */
   uiLocaleSet?(locale: Locale): Promise<void>;
+  /**
+   * Read the cause of the last failed boot, if Rust recorded one (F13).
+   *
+   * The shell's error screen asks this when its own settings read fails: a
+   * recorded boot failure means the database never opened and the real cause
+   * is Rust's, while no record means the read failure is the renderer's own.
+   *
+   * Optional like the locale call: only the shell's error path needs it.
+   */
+  bootFailure?(): Promise<string | null>;
+  /**
+   * Ask Rust to run boot again from the renderer's error screen (F13) — the
+   * same retry the boot-failure dialog's Retry button runs, reachable on the
+   * phone where that dialog is not the surface the user gets.
+   */
+  bootRetry?(): Promise<void>;
 }
 
 /**
@@ -719,6 +735,9 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     syncCloseToTray: (enabled) => invoke("close_to_tray_set", { enabled }),
     // D7: the tray and the boot dialogs learn the language the same way.
     uiLocaleSet: (locale) => invoke("ui_locale_set", { locale }),
+    // F13: the boot-failure cause and retry, for the shell's error screen.
+    bootFailure: () => invoke("boot_failure"),
+    bootRetry: () => invoke("boot_retry"),
     // Pairing window (§11.5). One command site each, so the IPC surface this
     // file is pinned against lists every command exactly once.
     pairingLocal: () => invoke("pairing_local"),

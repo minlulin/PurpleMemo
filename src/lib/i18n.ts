@@ -79,6 +79,7 @@ export const en = {
   "shell.navGroup.personal": "Personal",
   "shell.navGroup.system": "System",
   "shell.error.readDb": "Could not read the encrypted database: {error}",
+  "shell.error.bootFailed": "Purple Memo could not open its database: {error}",
   "shell.error.reloadWarning":
     "{error} Purple Memo will ask you to restart before the next lock.",
   "shell.notificationsBlocked":
@@ -1864,6 +1865,7 @@ export const my: Record<MessageKey, string> = {
   "shell.navGroup.personal": "ကိုယ်ပိုင်",
   "shell.navGroup.system": "စနစ်",
   "shell.error.readDb": "ကုဒ်ဝှက်ထားသော ဒေတာဘေ့စ်ကို ဖတ်၍ မရပါ — {error}",
+  "shell.error.bootFailed": "Purple Memo က ၎င်း၏ဒေတာဘေ့စ်ကို ဖွင့်၍ မရပါ — {error}",
   "shell.error.reloadWarning":
     "{error} နောက်တစ်ကြိမ် သော့ခတ်မီ Purple Memo က ပြန်လည်စတင်ရန် တောင်းဆိုပါမည်။",
   "shell.notificationsBlocked":

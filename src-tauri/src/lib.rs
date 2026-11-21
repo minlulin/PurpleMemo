@@ -91,6 +91,28 @@ static WATCHDOG_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// the other side sees that decision instead of racing it.
 static WATCHDOG_EXIT: Mutex<()> = Mutex::new(());
 
+/// The most recent boot failure's cause, kept where the renderer can read it.
+///
+/// `report_boot_failure` puts the failure in a native dialog and in
+/// `boot-error.log`, but on the phone the renderer's error screen is the
+/// surface the user actually reaches — and without this it has nothing to
+/// show but its own first failed query ("state not managed …"), which names
+/// the symptom and hides the cause (F13). Every successful `boot` clears it,
+/// so a stale cause can never be presented as the current one.
+static BOOT_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+fn record_boot_failure(message: Option<String>) {
+    *BOOT_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = message;
+}
+
+/// The recorded boot failure, if the last boot attempt failed.
+pub(crate) fn recorded_boot_failure() -> Option<String> {
+    BOOT_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// Retire every armed watchdog. Called the moment a wait state ends and when
 /// the app recovers; the bump happens under [`WATCHDOG_EXIT`] so it can never
 /// slip between the watchdog's final check and its exit.
@@ -164,6 +186,8 @@ pub fn run() {
             commands::backup_import_end,
             commands::close_to_tray_set,
             commands::ui_locale_set,
+            commands::boot_failure,
+            commands::boot_retry,
             commands::export_save_file,
             commands::pairing_local,
             commands::pairing_open,
@@ -359,6 +383,10 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     app.manage(pairing_listener::PairingListenerState::with_lifecycle(
         lifecycle,
     ));
+    // The database is open and managed: any boot failure recorded by an
+    // earlier attempt in this process is over, and the renderer's error
+    // screen must not present it as current (F13).
+    record_boot_failure(None);
     Ok(())
 }
 
@@ -495,6 +523,7 @@ fn report_boot_failure(app: &tauri::AppHandle, failure: &db::KeyLoadError) {
     // The log keeps the English cause and the English hint: it is read on a
     // bug report, often on another machine, and it is the one place the
     // diagnostic must read the same whatever the interface language is (D7).
+    record_boot_failure(Some(failure.message().to_string()));
     let logged = if failure.is_missing_key_for_existing_db() {
         // The credential store is reachable but empty — the keyring hint
         // would blame the wrong thing.
@@ -637,7 +666,7 @@ fn restore_key_from_file(key_file: &std::path::Path) -> Result<(), String> {
 /// because its frontend loaded while every command was failing with "state not
 /// managed" and would otherwise stay on its error screen. On failure the dialog
 /// is shown again.
-fn retry_boot(app: tauri::AppHandle) {
+pub(crate) fn retry_boot(app: tauri::AppHandle) {
     // The answer arrived — the clock now measures the retry attempt (E13).
     // Re-arming here (rather than only on the next failure) is what keeps a
     // slow-but-recoverable boot from being killed by the timer that was set
@@ -1374,6 +1403,25 @@ mod tray_tests {
         // Leave the process-wide mirror as every other test, and a real boot,
         // expects it.
         publish_close_to_tray(true);
+    }
+
+    /// F13: the recorded boot failure is what the renderer's error screen
+    /// shows and retries from, so the record must hold exactly the last
+    /// failure's cause — and a successful boot must clear it, or a recovered
+    /// app would keep presenting a cause that is no longer current.
+    #[test]
+    fn the_boot_failure_record_holds_the_last_failure_and_clears() {
+        use super::{record_boot_failure, recorded_boot_failure};
+        record_boot_failure(Some("first cause".to_string()));
+        assert_eq!(recorded_boot_failure().as_deref(), Some("first cause"));
+        record_boot_failure(Some("second cause".to_string()));
+        assert_eq!(
+            recorded_boot_failure().as_deref(),
+            Some("second cause"),
+            "a later failure replaces the earlier cause"
+        );
+        record_boot_failure(None);
+        assert_eq!(recorded_boot_failure(), None, "a successful boot clears it");
     }
 
     #[test]

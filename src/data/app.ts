@@ -53,6 +53,35 @@ export function publishUiLocale(locale: Locale): void {
 }
 
 /**
+ * The cause of the last failed boot, if Rust recorded one (F13).
+ *
+ * The shell's error screen asks when its own settings read fails: a recorded
+ * failure means Rust never opened the database and its cause is the honest
+ * thing to show, while no record means the read failure is the renderer's
+ * own. A failed query answers `null` — indistinguishable from "no failure",
+ * which is the safe direction: the screen falls back to its ordinary text
+ * and its ordinary retry.
+ */
+export async function readBootFailure(): Promise<string | null> {
+  try {
+    return (await driver.bootFailure?.()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask Rust to run boot again (F13): the retry the boot-failure dialog's
+ * Retry button runs, invoked from the renderer's error screen on the phone
+ * where that dialog is not the surface the user gets. Boot re-runs on its
+ * own thread; the caller polls its settings read until the database answers
+ * (a successful boot also reloads the window, which restarts the shell).
+ */
+export async function retryBoot(): Promise<void> {
+  await driver.bootRetry?.();
+}
+
+/**
  * This installation's own side of a pairing (§2.3): the APK is the phone, and
  * both desktop builds are the desktop.
  *
