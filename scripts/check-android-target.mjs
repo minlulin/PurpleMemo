@@ -12,15 +12,21 @@
  * (the recipe is docs/ANDROID_TOOLCHAIN.md, "Building the debug APK on Windows").
  * So this step runs when the machine can cross-compile, and skips naming the
  * missing piece when it cannot — the same rule check-android-apk.mjs applies to
- * a checkout with no APK in it. On the release machine, where the toolchain is
- * set up for the build anyway, the check runs and a break fails the gate there.
+ * a checkout with no APK in it.
+ *
+ * Two of those pieces live outside the repo in `%TEMP%`, where the toolchain doc
+ * puts them: the `make` shim (`npm run setup:android-make-shim`) and the perl
+ * module tree copied from Strawberry. They are discovered and added to this
+ * step's environment rather than required as exports, so a machine set up for
+ * the APK build compiles the target under a plain `npm run verify`; the exports
+ * only matter for `npx tauri android build` itself.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
 const TARGET = "aarch64-linux-android";
-const CARGO_TARGET = "aarch64-linux-android";
 const TOOLCHAIN = "aarch64-linux-android24-clang";
 const DOC = "docs/ANDROID_TOOLCHAIN.md";
 
@@ -45,24 +51,26 @@ function skip(reasons) {
   process.exit(0);
 }
 
-function run(command, args) {
+function run(command, args, env = process.env) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    env,
   });
-  if (result.error)
+  if (result.error) {
     return { status: null, output: String(result.error.message) };
+  }
   return {
     status: result.status,
     output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
   };
 }
 
-/** An executable on `PATH`, or null. */
-function onPath(name) {
+/** An executable on `env`'s PATH, or false. */
+function onPath(name, env) {
   const suffixes =
     process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+  for (const directory of (env.PATH ?? "").split(delimiter)) {
     if (!directory) continue;
     for (const suffix of suffixes) {
       if (existsSync(join(directory, `${name}${suffix}`))) return true;
@@ -71,103 +79,167 @@ function onPath(name) {
   return false;
 }
 
-/** rustup's installed targets, or null when rustup itself is unavailable. */
-function installedTargets() {
+/** Whether rustup has the target's std installed — false without rustup too. */
+function hasTargetStd() {
   const result = run("rustup", ["target", "list", "--installed"]);
-  if (result.status !== 0) return null;
-  return result.output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  if (result.status !== 0) return false;
+  return result.output.split(/\r?\n/).some((line) => line.trim() === TARGET);
 }
 
-/** The NDK this machine would build with: the pinned env var, else the newest. */
-function findNdk() {
-  const roots = [];
-  if (process.env.ANDROID_NDK_HOME) roots.push(process.env.ANDROID_NDK_HOME);
+/**
+ * The NDK's host bin directory — where `aarch64-linux-android24-clang` lives —
+ * from the pinned env var, else the newest NDK under the SDK.
+ *
+ * The compiler must be reachable by name, not by path: OpenSSL's generated
+ * Makefile is run by `/usr/bin/sh`, which eats the backslashes of a Windows path
+ * (docs/ANDROID_TOOLCHAIN.md, item 3) — the same reason the build puts this
+ * directory on `PATH` instead of passing `CC` a full path.
+ */
+function ndkBinDirectory() {
+  const ndks = [];
+  if (process.env.ANDROID_NDK_HOME) ndks.push(process.env.ANDROID_NDK_HOME);
   for (const root of [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT]) {
     if (!root) continue;
     const parent = join(root, "ndk");
     if (!existsSync(parent)) continue;
-    roots.push(
+    ndks.push(
       ...readdirSync(parent)
         .sort()
         .reverse()
         .map((version) => join(parent, version)),
     );
   }
-  return roots.find((root) => existsSync(root)) ?? null;
+  for (const ndk of ndks) {
+    const prebuilt = join(ndk, "toolchains", "llvm", "prebuilt");
+    if (!existsSync(prebuilt)) continue;
+    for (const host of readdirSync(prebuilt)) {
+      const bin = join(prebuilt, host, "bin");
+      if (existsSync(bin)) return bin;
+    }
+  }
+  return null;
 }
 
-/**
- * The cross-compiler must be reachable by name, not by path: OpenSSL's generated
- * Makefile is run by `/usr/bin/sh`, which eats the backslashes of a Windows
- * path (docs/ANDROID_TOOLCHAIN.md, item 3) — the same reason the build puts the
- * NDK's bin on `PATH` instead of passing `CC` a full path.
- */
-function hasCrossCompiler() {
-  return onPath(TOOLCHAIN);
+/** `C:\Users\x\AppData\Local\Temp` -> `/c/Users/x/AppData/Local/Temp` for perl. */
+function posixPath(path) {
+  return path
+    .replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`)
+    .replace(/\\/g, "/");
+}
+
+/** Prepend a directory to `env`'s PATH once, case-insensitively on Windows. */
+function addToPath(env, directory) {
+  const entries = (env.PATH ?? "").split(delimiter).filter(Boolean);
+  const normalise = (value) =>
+    process.platform === "win32" ? value.toLowerCase() : value;
+  if (entries.some((entry) => normalise(entry) === normalise(directory))) {
+    return;
+  }
+  env.PATH = [directory, ...entries].join(delimiter);
 }
 
 /** OpenSSL's `Configure` is a perl script with three module requirements. */
-function perlCanConfigure() {
-  const result = run("perl", [
-    "-MExtUtils::MakeMaker",
-    "-MPod::Usage",
-    "-MLocale::Maketext::Simple",
-    "-e",
-    "1",
-  ]);
-  return result.status === 0;
+function perlCanConfigure(env) {
+  return (
+    run(
+      "perl",
+      [
+        "-MExtUtils::MakeMaker",
+        "-MPod::Usage",
+        "-MLocale::Maketext::Simple",
+        "-e",
+        "1",
+      ],
+      env,
+    ).status === 0
+  );
 }
 
+/**
+ * The environment this step runs in: the caller's, plus the NDK's bin and the
+ * `make` shim on PATH, plus the perl module tree when the shell has none. Each
+ * addition only happens where the toolchain doc says the piece lives, and only
+ * when the caller has not set it already.
+ */
+function buildEnvironment(bin) {
+  const env = { ...process.env };
+  if (bin) addToPath(env, bin);
+  const shim = join(tmpdir(), "android-shim");
+  if (existsSync(shim)) addToPath(env, shim);
+  if (!perlCanConfigure(env)) {
+    const perlLib = join(tmpdir(), "android-perl", "lib");
+    if (
+      existsSync(perlLib) &&
+      perlCanConfigure({ ...env, PERL5LIB: posixPath(perlLib) })
+    ) {
+      env.PERL5LIB = posixPath(perlLib);
+      // MSYS turns a POSIX value into a Windows path when it launches gmake,
+      // and perl then splits "C:\\Users\u2026" on the colon into "C" and
+      // "\\Users\u2026" — the failure docs/ANDROID_TOOLCHAIN.md §2 records.
+      const excluded = (env.MSYS2_ENV_CONV_EXCL ?? "")
+        .split(";")
+        .filter(Boolean);
+      if (!excluded.includes("PERL5LIB")) {
+        env.MSYS2_ENV_CONV_EXCL = [...excluded, "PERL5LIB"].join(";");
+      }
+    }
+  }
+  // The build's own recipe, so openssl-src's Configure sees the NDK compiler.
+  for (const [variable, value] of [
+    [`CC_${TARGET}`, TOOLCHAIN],
+    [`AR_${TARGET}`, "llvm-ar"],
+    [`RANLIB_${TARGET}`, "llvm-ranlib"],
+  ]) {
+    env[variable] ??= value;
+  }
+  return env;
+}
+
+const bin = ndkBinDirectory();
+const env = buildEnvironment(bin);
+
 const reasons = [];
-const targets = installedTargets();
-if (targets === null) {
+if (!hasTargetStd()) {
   reasons.push(
-    "rustup is not available, so the target's std cannot be installed",
-  );
-} else if (!targets.includes(TARGET)) {
-  reasons.push(
-    `the ${TARGET} target is not installed (rustup target add ${TARGET})`,
+    `the ${TARGET} target's std is not installed (rustup target add ${TARGET})`,
   );
 }
-const ndk = findNdk();
-if (!ndk) {
-  reasons.push("no Android NDK (set ANDROID_NDK_HOME)");
+if (!bin) {
+  reasons.push("no Android NDK toolchain (set ANDROID_NDK_HOME)");
 }
-if (!hasCrossCompiler()) {
-  reasons.push(`the NDK's ${TOOLCHAIN} is not on PATH`);
-}
-if (!onPath("make")) {
+if (!onPath("make", env)) {
   reasons.push(
     "no make on PATH (the shim from npm run setup:android-make-shim)",
   );
 }
-if (!perlCanConfigure()) {
+if (!perlCanConfigure(env)) {
   reasons.push(
-    "perl cannot load ExtUtils::MakeMaker/Pod::Usage/Locale::Maketext::Simple (set PERL5LIB)",
+    "perl cannot load ExtUtils::MakeMaker/Pod::Usage/Locale::Maketext::Simple (see PERL5LIB in the toolchain doc)",
   );
 }
 if (reasons.length > 0) skip(reasons);
 
-const checked = run("cargo", [
-  "check",
-  "--target",
-  CARGO_TARGET,
-  "--manifest-path",
-  join("src-tauri", "Cargo.toml"),
-]);
+const checked = run(
+  "cargo",
+  [
+    "check",
+    "--target",
+    TARGET,
+    "--manifest-path",
+    join("src-tauri", "Cargo.toml"),
+  ],
+  env,
+);
 if (checked.status === null) {
   fail(`cargo could not be started — ${checked.output}`);
 }
 if (checked.status !== 0) {
   console.error(checked.output.trimEnd());
   fail(
-    `cargo check --target ${CARGO_TARGET} failed: code that compiles only for ` +
-      "Android is broken (the desktop build and clippy never compile it).",
+    `cargo check --target ${TARGET} failed: code that compiles only for Android ` +
+      "is broken (the desktop build and clippy never compile it).",
   );
 }
 console.log(
-  `check-android: OK — cargo check --target ${CARGO_TARGET} compiles the Android target`,
+  `check-android: OK — cargo check --target ${TARGET} compiles the Android target`,
 );
