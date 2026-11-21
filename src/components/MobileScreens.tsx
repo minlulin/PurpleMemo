@@ -437,6 +437,8 @@ type ExactState = "exact" | "inexact" | "unknown";
 type ResetStage = "idle" | "confirm" | "erase";
 
 interface SettingsFacts {
+  /** The bundle version this APK carries — the phone has no About screen. */
+  appVersion: string | null;
   schemaVersion: number | null;
   databaseBytes: number | null;
   backing: string | null;
@@ -452,6 +454,7 @@ interface SettingsFacts {
 }
 
 const EMPTY_FACTS: SettingsFacts = {
+  appVersion: null,
   schemaVersion: null,
   databaseBytes: null,
   backing: null,
@@ -514,22 +517,34 @@ export function SettingsScreen({
     // One fact per promise: a permission or diagnostic that cannot be read
     // must not blank the ones that can.
     void (async () => {
-      const [diagnostics, backing, exact, permission, rawPin, storedTheme] =
-        await Promise.all([
-          readMobileDiagnostics().catch(() => null),
-          invoke<string>("keystore_backing").catch(() => null),
-          invoke<string>("reminder_exact_state").catch(() => null),
-          isPermissionGranted().catch(() => null),
-          settingsRepo.getRaw(SETTING_KEYS.pinHash).then(
-            (value) => value,
-            () => null,
-          ),
-          settingsRepo.getTheme().catch(() => null),
-        ]);
+      const [
+        appVersion,
+        diagnostics,
+        backing,
+        exact,
+        permission,
+        rawPin,
+        storedTheme,
+      ] = await Promise.all([
+        // Dynamic, like the desktop's About line: no Tauri API in a browser build.
+        import("@tauri-apps/api/app")
+          .then(({ getVersion }) => getVersion())
+          .catch(() => null),
+        readMobileDiagnostics().catch(() => null),
+        invoke<string>("keystore_backing").catch(() => null),
+        invoke<string>("reminder_exact_state").catch(() => null),
+        isPermissionGranted().catch(() => null),
+        settingsRepo.getRaw(SETTING_KEYS.pinHash).then(
+          (value) => value,
+          () => null,
+        ),
+        settingsRepo.getTheme().catch(() => null),
+      ]);
       if (cancelled) return;
       setThemeState(storedTheme ?? "dark");
       setDiagnosticsFailed(diagnostics === null);
       setFacts({
+        appVersion,
         schemaVersion: diagnostics?.schemaVersion ?? null,
         databaseBytes: diagnostics?.databaseBytes ?? null,
         backing,
@@ -775,6 +790,8 @@ export function SettingsScreen({
         </p>
       ) : null}
       <dl className="mobile-facts">
+        <dt>{t("mobile.settings.appVersion")}</dt>
+        <dd>{facts.appVersion ?? t("mobile.settings.unknown")}</dd>
         <dt>{t("mobile.settings.schemaVersion")}</dt>
         <dd>{facts.schemaVersion ?? t("mobile.settings.unknown")}</dd>
         <dt>{t("mobile.settings.databaseSize")}</dt>

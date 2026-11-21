@@ -598,6 +598,7 @@ export const en = {
   "mobile.settings.keyLoss":
     "If the Keystore key is lost — a factory reset, a restored backup, cleared app data — the database cannot be opened. It is wiped so the phone can be paired again; that data is not recoverable.",
   "mobile.settings.diagnosticsHeading": "Diagnostics",
+  "mobile.settings.appVersion": "App version",
   "mobile.settings.schemaVersion": "Database schema version",
   "mobile.settings.databaseSize": "Database size",
   "mobile.settings.keystoreBacking": "Keystore backing",
@@ -2353,6 +2354,7 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.keyLoss":
     "Keystore ကီး ပျောက်ဆုံးလျှင် — စက်ရုံ ပြန်လည်သတ်မှတ်ခြင်း၊ ဘက်အပ် ပြန်ထည့်ခြင်း၊ အက်ပ် ဒေတာ ရှင်းလင်းခြင်း — ဒေတာဘေ့စ်ကို ဖွင့်၍ မရပါ။ ပြန်တွဲချိတ်နိုင်ရန် ၎င်းကို ဖျက်ပစ်ပါမည်၊ ထို ဒေတာကို ပြန်လည် ရယူနိုင်မည် မဟုတ်ပါ။",
   "mobile.settings.diagnosticsHeading": "စစ်ဆေးမှု အချက်အလက်",
+  "mobile.settings.appVersion": "အက်ပ် ဗားရှင်း",
   "mobile.settings.schemaVersion": "ဒေတာဘေ့စ် စကီးမာ ဗားရှင်း",
   "mobile.settings.databaseSize": "ဒေတာဘေ့စ် အရွယ်အစား",
   "mobile.settings.keystoreBacking": "Keystore အနောက်ခံ",
