@@ -20,6 +20,11 @@ Windows 10/11 (x64), for every published artifact. Linux and macOS build from
 source as best-effort only: they are not release-tested and receive no signed
 artifacts.
 
+Since 0.3.0 a release also publishes the **Android APK** (`arm64-v8a`, Android
+8.0 / API 26 and up). It is sideloaded and has no updater, so a new APK is a
+manual reinstall over the old one — same signing key, higher `versionCode`;
+`docs/ANDROID_DISTRIBUTION.md` §5 is the whole path.
+
 ## One-time setup
 
 ```bash
@@ -92,7 +97,27 @@ The position, decided by the owner on 2026-11-16:
    - `src-tauri/Cargo.toml` → `[package] version`
 
    Tag the commit `v<version>` (the tag keeps the `v`; the manifest does not).
-4. **Export the signing key** (a `.env` file does not work here):
+4. **Build and check the Android APK, then run the full gate** — the bump above
+   makes the gate red until this step is done, by design: `check-android-apk`
+   reads the artefact and the generated `app/tauri.properties` as well as
+   `package.json` (`docs/ANDROID_DISTRIBUTION.md` §3). Build it in the
+   environment `docs/ANDROID_TOOLCHAIN.md` pins, which also regenerates that
+   properties file:
+
+   ```bash
+   npx tauri android build --apk --target aarch64
+   npm run check:android-apk
+   ```
+
+   Its output is the APK's hand-off record: the signer DN, the certificate
+   SHA-256, `arm64-v8a only`, `versionCode`/`versionName`, the undefined
+   EVP/CRYPTO/OPENSSL symbol count and the APK's own SHA-256. Keep that block
+   beside `git rev-parse HEAD` and paste it into the release body — it is the
+   only evidence that the file handed over is the file checked.
+
+   Then run the full gate, tag the commit and push — the pre-push hook runs it
+   once more.
+5. **Export the signing key** (a `.env` file does not work here):
 
    ```bash
    export TAURI_SIGNING_PRIVATE_KEY="$(cat .keys/updater.key)"
@@ -117,7 +142,7 @@ The position, decided by the owner on 2026-11-16:
    end with `A public key has been found, but no private key` and writes **no
    `.sig` files** — so check for `bundle/nsis/*.exe.sig` before publishing.
 
-5. **Build** (`bundle.createUpdaterArtifacts` is already `true`):
+6. **Build** (`bundle.createUpdaterArtifacts` is already `true`):
 
    ```bash
    npm run tauri build
@@ -140,7 +165,7 @@ The position, decided by the owner on 2026-11-16:
 
    `tauri build` does **not** write `latest.json` — upstream only generates it
    inside the GitHub Action this project does not use.
-6. **Generate the manifest** (validates the version, the signature and the
+7. **Generate the manifest** (validates the version, the signature and the
    asset URL before anything is uploaded):
 
    ```bash
@@ -164,7 +189,7 @@ The position, decided by the owner on 2026-11-16:
    Pick **one** installer format and stay with it: the `url` in the manifest
    and the uploaded asset must be the same file, and the `signature` must be
    the contents of *that* file's `.sig`.
-7. **Publish** — with the GitHub CLI, or the web UI:
+8. **Publish** — with the GitHub CLI, or the web UI:
 
    ```bash
    gh release create v0.2.0 \
@@ -172,15 +197,28 @@ The position, decided by the owner on 2026-11-16:
      --notes-file RELEASE_NOTES.md \
      "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe" \
      "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe.sig" \
-     "src-tauri/target/release/bundle/nsis/latest.json"
+     "src-tauri/target/release/bundle/nsis/latest.json" \
+     "src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
    ```
 
-   Upload three assets: the installer, its `.sig`, and `latest.json`. Do not
-   mark it a draft or a pre-release.
-8. **Verify the update path on a real install**: keep the previous release
+   Upload four assets: the installer, its `.sig`, `latest.json`, and the APK.
+   The APK's name has no spaces, so GitHub stores it as
+   `app-universal-release.apk`, and no manifest points at it. Do not mark the
+   release a draft or a pre-release.
+9. **Verify the update path on a real install**: keep the previous release
    installed, open **Settings → Updates → Check for updates**, install, and
    confirm the version changes after restart. A `tauri dev` build cannot
    self-update — only an installed release build can.
+
+   The phone has no updater, so its half is a reinstall over the old one. A
+   build already on the phone that is signed by a **different** key (a debug
+   build, for instance) must be uninstalled first — Android refuses the upgrade
+   with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`:
+
+   ```bash
+   adb -s 4c61bf7a install -r app-universal-release.apk
+   adb -s 4c61bf7a shell dumpsys package com.minlulin.purplememo | grep versionName
+   ```
 
 ## Gotchas that have bitten this project
 
@@ -199,6 +237,13 @@ The position, decided by the owner on 2026-11-16:
 - **Version mismatch**: `latest.json` version, the tag and the app version must
   all agree, or the updater either ignores the release or loops offering an
   update the user already has.
+- **A bumped version makes the APK check fail until the APK is rebuilt.** That
+  is the check working, not a broken gate: `check-android-apk` reads
+  `app/tauri.properties` and the artefact beside `package.json`, so an older APK
+  beside a newer `package.json` is exactly the stale-file case it refuses, on
+  every `npm run verify` run on this machine. Rebuild (step 4) instead of
+  deleting the artefact or the check — with no APK at the default path the step
+  skips, which proves nothing about what gets handed over.
 - **Signature mismatch** (wrong keypair, or a manifest paired with another
   build's `.sig`) fails at install time with `signature verification failed`.
 - **GitHub rewrites spaces in asset names, and the manifest must agree.**
