@@ -523,8 +523,14 @@ test("a re-pair merges a shared uid by §4, and only a re-adoption replaces it",
   ).run(NOTE_UID);
 
   // The snapshot is OLDER than this phone's edit: the desktop's row loses.
-  await driver.batch(
-    await snapshotApplyStatements(driver, [desktopNote(3, "Desktop older")]),
+  const older = await snapshotApplyStatements(driver, [
+    desktopNote(3, "Desktop older"),
+  ]);
+  await driver.batch(older.statements);
+  assert.equal(
+    older.replaced,
+    0,
+    "the losing value here is the desktop's, so nothing of this device's was replaced",
   );
   assert.equal(
     noteRows(db)[0]?.title,
@@ -542,8 +548,14 @@ test("a re-pair merges a shared uid by §4, and only a re-adoption replaces it",
   assert.equal(kept.counter, 7, "the stamp still describes the value on disk");
 
   // The snapshot is NEWER: the desktop wins and the local value is archived.
-  await driver.batch(
-    await snapshotApplyStatements(driver, [desktopNote(9, "Desktop newer")]),
+  const newer = await snapshotApplyStatements(driver, [
+    desktopNote(9, "Desktop newer"),
+  ]);
+  await driver.batch(newer.statements);
+  assert.equal(
+    newer.replaced,
+    1,
+    "the pull reports the one edit it replaced, as §6's sync result does",
   );
   assert.equal(
     noteRows(db)[0]?.title,
@@ -559,15 +571,19 @@ test("a re-pair merges a shared uid by §4, and only a re-adoption replaces it",
   );
 
   // §9.4: a re-adoption after a restore is a different rule, named at the call.
-  await driver.batch(
-    await snapshotApplyStatements(
-      driver,
-      [desktopNote(3, "Desktop older")],
-      [],
-      new Date(),
-      "desktop-7f3c",
-      "replace",
-    ),
+  const wholesale = await snapshotApplyStatements(
+    driver,
+    [desktopNote(3, "Desktop older")],
+    [],
+    new Date(),
+    "desktop-7f3c",
+    "replace",
+  );
+  await driver.batch(wholesale.statements);
+  assert.equal(
+    wholesale.replaced,
+    0,
+    "a named wholesale replacement is the rule, not a conflict to report",
   );
   assert.equal(
     noteRows(db)[0]?.title,

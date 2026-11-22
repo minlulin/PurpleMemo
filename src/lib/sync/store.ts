@@ -1869,13 +1869,18 @@ async function mergeSnapshotRow(
   op: SnapshotOp,
   now: Date,
   senderDeviceId?: string,
-): Promise<BatchStatement[]> {
+): Promise<{ statements: BatchStatement[]; replaced: number }> {
   assertSyncTable(op.table);
   const [held] = await reader.query<Record<string, unknown>>(
     `SELECT * FROM "${op.table}" WHERE uid = ?`,
     [op.uid],
   );
-  if (held === undefined) return snapshotRowStatements(op, now, senderDeviceId);
+  if (held === undefined) {
+    return {
+      statements: snapshotRowStatements(op, now, senderDeviceId),
+      replaced: 0,
+    };
+  }
 
   const incoming: VersionStamp = {
     counter: op.stamp.counter,
@@ -1885,7 +1890,9 @@ async function mergeSnapshotRow(
   const heldStamp = await heldSnapshotStamp(reader, op.table, op.uid);
   // This device's value stands (or the two agree): nothing is written, and
   // the losing value is the SENDER's — its device writes that copy (§13.2).
-  if (compareStamps(incoming, heldStamp ?? PRE_HISTORY) <= 0) return [];
+  if (compareStamps(incoming, heldStamp ?? PRE_HISTORY) <= 0) {
+    return { statements: [], replaced: 0 };
+  }
 
   const mobile: SyncedRow = {
     table: op.table,
@@ -1893,17 +1900,21 @@ async function mergeSnapshotRow(
     stamp: heldStamp ?? PRE_HISTORY,
     fields: await wireFieldsOfHeld(reader, op.table, op, held),
   };
-  const copies = conflictLosers([
+  const losers = conflictLosers([
     { table: op.table, uid: op.uid, desktop: op, mobile },
-  ])
-    .filter((loser) => loser.loser === "mobile")
-    .flatMap((loser) =>
-      conflictCopyStatements(
-        [loser],
-        [{ table: op.table, uid: op.uid, row: held }],
+  ]).filter((loser) => loser.loser === "mobile");
+  return {
+    statements: [
+      ...losers.flatMap((loser) =>
+        conflictCopyStatements(
+          [loser],
+          [{ table: op.table, uid: op.uid, row: held }],
+        ),
       ),
-    );
-  return [...copies, ...snapshotRowStatements(op, now, senderDeviceId)];
+      ...snapshotRowStatements(op, now, senderDeviceId),
+    ],
+    replaced: losers.length,
+  };
 }
 
 /**
@@ -1914,6 +1925,11 @@ async function mergeSnapshotRow(
  * replacement, and the tombstones keep their guarded writes. `mode` is explicit
  * because the two paths are different rules: `merge` is §9.2 (first pairing and
  * ordinary re-pair), `replace` is §9.4 (re-adoption after a restore).
+ *
+ * `replaced` is how many of THIS device's values the snapshot's newer rows
+ * overwrote and archived (§13.2). It is reported rather than inferred, so the
+ * pull can name a replaced edit the same way §6's `SyncOutcome.replaced` does
+ * instead of letting it look like a record that vanished.
  */
 export async function snapshotApplyStatements(
   reader: AliasReader,
@@ -1923,7 +1939,7 @@ export async function snapshotApplyStatements(
   senderDeviceId?: string,
   mode: SnapshotApplyMode = "merge",
   vaultMeta?: VaultMetaWire | null,
-): Promise<BatchStatement[]> {
+): Promise<{ statements: BatchStatement[]; replaced: number }> {
   // F-2: the batch-level carriage matters only when the snapshot carries no
   // vault rows of its own; the local generation is read only in that case.
   const hasVaultRows = ops.some((op) => op.table === "vault_items");
@@ -1935,7 +1951,18 @@ export async function snapshotApplyStatements(
         }
       : null;
   if (mode === "replace") {
-    return snapshotStatements(ops, tombstones, now, senderDeviceId, carriage);
+    return {
+      statements: snapshotStatements(
+        ops,
+        tombstones,
+        now,
+        senderDeviceId,
+        carriage,
+      ),
+      // §9.4's wholesale replacement IS the rule, not a conflict: it archives
+      // no copy, so there is nothing "replaced" to report.
+      replaced: 0,
+    };
   }
   const vault: SnapshotOp[] = [];
   const rows: SnapshotOp[] = [];
@@ -1954,15 +1981,16 @@ export async function snapshotApplyStatements(
       (order.get(left.table) ?? 0) - (order.get(right.table) ?? 0),
   );
   const statements: BatchStatement[] = [];
+  let replaced = 0;
   for (const op of sorted) {
-    statements.push(
-      ...(await mergeSnapshotRow(reader, op, now, senderDeviceId)),
-    );
+    const merged = await mergeSnapshotRow(reader, op, now, senderDeviceId);
+    statements.push(...merged.statements);
+    replaced += merged.replaced;
   }
   statements.push(
     ...snapshotStatements(vault, tombstones, now, senderDeviceId, carriage),
   );
-  return statements;
+  return { statements, replaced };
 }
 
 /**

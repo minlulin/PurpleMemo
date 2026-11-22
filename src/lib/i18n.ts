@@ -543,6 +543,8 @@ export const en = {
   "mobile.settings.pullProgress": "Batch {batch} of {total}…",
   "mobile.settings.pullDone":
     "Copied: {rows} record(s) and {tombstones} deletion(s).",
+  "mobile.settings.pullReplaced":
+    "Copying from the desktop replaced {count} of this phone's edits with the desktop's newer version. The replaced copies are in this phone's Trash, and this phone has no Trash screen yet.",
   "mobile.settings.pullFailed":
     "Nothing was copied. The whole snapshot has to arrive before any of it is applied — try again.",
   "mobile.settings.pullTooLarge":
@@ -2307,6 +2309,8 @@ export const my: Record<MessageKey, string> = {
   "mobile.settings.pullProgress": "အစုအစည်း {batch} / {total}…",
   "mobile.settings.pullDone":
     "ကူးယူပြီးပါပြီ — မှတ်တမ်း {rows} ခု၊ ဖျက်မှတ် {tombstones} ခု။",
+  "mobile.settings.pullReplaced":
+    "ကွန်ပျူတာမှ ကူးယူမှုက ဤဖုန်း၏ တည်းဖြတ်ချက် {count} ခုကို ကွန်ပျူတာ၏ ပိုသစ်သော ဗားရှင်းဖြင့် အစားထိုးခဲ့သည်။ အစားထိုးခံရသော မိတ္တူများသည် ဤဖုန်း၏ အမှိုက်ပုံးထဲတွင် ရှိပြီး ဤဖုန်းတွင် အမှိုက်ပုံး မျက်နှာပြင် မရှိသေးပါ။",
   "mobile.settings.pullFailed":
     "ဘာမျှ မကူးယူရသေးပါ။ အစုအစည်းတစ်ခုလုံး ရောက်မှသာ သိမ်းဆည်းမည်ဖြစ်သည် — ထပ်ကြိုးစားပါ။",
   "mobile.settings.pullTooLarge": "အခြားစက်ရှိ မှတ်တမ်းတစ်ခုသည် ကူးယူရန် အလွန်ကြီးနေသည် —",

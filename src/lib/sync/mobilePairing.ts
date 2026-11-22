@@ -540,6 +540,13 @@ export interface SnapshotPullOutcome {
   batches: number;
   rows: number;
   tombstones: number;
+  /**
+   * This device's own values the snapshot's newer rows replaced, archived in
+   * the same transaction (§13.2). Reported so the pull names a replaced edit
+   * exactly as §6's `SyncOutcome.replaced` does, instead of leaving it to look
+   * like a record that vanished.
+   */
+  replaced: number;
   /** The staged rows themselves — §9.1's plan is computed against them. */
   stagedOps: SnapshotOp[];
   /** §8.4: a pull that stopped applies nothing, so this records 0 or all. */
@@ -596,6 +603,7 @@ export async function pullSnapshot(
     batches: 0,
     rows: 0,
     tombstones: 0,
+    replaced: 0,
     stagedOps: [] as SnapshotOp[],
     checkpoint:
       total > 0
@@ -646,24 +654,19 @@ export async function pullSnapshot(
   // the same shape every apply uses; a snapshot has no sequence of its own, so
   // the cursor it would move is left exactly where it was.
   let statements: BatchStatement[];
+  let replaced: number;
   try {
-    statements = applyStatements(
+    const applied = await snapshotApplyStatements(
+      transport,
+      staged,
+      deleted,
+      new Date(),
       input.desktopDeviceId,
-      0,
-      // §13.1: the desktop is the sender, so a reminder crossing this border
-      // without a creator is stamped as the desktop's. §9.2: a row this phone
-      // already holds is MERGED by §4, not overwritten — and a losing local
-      // value is archived in the same batch (§13.2).
-      await snapshotApplyStatements(
-        transport,
-        staged,
-        deleted,
-        new Date(),
-        input.desktopDeviceId,
-        options.mode ?? "merge",
-        vaultMeta,
-      ),
+      options.mode ?? "merge",
+      vaultMeta,
     );
+    statements = applyStatements(input.desktopDeviceId, 0, applied.statements);
+    replaced = applied.replaced;
   } catch (error) {
     return stalled(splitRefusal(errorText(error)), total);
   }
@@ -692,6 +695,7 @@ export async function pullSnapshot(
       batches: total,
       rows,
       tombstones,
+      replaced,
       stagedOps: staged,
       checkpoint,
       refusal: splitRefusal(errorText(error)),
@@ -703,6 +707,7 @@ export async function pullSnapshot(
     batches: total,
     rows,
     tombstones,
+    replaced,
     stagedOps: staged,
     checkpoint,
     refusal: null,

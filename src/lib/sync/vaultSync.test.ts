@@ -348,7 +348,7 @@ test("F-2: a setup-only desktop vault reaches the phone over a snapshot", async 
   await desktopVault.setupVault("desk-pass");
 
   const meta = await carriageOf(desktop);
-  const statements = await snapshotApplyStatements(
+  const applied = await snapshotApplyStatements(
     phone.driver,
     [],
     [],
@@ -357,7 +357,7 @@ test("F-2: a setup-only desktop vault reaches the phone over a snapshot", async 
     "merge",
     meta,
   );
-  await phone.driver.batch(statements);
+  await phone.driver.batch(applied.statements);
 
   const phoneVault = createVaultRepo(phone.driver, "mobile");
   assert.equal(await phoneVault.isSetUp(), true);

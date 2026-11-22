@@ -625,6 +625,11 @@ test("a pull stages every batch, applies them in ONE transaction, then adopts", 
   assert.equal(outcome.batches, 3);
   assert.equal(outcome.rows, 4);
   assert.equal(outcome.tombstones, 0);
+  assert.equal(
+    outcome.replaced,
+    0,
+    "a first pull onto an empty phone replaces nothing",
+  );
   assert.equal(outcome.refusal, null);
   assert.deepEqual(progress, ["1/3", "2/3", "3/3"]);
   // §8.4: three requests, three acks, ONE write, then the adoption.

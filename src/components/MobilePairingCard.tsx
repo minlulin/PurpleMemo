@@ -59,6 +59,7 @@ export function MobilePairingCard() {
   const [pulled, setPulled] = useState<{
     rows: number;
     tombstones: number;
+    replaced: number;
     stagedOps: SnapshotOp[];
   } | null>(null);
   const [pullError, setPullError] = useState<string | null>(null);
@@ -343,6 +344,7 @@ export function MobilePairingCard() {
         setPulled({
           rows: outcome.rows,
           tombstones: outcome.tombstones,
+          replaced: outcome.replaced,
           stagedOps: outcome.stagedOps,
         });
       } else {
@@ -563,6 +565,13 @@ export function MobilePairingCard() {
               {t("mobile.settings.pullDone", {
                 rows: pulled.rows,
                 tombstones: pulled.tombstones,
+              })}
+            </p>
+          ) : null}
+          {pulled !== null && pulled.replaced > 0 ? (
+            <p className="alert alert-warn" role="status">
+              {t("mobile.settings.pullReplaced", {
+                count: pulled.replaced,
               })}
             </p>
           ) : null}
