@@ -5,12 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  BACKUP_STALE_DAYS,
-  backupIsStale,
-  formatBackupAge,
-  parseLastBackup,
-} from "./backupHistory.ts";
+import { describeBackupAge, parseLastBackup } from "./backupHistory.ts";
 
 const NOW = new Date("2026-11-22T09:00:00.000Z");
 
@@ -48,31 +43,40 @@ test("anything that is not three valid fields is no record at all", () => {
   }
 });
 
-test("the age reads the way a person would say it", () => {
-  assert.equal(formatBackupAge("en", at(0), NOW), "today");
-  assert.equal(formatBackupAge("en", at(1), NOW), "yesterday");
-  assert.equal(formatBackupAge("en", at(3), NOW), "3 days ago");
+test("the age reads the way a person would say it, and counts whole days", () => {
+  assert.deepEqual(describeBackupAge("en", at(0), NOW), {
+    age: "today",
+    days: 0,
+  });
+  assert.deepEqual(describeBackupAge("en", at(1), NOW), {
+    age: "yesterday",
+    days: 1,
+  });
+  assert.deepEqual(describeBackupAge("en", at(3), NOW), {
+    age: "3 days ago",
+    days: 3,
+  });
   // Past two months the unit changes: "47 days ago" is harder to read.
-  assert.equal(formatBackupAge("en", at(61), NOW), "2 months ago");
+  assert.deepEqual(describeBackupAge("en", at(61), NOW), {
+    age: "2 months ago",
+    days: 61,
+  });
 });
 
 test("a future timestamp reads as today, never as a negative age", () => {
-  assert.equal(formatBackupAge("en", at(-5), NOW), "today");
+  assert.deepEqual(describeBackupAge("en", at(-5), NOW), {
+    age: "today",
+    days: 0,
+  });
 });
 
 test("an unreadable timestamp has no age to show", () => {
-  assert.equal(formatBackupAge("en", "not-a-date", NOW), null);
+  assert.equal(describeBackupAge("en", "not-a-date", NOW), null);
 });
 
 test("Burmese keeps Latin digits, like every other number in the app", () => {
-  const text = formatBackupAge("my", at(3), NOW);
-  assert.ok(text !== null);
-  assert.match(text, /3/);
-  assert.doesNotMatch(text, /[\u1040-\u1049]/);
-});
-
-test("thirty days is not stale; one day past that is", () => {
-  assert.equal(backupIsStale(at(BACKUP_STALE_DAYS), NOW), false);
-  assert.equal(backupIsStale(at(BACKUP_STALE_DAYS + 1), NOW), true);
-  assert.equal(backupIsStale("not-a-date", NOW), false);
+  const described = describeBackupAge("my", at(3), NOW);
+  assert.ok(described !== null);
+  assert.match(described.age, /3/);
+  assert.doesNotMatch(described.age, /[\u1040-\u1049]/);
 });

@@ -44,8 +44,7 @@ import {
 } from "../lib/backupContainer.ts";
 import {
   BACKUP_STALE_DAYS,
-  backupIsStale,
-  formatBackupAge,
+  describeBackupAge,
   type LastBackupRecord,
 } from "../lib/backupHistory.ts";
 import { hashAnswer, hashPin, verifyPin } from "../lib/crypto.ts";
@@ -738,36 +737,21 @@ export default function SettingsPage(p: SettingsPageProps) {
   };
 
   /**
-   * The Backup section's history line. `null` is "nothing to say" (the row has
-   * not been read yet); never having exported is `"never"`, a warning rather
-   * than silence, because on a product with no cloud that IS the risk.
+   * The recorded backup and its age, or `null` when this device has none it
+   * can trust. `lastBackup === undefined` (not read yet) is not "none": it
+   * must stay silent rather than warn while the read is in flight.
    */
-  const backupHistoryLine = ():
-    | { kind: "never" }
-    | { kind: "age"; stale: boolean; text: string }
-    | null => {
-    if (lastBackup === undefined) return null;
-    if (lastBackup === null) return { kind: "never" };
-    const age = formatBackupAge(locale, lastBackup.at);
-    // An unreadable stored timestamp promises nothing, so it reads as "never"
-    // rather than as an age derived from garbage.
-    if (age === null) return { kind: "never" };
-    const stale = backupIsStale(lastBackup.at);
-    // The age is the headline and the exact date stays beside it: "2 months
-    // ago" is the warning, the date is the evidence behind it.
-    return {
-      kind: "age",
-      stale,
-      text: t(stale ? "settings.lastBackupStale" : "settings.lastBackupAge", {
-        age,
-        date: formatDateTime(locale, lastBackup.at),
-        rows: formatNumber(locale, lastBackup.rows),
-        photos: formatNumber(locale, lastBackup.photos),
-        days: BACKUP_STALE_DAYS,
-      }),
-    };
-  };
-  const backupHistory = backupHistoryLine();
+  const backupHistory =
+    lastBackup === null || lastBackup === undefined
+      ? null
+      : (() => {
+          const described = describeBackupAge(locale, lastBackup.at);
+          return described === null
+            ? null
+            : { ...described, record: lastBackup };
+        })();
+  const backupStale =
+    backupHistory !== null && backupHistory.days > BACKUP_STALE_DAYS;
 
   return (
     <div className="budget-page">
@@ -1051,17 +1035,28 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">{t("settings.backupTitle")}</h3>
           <span className="badge">{t("settings.backupBadge")}</span>
         </div>
-        {backupHistory?.kind === "never" && (
+        {lastBackup !== undefined && backupHistory === null && (
           <p className="alert alert-warn" role="status">
             {t("settings.lastBackupNever")}
           </p>
         )}
-        {backupHistory?.kind === "age" && (
+        {backupHistory !== null && (
           <p
-            className={backupHistory.stale ? "alert alert-warn" : "muted"}
+            className={backupStale ? "alert alert-warn" : "muted"}
             role="status"
           >
-            {backupHistory.text}
+            {t(
+              backupStale
+                ? "settings.lastBackupStale"
+                : "settings.lastBackupAge",
+              {
+                age: backupHistory.age,
+                date: formatDateTime(locale, backupHistory.record.at),
+                rows: formatNumber(locale, backupHistory.record.rows),
+                photos: formatNumber(locale, backupHistory.record.photos),
+                days: BACKUP_STALE_DAYS,
+              },
+            )}
           </p>
         )}
         <label className="check-label">
