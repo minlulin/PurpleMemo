@@ -3,6 +3,7 @@
 // place that knows the key names.
 
 import type { BatchStatement, DataDriver } from "../data/driver.ts";
+import { type LastBackupRecord, parseLastBackup } from "./backupHistory.ts";
 import { isLocale, type Locale } from "./i18n.ts";
 import {
   type NotesViewMode,
@@ -42,6 +43,13 @@ export const SETTING_KEYS = {
   closeToTray: "close_to_tray",
   notesViewMode: "notes_view_mode",
   notesCollectionsCollapsed: "notes_collections_collapsed",
+  /**
+   * The last successful export this device made (`backupHistory.ts`).
+   * DEVICE-LOCAL in `backup.ts`: a backup is a fact about this machine's
+   * files, so neither an export nor a restore may carry another machine's
+   * claim about when it was last protected.
+   */
+  lastBackupAt: "last_backup_at",
 } as const;
 
 export type Theme = "dark" | "light";
@@ -259,6 +267,23 @@ export function createSettingsRepo(driver: DataDriver) {
 
     async setNotesCollectionsCollapsed(collapsed: boolean): Promise<void> {
       await this.setJSON(SETTING_KEYS.notesCollectionsCollapsed, collapsed);
+    },
+
+    /**
+     * The last successful export, or `null` when there is none to trust — no
+     * row yet, or a row that is not the shape `backupHistory.ts` writes. Both
+     * mean the same thing to the reader: this device has no backup history it
+     * can vouch for, which is what the warning says.
+     */
+    async getLastBackup(): Promise<LastBackupRecord | null> {
+      return parseLastBackup(
+        await this.getJSON<unknown>(SETTING_KEYS.lastBackupAt),
+      );
+    },
+
+    /** Record one successful export — written once the file is on disk. */
+    async setLastBackup(record: LastBackupRecord): Promise<void> {
+      await this.setJSON(SETTING_KEYS.lastBackupAt, record);
     },
 
     /**

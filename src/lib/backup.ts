@@ -185,13 +185,19 @@ export const BACKUP_TABLES = [
  * `vault_generation` are the VAULT's own data line (§12.3) — a restored vault
  * must still unlock, so they keep travelling.
  *
- * `settings.ts` marks no further device- or mobile-local key today. A new one
- * belongs in this list, not in a call site: both borders read it.
+ * `last_backup_at` (the Settings → Backup record) is here in the opposite
+ * direction: it says when THIS machine last wrote a backup, so a restore must
+ * not inherit the archive author's timestamp — and a restore is not an export
+ * of this device, so it must not refresh the claim either.
+ *
+ * A new device- or mobile-local key belongs in this list, not in a call site:
+ * both borders read it.
  */
 export const DEVICE_LOCAL_SETTING_KEYS = [
   SETTING_KEYS.pinHash,
   SETTING_KEYS.securityQuestion,
   SETTING_KEYS.securityAnswerHash,
+  SETTING_KEYS.lastBackupAt,
 ] as const;
 
 /**

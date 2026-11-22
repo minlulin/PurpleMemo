@@ -42,10 +42,16 @@ import {
   ENCRYPTED_BACKUP_MIME,
   isEncryptedBackup,
 } from "../lib/backupContainer.ts";
+import {
+  BACKUP_STALE_DAYS,
+  backupIsStale,
+  formatBackupAge,
+  type LastBackupRecord,
+} from "../lib/backupHistory.ts";
 import { hashAnswer, hashPin, verifyPin } from "../lib/crypto.ts";
 import { localISODateTime, todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
-import { formatDateTime } from "../lib/format.ts";
+import { formatDateTime, formatNumber } from "../lib/format.ts";
 import {
   isLocale,
   LOCALE_LABELS,
@@ -177,6 +183,14 @@ export default function SettingsPage(p: SettingsPageProps) {
    * on mount for the same reason as `preview`.
    */
   const [closeToTray, setCloseToTray] = useState(true);
+  /**
+   * The last successful export this device recorded. `null` is "never backed
+   * up"; `undefined` is "not read yet", so a backup having happened is never
+   * contradicted by a warning that merely rendered first.
+   */
+  const [lastBackup, setLastBackup] = useState<
+    LastBackupRecord | null | undefined
+  >(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,6 +207,14 @@ export default function SettingsPage(p: SettingsPageProps) {
         if (!cancelled) setCloseToTray(enabled);
       })
       // A failed read leaves the toggle at the default (ON).
+      .catch(() => undefined);
+    void settingsRepo
+      .getLastBackup()
+      .then((record) => {
+        if (!cancelled) setLastBackup(record);
+      })
+      // A failed read leaves the row unloaded, which renders nothing: a
+      // database error is not evidence that no backup exists.
       .catch(() => undefined);
     return () => {
       cancelled = true;
@@ -425,6 +447,21 @@ export default function SettingsPage(p: SettingsPageProps) {
         passwordBackup ? backupPassword : undefined,
       );
       await backupRepo.saveBackupFile(path, bytes);
+      // The file is on disk, so this export succeeded: record it where
+      // Settings reads it back, and show the new age immediately. A failed
+      // write is logged, not reported — the backup WAS saved, and telling the
+      // user otherwise invites a second export over a good file.
+      const record: LastBackupRecord = {
+        at: summary.exportedAt,
+        rows: summary.rowCount,
+        photos: summary.photoCount,
+      };
+      try {
+        await settingsRepo.setLastBackup(record);
+        setLastBackup(record);
+      } catch (e) {
+        console.error("[settings] could not record the last backup", e);
+      }
       toast.success(
         t(
           encrypted ? "settings.backupSavedEncrypted" : "settings.backupSaved",
@@ -699,6 +736,38 @@ export default function SettingsPage(p: SettingsPageProps) {
       setResetAck(false);
     }
   };
+
+  /**
+   * The Backup section's history line. `null` is "nothing to say" (the row has
+   * not been read yet); never having exported is `"never"`, a warning rather
+   * than silence, because on a product with no cloud that IS the risk.
+   */
+  const backupHistoryLine = ():
+    | { kind: "never" }
+    | { kind: "age"; stale: boolean; text: string }
+    | null => {
+    if (lastBackup === undefined) return null;
+    if (lastBackup === null) return { kind: "never" };
+    const age = formatBackupAge(locale, lastBackup.at);
+    // An unreadable stored timestamp promises nothing, so it reads as "never"
+    // rather than as an age derived from garbage.
+    if (age === null) return { kind: "never" };
+    const stale = backupIsStale(lastBackup.at);
+    // The age is the headline and the exact date stays beside it: "2 months
+    // ago" is the warning, the date is the evidence behind it.
+    return {
+      kind: "age",
+      stale,
+      text: t(stale ? "settings.lastBackupStale" : "settings.lastBackupAge", {
+        age,
+        date: formatDateTime(locale, lastBackup.at),
+        rows: formatNumber(locale, lastBackup.rows),
+        photos: formatNumber(locale, lastBackup.photos),
+        days: BACKUP_STALE_DAYS,
+      }),
+    };
+  };
+  const backupHistory = backupHistoryLine();
 
   return (
     <div className="budget-page">
@@ -982,6 +1051,19 @@ export default function SettingsPage(p: SettingsPageProps) {
           <h3 className="settings-heading">{t("settings.backupTitle")}</h3>
           <span className="badge">{t("settings.backupBadge")}</span>
         </div>
+        {backupHistory?.kind === "never" && (
+          <p className="alert alert-warn" role="status">
+            {t("settings.lastBackupNever")}
+          </p>
+        )}
+        {backupHistory?.kind === "age" && (
+          <p
+            className={backupHistory.stale ? "alert alert-warn" : "muted"}
+            role="status"
+          >
+            {backupHistory.text}
+          </p>
+        )}
         <label className="check-label">
           <input
             type="checkbox"

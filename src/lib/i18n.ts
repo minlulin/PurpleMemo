@@ -1004,6 +1004,12 @@ export const en = {
 
   "settings.backupTitle": "Backup & restore",
   "settings.backupBadge": ".zip or password-protected",
+  "settings.lastBackupNever":
+    "No backup has been made on this device. Everything here lives only on this machine — export one now.",
+  "settings.lastBackupAge":
+    "Last backup: {age} ({date}) — {rows} rows, {photos} photos.",
+  "settings.lastBackupStale":
+    "Last backup: {age} ({date}) — more than {days} days old. A disk failure would now lose everything written since then.",
   "settings.protectBackup":
     "Protect the backup with a password (a .{ext} file that needs this password to open)",
   "settings.backupPassword": "Backup password",
@@ -2762,6 +2768,12 @@ export const my: Record<MessageKey, string> = {
 
   "settings.backupTitle": "အရန်သိမ်းဆည်းမှုနှင့် ပြန်လည်ရယူမှု",
   "settings.backupBadge": ".zip သို့မဟုတ် စကားဝှက်ကာကွယ်ထားသည်",
+  "settings.lastBackupNever":
+    "ဤစက်တွင် အရန်သိမ်းဆည်းမှု မပြုလုပ်ရသေးပါ။ ဤနေရာရှိ အရာအားလုံးသည် ဤစက်တွင်သာ တည်ရှိသည် — ယခုပင် အရန်တစ်ခု ထုတ်ယူပါ။",
+  "settings.lastBackupAge":
+    "နောက်ဆုံး အရန်သိမ်းဆည်းမှု — {age} ({date})၊ အတန်း {rows} ခု၊ ဓာတ်ပုံ {photos} ခု။",
+  "settings.lastBackupStale":
+    "နောက်ဆုံး အရန်သိမ်းဆည်းမှု — {age} ({date})၊ ရက် {days} ကျော် ကြာနေပါပြီ။ ယခု ဒစ်ခ် ပျက်သွားပါက ထိုနောက်ပိုင်း ရေးထားသမျှ အားလုံး ဆုံးရှုံးပါမည်။",
   "settings.protectBackup":
     "အရန်သိမ်းဆည်းမှုကို စကားဝှက်ဖြင့် ကာကွယ်မည် (ဖွင့်ရန် ဤစကားဝှက် လိုအပ်သော .{ext} ဖိုင်)",
   "settings.backupPassword": "အရန်သိမ်းဆည်းမှု စကားဝှက်",
