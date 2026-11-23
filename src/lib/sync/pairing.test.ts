@@ -529,7 +529,10 @@ test("an offer is never filled in with defaults, nor trusted for its key and add
   };
   const refused = (result: ParsedOffer, reason: RegExp, note?: string) => {
     assert.equal(result.ok, false);
-    assert.match(result.ok === false ? result.reason : "", reason, note);
+    // `message: string` is a required overload in @types/node 26, so the
+    // optional note cannot be passed straight through.
+    const message = note ?? `expected the refusal to match ${reason}`;
+    assert.match(result.ok === false ? result.reason : "", reason, message);
   };
 
   // An omitted numeric used to coerce to 0 and pass `Number.isFinite`.

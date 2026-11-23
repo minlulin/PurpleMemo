@@ -75,7 +75,7 @@ month and weekday headings follow the language too.
 - The desktop installs its own updates: **Settings → Updates → Check for
   updates**. The phone does not; see above.
 - Database migrations are forward-only: this version upgrades your database to
-  schema v12 and **older versions cannot open it afterwards**. Reinstalling an
+  schema v14 and **older versions cannot open it afterwards**. Reinstalling an
   older build does not roll your data back; to go back you must restore a
   backup taken before the upgrade.
 - Backups restore rows and photos. The database encryption key is never part of

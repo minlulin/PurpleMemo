@@ -19,11 +19,15 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
-# Purple Memo: the Rust side reaches these two bridge classes by name over
-# JNI (src-tauri/src/reminders.rs) — ReminderBridge.sync / exactState /
-# openExactAlarmSettings / clearAll and SensitiveClipboard.copy. Nothing in
-# Java or Kotlin references them, so without these keeps R8 strips or renames
-# them in release builds and every reminder and sensitive-copy call fails at
-# runtime (silently: the JS side treats a failed sync as best-effort).
+# Purple Memo: the Rust side reaches these bridge classes by name over JNI
+# (src-tauri/src/reminders.rs, src-tauri/src/biometric.rs) — ReminderBridge.sync
+# / exactState / openExactAlarmSettings / clearAll, SensitiveClipboard.copy and
+# BiometricBridge.status / authenticate. Nothing in Java or Kotlin references
+# them, so without these keeps R8 strips or renames them in release builds and
+# every reminder, sensitive-copy and biometric call fails at runtime (silently:
+# the JS side treats a failed sync as best-effort, and a stripped biometric
+# bridge just answers "unavailable"). scripts/check-jni-keeps.mjs fails the gate
+# when a class named by a bridge constant in the Rust sources has no rule here.
 -keep class com.minlulin.purplememo.ReminderBridge { public static *; }
 -keep class com.minlulin.purplememo.SensitiveClipboard { public static *; }
+-keep class com.minlulin.purplememo.BiometricBridge { public static *; }

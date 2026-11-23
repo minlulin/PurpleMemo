@@ -177,7 +177,32 @@ if (toolchainChannel !== cargoRustVersion) {
   process.exit(1);
 }
 
+// The notes promise the user which schema their database becomes, and the
+// migration is forward-only, so a stale number there is a wrong upgrade
+// promise: the notes said "schema v12" while `SCHEMA_VERSION` was 14.
+const schemaVersion = /pub const SCHEMA_VERSION: i64 = (\d+);/.exec(
+  readText("src-tauri/src/schema.rs"),
+)?.[1];
+const namedSchema = [
+  ...readText("RELEASE_NOTES.md").matchAll(/schema v(\d+)/gi),
+].map((match) => match[1]);
+if (
+  schemaVersion === undefined ||
+  namedSchema.length === 0 ||
+  namedSchema.some((named) => named !== schemaVersion)
+) {
+  const named = [...new Set(namedSchema)].map((v) => `schema v${v}`).join(", ");
+  console.error(
+    "check-versions: FAILED — the release notes and the schema disagree:\n" +
+      `  src-tauri/src/schema.rs: SCHEMA_VERSION = ${schemaVersion ?? "(unreadable)"}\n` +
+      `  RELEASE_NOTES.md: ${named || "names no schema version"}\n` +
+      "  The notes must name the schema the code actually applies.",
+  );
+  process.exit(1);
+}
+
 console.log(
   `check-versions: OK — all three manifests agree on ${pkg}; ` +
-    `Node ${nvmNode} and Rust ${toolchainChannel} are pinned on both sides`,
+    `Node ${nvmNode} and Rust ${toolchainChannel} are pinned on both sides; ` +
+    `RELEASE_NOTES.md names schema v${schemaVersion}`,
 );

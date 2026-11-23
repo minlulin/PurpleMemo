@@ -1157,9 +1157,12 @@ const ALLOWED_PRAGMAS: [&str; 3] = ["FOREIGN_KEYS", "FOREIGN_KEY_CHECK", "USER_V
 
 /// Refuse statements outside the vocabulary the renderer is allowed to use.
 ///
-/// This is defence in depth, not a sandbox: the delivery plan already
-/// establishes that the renderer is trusted (it can run arbitrary SQL and
-/// read the DB key).
+/// This is defence in depth, not a sandbox: the renderer is still trusted
+/// with the app's own data — its driver runs the statements it builds over
+/// this connection. It no longer holds the database key: `db_key_export` is
+/// gone, so no command returns it, and `db_key_save` writes the key file inside
+/// Rust, which keeps the key from crossing IPC at all (docs/RELEASE.md,
+/// "Renderer trust boundary").
 /// What it buys is that a bug in the TypeSQL layer — which builds some
 /// statements by interpolating a validated identifier — cannot escalate beyond
 /// the app's own vocabulary: no schema destruction (`DROP`, `ALTER`), no file
