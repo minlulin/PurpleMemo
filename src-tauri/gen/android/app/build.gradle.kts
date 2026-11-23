@@ -205,6 +205,9 @@ rust {
 }
 
 dependencies {
+    // Fingerprint/face unlock (BiometricBridge.kt): 1.1.0 is the latest stable
+    // (verified 2026-11-23 against the Android Developers release page).
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

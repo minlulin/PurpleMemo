@@ -1,3 +1,4 @@
+mod biometric;
 mod commands;
 mod db;
 // Public because the pairing envelope is the one piece of the sync boundary
@@ -226,6 +227,8 @@ pub fn run() {
             reminders::clipboard_copy_sensitive,
             reminders::clipboard_probe_read,
             reminders::keystore_backing,
+            biometric::biometric_status,
+            biometric::biometric_authenticate,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| report_run_failure(&e.to_string()));

@@ -39,5 +39,16 @@ class MainActivity : TauriActivity() {
     // webview can invoke a command.
     ReminderBridge.install(applicationContext)
     SensitiveClipboard.install(applicationContext)
+    // The biometric prompt is the one surface that cannot take the application
+    // context: `BiometricPrompt` attaches to this Activity's FragmentManager.
+    // The bridge holds a weak reference, refreshed here and on every resume, so
+    // a configuration change hands it the current Activity without keeping a
+    // finished one alive.
+    BiometricBridge.attach(this)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    BiometricBridge.attach(this)
   }
 }
