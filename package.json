@@ -11,7 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "verify": "node scripts/check-hooks.mjs && node scripts/check-references.mjs && node scripts/check-signing-key.mjs && node scripts/check-android-apk.mjs && node scripts/check-android-manifest.mjs && node scripts/check-jni-keeps.mjs && node scripts/check-versions.mjs && npm run lint && npm run token-lint && npm run dead-code && npm run typecheck && npm run test && npm run test:rust && npm run clippy && npm run fmt:check && npm run check:android && npm run build",
+    "verify": "node scripts/check-hooks.mjs && node scripts/check-references.mjs && node scripts/check-signing-key.mjs && node scripts/check-android-apk.mjs && node scripts/check-android-manifest.mjs && node scripts/check-jni-keeps.mjs && node scripts/check-capabilities.mjs && node scripts/check-versions.mjs && npm run lint && npm run token-lint && npm run dead-code && npm run typecheck && npm run test && npm run test:rust && npm run clippy && npm run fmt:check && npm run check:android && npm run build",
     "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --write .",
     "token-lint": "node scripts/token-lint.mjs",
@@ -25,6 +25,7 @@
     "check:android-apk": "node scripts/check-android-apk.mjs",
     "check:android-manifest": "node scripts/check-android-manifest.mjs",
     "check:jni-keeps": "node scripts/check-jni-keeps.mjs",
+    "check:capabilities": "node scripts/check-capabilities.mjs",
     "setup:android-make-shim": "node scripts/android-make-shim/setup.mjs",
     "clippy": "cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"
