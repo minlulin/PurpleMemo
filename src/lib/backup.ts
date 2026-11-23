@@ -190,6 +190,12 @@ export const BACKUP_TABLES = [
  * not inherit the archive author's timestamp — and a restore is not an export
  * of this device, so it must not refresh the claim either.
  *
+ * `biometric_unlock` is the same kind of fact in the other direction again: it
+ * says whether THIS phone's sensor should stand beside this device's PIN. A
+ * restore onto a phone without a sensor must not arrive with the shortcut
+ * switched on, and another machine's choice is not evidence about this one's
+ * hardware.
+ *
  * A new device- or mobile-local key belongs in this list, not in a call site:
  * both borders read it.
  */
@@ -198,6 +204,7 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
   SETTING_KEYS.securityQuestion,
   SETTING_KEYS.securityAnswerHash,
   SETTING_KEYS.lastBackupAt,
+  SETTING_KEYS.biometricUnlock,
 ] as const;
 
 /**

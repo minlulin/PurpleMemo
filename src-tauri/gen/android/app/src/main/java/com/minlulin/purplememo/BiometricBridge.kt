@@ -42,7 +42,13 @@ import java.util.concurrent.atomic.AtomicReference
 object BiometricBridge {
     private const val TAG = "PurpleMemo"
 
-    /** The prompt's escape hatch; the app PIN is what it leads back to. */
+    /**
+     * The prompt's escape hatch; the app PIN is what it leads back to.
+     *
+     * Only a fallback: the renderer supplies the label in the app's own
+     * language, because this class cannot read the encrypted settings row that
+     * holds that choice.
+     */
     private const val PIN_BUTTON = "Use PIN"
 
     /**
@@ -102,12 +108,16 @@ object BiometricBridge {
     /**
      * Show the prompt and report what it did.
      *
+     * `title` and `negativeButton` are the dialog's words, passed in by the
+     * renderer from the app's catalogue; a blank one falls back to the app label
+     * / [PIN_BUTTON].
+     *
      * Called from a non-UI thread (the Rust side runs it on a blocking thread),
      * so blocking here is safe. A phone with nothing enrolled or no hardware is
      * turned away by [status] instead of being shown a prompt that can only fail.
      */
     @JvmStatic
-    fun authenticate(): String {
+    fun authenticate(title: String, negativeButton: String): String {
         val activity = currentActivity() ?: return "unavailable"
         if (status() != "available") return "unavailable"
         if (prompting) {
@@ -117,7 +127,7 @@ object BiometricBridge {
         prompting = true
         try {
             val waiter = Waiter()
-            if (!main.post { show(activity, waiter) }) {
+            if (!main.post { show(activity, waiter, title, negativeButton) }) {
                 Log.w(TAG, "the main thread did not accept the biometric prompt")
                 return "unavailable"
             }
@@ -128,33 +138,46 @@ object BiometricBridge {
     }
 
     /** Build and show the prompt; any failure settles the waiter, never throws. */
-    private fun show(activity: FragmentActivity, waiter: Waiter) {
+    private fun show(
+        activity: FragmentActivity,
+        waiter: Waiter,
+        title: String,
+        negativeButton: String,
+    ) {
         try {
             val prompt = BiometricPrompt(
                 activity,
                 ContextCompat.getMainExecutor(activity),
                 callback(waiter),
             )
-            prompt.authenticate(promptInfo(activity))
+            prompt.authenticate(promptInfo(activity, title, negativeButton))
         } catch (e: Exception) {
             Log.w(TAG, "the biometric prompt could not be shown", e)
             waiter.settle("unavailable")
         }
     }
 
-    private fun promptInfo(activity: FragmentActivity): BiometricPrompt.PromptInfo {
-        val appName = try {
-            activity.packageManager
-                .getApplicationLabel(activity.applicationInfo)
-                .toString()
-        } catch (e: Exception) {
-            "Purple Memo"
+    private fun promptInfo(
+        activity: FragmentActivity,
+        title: String,
+        negativeButton: String,
+    ): BiometricPrompt.PromptInfo {
+        // The app's own label is only a last resort: the renderer's title is the
+        // one in the language the user chose inside the app.
+        val heading = title.ifBlank {
+            try {
+                activity.packageManager
+                    .getApplicationLabel(activity.applicationInfo)
+                    .toString()
+            } catch (e: Exception) {
+                "Purple Memo"
+            }
         }
         return BiometricPrompt.PromptInfo.Builder()
-            .setTitle(appName)
+            .setTitle(heading)
             // Required whenever the device credential is not allowed, and the
             // honest escape: this button leads back to the app's PIN.
-            .setNegativeButtonText(PIN_BUTTON)
+            .setNegativeButtonText(negativeButton.ifBlank { PIN_BUTTON })
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG,
             )

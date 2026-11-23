@@ -50,6 +50,13 @@ export const SETTING_KEYS = {
    * claim about when it was last protected.
    */
   lastBackupAt: "last_backup_at",
+  /**
+   * Whether this phone offers its fingerprint/face prompt beside the app PIN.
+   * DEVICE-LOCAL in `backup.ts`: it is a fact about this handset's sensor, not
+   * about the library, so a backup must not carry it and a restore must not
+   * turn it on.
+   */
+  biometricUnlock: "biometric_unlock",
 } as const;
 
 export type Theme = "dark" | "light";
@@ -284,6 +291,25 @@ export function createSettingsRepo(driver: DataDriver) {
     /** Record one successful export — written once the file is on disk. */
     async setLastBackup(record: LastBackupRecord): Promise<void> {
       await this.setJSON(SETTING_KEYS.lastBackupAt, record);
+    },
+
+    /**
+     * Whether the lock screen may show the phone's biometric prompt. Default
+     * OFF.
+     *
+     * `=== true` is deliberate: a fresh install, a desktop (where the prompt
+     * does not exist), and an install that predates the key all answer "no".
+     * Turning it on is a deliberate act behind the current PIN, so anything
+     * short of a recorded `true` must not offer the shortcut.
+     */
+    async getBiometricUnlock(): Promise<boolean> {
+      return (
+        (await this.getJSON<boolean>(SETTING_KEYS.biometricUnlock)) === true
+      );
+    },
+
+    async setBiometricUnlock(enabled: boolean): Promise<void> {
+      await this.setJSON(SETTING_KEYS.biometricUnlock, enabled);
     },
 
     /**

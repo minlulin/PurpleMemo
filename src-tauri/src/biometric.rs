@@ -32,23 +32,33 @@ pub fn biometric_status() -> Result<String, String> {
 /// Show the prompt and report what it did: `"success"`, `"cancelled"`,
 /// `"failed"`, `"lockout"` or `"unavailable"`.
 ///
+/// `title` and `negative_button` are the prompt's own words, supplied by the
+/// renderer from the app's catalogue: the bridge cannot read the encrypted
+/// settings row that holds the language choice, so `res/values` (which follows
+/// the phone's *system* locale) would be the wrong source. The bridge falls back
+/// to its own defaults when either string is blank.
+///
 /// Asynchronous and on a blocking thread on purpose: the prompt waits for a
 /// human, and the one thread that must never wait is the main thread — that is
 /// the ANR this avoids. The Kotlin side already waits off the UI thread; running
 /// the call through `spawn_blocking` also keeps a multi-minute wait out of the
 /// async runtime's worker pool.
 #[tauri::command]
-pub async fn biometric_authenticate() -> Result<String, String> {
+pub async fn biometric_authenticate(
+    title: String,
+    negative_button: String,
+) -> Result<String, String> {
     #[cfg(target_os = "android")]
     {
-        tauri::async_runtime::spawn_blocking(|| {
-            android::call_no_arg_string(android::BRIDGE, "authenticate")
+        tauri::async_runtime::spawn_blocking(move || {
+            android::call_two_strings(android::BRIDGE, "authenticate", &title, &negative_button)
         })
         .await
         .map_err(|e| format!("the biometric prompt could not be awaited: {e}"))?
     }
     #[cfg(not(target_os = "android"))]
     {
+        let _ = (title, negative_button);
         Ok(UNAVAILABLE.to_string())
     }
 }
@@ -71,11 +81,12 @@ fn call(method: &str) -> Result<String, String> {
 /// A local copy of [`crate::reminders::android`]'s call pattern (that module is
 /// private): the same `with_env` / `app_class` / `call_no_arg_string` shapes and
 /// the same error wording, kept here rather than moved so the reminder path does
-/// not change to serve this one. Only the no-argument string call is needed —
-/// both biometric methods take and return plain strings.
+/// not change to serve this one. Both biometric methods take and return plain
+/// strings: `status()` takes none, `authenticate()` takes the prompt's title and
+/// escape-hatch label.
 #[cfg(target_os = "android")]
 mod android {
-    use jni::objects::{JClass, JString, JValue};
+    use jni::objects::{JClass, JObject, JString, JValue, JValueOwned};
     use jni::{JNIEnv, JavaVM};
 
     /// The app's own bridge class, resolved through the *app's* class loader —
@@ -144,6 +155,22 @@ mod android {
         format!("{caught}")
     }
 
+    /// Read a Java `String` out of a call's return value.
+    fn string_result<'local>(
+        env: &mut JNIEnv<'local>,
+        value: JValueOwned<'local>,
+        method: &str,
+    ) -> Result<String, String> {
+        let object = value
+            .l()
+            .map_err(|e| format!("{method} did not return a string: {e}"))?;
+        let text: String = env
+            .get_string(&JString::from(object))
+            .map_err(|e| format!("could not read the {method} result: {e}"))?
+            .into();
+        Ok(text)
+    }
+
     /// Call a static `() -> String` bridge method.
     pub fn call_no_arg_string(class: &str, method: &str) -> Result<String, String> {
         with_env(|env| {
@@ -151,14 +178,36 @@ mod android {
             let value = env
                 .call_static_method(&target, method, "()Ljava/lang/String;", &[])
                 .map_err(|e| throwable_message(env, e))?;
-            let object = value
-                .l()
-                .map_err(|e| format!("{method} did not return a string: {e}"))?;
-            let text: String = env
-                .get_string(&JString::from(object))
-                .map_err(|e| format!("could not read the {method} result: {e}"))?
-                .into();
-            Ok(text)
+            string_result(env, value, method)
+        })
+    }
+
+    /// Call a static `(String, String) -> String` bridge method.
+    pub fn call_two_strings(
+        class: &str,
+        method: &str,
+        first: &str,
+        second: &str,
+    ) -> Result<String, String> {
+        with_env(|env| {
+            let target = app_class(env, class)?;
+            let a = env
+                .new_string(first)
+                .map_err(|e| format!("could not allocate the prompt title: {e}"))?;
+            let b = env
+                .new_string(second)
+                .map_err(|e| format!("could not allocate the prompt button text: {e}"))?;
+            let a: JObject = a.into();
+            let b: JObject = b.into();
+            let value = env
+                .call_static_method(
+                    &target,
+                    method,
+                    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                    &[JValue::Object(&a), JValue::Object(&b)],
+                )
+                .map_err(|e| throwable_message(env, e))?;
+            string_result(env, value, method)
         })
     }
 }

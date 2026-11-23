@@ -37,13 +37,32 @@ export async function biometricStatus(): Promise<BiometricStatus> {
   return await invoke<BiometricStatus>("biometric_status");
 }
 
+/** The two strings the OS dialog shows, supplied by the renderer's catalogue. */
+export interface BiometricPromptText {
+  /** The dialog's title, e.g. "Unlock Purple Memo". */
+  title: string;
+  /** The escape hatch's label — this app's PIN, never the device credential. */
+  negativeButton: string;
+}
+
 /**
  * Show the phone's prompt and report the outcome.
  *
  * Resolves only when the prompt is done — this can take as long as the person
  * standing in front of the phone, which is why the Rust command runs it off the
  * main thread.
+ *
+ * The prompt's words travel with the call: the bridge lives in the native
+ * layer and cannot read the encrypted settings row that holds the app's own
+ * language choice, so `res/values` (which follows the phone's *system* locale)
+ * would be the wrong source. A blank string is accepted by the bridge and falls
+ * back to its own defaults.
  */
-export async function biometricAuthenticate(): Promise<BiometricOutcome> {
-  return await invoke<BiometricOutcome>("biometric_authenticate");
+export async function biometricAuthenticate(
+  text: BiometricPromptText,
+): Promise<BiometricOutcome> {
+  return await invoke<BiometricOutcome>("biometric_authenticate", {
+    title: text.title,
+    negativeButton: text.negativeButton,
+  });
 }

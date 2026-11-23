@@ -54,6 +54,15 @@ test("every invoked command is registered in lib.rs, and nothing else is", () =>
   );
 });
 
+test("the prompt's words are handed to the bridge with the call", () => {
+  // The native bridge cannot read the encrypted settings row that holds the
+  // app's language choice, so these two strings are the renderer's job. A
+  // signature that dropped either would fall back to English on a Burmese
+  // phone — and would still compile, because both sides are strings.
+  assert.match(moduleSrc, /title:\s*text\.title/);
+  assert.match(moduleSrc, /negativeButton:\s*text\.negativeButton/);
+});
+
 test("the pair stays out of the driver's pinned 46", () => {
   // Adding it to `driver.ts` would break `ipc.test.ts`'s count for the wrong
   // reason, and would put an Android-only surface in the shared driver. The

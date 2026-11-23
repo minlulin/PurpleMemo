@@ -37,12 +37,21 @@ import {
 } from "../data/app.ts";
 import { factoryReset } from "../data/driver.ts";
 import {
+  type BiometricStatus,
+  biometricStatus,
+} from "../lib/android-biometric.ts";
+import {
   copySensitive,
   isAndroidPlatform,
   syncAndroidReminders,
 } from "../lib/android-reminders.ts";
 import { classifyPin, type PinState } from "../lib/appLock.ts";
+import {
+  BIOMETRIC_TOGGLE_REASON,
+  biometricToggleBlock,
+} from "../lib/biometricUnlock.ts";
 import type { WalletEntryRow } from "../lib/budget.ts";
+import { verifyPin } from "../lib/crypto.ts";
 import { localISODateTime, todayLocal } from "../lib/dates.ts";
 import { errText } from "../lib/errors.ts";
 import type { SearchGroup } from "../lib/globalSearch.ts";
@@ -511,6 +520,24 @@ export function SettingsScreen({
    *  would race the first one's file deletions mid-flight. */
   const resettingRef = useRef(false);
 
+  /**
+   * Biometric unlock: the phone's answer, the stored choice, and the PIN
+   * confirmation D3 requires before the choice can be switched on.
+   *
+   * `biometric === null` is "not read yet": the row renders nothing rather
+   * than a toggle with an assumed reason.
+   */
+  const [biometric, setBiometric] = useState<BiometricStatus | null>(null);
+  const [biometricOn, setBiometricOn] = useState(false);
+  const [bioConfirm, setBioConfirm] = useState(false);
+  const [bioPin, setBioPin] = useState("");
+  const [bioPinWrong, setBioPinWrong] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
+  /** Synchronous half of the double-submit rule: PIN verification costs a
+   *  600k-iteration derivation, so a second tap must be refused before React
+   *  has re-rendered. */
+  const bioBusyRef = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
     setDiagnosticsFailed(false);
@@ -525,6 +552,8 @@ export function SettingsScreen({
         permission,
         rawPin,
         storedTheme,
+        bioStatus,
+        bioEnabled,
       ] = await Promise.all([
         // Dynamic, like the desktop's About line: no Tauri API in a browser build.
         import("@tauri-apps/api/app")
@@ -539,9 +568,16 @@ export function SettingsScreen({
           () => null,
         ),
         settingsRepo.getTheme().catch(() => null),
+        // The phone's own answer, and this device's stored choice. A failed
+        // read of either is not an error state: the toggle simply stays off,
+        // which is the safe direction.
+        biometricStatus().catch(() => null),
+        settingsRepo.getBiometricUnlock().catch(() => false),
       ]);
       if (cancelled) return;
       setThemeState(storedTheme ?? "dark");
+      setBiometric(bioStatus);
+      setBiometricOn(bioEnabled);
       setDiagnosticsFailed(diagnostics === null);
       setFacts({
         appVersion,
@@ -677,6 +713,62 @@ export function SettingsScreen({
     }
   };
 
+  /**
+   * The Settings toggle's two sides (D3).
+   *
+   * Turning OFF is immediate and free: the shortcut is coming off, and asking
+   * for proof to disable something is how a lockout becomes permanent. Turning
+   * ON verifies the current PIN first — it stands beside the PIN lock, so
+   * whoever is merely holding an unlocked phone must not be able to arm it.
+   * A wrong PIN changes nothing and says so.
+   */
+  const changeBiometric = async (next: boolean) => {
+    if (bioBusyRef.current) return;
+    if (!next) {
+      bioBusyRef.current = true;
+      setBioBusy(true);
+      try {
+        await settingsRepo.setBiometricUnlock(false);
+        setBiometricOn(false);
+        setBioConfirm(false);
+        setBioPin("");
+        setBioPinWrong(false);
+      } catch {
+        // A failed write leaves the toggle where it was: the row is the truth.
+      } finally {
+        bioBusyRef.current = false;
+        setBioBusy(false);
+      }
+      return;
+    }
+    const pin = facts.pin;
+    if (pin === null || pin.kind !== "stored") return;
+    bioBusyRef.current = true;
+    setBioBusy(true);
+    setBioPinWrong(false);
+    try {
+      if (!(await verifyPin(bioPin, pin.hash))) {
+        setBioPinWrong(true);
+        return;
+      }
+      await settingsRepo.setBiometricUnlock(true);
+      setBiometricOn(true);
+      setBioConfirm(false);
+      setBioPin("");
+    } catch {
+      // Same rule as turning off: nothing changes unless the row was written.
+    } finally {
+      bioBusyRef.current = false;
+      setBioBusy(false);
+    }
+  };
+
+  const pinSet = facts.pin?.kind === "stored";
+  const biometricBlock =
+    biometric === null
+      ? null
+      : biometricToggleBlock({ pinSet, status: biometric });
+
   const pinText =
     facts.pin === null
       ? ""
@@ -780,6 +872,104 @@ export function SettingsScreen({
         <li className="mobile-row-text">{t("mobile.settings.encryption")}</li>
         <li className="mobile-row-text">{t("mobile.settings.keyLoss")}</li>
       </ul>
+      {/* The phone's Settings is the Android shell (App.tsx picks MobileShell
+          on the same platform signal), so desktop never renders this block. */}
+      {isAndroidPlatform() && biometric !== null ? (
+        <div className="mobile-card">
+          <p className="mobile-fact-term">{t("settings.biometric.label")}</p>
+          <p className="mobile-row-text">
+            {t("settings.biometric.description")}
+          </p>
+          {biometricBlock !== null ? (
+            <>
+              <p className="mobile-row-text">
+                {t(BIOMETRIC_TOGGLE_REASON[biometricBlock])}
+              </p>
+              <button
+                type="button"
+                className="btn"
+                disabled
+                aria-pressed={false}
+              >
+                {t("settings.biometric.label")}
+              </button>
+            </>
+          ) : bioConfirm && !biometricOn ? (
+            <>
+              <label>
+                {t("settings.biometric.pinPrompt")}
+                <input
+                  className="input"
+                  type="password"
+                  autoComplete="current-password"
+                  value={bioPin}
+                  disabled={bioBusy}
+                  onChange={(event) => {
+                    setBioPin(event.target.value);
+                    setBioPinWrong(false);
+                  }}
+                />
+              </label>
+              {bioPinWrong ? (
+                <p className="mobile-error" role="alert">
+                  {t("settings.biometric.wrongPin")}
+                </p>
+              ) : null}
+              <div className="row-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={bioBusy}
+                  onClick={() => {
+                    setBioConfirm(false);
+                    setBioPin("");
+                    setBioPinWrong(false);
+                  }}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={bioBusy || bioPin === ""}
+                  onClick={() => void changeBiometric(true)}
+                >
+                  {bioBusy
+                    ? t("common.checking")
+                    : t("settings.biometric.turnOn")}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mobile-row-text">
+                {biometricOn
+                  ? t("settings.biometric.on")
+                  : t("settings.biometric.off")}
+              </p>
+              <button
+                type="button"
+                className={biometricOn ? "btn is-on" : "btn"}
+                aria-pressed={biometricOn}
+                disabled={bioBusy}
+                onClick={() => {
+                  if (biometricOn) {
+                    void changeBiometric(false);
+                    return;
+                  }
+                  setBioPin("");
+                  setBioPinWrong(false);
+                  setBioConfirm(true);
+                }}
+              >
+                {biometricOn
+                  ? t("settings.biometric.turnOff")
+                  : t("settings.biometric.turnOn")}
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
 
       <p className="mobile-section-kicker">
         {t("mobile.settings.diagnosticsHeading")}

@@ -4,8 +4,14 @@
 // in the settings table; the fallback stores the same kind of hash for the
 // answer. There is NO online recovery and the UI says so plainly
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { settingsRepo } from "../data/app.ts";
+import {
+  type BiometricStatus,
+  biometricAuthenticate,
+  biometricStatus,
+} from "../lib/android-biometric.ts";
+import { isAndroidPlatform } from "../lib/android-reminders.ts";
 import {
   LOCK_RETRY_DELAY_MS,
   lockRetryDelayMs,
@@ -15,6 +21,10 @@ import {
   pinResetBlocked,
 } from "../lib/appLock.ts";
 import {
+  BIOMETRIC_OUTCOME_MESSAGE,
+  biometricOffer,
+} from "../lib/biometricUnlock.ts";
+import {
   hashAnswer,
   hashPin,
   type PinHash,
@@ -22,6 +32,7 @@ import {
   verifyPin,
 } from "../lib/crypto.ts";
 import { errText } from "../lib/errors.ts";
+import type { MessageKey } from "../lib/i18n.ts";
 import { SETTING_KEYS } from "../lib/settings.ts";
 import { IconLock } from "./icons.tsx";
 import { type Translate, useT } from "./useTranslation.ts";
@@ -356,6 +367,34 @@ export function LockScreen(p: LockScreenProps) {
    *  unmounted screen. */
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * The biometric shortcut's two inputs: the setting and the phone's own
+   * answer. Read once, on mount, and only on Android — a desktop has no
+   * prompt, so it never asks and never invokes.
+   *
+   * `status` starts `null` ("not read yet"), which `biometricOffer` treats as
+   * false: the shortcut appears when the phone has answered `available`, never
+   * before. A phone whose enrolment changed since the read can only produce a
+   * quiet failure line, never an unlock — the prompt itself re-checks.
+   */
+  const [biometric, setBiometric] = useState<{
+    enabled: boolean;
+    status: BiometricStatus | null;
+  }>({ enabled: false, status: null });
+  /** A prompt is outstanding, and the button is disabled while it is. */
+  const [bioBusy, setBioBusy] = useState(false);
+  /** The one quiet line D5 allows, as a key so it follows a language switch. */
+  const [bioNote, setBioNote] = useState<MessageKey | null>(null);
+  /** Synchronous half of the one-at-a-time rule: a second tap cannot start a
+   *  second prompt before React has re-rendered the disabled button. */
+  const bioBusyRef = useRef(false);
+  /**
+   * The auto-prompt runs once per mount (D2). A manual retry does not reset
+   * this, so the timeout-`cancelled` prompt that follows a long wait cannot
+   * re-trigger it in a loop.
+   */
+  const bioAutoPromptedRef = useRef(false);
+
   useEffect(() => {
     return () => {
       if (cooldownTimerRef.current !== null) {
@@ -364,6 +403,73 @@ export function LockScreen(p: LockScreenProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAndroidPlatform()) return;
+    let cancelled = false;
+    void Promise.all([
+      settingsRepo.getBiometricUnlock().catch(() => false),
+      biometricStatus().catch((): BiometricStatus => "unavailable"),
+    ]).then(([enabled, status]) => {
+      if (!cancelled) setBiometric({ enabled, status });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * One prompt, on the phone's own surface.
+   *
+   * The renderer supplies the dialog's words: they come from the catalogue in
+   * the language chosen inside the app, which the native bridge cannot read.
+   * `success` calls the same `onUnlock` a correct PIN calls — the entry re-read
+   * behind it is unchanged, and nothing here writes a setting.
+   */
+  const unlockWithBiometric = useCallback(async () => {
+    if (bioBusyRef.current) return;
+    bioBusyRef.current = true;
+    setBioBusy(true);
+    setBioNote(null);
+    try {
+      const outcome = await biometricAuthenticate({
+        title: t("lock.biometric.promptTitle"),
+        negativeButton: t("lock.biometric.usePin"),
+      });
+      if (outcome === "success") {
+        failuresRef.current = 0;
+        try {
+          await p.onUnlock();
+        } catch (e) {
+          // The prompt did its job; the entry behind it failed. That is the
+          // PIN path's own error, in the same place it reports it.
+          setError(errText(e));
+        }
+        return;
+      }
+      setBioNote(BIOMETRIC_OUTCOME_MESSAGE[outcome]);
+    } catch {
+      // A command that cannot even be reached is the same non-result as the
+      // bridge's own `unavailable`: say so quietly and leave the PIN pad up.
+      setBioNote(BIOMETRIC_OUTCOME_MESSAGE.failed);
+    } finally {
+      bioBusyRef.current = false;
+      setBioBusy(false);
+    }
+  }, [p.onUnlock, t]);
+
+  const offerBiometric = biometricOffer({
+    enabled: biometric.enabled,
+    pinSet: p.pinHash !== undefined,
+    status: biometric.status,
+    stage: mode === "pin" ? "pin" : "forgot",
+  });
+
+  useEffect(() => {
+    if (!offerBiometric || bioAutoPromptedRef.current) return;
+    bioAutoPromptedRef.current = true;
+    void unlockWithBiometric();
+  }, [offerBiometric, unlockWithBiometric]);
 
   const noteFailure = async () => {
     const next = failuresRef.current + 1;
@@ -570,6 +676,28 @@ export function LockScreen(p: LockScreenProps) {
               {t("lock.forgot")}
             </button>
           </div>
+          {/* The phone's own surface, beside a PIN pad that stays visible and
+              usable throughout — including while a prompt is up. Nothing but
+              `success` leaves this screen, and no outcome writes a setting. */}
+          {offerBiometric ? (
+            <div className="editor-actions">
+              <button
+                type="button"
+                className="btn"
+                disabled={bioBusy}
+                onClick={() => void unlockWithBiometric()}
+              >
+                {bioBusy
+                  ? t("common.checking")
+                  : t("lock.biometric.useFingerprint")}
+              </button>
+            </div>
+          ) : null}
+          {bioNote ? (
+            <p className="alert alert-note" role="status">
+              {t(bioNote)}
+            </p>
+          ) : null}
         </form>
       </div>
     );

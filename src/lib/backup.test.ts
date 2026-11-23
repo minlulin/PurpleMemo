@@ -1959,7 +1959,13 @@ test("a payload carries the theme and the vault verifier, never the app PIN", as
   // vault must still unlock.
   assert.deepEqual(
     [...DEVICE_LOCAL_SETTING_KEYS],
-    ["pin_hash", "security_question", "security_answer_hash", "last_backup_at"],
+    [
+      "pin_hash",
+      "security_question",
+      "security_answer_hash",
+      "last_backup_at",
+      "biometric_unlock",
+    ],
   );
 });
 

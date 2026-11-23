@@ -144,6 +144,23 @@ export const en = {
   "settings.pinMismatch": "New PINs do not match.",
   "settings.pinQuestionPair":
     "Provide BOTH a question and an answer to change the fallback — nothing was changed.",
+  "settings.biometric.label": "Fingerprint or face unlock",
+  "settings.biometric.description":
+    "Unlock with the phone's fingerprint or face instead of typing your PIN. The PIN keeps working and is still required when the app starts and at first run.",
+  "settings.biometric.on": "Fingerprint or face unlock is on.",
+  "settings.biometric.off": "Fingerprint or face unlock is off.",
+  "settings.biometric.turnOn": "Turn on",
+  "settings.biometric.turnOff": "Turn off",
+  "settings.biometric.pinPrompt": "Enter your current PIN to turn this on.",
+  "settings.biometric.wrongPin": "Wrong PIN — unlock is still off.",
+  "settings.biometric.reasonNoneEnrolled":
+    "Nothing is enrolled on this phone. Add a fingerprint or face in the phone's own settings first.",
+  "settings.biometric.reasonNoHardware":
+    "This phone has no fingerprint or face sensor.",
+  "settings.biometric.reasonUnavailable":
+    "Not available on this phone right now.",
+  "settings.biometric.setPinFirst":
+    "Set an app PIN first — fingerprint or face unlock sits beside the PIN, not in place of it.",
   "settings.previewsOn": "previews on",
   "settings.previewsOff": "previews off",
   "settings.previewHint":
@@ -740,6 +757,11 @@ export const en = {
   "lock.error.wrongAnswer": "Wrong answer.",
   "lock.error.tooMany":
     "Too many wrong attempts — wait {seconds} seconds before trying again.",
+  "lock.biometric.promptTitle": "Unlock Purple Memo",
+  "lock.biometric.usePin": "Use PIN",
+  "lock.biometric.useFingerprint": "Use fingerprint",
+  "lock.biometric.lockout": "Too many attempts. Use your PIN.",
+  "lock.biometric.failed": "Fingerprint unlock did not work. Use your PIN.",
   "lock.reset.title": "Reset your PIN",
   "lock.reset.intro":
     "Answer your security question to set a new PIN. There is no other way to recover the PIN.",
@@ -1937,6 +1959,22 @@ export const my: Record<MessageKey, string> = {
   "settings.pinMismatch": "PIN အသစ်နှစ်ခု မကိုက်ညီပါ။",
   "settings.pinQuestionPair":
     "အရန်မေးခွန်း ပြောင်းလဲရန် မေးခွန်းနှင့် အဖြေ နှစ်ခုစလုံး ဖြည့်ပါ — မည်သည့်အရာမျှ မပြောင်းလဲရသေးပါ။",
+  "settings.biometric.label": "လက်ဗွေ သို့မဟုတ် မျက်နှာ ဖြင့် ဖွင့်ခြင်း",
+  "settings.biometric.description":
+    "PIN ရိုက်ထည့်မည့်အစား ဖုန်း၏ လက်ဗွေ သို့မဟုတ် မျက်နှာ ဖြင့် အက်ပ်ကို ဖွင့်နိုင်သည်။ PIN သည် ဆက်လက် အလုပ်လုပ်ပြီး အက်ပ် စတင်ချိန်နှင့် ပထမဆုံး အသုံးပြုချိန်တွင် PIN ကို မဖြစ်မနေ လိုအပ်ဆဲ ဖြစ်သည်။",
+  "settings.biometric.on": "လက်ဗွေ/မျက်နှာ ဖြင့် ဖွင့်ခြင်း ဖွင့်ထားသည်။",
+  "settings.biometric.off": "လက်ဗွေ/မျက်နှာ ဖြင့် ဖွင့်ခြင်း ပိတ်ထားသည်။",
+  "settings.biometric.turnOn": "ဖွင့်မည်",
+  "settings.biometric.turnOff": "ပိတ်မည်",
+  "settings.biometric.pinPrompt": "ဖွင့်ရန် လက်ရှိ PIN ကို ရိုက်ထည့်ပါ။",
+  "settings.biometric.wrongPin": "PIN မှားနေသည် — ဖွင့်မထားရသေးပါ။",
+  "settings.biometric.reasonNoneEnrolled":
+    "ဤဖုန်းတွင် မှတ်ပုံတင်ထားခြင်း မရှိပါ။ ဖုန်း၏ ကိုယ်ပိုင် ဆက်တင်တွင် လက်ဗွေ သို့မဟုတ် မျက်နှာ အရင်ထည့်ပါ။",
+  "settings.biometric.reasonNoHardware":
+    "ဤဖုန်းတွင် လက်ဗွေ သို့မဟုတ် မျက်နှာ အာရုံခံကိရိယာ မရှိပါ။",
+  "settings.biometric.reasonUnavailable": "ဤဖုန်းတွင် ယခု အချိန်တွင် မရနိုင်ပါ။",
+  "settings.biometric.setPinFirst":
+    "ဦးစွာ အက်ပ် PIN သတ်မှတ်ပါ — လက်ဗွေ/မျက်နှာ ဖြင့် ဖွင့်ခြင်းသည် PIN ၏ အစားထိုး မဟုတ်ဘဲ ၎င်းဘေးတွင် ရှိသည်။",
   "settings.previewsOn": "အစမ်းပြချက် ဖွင့်ထားသည်",
   "settings.previewsOff": "အစမ်းပြချက် ပိတ်ထားသည်",
   "settings.previewHint":
@@ -2505,6 +2543,11 @@ export const my: Record<MessageKey, string> = {
   "lock.error.wrongAnswer": "အဖြေ မှားနေသည်။",
   "lock.error.tooMany":
     "မှားယွင်းစွာ ကြိုးစားမှု များလွန်းသည် — ထပ်မံကြိုးစားမီ စက္ကန့် {seconds} စောင့်ပါ။",
+  "lock.biometric.promptTitle": "Purple Memo ကို ဖွင့်ရန်",
+  "lock.biometric.usePin": "PIN သုံးမည်",
+  "lock.biometric.useFingerprint": "လက်ဗွေ ဖြင့် ဖွင့်မည်",
+  "lock.biometric.lockout": "ကြိုးစားမှု များလွန်းသည်။ သင့် PIN ကို သုံးပါ။",
+  "lock.biometric.failed": "လက်ဗွေ ဖြင့် ဖွင့်၍ မရပါ။ သင့် PIN ကို သုံးပါ။",
   "lock.reset.title": "PIN ပြန်လည်သတ်မှတ်ပါ",
   "lock.reset.intro":
     "PIN အသစ် သတ်မှတ်ရန် သင့်လုံခြုံရေးမေးခွန်းကို ဖြေပါ။ PIN ပြန်လည်ရယူရန် အခြားနည်းလမ်း မရှိပါ။",
