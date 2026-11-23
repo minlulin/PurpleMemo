@@ -114,6 +114,10 @@ delete every `*.so`/`*.dll`/`*.xs`/`*.bs` from the copy.
 ships only `npm.cmd`, so the frontend step fails inside Gradle unless an
 `npm.bat` exists earlier on PATH (a one-line forwarder to `npm.cmd` is enough).
 
+**A stray `hs_err_pid*.log` in `src-tauri/` is a crashed Gradle daemon JVM**
+(seen 2026-11-16: `EXCEPTION_ACCESS_VIOLATION` in `jvm.dll`, JDK 17, Gradle
+9.6.1). It is gitignored and harmless — delete it; the build is unaffected.
+
 These three shims live outside the repo (in `%TEMP%`), so a fresh machine needs
 them recreated. The `make.exe` one is now built from `scripts/android-make-shim/`
 by `npm run setup:android-make-shim`; the `npm.bat` and the `PERL5LIB` tree are

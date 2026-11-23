@@ -21,6 +21,10 @@ The phone never contacts GitHub and has **no automatic updates** — a new
 release is a new APK you install by hand. **Settings → Diagnostics** on the
 phone names the version it is running.
 
+The phone has **no backup or export of its own** — its safety net is the
+desktop. Sync with the desktop before a factory reset: a reset loses the
+phone's device-local reminders and settings outright.
+
 ## Sync with the desktop
 
 To pair, open **Settings → Pairing** on the desktop, scan the QR code with the

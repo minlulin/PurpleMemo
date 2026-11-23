@@ -298,12 +298,15 @@ Options: disclose plainly (cheap), or remember the last endpoint per peer
 locally — device-local, no wire change, and the pinned key is still what
 authenticates a peer, so a wrong address can only fail, not impersonate.
 
-## F8 — the phone has no backup or export of its own · **open**
+## F8 — the phone has no backup or export of its own · **done 2026-11-23**
 
 Its only path to safety is the desktop. A phone factory reset or rollback loses
 device-local reminders and settings outright (`docs/ANDROID_DISTRIBUTION.md` §6
 is honest about this). Needs a plain sentence in the notes; code change out of
 scope for 0.3.0.
+
+The sentence landed in `RELEASE_NOTES.md` ("The phone has no backup or export
+of its own — its safety net is the desktop…") on 2026-11-23.
 
 ---
 
@@ -395,7 +398,14 @@ APK is installed.
 
 # Hygiene
 
-## F12 — small leftovers · **open**
+## F12 — small leftovers · **done 2026-11-23**
+
+Closed 2026-11-23: the `hs_err_pid` gotcha line landed in
+`docs/ANDROID_TOOLCHAIN.md`. The one `ANDROID_BUILD_TODO.md` item still
+unticked stays unticked on purpose — its remaining part is the owner's
+Redmi checklist and the upgrade/rollback drills, hardware work tracked
+with F11; the "WAVE 3 wording" remark is a historical session note, and
+the upload it concerned shipped and was proved on hardware on 2026-11-12.
 
 - The APK symbol-gate prompt was untracked; it was moved into
   `docs/history/` on 2026-11-21, where the other prompts already live.
@@ -419,5 +429,6 @@ APK is installed.
 - [ ] F11 — hardware run of reset → re-pair → re-adoption
 - [x] F10 — dependency decision (notification plugin), then patches
 - [x] F9 — gate: `check:android` + manifest permissions
-- [ ] F7 / F8 — copy decisions for sync-without-code and no phone backup
-- [ ] F12 — hygiene
+- [ ] F7 — copy decision for sync-without-code
+- [x] F8 — no-phone-backup sentence in the release notes — 2026-11-23
+- [x] F12 — hygiene — 2026-11-23

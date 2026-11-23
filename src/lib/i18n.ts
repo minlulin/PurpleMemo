@@ -146,7 +146,7 @@ export const en = {
     "Provide BOTH a question and an answer to change the fallback — nothing was changed.",
   "settings.biometric.label": "Fingerprint or face unlock",
   "settings.biometric.description":
-    "Unlock with the phone's fingerprint or face instead of typing your PIN. The PIN keeps working and is still required when the app starts and at first run.",
+    "Unlock with the phone's fingerprint or face instead of typing your PIN. The PIN keeps working exactly as before — biometric is an extra way in, never a replacement.",
   "settings.biometric.on": "Fingerprint or face unlock is on.",
   "settings.biometric.off": "Fingerprint or face unlock is off.",
   "settings.biometric.turnOn": "Turn on",
@@ -1961,7 +1961,7 @@ export const my: Record<MessageKey, string> = {
     "အရန်မေးခွန်း ပြောင်းလဲရန် မေးခွန်းနှင့် အဖြေ နှစ်ခုစလုံး ဖြည့်ပါ — မည်သည့်အရာမျှ မပြောင်းလဲရသေးပါ။",
   "settings.biometric.label": "လက်ဗွေ သို့မဟုတ် မျက်နှာ ဖြင့် ဖွင့်ခြင်း",
   "settings.biometric.description":
-    "PIN ရိုက်ထည့်မည့်အစား ဖုန်း၏ လက်ဗွေ သို့မဟုတ် မျက်နှာ ဖြင့် အက်ပ်ကို ဖွင့်နိုင်သည်။ PIN သည် ဆက်လက် အလုပ်လုပ်ပြီး အက်ပ် စတင်ချိန်နှင့် ပထမဆုံး အသုံးပြုချိန်တွင် PIN ကို မဖြစ်မနေ လိုအပ်ဆဲ ဖြစ်သည်။",
+    "PIN ရိုက်ထည့်မည့်အစား ဖုန်း၏ လက်ဗွေ သို့မဟုတ် မျက်နှာ ဖြင့် အက်ပ်ကို ဖွင့်နိုင်သည်။ PIN သည် ယခင်အတိုင်း ဆက်လက် အလုပ်လုပ်သည် — biometric သည် အစားထိုး မဟုတ်ဘဲ ထပ်ဆောင်း ဖွင့်နည်း တစ်ခုသာ ဖြစ်သည်။",
   "settings.biometric.on": "လက်ဗွေ/မျက်နှာ ဖြင့် ဖွင့်ခြင်း ဖွင့်ထားသည်။",
   "settings.biometric.off": "လက်ဗွေ/မျက်နှာ ဖြင့် ဖွင့်ခြင်း ပိတ်ထားသည်။",
   "settings.biometric.turnOn": "ဖွင့်မည်",
