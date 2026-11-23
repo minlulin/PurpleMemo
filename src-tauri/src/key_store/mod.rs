@@ -22,6 +22,11 @@ mod android;
 #[cfg(desktop)]
 mod desktop;
 
+/// The wrapped-blob codec and the loss classification, kept platform-free
+/// so their tests run everywhere (see the module's own header).
+#[cfg(any(target_os = "android", test))]
+mod blob;
+
 #[cfg(target_os = "android")]
 use android as platform;
 #[cfg(desktop)]
@@ -79,7 +84,9 @@ impl Slot {
 
     /// Blob magic (Android). Distinct per slot, so a blob written for one secret
     /// is refused — not merely fail to authenticate — when opened as the other.
-    #[cfg(target_os = "android")]
+    /// Widened to `test` because the platform-free blob codec's suite runs on
+    /// every machine and reads the magic through here.
+    #[cfg(any(target_os = "android", test))]
     pub fn magic(self) -> &'static [u8; 5] {
         match self {
             Self::Database => b"PMKW1",

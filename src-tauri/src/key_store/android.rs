@@ -40,26 +40,17 @@ use std::path::{Path, PathBuf};
 use jni::objects::{JByteArray, JObject, JObjectArray, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
+use super::blob::{
+    aead_failure_is_loss, backing_name, decode_blob, decode_key_hex, encode_blob, BACKING_SOFTWARE,
+    BACKING_STRONGBOX, BACKING_TEE, BACKING_UNKNOWN, GCM_TAG_LEN, KEY_LEN,
+};
 use super::{KeyStoreError, Slot};
 
-/// Length of the blob magic (`PMKW1` / `PMPK1`); the bytes themselves come from
-/// the slot, so a blob written for one secret cannot be opened as the other.
-const MAGIC_LEN: usize = 5;
-/// magic + backing byte + IV length byte.
-const HEADER_LEN: usize = MAGIC_LEN + 2;
 const IV_LEN: usize = 12;
 const GCM_TAG_BITS: i32 = 128;
-const GCM_TAG_LEN: usize = 16;
-/// Neither secret this module wraps is any other length.
-const KEY_LEN: usize = 32;
 /// `KeyProperties.PURPOSE_ENCRYPT` / `PURPOSE_DECRYPT`.
 const PURPOSE_ENCRYPT: i32 = 1;
 const PURPOSE_DECRYPT: i32 = 2;
-
-const BACKING_UNKNOWN: u8 = 0;
-const BACKING_SOFTWARE: u8 = 1;
-const BACKING_TEE: u8 = 2;
-const BACKING_STRONGBOX: u8 = 3;
 
 /// Android has no exported-key restore path — the DEK exists only inside the
 /// Keystore wrap — so "database exists, store holds no key" is key loss, not a
@@ -246,52 +237,6 @@ fn write_blob(slot: Slot, path: &Path, blob: &[u8]) -> Result<(), KeyStoreError>
         let _ = std::fs::remove_file(&tmp);
         KeyStoreError::Failed(format!("could not write {}: {e}", path.display()))
     })
-}
-
-fn encode_blob(slot: Slot, backing: u8, iv: &[u8], ciphertext: &[u8]) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(HEADER_LEN + iv.len() + ciphertext.len());
-    blob.extend_from_slice(slot.magic());
-    blob.push(backing);
-    blob.push(iv.len() as u8);
-    blob.extend_from_slice(iv);
-    blob.extend_from_slice(ciphertext);
-    blob
-}
-
-fn decode_blob(slot: Slot, blob: &[u8]) -> Option<(u8, &[u8], &[u8])> {
-    if blob.len() < HEADER_LEN || &blob[..MAGIC_LEN] != slot.magic() {
-        return None;
-    }
-    let backing = blob[MAGIC_LEN];
-    let iv_len = blob[MAGIC_LEN + 1] as usize;
-    if iv_len == 0 || iv_len > 32 {
-        return None;
-    }
-    let iv_end = HEADER_LEN.checked_add(iv_len)?;
-    if blob.len() < iv_end + KEY_LEN + GCM_TAG_LEN {
-        return None;
-    }
-    Some((backing, &blob[HEADER_LEN..iv_end], &blob[iv_end..]))
-}
-
-fn decode_key_hex(key: &str) -> Option<[u8; KEY_LEN]> {
-    if key.len() != KEY_LEN * 2 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut secret = [0u8; KEY_LEN];
-    for (index, byte) in secret.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&key[index * 2..index * 2 + 2], 16).ok()?;
-    }
-    Some(secret)
-}
-
-fn backing_name(backing: u8) -> &'static str {
-    match backing {
-        BACKING_STRONGBOX => "StrongBox",
-        BACKING_TEE => "TEE",
-        BACKING_SOFTWARE => "software",
-        _ => "unknown",
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -928,7 +873,7 @@ fn unwrap_dek(
     ) {
         Ok(value) => checked!(env, WHAT, value.i()),
         Err(_) => {
-            if pending_exception_class(env).as_deref() == Some("javax.crypto.AEADBadTagException") {
+            if aead_failure_is_loss(pending_exception_class(env).as_deref()) {
                 return Err(KeyStoreError::Lost(format!(
                     "the Keystore key {} refuses the wrapped {} (its \
                      authentication tag does not verify); {}",
