@@ -176,32 +176,54 @@ fn lock_conn(state: &AppState) -> CmdResult<ConnGuard<'_>> {
 }
 
 /// SELECT-ish reads: rows as JSON objects keyed by column name.
+///
+/// Async + `spawn_blocking` (P1/B3): a slow FTS query or a large scan ran on
+/// the main thread, where Tauri executes a synchronous command, so every
+/// page's reads serialized on the UI thread. The work is unchanged and still
+/// serializes — the single connection's mutex, taken *inside* the blocking
+/// closure and never held across an `.await`, is what preserves ordering now,
+/// not the thread.
 #[tauri::command]
-pub fn db_query(
-    state: State<'_, AppState>,
+pub async fn db_query(
+    app: tauri::AppHandle,
     sql: String,
     params: Option<Vec<JsonValue>>,
 ) -> CmdResult<Vec<JsonObj>> {
-    let conn = lock_conn(&state)?;
-    db::query_rows(&conn, &sql, params.as_deref().unwrap_or(&[])).map_err(Refusal::from)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = lock_conn(&state)?;
+        db::query_rows(&conn, &sql, params.as_deref().unwrap_or(&[])).map_err(Refusal::from)
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Single write: returns affected-row count + last insert rowid.
+///
+/// Async + `spawn_blocking`, same reason and same shape as [`db_query`]:
+/// every page's writes serialized on the main thread. The admission order is
+/// preserved exactly — admitted on the blocking thread before anything is
+/// locked, ticket declared before the guard.
 #[tauri::command]
-pub fn db_execute(
-    state: State<'_, AppState>,
-    lifecycle: State<'_, Arc<Lifecycle>>,
+pub async fn db_execute(
+    app: tauri::AppHandle,
     sql: String,
     params: Option<Vec<JsonValue>>,
     lease: Option<u64>,
 ) -> CmdResult<ExecuteOutcome> {
-    // Admit first, and declare the ticket BEFORE the connection guard: the
-    // ticket then drops after it, so when `begin_import`'s drain returns no
-    // admitted writer can still hold the connection — which is what lets the
-    // safety copy know its snapshot has no writer landing behind it (E5).
-    let _ticket = lifecycle.admit(lease)?;
-    let conn = lock_conn(&state)?;
-    db::execute(&conn, &sql, params.as_deref().unwrap_or(&[])).map_err(Refusal::from)
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        // Admit first, and declare the ticket BEFORE the connection guard: the
+        // ticket then drops after it, so when `begin_import`'s drain returns no
+        // admitted writer can still hold the connection — which is what lets the
+        // safety copy know its snapshot has no writer landing behind it (E5).
+        let _ticket = lifecycle.admit(lease)?;
+        let state = app.state::<AppState>();
+        let conn = lock_conn(&state)?;
+        db::execute(&conn, &sql, params.as_deref().unwrap_or(&[])).map_err(Refusal::from)
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Multi-statement writes, committed as one transaction inside Rust
@@ -1980,6 +2002,46 @@ mod tests {
             txn_open: std::sync::atomic::AtomicBool::new(false),
             reset_terminal: std::sync::atomic::AtomicBool::new(false),
             data_dir: std::path::PathBuf::from("unused"),
+        }
+    }
+
+    /// B3 (P1): `db_query` and `db_execute` must run off the main thread. A
+    /// synchronous command runs on the main thread, so a slow FTS query or a
+    /// large scan serialized every page's reads on the UI thread; an `async`
+    /// one whose work stays inline parks an async-runtime worker instead. Both
+    /// halves are pinned.
+    ///
+    /// The signature half is compile-time, not a source grep: an `async fn`
+    /// item coerces to `fn(args..) -> Fut` with `Fut: Future`, and a sync
+    /// signature cannot — its return type is a `Result`, which implements no
+    /// `Future` — so a regression fails to build the test binary.
+    ///
+    /// The connection lock needs no pin: a `ConnGuard` cannot cross into the
+    /// `'static` closure, nor sit across an `.await`, so the lock can only live
+    /// inside the blocking closure, and the mutex still orders every read.
+    fn assert_async_three<A, B, C, Fut: std::future::Future>(_command: fn(A, B, C) -> Fut) {}
+
+    fn assert_async_four<A, B, C, D, Fut: std::future::Future>(_command: fn(A, B, C, D) -> Fut) {}
+
+    #[test]
+    fn db_query_and_db_execute_run_off_the_main_thread() {
+        type Params = Option<Vec<super::JsonValue>>;
+        assert_async_three::<tauri::AppHandle, String, Params, _>(super::db_query);
+        assert_async_four::<tauri::AppHandle, String, Params, Option<u64>, _>(super::db_execute);
+
+        let src = include_str!("commands.rs");
+        for name in ["db_query", "db_execute"] {
+            let start = src
+                .find(&format!("pub async fn {name}("))
+                .unwrap_or_else(|| panic!("{name} must be an async command"));
+            let end = src[start..]
+                .find("#[tauri::command]")
+                .map(|i| start + i)
+                .unwrap_or(src.len());
+            assert!(
+                src[start..end].contains("spawn_blocking("),
+                "{name} must move its blocking work to a blocking thread"
+            );
         }
     }
 
