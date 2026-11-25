@@ -295,8 +295,10 @@ test("photo reads answer with raw bytes rather than a JSON byte array", () => {
   for (const command of ["photo_read", "photo_read_thumb"]) {
     assert.match(
       commandsSrc,
-      new RegExp(`pub fn ${command}\\([\\s\\S]{0,240}CmdResult<Response>`),
-      `${command} must return tauri::ipc::Response`,
+      new RegExp(
+        `pub async fn ${command}\\([\\s\\S]{0,240}CmdResult<Response>`,
+      ),
+      `${command} must be async and return tauri::ipc::Response`,
     );
   }
 });
@@ -502,7 +504,7 @@ test("the key export is one-way: a path goes out, nothing comes back", () => {
   // now does the write, so the command takes a path and returns unit.
   assert.match(
     commandsSrc,
-    /pub fn db_key_save\(path: String\) -> CmdResult<\(\)>/,
+    /pub async fn db_key_save\(path: String\) -> CmdResult<\(\)>/,
     "db_key_save must take a path and return nothing",
   );
   assert.ok(

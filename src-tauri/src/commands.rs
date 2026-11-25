@@ -28,7 +28,11 @@
 //!
 //! Every command serializes through the single mutex-protected connection
 //! (— no pooling). UI pages never call these directly; they go through
-//! the feature libraries and the data driver (P2).
+//! the feature libraries and the data driver (P2). Everything that touches
+//! the database or the disk is `async` and dispatches through
+//! `spawn_blocking` (B3), so a slow query, a large photo or a contested lock
+//! never parks the main thread; the mutex, taken inside the blocking closure
+//! and never held across an `.await`, is what still orders them.
 //!
 //! Photo bytes cross IPC as RAW payloads: `photo_read` returns
 //! `tauri::ipc::Response`, which the frontend receives as an `ArrayBuffer`
@@ -271,52 +275,70 @@ pub async fn db_batch(
 /// reads as well as writes, so `db_query` cannot COMMIT an open transaction or
 /// BEGIN one the flag never saw. `db::tests::db_query_cannot_commit_or_begin_around_the_txn_flag`
 /// is the regression that keeps it that way.
+///
+/// Async + `spawn_blocking` like every other DB command (B3): each step is a
+/// SQLCipher round trip under the one connection lock, so none of the four may
+/// run on the main thread. The order is untouched — admission, then the lock,
+/// then the flag, then SQLite — and the ticket stays declared before the guard
+/// (E5), so the import drain still sees every writer.
 #[tauri::command]
-pub fn db_begin(state: State<'_, AppState>, lifecycle: State<'_, Arc<Lifecycle>>) -> CmdResult<()> {
-    let _ticket = lifecycle.admit(None)?;
-    let conn = lock_conn(&state)?;
-    if state.txn_open.swap(true, Ordering::SeqCst) {
-        return Err(Refusal::new("rust.error.txnAlreadyOpen"));
-    }
-    if let Err(e) = db::begin_tx(&conn) {
-        state.txn_open.store(false, Ordering::SeqCst);
-        return Err(Refusal::from(e));
-    }
-    Ok(())
+pub async fn db_begin(app: tauri::AppHandle) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let _ticket = lifecycle.admit(None)?;
+        let state = app.state::<AppState>();
+        let conn = lock_conn(&state)?;
+        if state.txn_open.swap(true, Ordering::SeqCst) {
+            return Err(Refusal::new("rust.error.txnAlreadyOpen"));
+        }
+        if let Err(e) = db::begin_tx(&conn) {
+            state.txn_open.store(false, Ordering::SeqCst);
+            return Err(Refusal::from(e));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Commit the manual transaction. On failure the open flag stays set so the
 /// caller may still call [`db_rollback`]. If rollback also fails, call
 /// [`db_reset_txn`] to clear the flag; the uncommitted rows are lost.
 #[tauri::command]
-pub fn db_commit(
-    state: State<'_, AppState>,
-    lifecycle: State<'_, Arc<Lifecycle>>,
-) -> CmdResult<()> {
-    let _ticket = lifecycle.admit(None)?;
-    let conn = lock_conn(&state)?;
-    if !state.txn_open.load(Ordering::SeqCst) {
-        return Err(Refusal::new("rust.error.noTxnToCommit"));
-    }
-    db::commit_tx(&conn)?;
-    state.txn_open.store(false, Ordering::SeqCst);
-    Ok(())
+pub async fn db_commit(app: tauri::AppHandle) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let _ticket = lifecycle.admit(None)?;
+        let state = app.state::<AppState>();
+        let conn = lock_conn(&state)?;
+        if !state.txn_open.load(Ordering::SeqCst) {
+            return Err(Refusal::new("rust.error.noTxnToCommit"));
+        }
+        db::commit_tx(&conn)?;
+        state.txn_open.store(false, Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Roll back the manual transaction.
 #[tauri::command]
-pub fn db_rollback(
-    state: State<'_, AppState>,
-    lifecycle: State<'_, Arc<Lifecycle>>,
-) -> CmdResult<()> {
-    let _ticket = lifecycle.admit(None)?;
-    let conn = lock_conn(&state)?;
-    if !state.txn_open.load(Ordering::SeqCst) {
-        return Err(Refusal::new("rust.error.noTxnToRollback"));
-    }
-    db::rollback_tx(&conn)?;
-    state.txn_open.store(false, Ordering::SeqCst);
-    Ok(())
+pub async fn db_rollback(app: tauri::AppHandle) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let _ticket = lifecycle.admit(None)?;
+        let state = app.state::<AppState>();
+        let conn = lock_conn(&state)?;
+        if !state.txn_open.load(Ordering::SeqCst) {
+            return Err(Refusal::new("rust.error.noTxnToRollback"));
+        }
+        db::rollback_tx(&conn)?;
+        state.txn_open.store(false, Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Clear the manual-transaction flag without touching the DB.
@@ -327,29 +349,32 @@ pub fn db_rollback(
 /// from the last `db_begin` are gone; the caller is responsible for
 /// re-reading and reconciling state.
 #[tauri::command]
-pub fn db_reset_txn(
-    state: State<'_, AppState>,
-    lifecycle: State<'_, Arc<Lifecycle>>,
-) -> CmdResult<()> {
-    let _ticket = lifecycle.admit(None)?;
-    // Fail closed like every other DB command once the connection is taken
-    // — "every DB command refuses after a reset" is one rule, and
-    // clearing a transaction flag without a connection is meaningless.
-    //
-    // E12: the whole reconciliation runs UNDER this lock. The flag is what
-    // every other command consults to mean "a manual transaction is open",
-    // so it may only change while this guard excludes them — and it may only
-    // clear when SQLite agrees the transaction is gone (`reconcile_open_txn`
-    // checks autocommit and ROLLBACKs for real). On failure the `?` returns
-    // BEFORE the store: the flag stays set, later writes keep refusing, and
-    // the app demands a restart instead of reporting a cleared state that
-    // still holds an open transaction.
-    {
-        let conn = lock_conn(&state)?;
-        db::reconcile_open_txn(&conn)?;
-        state.txn_open.store(false, Ordering::SeqCst);
-    }
-    Ok(())
+pub async fn db_reset_txn(app: tauri::AppHandle) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let _ticket = lifecycle.admit(None)?;
+        let state = app.state::<AppState>();
+        // Fail closed like every other DB command once the connection is taken
+        // — "every DB command refuses after a reset" is one rule, and
+        // clearing a transaction flag without a connection is meaningless.
+        //
+        // E12: the whole reconciliation runs UNDER this lock. The flag is what
+        // every other command consults to mean "a manual transaction is open",
+        // so it may only change while this guard excludes them — and it may only
+        // clear when SQLite agrees the transaction is gone (`reconcile_open_txn`
+        // checks autocommit and ROLLBACKs for real). On failure the `?` returns
+        // BEFORE the store: the flag stays set, later writes keep refusing, and
+        // the app demands a restart instead of reporting a cleared state that
+        // still holds an open transaction.
+        {
+            let conn = lock_conn(&state)?;
+            db::reconcile_open_txn(&conn)?;
+            state.txn_open.store(false, Ordering::SeqCst);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Store photo bytes content-addressed under `photos/<yyyy>/<mm>/`; the
@@ -410,25 +435,35 @@ pub async fn photo_save(app: tauri::AppHandle, request: Request<'_>) -> CmdResul
 /// Read photo bytes by DB-relative path (traversal-guarded). The response is
 /// raw bytes: the frontend receives an `ArrayBuffer`, not a JSON array.
 #[tauri::command]
-pub fn photo_read(state: State<'_, AppState>, rel_path: String) -> CmdResult<Response> {
-    Ok(Response::new(photos::read_photo(
-        &state.data_dir,
-        &rel_path,
-    )?))
+pub async fn photo_read(app: tauri::AppHandle, rel_path: String) -> CmdResult<Response> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        Ok(Response::new(photos::read_photo(
+            &state.data_dir,
+            &rel_path,
+        )?))
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Read the thumbnail of a photo, given the SOURCE photo's relative path.
 /// Errors when no thumbnail has been stored yet — the frontend then generates
 /// one from the full bytes and saves it with `photo_save_thumb`.
 #[tauri::command]
-pub fn photo_read_thumb(
-    state: State<'_, AppState>,
+pub async fn photo_read_thumb(
+    app: tauri::AppHandle,
     source_rel_path: String,
 ) -> CmdResult<Response> {
-    Ok(Response::new(photos::read_thumb(
-        &state.data_dir,
-        &source_rel_path,
-    )?))
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        Ok(Response::new(photos::read_thumb(
+            &state.data_dir,
+            &source_rel_path,
+        )?))
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Store the thumbnail of a photo (raw bytes; the source photo path travels
@@ -456,16 +491,21 @@ pub async fn photo_save_thumb(app: tauri::AppHandle, request: Request<'_>) -> Cm
 /// The derived thumbnail is deleted with it; DB rows referencing the photo are
 /// the feature layer's concern (P3e).
 #[tauri::command]
-pub fn photo_delete(
-    state: State<'_, AppState>,
-    lifecycle: State<'_, Arc<Lifecycle>>,
+pub async fn photo_delete(
+    app: tauri::AppHandle,
     rel_path: String,
     lease: Option<u64>,
 ) -> CmdResult<()> {
-    // An import deletes the photos its archive no longer references; anyone
-    // else is refused while a window or reset owns the data (E1/E5).
-    let _ticket = lifecycle.admit(lease)?;
-    photos::delete_photo(&state.data_dir, &rel_path)
+    tauri::async_runtime::spawn_blocking(move || {
+        // An import deletes the photos its archive no longer references; anyone
+        // else is refused while a window or reset owns the data (E1/E5).
+        let lifecycle = app.state::<Arc<Lifecycle>>();
+        let _ticket = lifecycle.admit(lease)?;
+        let state = app.state::<AppState>();
+        photos::delete_photo(&state.data_dir, &rel_path)
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Write the DB encryption key to a file the user chose
@@ -484,10 +524,14 @@ pub fn photo_delete(
 ///
 /// Every successful call appends to `key-export.log`.
 #[tauri::command]
-pub fn db_key_save(path: String) -> CmdResult<()> {
-    refuse_mobile_role()?;
-    db::save_db_key_file(std::path::Path::new(&path))
-        .map_err(|e| Refusal::new("rust.error.keyWrite").with("detail", e))
+pub async fn db_key_save(path: String) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        refuse_mobile_role()?;
+        db::save_db_key_file(std::path::Path::new(&path))
+            .map_err(|e| Refusal::new("rust.error.keyWrite").with("detail", e))
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// Desktop-role commands refuse on mobile. The handler list is shared
@@ -1116,9 +1160,15 @@ pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<Pairin
 /// Current pairing state — including the peer a code-confirmed rendezvous
 /// pinned, which the panel then stores as its pin (§11.2).
 #[tauri::command]
-pub fn pairing_status(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
-    refuse_mobile_role()?;
-    state.status().map_err(Refusal::from)
+pub async fn pairing_status(app: tauri::AppHandle) -> CmdResult<PairingListenerInfo> {
+    tauri::async_runtime::spawn_blocking(move || {
+        refuse_mobile_role()?;
+        app.state::<PairingListenerState>()
+            .status()
+            .map_err(Refusal::from)
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// The pairing identity's state, for the re-pair recovery (§11.2, wave 1 N2).
@@ -1144,34 +1194,38 @@ pub struct PairingIdentityStatus {
 /// Report the identity without minting anything, so the panel can offer the
 /// confirmed re-pair instead of a dead end (N2).
 #[tauri::command]
-pub fn pairing_identity_status(app: tauri::AppHandle) -> CmdResult<PairingIdentityStatus> {
-    let db_state = app
-        .try_state::<AppState>()
-        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
-    let (history, flagged) = {
-        let conn = lock_conn(&db_state)?;
-        (pairing_history(&conn)?, re_pair_required(&conn)?)
-    };
-    match pairing_key::inspect(history) {
-        Ok(stored) => Ok(PairingIdentityStatus {
-            present: stored.is_some(),
-            public_key: stored.as_ref().map(|identity| identity.public_key_hex()),
-            fingerprint: stored.as_ref().map(|identity| identity.fingerprint()),
-            needs_re_pair: flagged,
-            lost: false,
-            re_pair_required: flagged,
-            note: None,
-        }),
-        Err(error) => Ok(PairingIdentityStatus {
-            present: false,
-            public_key: None,
-            fingerprint: None,
-            needs_re_pair: error.needs_re_pair_flag() || flagged,
-            lost: matches!(error, crate::pairing_key::PairingKeyError::Lost(_)),
-            re_pair_required: flagged,
-            note: Some(error.message().to_string()),
-        }),
-    }
+pub async fn pairing_identity_status(app: tauri::AppHandle) -> CmdResult<PairingIdentityStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
+        let (history, flagged) = {
+            let conn = lock_conn(&db_state)?;
+            (pairing_history(&conn)?, re_pair_required(&conn)?)
+        };
+        match pairing_key::inspect(history) {
+            Ok(stored) => Ok(PairingIdentityStatus {
+                present: stored.is_some(),
+                public_key: stored.as_ref().map(|identity| identity.public_key_hex()),
+                fingerprint: stored.as_ref().map(|identity| identity.fingerprint()),
+                needs_re_pair: flagged,
+                lost: false,
+                re_pair_required: flagged,
+                note: None,
+            }),
+            Err(error) => Ok(PairingIdentityStatus {
+                present: false,
+                public_key: None,
+                fingerprint: None,
+                needs_re_pair: error.needs_re_pair_flag() || flagged,
+                lost: matches!(error, crate::pairing_key::PairingKeyError::Lost(_)),
+                re_pair_required: flagged,
+                note: Some(error.message().to_string()),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// What the phone needs from the scanned offer to reach the desktop (§11.1).
@@ -1552,49 +1606,53 @@ pub struct UploadStatusResult {
 }
 
 #[tauri::command]
-pub fn pairing_upload_status(
+pub async fn pairing_upload_status(
     app: tauri::AppHandle,
     input: SnapshotPullInput,
 ) -> CmdResult<UploadStatusResult> {
-    let db_state = app
-        .try_state::<AppState>()
-        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
-    let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
-    let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
-    let identity = load_pairing_identity(&db_state)?;
-    let pull = crate::pairing_client::SnapshotPull {
-        endpoint: &input.endpoint,
-        pairing_id: &pin.pairing_id,
-        desktop_public_key: &pin.public_key,
-        desktop_device_id: &input.desktop_device_id,
-        generation: pin.generation,
-    };
-    let facts = crate::pairing_client::PhoneFacts {
-        device_id: &device_id,
-        protocol_version: PROTOCOL_VERSION,
-        schema_version,
-    };
-    let reply = crate::pairing_client::poll_upload_status(
-        &pull,
-        &facts,
-        &identity,
-        crate::pairing_client::process_counters(),
-    )
-    .map_err(|error| Refusal::from(error.to_string()))?;
-    let number = |key: &str| reply.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
-    Ok(UploadStatusResult {
-        state: reply
-            .get("state")
-            .and_then(|value| value.as_str())
-            .unwrap_or("pending")
-            .to_string(),
-        inserted: number("inserted"),
-        already_known: number("alreadyKnown"),
-        message: reply
-            .get("message")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
+        let (device_id, _generation, schema_version) = local_sync_facts(&db_state)?;
+        let pin = pinned_pull(&db_state, &input.desktop_device_id)?;
+        let identity = load_pairing_identity(&db_state)?;
+        let pull = crate::pairing_client::SnapshotPull {
+            endpoint: &input.endpoint,
+            pairing_id: &pin.pairing_id,
+            desktop_public_key: &pin.public_key,
+            desktop_device_id: &input.desktop_device_id,
+            generation: pin.generation,
+        };
+        let facts = crate::pairing_client::PhoneFacts {
+            device_id: &device_id,
+            protocol_version: PROTOCOL_VERSION,
+            schema_version,
+        };
+        let reply = crate::pairing_client::poll_upload_status(
+            &pull,
+            &facts,
+            &identity,
+            crate::pairing_client::process_counters(),
+        )
+        .map_err(|error| Refusal::from(error.to_string()))?;
+        let number = |key: &str| reply.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
+        Ok(UploadStatusResult {
+            state: reply
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or("pending")
+                .to_string(),
+            inserted: number("inserted"),
+            already_known: number("alreadyKnown"),
+            message: reply
+                .get("message")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        })
     })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// The staged upload the desktop panel applies (§9.1): the pairing it belongs
@@ -1852,49 +1910,53 @@ pub struct SyncStatusResult {
 }
 
 #[tauri::command]
-pub fn pairing_sync_status(
+pub async fn pairing_sync_status(
     app: tauri::AppHandle,
     input: SnapshotPullInput,
 ) -> CmdResult<SyncStatusResult> {
-    let facts = sync_phone_facts(&app, &input)?;
-    let db_state = app
-        .try_state::<AppState>()
-        .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
-    let identity = load_pairing_identity(&db_state)?;
-    let pull = crate::pairing_client::SnapshotPull {
-        endpoint: &input.endpoint,
-        pairing_id: &facts.pairing_id,
-        desktop_public_key: &facts.desktop_public_key,
-        desktop_device_id: &input.desktop_device_id,
-        generation: facts.generation,
-    };
-    let phone = crate::pairing_client::PhoneFacts {
-        device_id: &facts.device_id,
-        protocol_version: PROTOCOL_VERSION,
-        schema_version: facts.schema_version,
-    };
-    let reply = crate::pairing_client::poll_sync_status(
-        &pull,
-        &phone,
-        &identity,
-        crate::pairing_client::process_counters(),
-    )
-    .map_err(|error| Refusal::from(error.to_string()))?;
-    Ok(SyncStatusResult {
-        state: reply
-            .get("state")
-            .and_then(|value| value.as_str())
-            .unwrap_or("pending")
-            .to_string(),
-        through_seq: reply
-            .get("throughSeq")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0),
-        message: reply
-            .get("message")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
+    tauri::async_runtime::spawn_blocking(move || {
+        let facts = sync_phone_facts(&app, &input)?;
+        let db_state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
+        let identity = load_pairing_identity(&db_state)?;
+        let pull = crate::pairing_client::SnapshotPull {
+            endpoint: &input.endpoint,
+            pairing_id: &facts.pairing_id,
+            desktop_public_key: &facts.desktop_public_key,
+            desktop_device_id: &input.desktop_device_id,
+            generation: facts.generation,
+        };
+        let phone = crate::pairing_client::PhoneFacts {
+            device_id: &facts.device_id,
+            protocol_version: PROTOCOL_VERSION,
+            schema_version: facts.schema_version,
+        };
+        let reply = crate::pairing_client::poll_sync_status(
+            &pull,
+            &phone,
+            &identity,
+            crate::pairing_client::process_counters(),
+        )
+        .map_err(|error| Refusal::from(error.to_string()))?;
+        Ok(SyncStatusResult {
+            state: reply
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or("pending")
+                .to_string(),
+            through_seq: reply
+                .get("throughSeq")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            message: reply
+                .get("message")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        })
     })
+    .await
+    .map_err(|e| Refusal::from(e.to_string()))?
 }
 
 /// The staged §6 push the desktop panel applies: the operations as wire
@@ -2019,29 +2081,78 @@ mod tests {
     /// The connection lock needs no pin: a `ConnGuard` cannot cross into the
     /// `'static` closure, nor sit across an `.await`, so the lock can only live
     /// inside the blocking closure, and the mutex still orders every read.
+    fn assert_async_one<A, Fut: std::future::Future>(_command: fn(A) -> Fut) {}
+
+    fn assert_async_two<A, B, Fut: std::future::Future>(_command: fn(A, B) -> Fut) {}
+
     fn assert_async_three<A, B, C, Fut: std::future::Future>(_command: fn(A, B, C) -> Fut) {}
 
     fn assert_async_four<A, B, C, D, Fut: std::future::Future>(_command: fn(A, B, C, D) -> Fut) {}
+
+    /// The other half of the pin: an `async` command whose work stays inline
+    /// still parks an async-runtime worker, so the body must dispatch.
+    fn assert_dispatches_off_the_main_thread(name: &str) {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find(&format!("pub async fn {name}("))
+            .unwrap_or_else(|| panic!("{name} must be an async command"));
+        let end = src[start..]
+            .find("#[tauri::command]")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        assert!(
+            src[start..end].contains("spawn_blocking("),
+            "{name} must move its blocking work to a blocking thread"
+        );
+    }
 
     #[test]
     fn db_query_and_db_execute_run_off_the_main_thread() {
         type Params = Option<Vec<super::JsonValue>>;
         assert_async_three::<tauri::AppHandle, String, Params, _>(super::db_query);
         assert_async_four::<tauri::AppHandle, String, Params, Option<u64>, _>(super::db_execute);
+        assert_dispatches_off_the_main_thread("db_query");
+        assert_dispatches_off_the_main_thread("db_execute");
+    }
 
-        let src = include_str!("commands.rs");
-        for name in ["db_query", "db_execute"] {
-            let start = src
-                .find(&format!("pub async fn {name}("))
-                .unwrap_or_else(|| panic!("{name} must be an async command"));
-            let end = src[start..]
-                .find("#[tauri::command]")
-                .map(|i| start + i)
-                .unwrap_or(src.len());
-            assert!(
-                src[start..end].contains("spawn_blocking("),
-                "{name} must move its blocking work to a blocking thread"
-            );
+    /// B3 part 2: the rest of the surface Arena named — the manual transaction
+    /// family, the photo reads and delete, the key export, and the pairing
+    /// status reads. Same two halves, so no edit can quietly move one of them
+    /// back onto the main thread.
+    #[test]
+    fn the_txn_photo_key_and_pairing_commands_run_off_the_main_thread() {
+        assert_async_one::<tauri::AppHandle, _>(super::db_begin);
+        assert_async_one::<tauri::AppHandle, _>(super::db_commit);
+        assert_async_one::<tauri::AppHandle, _>(super::db_rollback);
+        assert_async_one::<tauri::AppHandle, _>(super::db_reset_txn);
+        assert_async_one::<String, _>(super::db_key_save);
+        assert_async_two::<tauri::AppHandle, String, _>(super::photo_read);
+        assert_async_two::<tauri::AppHandle, String, _>(super::photo_read_thumb);
+        assert_async_three::<tauri::AppHandle, String, Option<u64>, _>(super::photo_delete);
+        assert_async_one::<tauri::AppHandle, _>(super::pairing_status);
+        assert_async_one::<tauri::AppHandle, _>(super::pairing_identity_status);
+        assert_async_two::<tauri::AppHandle, super::SnapshotPullInput, _>(
+            super::pairing_upload_status,
+        );
+        assert_async_two::<tauri::AppHandle, super::SnapshotPullInput, _>(
+            super::pairing_sync_status,
+        );
+
+        for name in [
+            "db_begin",
+            "db_commit",
+            "db_rollback",
+            "db_reset_txn",
+            "photo_read",
+            "photo_read_thumb",
+            "photo_delete",
+            "db_key_save",
+            "pairing_status",
+            "pairing_identity_status",
+            "pairing_upload_status",
+            "pairing_sync_status",
+        ] {
+            assert_dispatches_off_the_main_thread(name);
         }
     }
 
