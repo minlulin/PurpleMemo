@@ -6,11 +6,9 @@ use std::sync::atomic::Ordering;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::envelope::{self, SealInput};
+use crate::envelope::{self, Opened, SealInput};
 
-use super::super::{
-    decode_frame, Gate, Opened, PairedPeer, Pin, RefusalReply, PAIRING_MAX_ATTEMPTS,
-};
+use super::super::{decode_frame, Gate, PairedPeer, Pin, RefusalReply, PAIRING_MAX_ATTEMPTS};
 use super::common::{canonical_device_id, codes_equal, normalize_code, now_ms, usable_public_key};
 
 /// The code-confirmed first pairing (§11.1). The request is plaintext and

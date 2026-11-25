@@ -81,33 +81,32 @@
 //! both sides are pinned to the same byte vector by a test.
 
 use std::collections::HashSet;
-use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
-use crate::envelope::{self, Opened, Refusal, KEY_BYTES};
+use crate::envelope::{self, Refusal, KEY_BYTES};
 use crate::lifecycle::Lifecycle;
 use crate::pairing_key::PairingIdentity;
 use crate::pairing_snapshot::{Snapshot, SnapshotBatch};
 
+mod frame;
+mod http;
+mod net;
 mod routes;
 
-use self::routes::common::{active_pin, admit, normalize_code};
+/// The frame codec lives in `frame`; `pairing_snapshot` reaches it as
+/// `pairing_listener::encode_frame`, so that path stays.
+pub use self::frame::{decode_frame, encode_frame};
 
-/// A sealed message from the pinned peer (§11.6.1).
-const HELLO_PATH: &str = "/pair/hello";
-
-/// The §8.4 snapshot pull: sealed `snapshot-request` / `applied` / `adopted`.
-const SNAPSHOT_PATH: &str = "/pair/snapshot";
-
-/// The code-confirmed rendezvous that pins a peer for the first time (§11.1).
-const REQUEST_PATH: &str = "/pair/request";
+use self::http::serve;
+use self::net::lan_ip;
+use self::routes::common::normalize_code;
 
 /// The protocol this build speaks (protocol v1, `docs/ANDROID_SYNC_PROTOCOL.md`).
 pub const PROTOCOL_VERSION: u64 = 1;
@@ -121,38 +120,6 @@ pub const FRAME_HEADER_BYTES: usize = 4;
 /// A pairing message is a handshake, not a data transfer: the cap stops a
 /// stranger from making the desktop buffer megabytes.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
-
-/// The message kinds `/pair/hello` speaks (§2.3's server-side seam). An
-/// operation of any other kind is refused before it can have an effect.
-const ACCEPTED_KINDS: [&str; 1] = ["hello"];
-
-/// The kinds `/pair/snapshot` speaks — its own accepted set, never appended to
-/// the hello's: a window that pulled data would be one a hello could not close.
-const SNAPSHOT_ACCEPTED_KINDS: [&str; 3] = ["snapshot-request", "applied", "adopted"];
-
-/// The §9.1 upload: sealed `upload` / `upload-commit` / `upload-status`.
-const UPLOAD_PATH: &str = "/pair/upload";
-
-/// The kinds `/pair/upload` speaks — again its own set (§2.3): the route that
-/// receives records never answers a pull, and the route that serves them never
-/// stages an upload.
-const UPLOAD_ACCEPTED_KINDS: [&str; 3] = ["upload", "upload-commit", "upload-status"];
-
-/// The §6 ongoing exchange: `sync-push` / `sync-commit` / `sync-pull` /
-/// `sync-applied` / `sync-status`. A fourth route with its own kind set, for
-/// the same reason each of the others has one (§2.3).
-const SYNC_PATH: &str = "/pair/sync";
-
-/// The kinds `/pair/sync` speaks. The push half and the pull half share the
-/// route because they are one exchange — but the kind set is still the route's
-/// own: a snapshot message posted here is refused by name.
-const SYNC_ACCEPTED_KINDS: [&str; 5] = [
-    "sync-push",
-    "sync-commit",
-    "sync-pull",
-    "sync-applied",
-    "sync-status",
-];
 
 /// §8.3's per-batch op bound, shared with the snapshot: one upload batch is
 /// one bounded frame, never a data dump.
@@ -183,60 +150,11 @@ fn est_sync_op_bytes(op: &JsonValue) -> usize {
 /// hold (64 × 200 ops is already far past any phone's offline backlog).
 const MAX_UPLOAD_BATCHES: usize = 64;
 
-/// How long the accept loop sleeps between non-blocking accepts: the bound on
-/// how long a `stop` waits to be seen, and on how long a phone waits to be
-/// accepted.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
-
 /// How long a stop may spend proving the socket is gone.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(2);
 
 /// The gap between two probes of a port that is closing.
 const CLOSE_PROBE_GAP: Duration = Duration::from_millis(5);
-
-/// Responses served at once: a client that stalls owns a worker, never the
-/// accept loop. Two is enough for a phone plus a retry.
-const MAX_WORKERS: usize = 2;
-
-/// How long one connection may take, end to end, before its worker gives up on
-/// it. Every read and write is bounded by this too, so a client that dribbles a
-/// byte at a time cannot hold a worker either (§11.1, N5).
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// A request head is a request line and a handful of headers. Anything larger is
-/// a client that will not be served.
-const MAX_HEAD_BYTES: usize = 8 * 1024;
-
-/// Frame one UTF-8 JSON document with its four-byte length prefix.
-pub fn encode_frame(text: &str) -> Result<Vec<u8>, String> {
-    let body = text.as_bytes();
-    if body.len() > MAX_FRAME_BYTES {
-        return Err(format!(
-            "a pairing message is limited to {MAX_FRAME_BYTES} bytes"
-        ));
-    }
-    let mut frame = Vec::with_capacity(FRAME_HEADER_BYTES + body.len());
-    frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    frame.extend_from_slice(body);
-    Ok(frame)
-}
-
-/// Read one framed document. The length must match the body exactly: a
-/// truncated frame is refused rather than decoded from whatever is left.
-pub fn decode_frame(bytes: &[u8]) -> Result<String, String> {
-    if bytes.len() < FRAME_HEADER_BYTES {
-        return Err("a frame begins with a four-byte length.".to_string());
-    }
-    let length = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-    if length > MAX_FRAME_BYTES {
-        return Err("the frame is larger than the pairing limit.".to_string());
-    }
-    if bytes.len() - FRAME_HEADER_BYTES != length {
-        return Err("the frame's length prefix does not match its body.".to_string());
-    }
-    String::from_utf8(bytes[FRAME_HEADER_BYTES..].to_vec())
-        .map_err(|_| "the frame is not UTF-8.".to_string())
-}
 
 /// The peer's pin (§11.2), as the shell hands it in when the window opens.
 #[derive(Debug, Clone, Deserialize)]
@@ -1198,467 +1116,16 @@ impl RefusalReply {
     }
 }
 
-/// The reason phrase for every status this listener can answer with.
-fn status_text(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        204 => "No Content",
-        400 => "Bad Request",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Internal Server Error",
-    }
-}
-
-/// Write one response; the caller's stream is dropped afterwards, which closes
-/// the connection.
-///
-/// No `Access-Control-Allow-Origin` is ever sent (§11.1, N5): the phone's sealed
-/// client invokes HTTP from Rust, not from a WebView `fetch`, so no browser is
-/// meant to read this port and a wildcard grant would only widen it.
-fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> std::io::Result<()> {
-    let mut head = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
-        status_text(status)
-    );
-    // A 204 has no body and must not carry a length (RFC 9110 §6.4.1).
-    if status != 204 {
-        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    head.push_str("\r\n");
-    let mut wire = head.into_bytes();
-    wire.extend_from_slice(body);
-    stream.write_all(&wire)
-}
-
-/// Read one request: a bounded head, then exactly the body its `Content-Length`
-/// promises. Bounded in bytes *and* in time, so neither a huge head nor a slow
-/// drip holds the worker past [`CONNECTION_TIMEOUT`].
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), RefusalReply> {
-    let deadline = Instant::now() + CONNECTION_TIMEOUT;
-    let too_slow = || RefusalReply::malformed("the request did not arrive in time.");
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() >= MAX_HEAD_BYTES {
-            return Err(RefusalReply::malformed("the request head is too large."));
-        }
-        if Instant::now() >= deadline {
-            return Err(too_slow());
-        }
-        match stream.read(&mut byte) {
-            Ok(0) => return Err(RefusalReply::malformed("the request head ended early.")),
-            Ok(_) => head.push(byte[0]),
-            Err(_) => return Err(too_slow()),
-        }
-    }
-    let text = String::from_utf8(head)
-        .map_err(|_| RefusalReply::malformed("the request head is not UTF-8."))?;
-    let mut lines = text.split("\r\n");
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split(' ');
-    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
-        return Err(RefusalReply::malformed(
-            "the request line is not METHOD TARGET HTTP/x.y.",
-        ));
-    };
-    if !parts
-        .next()
-        .is_some_and(|version| version.starts_with("HTTP/1."))
-    {
-        return Err(RefusalReply::malformed("a pairing message is HTTP/1.x."));
-    }
-
-    let mut content_length: Option<usize> = None;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(RefusalReply::malformed("a header has no colon."));
-        };
-        match name.trim().to_ascii_lowercase().as_str() {
-            "content-length" => {
-                let length = value
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|_| RefusalReply::malformed("Content-Length is a number."))?;
-                if content_length.replace(length).is_some() {
-                    return Err(RefusalReply::malformed("Content-Length is sent once."));
-                }
-            }
-            // A chunked body is not a pairing message: the frame carries its own
-            // length and the HTTP body is exactly that (§11.6.1).
-            "transfer-encoding" => {
-                return Err(RefusalReply::malformed(
-                    "a pairing message is not chunked; send one framed body.",
-                ))
-            }
-            _ => {}
-        }
-    }
-
-    let body_limit = MAX_FRAME_BYTES + FRAME_HEADER_BYTES + 1;
-    let length = content_length.unwrap_or(0);
-    if length > body_limit {
-        return Err(RefusalReply::malformed(
-            "the request body is larger than a pairing message.",
-        ));
-    }
-    let mut body = Vec::with_capacity(length);
-    let mut chunk = [0u8; 8192];
-    while body.len() < length {
-        if Instant::now() >= deadline {
-            return Err(too_slow());
-        }
-        let want = (length - body.len()).min(chunk.len());
-        match stream.read(&mut chunk[..want]) {
-            Ok(0) => return Err(RefusalReply::malformed("the request body ended early.")),
-            Ok(read) => body.extend_from_slice(&chunk[..read]),
-            Err(_) => return Err(too_slow()),
-        }
-    }
-    Ok((
-        method.to_string(),
-        target.split('?').next().unwrap_or(target).to_string(),
-        body,
-    ))
-}
-
-/// One answered connection: a status and, unless it is a bodiless 204, the
-/// framed JSON document the phone reads (§11.6.1).
-fn answer(stream: &mut TcpStream, gate: &Gate) -> (u16, Option<JsonValue>) {
-    let (method, path, body) = match read_request(stream) {
-        Ok(request) => request,
-        Err(refusal) => return (refusal.status, Some(refusal.body())),
-    };
-    let hello = path == HELLO_PATH;
-    let snapshot = path == SNAPSHOT_PATH;
-    let upload = path == UPLOAD_PATH;
-    let sync = path == SYNC_PATH;
-    if !hello && !snapshot && !upload && !sync && path != REQUEST_PATH {
-        return (
-            404,
-            Some(json!({
-                "ok": false,
-                "reason": "not-found",
-                "message": "the pairing listener serves POST /pair/hello, POST /pair/request, POST /pair/snapshot, POST /pair/upload and POST /pair/sync.",
-            })),
-        );
-    }
-    // Answered, never granted: the 204 carries no CORS headers (N5).
-    if method == "OPTIONS" {
-        return (204, None);
-    }
-    if method != "POST" {
-        return (
-            405,
-            Some(json!({
-                "ok": false,
-                "reason": "method",
-                "message": "a pairing message is POSTed.",
-            })),
-        );
-    }
-    // §11.3 before anything else: a revoked peer's key is not even looked at.
-    // This gates sealed messages only — the rendezvous below *replaces* the
-    // pin, and a revocation must never be a lockout from re-pairing. On the
-    // snapshot route it also means the reader is never called, so not one batch
-    // byte leaves the desktop.
-    if (hello || snapshot || upload || sync) && active_pin(gate).is_some_and(|pin| pin.revoked) {
-        let refusal = RefusalReply::refused(
-            "revoked",
-            "this device was revoked on the desktop; re-pair it before anything syncs (§11.3).",
-        );
-        return (refusal.status, Some(refusal.body()));
-    }
-    let outcome = if hello {
-        admit(gate, &body, &ACCEPTED_KINDS)
-            .and_then(|(pin, opened)| routes::hello::acknowledged(gate, &pin, opened))
-    } else if snapshot {
-        admit(gate, &body, &SNAPSHOT_ACCEPTED_KINDS)
-            .and_then(|(pin, opened)| routes::snapshot::snapshot_answer(gate, &pin, &opened))
-    } else if upload {
-        admit(gate, &body, &UPLOAD_ACCEPTED_KINDS)
-            .and_then(|(pin, opened)| routes::upload::upload_answer(gate, &pin, &opened))
-    } else if sync {
-        admit(gate, &body, &SYNC_ACCEPTED_KINDS)
-            .and_then(|(pin, opened)| routes::sync::sync_answer(gate, &pin, &opened))
-    } else {
-        routes::hello::rendezvous(gate, &body)
-    };
-    match outcome {
-        Ok(reply) => (200, Some(reply)),
-        Err(refusal) => (refusal.status, Some(refusal.body())),
-    }
-}
-
-/// The accept loop. It never writes a response itself, so a client that stalls
-/// cannot keep `stop` from returning; and it joins every worker it spawned, so
-/// no thread holding `Arc<Gate>` — and with it the local secret — outlives the
-/// window (§11.1, N5).
-fn serve(listener: TcpListener, gate: Arc<Gate>, shared: Arc<Shared>) {
-    // Non-blocking accept so the shutdown flag is read without a second socket.
-    if listener.set_nonblocking(true).is_err() {
-        return;
-    }
-    let mut consecutive_errors = 0u32;
-    let mut workers: Vec<JoinHandle<()>> = Vec::new();
-    while !shared.stop.load(Ordering::SeqCst) {
-        workers.retain(|worker| !worker.is_finished());
-        match listener.accept() {
-            Ok((stream, _)) => {
-                consecutive_errors = 0;
-                if workers.len() >= MAX_WORKERS {
-                    // Every slot is busy. Dropping closes the connection without
-                    // putting this loop behind a worker that is still reading.
-                    drop(stream);
-                    continue;
-                }
-                let worker_gate = Arc::clone(&gate);
-                if let Ok(join) = thread::Builder::new()
-                    .name("purple-memo-pairing-worker".to_string())
-                    .spawn(move || handle(stream, &worker_gate))
-                {
-                    workers.push(join);
-                }
-            }
-            Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                consecutive_errors = 0;
-                thread::sleep(POLL_INTERVAL);
-            }
-            // A client hanging up mid-handshake is normal; a listener that keeps
-            // failing is not.
-            Err(ref error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::ConnectionAborted
-                        | ErrorKind::ConnectionReset
-                        | ErrorKind::Interrupted
-                ) => {}
-            Err(_) => {
-                consecutive_errors += 1;
-                if consecutive_errors >= 100 {
-                    break;
-                }
-            }
-        }
-    }
-    // Close the port first, then wait for the workers: a stop that returned with
-    // `Gate`-holding threads alive would leave the local secret reachable after
-    // the window is gone.
-    drop(listener);
-    for worker in workers {
-        let _ = worker.join();
-    }
-}
-
-/// Serve one connection: install the deadlines, answer, close.
-fn handle(mut stream: TcpStream, gate: &Gate) {
-    // `accept` hands over a socket that inherits the listener's non-blocking
-    // mode, and a read timeout is ignored on one: the first read would answer
-    // `WouldBlock` microseconds after the connection arrived, before a phone's
-    // request was on the wire, and be refused as "did not arrive in time" (N5).
-    // Clearing it here is what makes CONNECTION_TIMEOUT mean what it says.
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
-    let (status, body) = answer(&mut stream, gate);
-    // A body that cannot be framed is a REFUSAL, never an empty 2xx: the old
-    // `unwrap_or_default()` answered 200 with no bytes, which a phone reads as a
-    // malformed batch after its own push has already committed — the two-way
-    // wedge SW-04 describes. Named, and still framed, so the client can report
-    // the reason instead of guessing (§7.7).
-    let (status, framed) = match body {
-        Some(body) => match encode_frame(&body.to_string()) {
-            Ok(frame) => (status, frame),
-            Err(message) => {
-                let refusal = RefusalReply {
-                    code: "frame-too-large",
-                    message,
-                    status: 500,
-                    attempts_left: None,
-                };
-                let framed = encode_frame(&refusal.body().to_string())
-                    .expect("a refusal body is far under the frame cap");
-                (refusal.status, framed)
-            }
-        },
-        None => (status, Vec::new()),
-    };
-    let _ = write_response(&mut stream, status, &framed);
-}
-
 // ---------------------------------------------------------------------------
 // Tests — run with `cargo test`. Real crypto, real loopback socket, no stubs.
 // ---------------------------------------------------------------------------
 
-/// The LAN address a phone on the same network can reach (also the address the
-/// pairing offer puts in its QR, §11.1).
-///
-/// The default route answers on any normal network; an isolated LAN — a phone
-/// hotspot or an offline router — has no default route at all, and returning
-/// `None` there produced QRs with an empty endpoint that every phone refused
-/// (N7). So the routes are asked first and the interfaces second.
-fn lan_ip() -> Option<String> {
-    default_route_ip().or_else(|| pick_lan_ip(interface_ips()))
-}
-
-/// The source address the default route would use, when there is one. Binding
-/// a UDP socket and "connecting" it sends nothing — it only asks the OS.
-fn default_route_ip() -> Option<String> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    // RFC 5737 TEST-NET: routable-looking, never a real destination.
-    socket.connect("192.0.2.1:80").ok()?;
-    socket.local_addr().ok().map(|a| a.ip().to_string())
-}
-
-/// The best LAN address among the interfaces the OS reports.
-///
-/// A private IPv4 address wins (that is what a home network hands out), then
-/// any other routable-looking IPv4. Loopback, `169.254/16` link-local and
-/// unspecified addresses are never offered: none of them can be dialled from a
-/// phone. IPv6 is skipped on purpose — a link-local address needs a scope id a
-/// `host:port` QR cannot carry, and the phone's transport dials v4 today.
-fn pick_lan_ip(candidates: Vec<std::net::IpAddr>) -> Option<String> {
-    use std::net::IpAddr;
-    let rank = |ip: &IpAddr| -> Option<u8> {
-        match ip {
-            IpAddr::V4(v4) if v4.is_loopback() || v4.is_unspecified() => None,
-            IpAddr::V4(v4) if v4.is_link_local() => None,
-            IpAddr::V4(v4) if v4.is_private() => Some(0),
-            IpAddr::V4(_) => Some(1),
-            IpAddr::V6(_) => None,
-        }
-    };
-    let mut best: Option<(u8, IpAddr)> = None;
-    for ip in candidates {
-        let Some(score) = rank(&ip) else { continue };
-        let better = match best {
-            None => true,
-            Some((current, _)) => score < current,
-        };
-        if better {
-            best = Some((score, ip));
-        }
-    }
-    best.map(|(_, ip)| ip.to_string())
-}
-
-/// Every IPv4 address the OS reports for its interfaces (no crate needed; the
-/// platform call is target-gated here).
-#[cfg(unix)]
-fn interface_ips() -> Vec<std::net::IpAddr> {
-    use std::net::{IpAddr, Ipv4Addr};
-    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: `getifaddrs` fills a NULL-terminated list owned by us; every node
-    // is read only while non-NULL, the v4 address is read from the sockaddr the
-    // family check just identified, and the list is freed exactly once below.
-    unsafe {
-        if libc::getifaddrs(&mut head) != 0 {
-            return Vec::new();
-        }
-        let mut found = Vec::new();
-        let mut cursor = head;
-        while let Some(entry) = cursor.as_ref() {
-            if !entry.ifa_addr.is_null() && (*entry.ifa_addr).sa_family as i32 == libc::AF_INET {
-                let addr = &*(entry.ifa_addr as *const libc::sockaddr_in);
-                // `s_addr` is network byte order; its in-memory bytes are the
-                // four octets in order.
-                found.push(IpAddr::V4(Ipv4Addr::from(
-                    addr.sin_addr.s_addr.to_ne_bytes(),
-                )));
-            }
-            cursor = entry.ifa_next;
-        }
-        libc::freeifaddrs(head);
-        found
-    }
-}
-
-/// Windows: `GetAdaptersAddresses`, the same call every LAN-address crate
-/// makes. `windows-sys` is already in the lock file (Tauri's own tree), so this
-/// declares an existing pin rather than adding a crate to download.
-#[cfg(windows)]
-fn interface_ips() -> Vec<std::net::IpAddr> {
-    use std::net::{IpAddr, Ipv4Addr};
-    use std::ptr;
-    use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS};
-    use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
-        GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
-    };
-    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
-
-    // `usize` keeps the buffer aligned for the adapter structs it is read as.
-    let mut words: Vec<usize> = vec![0; 15 * 1024 / std::mem::size_of::<usize>()];
-    let mut size = (words.len() * std::mem::size_of::<usize>()) as u32;
-    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
-    // SAFETY: the buffer is aligned and sized by `size`, which the call updates
-    // on overflow; it is reallocated once and the call repeated.
-    let mut result = unsafe {
-        GetAdaptersAddresses(
-            AF_UNSPEC as u32,
-            flags,
-            ptr::null(),
-            words.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
-            &mut size,
-        )
-    };
-    if result == ERROR_BUFFER_OVERFLOW {
-        words = vec![0; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-        size = (words.len() * std::mem::size_of::<usize>()) as u32;
-        // SAFETY: same contract as the first call, with the size the OS asked
-        // for.
-        result = unsafe {
-            GetAdaptersAddresses(
-                AF_UNSPEC as u32,
-                flags,
-                ptr::null(),
-                words.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
-                &mut size,
-            )
-        };
-    }
-    if result != ERROR_SUCCESS {
-        return Vec::new();
-    }
-    let mut found = Vec::new();
-    let mut adapter = words.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
-    // SAFETY: the adapter list was filled by the successful call above and is
-    // NULL-terminated; each unicast entry is likewise walked only while non-NULL
-    // and read as a `SOCKADDR_IN` only after its family says it is one.
-    unsafe {
-        while let Some(current) = adapter.as_ref() {
-            let mut unicast = current.FirstUnicastAddress;
-            while let Some(entry) = unicast.as_ref() {
-                let socket = entry.Address;
-                if !socket.lpSockaddr.is_null() && (*socket.lpSockaddr).sa_family == AF_INET {
-                    let addr = &*(socket.lpSockaddr as *const SOCKADDR_IN);
-                    found.push(IpAddr::V4(Ipv4Addr::from(
-                        addr.sin_addr.S_un.S_addr.to_ne_bytes(),
-                    )));
-                }
-                unicast = entry.Next;
-            }
-            adapter = current.Next;
-        }
-    }
-    found
-}
-
-#[cfg(not(any(unix, windows)))]
-fn interface_ips() -> Vec<std::net::IpAddr> {
-    Vec::new()
-}
-
 #[cfg(test)]
 mod tests {
-    use self::routes::common::now_ms;
+    use super::routes::common::now_ms;
     use super::*;
     use crate::envelope::SealInput;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::TcpStream as StdTcpStream;
 
     pub(super) const DESKTOP_SECRET: [u8; KEY_BYTES] = [0x11u8; KEY_BYTES];
@@ -1820,24 +1287,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_hello_endpoint_speaks_and_only_by_post() {
-        let (state, port) = started(false);
-
-        let (status, raw) = request(port, "GET /", b"");
-        assert_eq!(status, 404, "no other path is served");
-        let text = decode_frame(&raw).expect("even a 404 is one framed document");
-        let reply: JsonValue = serde_json::from_str(&text).expect("reply json");
-        assert_eq!(reply["reason"], json!("not-found"));
-
-        let (status, raw) = request(port, "GET /pair/hello", b"");
-        assert_eq!(status, 405, "a hello is POSTed");
-        let text = decode_frame(&raw).expect("even a 405 is one framed document");
-        let reply: JsonValue = serde_json::from_str(&text).expect("reply json");
-        assert_eq!(reply["reason"], json!("method"));
-        state.stop().expect("stop");
-    }
-
-    #[test]
     fn nothing_listens_until_the_window_opens_and_nothing_listens_after_it_closes() {
         let idle = PairingListenerState::default();
         let info = idle.status().expect("status");
@@ -1923,42 +1372,6 @@ mod tests {
             "nor the peer's: {printed}"
         );
         state.stop().expect("stop");
-    }
-
-    /// The framing both sides speak. `src/lib/sync/frame.test.ts` pins the same
-    /// `00000011` prefix for the same plaintext.
-    #[test]
-    fn a_frame_is_four_big_endian_length_bytes_then_utf8_json() {
-        let text = "{\"hello\":\"world\"}";
-        let frame = encode_frame(text).expect("frame");
-        assert_eq!(
-            envelope::to_hex(&frame),
-            format!("00000011{}", envelope::to_hex(text.as_bytes()))
-        );
-        assert_eq!(decode_frame(&frame).expect("decode"), text);
-
-        assert!(
-            decode_frame(&frame[..3]).is_err(),
-            "three bytes is not a frame"
-        );
-        assert!(
-            decode_frame(&frame[..frame.len() - 1]).is_err(),
-            "a truncated body is refused, not guessed"
-        );
-        let mut longer = frame.clone();
-        longer.push(b' ');
-        assert!(
-            decode_frame(&longer).is_err(),
-            "a length that does not match the body is refused"
-        );
-        assert!(
-            decode_frame(&[0xff, 0xff, 0xff, 0xff]).is_err(),
-            "an absurd length is refused before anything is allocated"
-        );
-        assert!(
-            decode_frame(b"\x00\x00\x00\x01\xff").is_err(),
-            "the body must be UTF-8"
-        );
     }
 
     #[test]
@@ -2076,42 +1489,6 @@ mod tests {
             }),
         );
         assert_eq!(status, 200, "the new code is the one the listener checks");
-    }
-
-    /// A window opened with the stored pin *and* a code: what a re-pair of an
-    /// existing phone looks like.
-    #[test]
-    fn two_stalled_connections_do_not_keep_the_phone_out() {
-        let (state, port) = started(false);
-        // Two clients announce a body and never send it: both worker slots are
-        // held until the connection's own deadline expires.
-        let mut stalled = Vec::new();
-        for _ in 0..MAX_WORKERS {
-            let mut stream = StdTcpStream::connect(("127.0.0.1", port)).expect("connect");
-            write!(
-                stream,
-                "POST /pair/hello HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\n"
-            )
-            .expect("write head");
-            stalled.push(stream);
-        }
-        thread::sleep(CONNECTION_TIMEOUT + Duration::from_millis(500));
-
-        // The deadline freed the workers, so the real phone is served.
-        let (status, body) = post(port, &hello_frame(1));
-        assert_eq!(status, 200, "{body}");
-        drop(stalled);
-        state.stop().expect("stop");
-    }
-
-    #[test]
-    fn no_response_grants_a_browser_origin() {
-        let (state, port) = started(false);
-        for line in ["POST /pair/hello", "OPTIONS /pair/hello"] {
-            let head = String::from_utf8_lossy(&raw_response(port, line, &[])).to_lowercase();
-            assert!(!head.contains("access-control"), "{line}: {head}");
-        }
-        state.stop().expect("stop");
     }
 
     // ------------------------------------------------------------------
