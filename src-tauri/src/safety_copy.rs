@@ -521,7 +521,9 @@ mod tests {
         // The caller must checkpoint AND copy the database file
         // inside the same `lock_conn` scope, with the photo tree copying
         // after it. A source pin keeps the two from drifting apart.
-        let src = include_str!("commands.rs");
+        // The caller moved into `commands/backup.rs` (P2/Session 3) — both it
+        // and the command that bounds its body live there, in that order.
+        let src = include_str!("commands/backup.rs");
         let start = src
             .find("pub async fn backup_safety_copy")
             .expect("backup_safety_copy is the caller");

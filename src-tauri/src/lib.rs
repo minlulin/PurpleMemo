@@ -1380,7 +1380,19 @@ mod tray_tests {
             SRC.contains("refresh_close_to_tray(&conn);"),
             "boot seeds the mirror before any window can be closed"
         );
-        let commands = include_str!("commands.rs");
+        // `commands.rs` is the parent of the per-domain submodules, so the
+        // publishers live beside it: read the whole family in a fixed order
+        // instead of the parent alone, or the scan would pass on a file that no
+        // longer holds either string.
+        let commands = [
+            include_str!("commands.rs"),
+            include_str!("commands/app.rs"),
+            include_str!("commands/backup.rs"),
+            include_str!("commands/db.rs"),
+            include_str!("commands/pairing.rs"),
+            include_str!("commands/photos.rs"),
+        ]
+        .concat();
         assert!(
             commands.contains("crate::refresh_close_to_tray(&conn);"),
             "an import republishes it — the import replaced the settings table"

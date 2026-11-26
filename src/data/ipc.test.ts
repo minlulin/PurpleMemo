@@ -1,5 +1,6 @@
 // The IPC boundary is a two-file contract: `driver.ts` names the commands and
-// headers, `src-tauri/src/commands.rs` + `lib.rs` implement and register them.
+// headers, `src-tauri/src/commands.rs` (with its `commands/` submodules) +
+// `lib.rs` implement and register them.
 // TypeScript cannot check across that line, so a typo would only ever surface
 // as a runtime error on a user's machine — these tests read both sides and pin
 // them together (the same trick `contrast.test.ts` uses on the stylesheets).
@@ -20,10 +21,25 @@ import {
 } from "./driver.ts";
 
 const driverSrc = readFileSync(new URL("./driver.ts", import.meta.url), "utf8");
-const commandsSrc = readFileSync(
-  new URL("../../src-tauri/src/commands.rs", import.meta.url),
-  "utf8",
-);
+// `commands.rs` is the parent of per-domain submodules (P2/Session 3), so the
+// command bodies live beside it: every scan reads the whole family, concatenated
+// in a fixed order — the parent first, then the submodules alphabetically. A
+// scan of the parent alone would find none of the moved bodies.
+const commandsSrc = [
+  "commands.rs",
+  "commands/app.rs",
+  "commands/backup.rs",
+  "commands/db.rs",
+  "commands/pairing.rs",
+  "commands/photos.rs",
+]
+  .map((file) =>
+    readFileSync(
+      new URL(`../../src-tauri/src/${file}`, import.meta.url),
+      "utf8",
+    ),
+  )
+  .join("\n");
 const libSrc = readFileSync(
   new URL("../../src-tauri/src/lib.rs", import.meta.url),
   "utf8",

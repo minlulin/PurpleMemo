@@ -72,7 +72,13 @@ const SHARED_LIMITS = [
   {
     what: "per-photo ceiling (25 MiB)",
     ts: { file: "src/lib/backup.ts", name: "MAX_BACKUP_PHOTO_BYTES" },
-    rust: { file: "src-tauri/src/commands.rs", name: "MAX_SAVED_PHOTO_BYTES" },
+    // The ceiling moved with the photo commands into `commands/photos.rs`
+    // (P2/Session 3); a scan of `commands.rs` alone would find nothing and
+    // this check would report the constant as missing.
+    rust: {
+      file: "src-tauri/src/commands/photos.rs",
+      name: "MAX_SAVED_PHOTO_BYTES",
+    },
   },
 ];
 

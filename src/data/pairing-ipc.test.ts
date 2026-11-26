@@ -10,8 +10,11 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const driver = readFileSync(new URL("./driver.ts", import.meta.url), "utf8");
+// The pairing commands moved out of `commands.rs` into `commands/pairing.rs`
+// (P2/Session 3); every body this file asserts on lives there now, so the scan
+// reads that file — pointing it at the parent would find nothing.
 const commands = readFileSync(
-  new URL("../../src-tauri/src/commands.rs", import.meta.url),
+  new URL("../../src-tauri/src/commands/pairing.rs", import.meta.url),
   "utf8",
 );
 const lib = readFileSync(
