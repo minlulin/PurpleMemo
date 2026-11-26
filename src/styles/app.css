@@ -1134,6 +1134,7 @@ button.chip:hover {
 /* One control, two segments — never two competing buttons. */
 .theme-segmented {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: var(--space-1);
   margin: 0;
   padding: var(--space-1);

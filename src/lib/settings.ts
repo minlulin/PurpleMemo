@@ -71,7 +71,31 @@ export const SETTING_KEYS = {
   syncEndpoints: "sync_endpoints",
 } as const;
 
-export type Theme = "dark" | "light";
+export type Theme =
+  | "dark"
+  | "light"
+  | "oled"
+  | "midnight"
+  | "forest"
+  | "sepia"
+  | "clean";
+
+export interface ThemeOption {
+  value: Theme;
+  /** i18n key suffix: rendered under `settings.*` on desktop and under
+   *  `mobile.settings.*` on mobile, so one definition serves both pickers. */
+  key: string;
+}
+
+export const THEMES: readonly ThemeOption[] = [
+  { value: "dark", key: "themeDark" },
+  { value: "light", key: "themeLight" },
+  { value: "oled", key: "themeOled" },
+  { value: "midnight", key: "themeMidnight" },
+  { value: "forest", key: "themeForest" },
+  { value: "sepia", key: "themeSepia" },
+  { value: "clean", key: "themeClean" },
+] as const;
 
 /**
  * The one upsert for this table, as a batch statement.
@@ -166,7 +190,7 @@ export function createSettingsRepo(driver: DataDriver) {
 
     // -- Typed helpers -----------------------------------------------------------
     /**
-     * The stored appearance — exactly `"dark"` or `"light"`, else `null` (M4).
+     * The stored appearance — one of the seven theme values, else `null` (M4).
      *
      * `getJSON` parses ANY JSON: `{}`, `true` and `"blue"` all come back as
      * values, and the shell's fallback is nullish (`theme ?? "dark"`), so a
@@ -178,7 +202,11 @@ export function createSettingsRepo(driver: DataDriver) {
      */
     async getTheme(): Promise<Theme | null> {
       const value = await this.getJSON<unknown>(SETTING_KEYS.theme);
-      return value === "dark" || value === "light" ? value : null;
+      return (THEMES as readonly { value: Theme }[]).some(
+        (o) => o.value === value,
+      )
+        ? (value as Theme)
+        : null;
     },
 
     async setTheme(theme: Theme): Promise<void> {

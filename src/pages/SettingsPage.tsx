@@ -65,7 +65,7 @@ import {
   resetAttemptFromError,
   resetAttemptFromOutcome,
 } from "../lib/reset.ts";
-import { SETTING_KEYS, type Theme } from "../lib/settings.ts";
+import { SETTING_KEYS, THEMES, type Theme } from "../lib/settings.ts";
 import {
   checkForUpdate,
   installUpdate,
@@ -753,6 +753,8 @@ export default function SettingsPage(p: SettingsPageProps) {
   const backupStale =
     backupHistory !== null && backupHistory.days > BACKUP_STALE_DAYS;
 
+  const currentTheme = THEMES.find((option) => option.value === p.theme);
+
   return (
     <div className="budget-page">
       <header className="page-header">
@@ -814,29 +816,34 @@ export default function SettingsPage(p: SettingsPageProps) {
             {t("settings.section.appearance")}
           </h3>
           <span className="badge badge-accent">
-            {p.theme === "dark"
-              ? t("settings.themeDark")
-              : t("settings.themeLight")}
+            {t(`settings.${currentTheme?.key ?? "themeDark"}` as MessageKey)}
           </span>
         </div>
         <fieldset className="theme-segmented">
           <legend className="visually-hidden">{t("settings.theme")}</legend>
-          <button
-            type="button"
-            className={p.theme === "dark" ? "btn is-on" : "btn"}
-            aria-pressed={p.theme === "dark"}
-            onClick={() => void setTheme("dark")}
-          >
-            <IconMoon className="icon" /> {t("settings.themeDark")}
-          </button>
-          <button
-            type="button"
-            className={p.theme === "light" ? "btn is-on" : "btn"}
-            aria-pressed={p.theme === "light"}
-            onClick={() => void setTheme("light")}
-          >
-            <IconSun className="icon" /> {t("settings.themeLight")}
-          </button>
+          {THEMES.map((option) => {
+            const on = p.theme === option.value;
+            const icon =
+              option.value === "dark" ||
+              option.value === "oled" ||
+              option.value === "midnight" ||
+              option.value === "forest" ? (
+                <IconMoon className="icon" />
+              ) : (
+                <IconSun className="icon" />
+              );
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={on ? "btn is-on" : "btn"}
+                aria-pressed={on}
+                onClick={() => void setTheme(option.value)}
+              >
+                {icon} {t(`settings.${option.key}` as MessageKey)}
+              </button>
+            );
+          })}
         </fieldset>
         <div className="side-form">
           <label>

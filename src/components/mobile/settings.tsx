@@ -23,6 +23,7 @@ import {
 } from "../../lib/biometricUnlock.ts";
 import { verifyPin } from "../../lib/crypto.ts";
 import { errText } from "../../lib/errors.ts";
+import type { MessageKey } from "../../lib/i18n.ts";
 import { formatBytes } from "../../lib/mobileSettings.ts";
 import {
   type ResetAttempt,
@@ -30,7 +31,7 @@ import {
   resetAttemptFromOutcome,
   resetPinAccepted,
 } from "../../lib/reset.ts";
-import { SETTING_KEYS, type Theme } from "../../lib/settings.ts";
+import { SETTING_KEYS, THEMES, type Theme } from "../../lib/settings.ts";
 import { Dialog } from "../Dialog.tsx";
 import { MobilePairingCard } from "../MobilePairingCard.tsx";
 import { useT } from "../useTranslation.ts";
@@ -386,22 +387,20 @@ export function SettingsScreen({
           <legend className="visually-hidden">
             {t("mobile.settings.appearanceHeading")}
           </legend>
-          <button
-            type="button"
-            className={theme === "dark" ? "btn is-on" : "btn"}
-            aria-pressed={theme === "dark"}
-            onClick={() => void applyTheme("dark")}
-          >
-            {t("mobile.settings.themeDark")}
-          </button>
-          <button
-            type="button"
-            className={theme === "light" ? "btn is-on" : "btn"}
-            aria-pressed={theme === "light"}
-            onClick={() => void applyTheme("light")}
-          >
-            {t("mobile.settings.themeLight")}
-          </button>
+          {THEMES.map((option) => {
+            const on = theme === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={on ? "btn is-on" : "btn"}
+                aria-pressed={on}
+                onClick={() => void applyTheme(option.value)}
+              >
+                {t(`mobile.settings.${option.key}` as MessageKey)}
+              </button>
+            );
+          })}
         </fieldset>
       </div>
 

@@ -228,6 +228,15 @@ test("getTheme: only dark and light pass through; every other JSON value is null
 
   assert.equal(await themeOf('"dark"'), "dark", "dark passes through");
   assert.equal(await themeOf('"light"'), "light", "light passes through");
+  assert.equal(await themeOf('"oled"'), "oled", "oled passes through");
+  assert.equal(
+    await themeOf('"midnight"'),
+    "midnight",
+    "midnight passes through",
+  );
+  assert.equal(await themeOf('"forest"'), "forest", "forest passes through");
+  assert.equal(await themeOf('"sepia"'), "sepia", "sepia passes through");
+  assert.equal(await themeOf('"clean"'), "clean", "clean passes through");
   assert.equal(await themeOf(undefined), null, "a missing row stays null");
   assert.equal(await themeOf("not json"), null, "unparseable stays null");
   assert.equal(await themeOf("{}"), null, "an object never reaches React");
