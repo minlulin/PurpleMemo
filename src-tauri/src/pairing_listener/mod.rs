@@ -156,6 +156,15 @@ const CLOSE_DEADLINE: Duration = Duration::from_secs(2);
 /// The gap between two probes of a port that is closing.
 const CLOSE_PROBE_GAP: Duration = Duration::from_millis(5);
 
+/// The port the listener prefers (F7). The phone remembers the last endpoint
+/// that reached this desktop, so the port must survive the panel closing and
+/// reopening — an ephemeral port would strand that memory on a dead address
+/// every time. When the port is taken (another program, a socket still
+/// closing, a parallel test) the bind falls back to an ephemeral port: the
+/// offer carries whatever was actually bound, so pairing by scan works
+/// either way, and only the remembered address misses for that window.
+const PAIRING_PORT: u16 = 48720;
+
 /// The peer's pin (§11.2), as the shell hands it in when the window opens.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -824,7 +833,7 @@ impl PairingListenerState {
             None => None,
         };
 
-        let listener = TcpListener::bind((bind, 0))
+        let listener = bind_pairing_listener(bind)
             .map_err(|e| format!("could not start the pairing listener on {bind}: {e}"))?;
         let bound = listener
             .local_addr()
@@ -1024,6 +1033,13 @@ fn reap(mut running: Running) -> Result<(), String> {
     wait_until_refused(running.probe)
 }
 
+/// Bind the listener: [`PAIRING_PORT`] when it is free, an ephemeral port
+/// when it is not (see the const for why the fixed port matters and why the
+/// fallback is safe).
+fn bind_pairing_listener(bind: &str) -> std::io::Result<TcpListener> {
+    TcpListener::bind((bind, PAIRING_PORT)).or_else(|_| TcpListener::bind((bind, 0)))
+}
+
 /// Probe `probe` until a connect is refused, bounded by [`CLOSE_DEADLINE`].
 ///
 /// "Refused" is a failed connect, which on Windows may be a dropped SYN rather
@@ -1135,6 +1151,30 @@ mod tests {
     pub(super) const OTHER_SECRET: [u8; KEY_BYTES] = [0x55u8; KEY_BYTES];
     pub(super) const DESKTOP_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     pub(super) const PHONE_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    #[test]
+    fn the_listener_prefers_the_fixed_port_and_falls_back_when_it_is_taken() {
+        // F7: the phone's remembered endpoint names this port, so a reopened
+        // panel must bind it again. `::1` is an address no other test binds,
+        // so the preference is observable without racing them.
+        let listener = bind_pairing_listener("::1").expect("bind");
+        assert_eq!(
+            listener.local_addr().expect("addr").port(),
+            PAIRING_PORT,
+            "a free fixed port is the one bound"
+        );
+        drop(listener);
+        // With the fixed port occupied (by this test, or by a parallel one),
+        // the bind still succeeds on an ephemeral port — pairing by scan
+        // carries whatever was bound, so only the remembered address misses.
+        let _occupied = TcpListener::bind(("127.0.0.1", PAIRING_PORT)).ok();
+        let fallback = bind_pairing_listener("127.0.0.1").expect("bind");
+        assert_ne!(
+            fallback.local_addr().expect("addr").port(),
+            PAIRING_PORT,
+            "a taken fixed port falls back instead of failing"
+        );
+    }
 
     pub(super) fn desktop_identity() -> PairingIdentity {
         PairingIdentity::from_secret(DESKTOP_SECRET)
