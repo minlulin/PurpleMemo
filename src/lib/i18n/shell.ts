@@ -24,6 +24,10 @@ export const enShell = {
     "Notifications are blocked — due reminders stay listed in Tasks.",
   "shell.listenerStopFailed":
     "The pairing window did not close — open the pairing panel and close it.",
+
+  "shortcuts.esc": "Close a dialog",
+  "shortcuts.tab": "Move inside a dialog, never behind it",
+  "shortcuts.tabFirst": "First stop skips straight to the content",
 } as const;
 
 export const myShell: Record<keyof typeof enShell, string> = {
@@ -51,4 +55,8 @@ export const myShell: Record<keyof typeof enShell, string> = {
   "shell.notificationsBlocked":
     "အသိပေးချက်များ ပိတ်ထားသည် — ရောက်ရှိနေသော သတိပေးချက်များကို လုပ်ငန်းများတွင် စာရင်းပြထားဆဲဖြစ်သည်။",
   "shell.listenerStopFailed": "တွဲချိတ်ဝင်းဒိုး မရပ်တန့်နိုင်ပါ — တွဲချိတ်အကန့်ကို ဖွင့်ပြီး ပြန်ပိတ်ပါ။",
+
+  "shortcuts.esc": "ဒိုင်ယာလော့ဂ်တစ်ခုကို ပိတ်မည်",
+  "shortcuts.tab": "ဒိုင်ယာလော့ဂ်အတွင်း ရွေ့သွားမည်၊ နောက်ဘက်သို့ ဘယ်တော့မှ မရောက်ပါ",
+  "shortcuts.tabFirst": "ပထမဆုံး ရပ်နားရာက အကြောင်းအရာသို့ တိုက်ရိုက် ကျော်သွားသည်",
 };

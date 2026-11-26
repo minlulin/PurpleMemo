@@ -6,6 +6,11 @@ export const enReminders = {
   "reminders.noticeUnknown":
     "Reminders are scheduled on this phone; this device could not report whether they are exact.",
   "reminders.allowExact": "Allow exact alarms",
+
+  "session.remindersTitle": "Reminders",
+  "session.previewTitle": "Reminder: {title}",
+  "session.dueTitle": "Reminder due",
+  "session.dueBody": "Open Purple Memo to see the reminder.",
 } as const;
 
 export const myReminders: Record<keyof typeof enReminders, string> = {
@@ -16,4 +21,9 @@ export const myReminders: Record<keyof typeof enReminders, string> = {
   "reminders.noticeUnknown":
     "သတိပေးချက်များကို ဤဖုန်းတွင် အချိန်သတ်မှတ်ထားသည်; သို့သော် တိကျမှုကို ဤစက်က မဖော်ပြနိုင်ပါ။",
   "reminders.allowExact": "တိကျသော နှိုးဆော်ချက်ကို ခွင့်ပြုရန်",
+
+  "session.remindersTitle": "သတိပေးချက်များ",
+  "session.previewTitle": "သတိပေးချက် − {title}",
+  "session.dueTitle": "သတိပေးချက် ရောက်နေသည်",
+  "session.dueBody": "သတိပေးချက်ကို ကြည့်ရန် Purple Memo ကို ဖွင့်ပါ။",
 };

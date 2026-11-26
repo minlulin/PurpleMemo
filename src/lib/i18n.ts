@@ -1,11 +1,9 @@
 // Localization.
 //
-// One flat catalogue of dotted keys per locale, split into one file per
-// top-level namespace under `i18n/` — each holds its English keys and the
-// matching Burmese keys side by side. `en` below is the typed English source
-// of truth, `my` the Burmese catalogue that the compiler and the suite both
-// require to be complete. Pages ask for a key; they never branch on the
-// language.
+// The lookup: a key and its params in, text in the active locale out. Pages ask
+// for a key; they never branch on the language. The catalogues are assembled in
+// `i18n/catalogues.ts` — one file per subject, each English key above its
+// Burmese translation.
 //
 // Storage stays locale-neutral: dates remain ISO and money remains integer
 // cents. Only presentation is translated — see `lib/format.ts`.
@@ -15,43 +13,10 @@
 // release build falls back to English, then to the key itself, because a blank
 // button is worse than an English one.
 
-import { enBudget, myBudget } from "./i18n/budget.ts";
-import { enBusiness, myBusiness } from "./i18n/business.ts";
-import { enCapture, myCapture } from "./i18n/capture.ts";
-import { enCommon, myCommon } from "./i18n/common.ts";
-import { enContacts, myContacts } from "./i18n/contacts.ts";
-import { enDashboard, myDashboard } from "./i18n/dashboard.ts";
-import { enExports, myExports } from "./i18n/exports.ts";
-import { enGallery, myGallery } from "./i18n/gallery.ts";
-import { enHabits, myHabits } from "./i18n/habits.ts";
-import { enImport, myImport } from "./i18n/import.ts";
-import { enInbox, myInbox } from "./i18n/inbox.ts";
-import { enJournal, myJournal } from "./i18n/journal.ts";
-import { enLinkPicker, myLinkPicker } from "./i18n/link-picker.ts";
-import { enLinks, myLinks } from "./i18n/links.ts";
-import { enLoans, myLoans } from "./i18n/loans.ts";
-import { enLock, myLock } from "./i18n/lock.ts";
-import { enMarkdown, myMarkdown } from "./i18n/markdown.ts";
-import { enMemories, myMemories } from "./i18n/memories.ts";
-import { enMobile, myMobile } from "./i18n/mobile.ts";
-import { enMonth, myMonth } from "./i18n/month.ts";
-import { enNav, myNav } from "./i18n/nav.ts";
-import { enNotes, myNotes } from "./i18n/notes.ts";
-import { enOnboarding, myOnboarding } from "./i18n/onboarding.ts";
-import { enPairing, myPairing } from "./i18n/pairing.ts";
-import { enReminders, myReminders } from "./i18n/reminders.ts";
-import { enReset, myReset } from "./i18n/reset.ts";
-import { enRust, myRust } from "./i18n/rust.ts";
-import { enSearch, mySearch } from "./i18n/search.ts";
-import { enSession, mySession } from "./i18n/session.ts";
-import { enSettings, mySettings } from "./i18n/settings.ts";
-import { enShell, myShell } from "./i18n/shell.ts";
-import { enShopping, myShopping } from "./i18n/shopping.ts";
-import { enShortcuts, myShortcuts } from "./i18n/shortcuts.ts";
-import { enTasks, myTasks } from "./i18n/tasks.ts";
-import { enTrash, myTrash } from "./i18n/trash.ts";
-import { enVault, myVault } from "./i18n/vault.ts";
-import { enWeekday, myWeekday } from "./i18n/weekday.ts";
+import { en, type MessageKey, my } from "./i18n/catalogues.ts";
+
+export type { MessageKey };
+export { en, my };
 
 export const LOCALES = ["en", "my"] as const;
 
@@ -78,90 +43,6 @@ export function localeFromLanguageTag(tag: string | null | undefined): Locale {
   if (typeof tag !== "string") return DEFAULT_LOCALE;
   return tag.trim().toLowerCase().startsWith("my") ? "my" : DEFAULT_LOCALE;
 }
-
-// -- Catalogue ----------------------------------------------------------------
-
-export const en = {
-  ...enCommon,
-  ...enShell,
-  ...enNav,
-  ...enSettings,
-  ...enRust,
-  ...enMobile,
-  ...enPairing,
-  ...enReminders,
-  ...enMarkdown,
-  ...enShortcuts,
-  ...enCapture,
-  ...enSearch,
-  ...enSession,
-  ...enLock,
-  ...enInbox,
-  ...enTrash,
-  ...enNotes,
-  ...enTasks,
-  ...enDashboard,
-  ...enReset,
-  ...enLinkPicker,
-  ...enLinks,
-  ...enImport,
-  ...enContacts,
-  ...enBusiness,
-  ...enLoans,
-  ...enHabits,
-  ...enShopping,
-  ...enGallery,
-  ...enJournal,
-  ...enMemories,
-  ...enExports,
-  ...enMonth,
-  ...enWeekday,
-  ...enOnboarding,
-  ...enVault,
-  ...enBudget,
-} as const;
-
-export type MessageKey = keyof typeof en;
-
-export const my: Record<MessageKey, string> = {
-  ...myCommon,
-  ...myShell,
-  ...myNav,
-  ...mySettings,
-  ...myRust,
-  ...myMobile,
-  ...myPairing,
-  ...myReminders,
-  ...myMarkdown,
-  ...myShortcuts,
-  ...myCapture,
-  ...mySearch,
-  ...mySession,
-  ...myLock,
-  ...myInbox,
-  ...myTrash,
-  ...myNotes,
-  ...myTasks,
-  ...myDashboard,
-  ...myReset,
-  ...myLinkPicker,
-  ...myLinks,
-  ...myImport,
-  ...myContacts,
-  ...myBusiness,
-  ...myLoans,
-  ...myHabits,
-  ...myShopping,
-  ...myGallery,
-  ...myJournal,
-  ...myMemories,
-  ...myExports,
-  ...myMonth,
-  ...myWeekday,
-  ...myOnboarding,
-  ...myVault,
-  ...myBudget,
-};
 
 const messages: Record<Locale, Partial<Record<MessageKey, string>>> = {
   en,

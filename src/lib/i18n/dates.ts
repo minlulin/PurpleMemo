@@ -1,4 +1,4 @@
-export const enMonth = {
+export const enDates = {
   // Months — the month/year headings on Budget, Journal, Habits and Memories.
   // The name and the word order around the year both come from here, so a
   // Burmese page does not show "October 2026" under Burmese tabs.
@@ -21,9 +21,19 @@ export const enMonth = {
   "month.previous": "Previous month",
   "month.next": "Next month",
   "month.this": "This month",
+
+  // Weekday headings for the month grid. Abbreviations, so they are keys
+  // rather than echoed locale data.
+  "weekday.sun": "Su",
+  "weekday.mon": "Mo",
+  "weekday.tue": "Tu",
+  "weekday.wed": "We",
+  "weekday.thu": "Th",
+  "weekday.fri": "Fr",
+  "weekday.sat": "Sa",
 } as const;
 
-export const myMonth: Record<keyof typeof enMonth, string> = {
+export const myDates: Record<keyof typeof enDates, string> = {
   // Months — the year comes first in Burmese, so the template carries that
   // order rather than the pages gluing the two halves together.
   "month.01": "ဇန်နဝါရီ",
@@ -43,4 +53,16 @@ export const myMonth: Record<keyof typeof enMonth, string> = {
   "month.previous": "ယမန်လ",
   "month.next": "နောက်လ",
   "month.this": "ယခုလ",
+
+  "weekday.sun": "နွေ",
+  "weekday.mon": "လာ",
+  "weekday.tue": "ဂါ",
+  "weekday.wed": "ဟူး",
+  // Each abbreviation is the day's distinguishing syllable: ကြာသပတေး → ကြာ,
+  // သောကြာ → သော, စနေ → နေ. Thursday and Friday share a syllable (ကြာ), so
+  // reading down the column is not enough to spot a shift — Sunday..Saturday
+  // must be spelled out in order.
+  "weekday.thu": "ကြာ",
+  "weekday.fri": "သော",
+  "weekday.sat": "နေ",
 };

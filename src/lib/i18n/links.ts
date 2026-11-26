@@ -8,6 +8,9 @@ export const enLinks = {
   "links.unavailable": "{type} — unavailable (it was deleted)",
   "links.unlinkWhat": "link",
   "links.unlink": "Unlink",
+
+  "markdown.linkFailed":
+    "Could not open {url} — this system has no handler for it.",
 } as const;
 
 export const myLinks: Record<keyof typeof enLinks, string> = {
@@ -20,4 +23,6 @@ export const myLinks: Record<keyof typeof enLinks, string> = {
   "links.unavailable": "{type} — မရနိုင်တော့ပါ (ဖျက်လိုက်ခြင်း)",
   "links.unlinkWhat": "ချိတ်ဆက်မှု",
   "links.unlink": "ချိတ်ဆက်မှု ဖြုတ်မည်",
+
+  "markdown.linkFailed": "{url} ကို ဖွင့်၍မရပါ — ဤစနစ်တွင် ကိုင်တွယ်သည့် အက်ပ်မရှိပါ။",
 };
