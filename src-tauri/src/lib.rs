@@ -1,3 +1,8 @@
+// Every `unsafe` block in this crate is an explicit one: the lint keeps a future
+// `unsafe fn` from silently inheriting its caller's obligations, so a new
+// platform seam has to state its contract instead of wrapping the whole body.
+#![deny(unsafe_op_in_unsafe_fn)]
+
 mod biometric;
 mod commands;
 mod db;

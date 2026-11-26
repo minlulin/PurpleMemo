@@ -171,6 +171,11 @@ mod android {
     /// Run `f` on a thread attached to the app's JVM.
     fn with_env<T>(f: impl FnOnce(&mut JNIEnv) -> Result<T, String>) -> Result<T, String> {
         let context = ndk_context::android_context();
+        // SAFETY: `vm()` is the process's single JavaVM, created by the Android
+        // runtime and valid until the process exits. `from_raw` only wraps the
+        // pointer — the `JavaVM` never owns or frees it — so it may be rebuilt
+        // from the same pointer on every call, and the thread's attachment is
+        // released by the guard below.
         let vm = unsafe { JavaVM::from_raw(context.vm().cast()) }
             .map_err(|e| format!("the Android JVM is not reachable: {e}"))?;
         let mut guard = vm
