@@ -65,12 +65,11 @@ mod db;
 mod pairing;
 mod photos;
 
-// Every command and every struct its signature names is re-exported under this
-// module, so `lib.rs` keeps registering them as `commands::<name>,` with no
-// change. The globs also carry each command's hidden `__cmd__<name>` helper,
-// which `generate_handler!` expands to at the path it is registered under —
-// re-listing the commands by name would leave those behind and the handler
-// would not compile.
+// Every command is re-exported here, so `lib.rs` keeps registering them as
+// `commands::<name>,`. The globs are not just brevity: each `#[tauri::command]`
+// also emits a hidden `__cmd__<name>` helper that `generate_handler!` expands
+// at the registered path, and naming the functions one by one would leave
+// those behind — the handler would not compile.
 pub use app::*;
 pub use backup::*;
 pub use db::*;

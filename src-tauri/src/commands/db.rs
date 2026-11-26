@@ -2,10 +2,6 @@
 //! transaction family (begin/commit/rollback, plus the break-glass
 //! `db_reset_txn`) and the one-way key export that writes the key to a file
 //! the user chose.
-//!
-//! Moved verbatim out of `commands.rs` (P2/Session 3); the shared items they
-//! use — `lock_conn`, `CmdResult` and `refuse_mobile_role` — stay in the
-//! parent.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

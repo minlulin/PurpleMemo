@@ -1,7 +1,5 @@
 //! The app-level commands: the close-to-tray mirror's publishers, the
 //! interface locale, the boot status pair and the factory-reset engine.
-//!
-//! Moved verbatim out of `commands.rs` (P2/Session 3).
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

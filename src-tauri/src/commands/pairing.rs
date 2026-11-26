@@ -1,10 +1,6 @@
 //! The pairing commands: this device's facts and identity, the pairing
 //! window, the phone's snapshot/upload/sync exchanges and the confirmed
 //! identity replacement.
-//!
-//! Moved verbatim out of `commands.rs` (P2/Session 3); the shared items they
-//! use — `lock_conn`, `CmdResult` and `refuse_mobile_role` — stay in the
-//! parent.
 
 use rusqlite::Connection;
 use serde::Serialize;

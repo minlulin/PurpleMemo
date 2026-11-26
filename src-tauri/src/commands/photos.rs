@@ -1,10 +1,8 @@
 //! The photo commands: raw-body writers for the original bytes and the
 //! thumbnail, and the raw-byte reads. The photo header constants and their
-//! lease helper live here because these five commands are their only users
-//! (the generic raw-body/header helpers stay in the parent, shared with
-//! `backup.rs`).
-//!
-//! Moved verbatim out of `commands.rs` (P2/Session 3).
+//! lease helper live here because these five commands are their only users;
+//! the generic raw-body/header helpers stay in the parent, shared with
+//! `backup.rs`.
 
 use std::sync::Arc;
 

@@ -3,9 +3,8 @@
 //! copy that opens the import exclusion window, and the lease pair that
 //! claims and releases it.
 //!
-//! Moved verbatim out of `commands.rs` (P2/Session 3). `export_save_file` stays
-//! in this file after `backup_safety_copy` because `safety_copy.rs`'s source
-//! pin bounds the copy's body with it.
+//! `export_save_file` stays in this file after `backup_safety_copy`:
+//! `safety_copy.rs`'s source pin bounds the copy's body with it.
 
 use std::sync::Arc;
 
