@@ -10,8 +10,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useLocale, useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Loans: view + create, no repayments -------------------------------------
-
 /**
  * The Loans screen: lent and borrowed loans with counterparty, amount and
  * direction.

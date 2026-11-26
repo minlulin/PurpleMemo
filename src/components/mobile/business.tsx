@@ -10,8 +10,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useLocale, useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Business: jobs, create-only ---------------------------------------------
-
 /**
  * The Business screen: the shop's jobs with shop, total and status.
  *

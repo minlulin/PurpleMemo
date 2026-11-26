@@ -35,8 +35,6 @@ import { Dialog } from "../Dialog.tsx";
 import { MobilePairingCard } from "../MobilePairingCard.tsx";
 import { useT } from "../useTranslation.ts";
 
-// -- Settings ----------------------------------------------------------------
-
 type ExactState = "exact" | "inexact" | "unknown";
 
 /**

@@ -12,8 +12,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useT } from "../useTranslation.ts";
 import { LoadMessage } from "./common.tsx";
 
-// -- Vault: lookup + copy only -----------------------------------------------
-
 type VaultPhase = "loading" | "error" | "unset" | "locked" | "open";
 
 /** Seconds the sensitive clipboard holds the value (the bridge reports it). */

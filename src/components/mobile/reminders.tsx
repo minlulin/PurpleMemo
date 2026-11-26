@@ -18,8 +18,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Reminders ---------------------------------------------------------------
-
 type ReminderRepeat = "none" | "daily" | "weekly" | "monthly";
 
 const REMINDER_REPEATS: readonly ReminderRepeat[] = [

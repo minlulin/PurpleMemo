@@ -1,20 +1,17 @@
 // The phone's screens, one module per domain in `components/mobile/`.
 //
+// This file is their one public path: `MobileShell.tsx` imports every screen
+// from here, so which module holds one is this folder's business.
+//
 // Rules live in `lib/mobileShell.ts` / `lib/mobileSearch.ts`; the screens are
 // the wiring over the shared repositories, which are the same ones the desktop
 // pages use. Nothing there mints identity — `createNote` / `createTask` /
 // `addItem` do that, so a record typed on the phone is as sync-ready as one
-// typed on the desktop. The ONE driver call is the danger zone's reset act
-// (F-1), which runs the same factory-reset engine the desktop's Settings and
-// Android's key-loss flow use — `src/reset-gate.test.ts` pins it as one of
-// exactly two call sites.
+// typed on the desktop.
 //
 // Mobile is view + add + mark-done toggles only (design, interaction model):
-// the screens can create a record and flip exactly the one boolean the design
+// a screen can create a record and flip exactly the one boolean the design
 // allows. No other edit exists there on purpose.
-//
-// This file stays the public path — `MobileShell.tsx` and the tests import the
-// screens from here — so the split changed no importer.
 
 export { BudgetScreen, EntryCompose } from "./mobile/budget.tsx";
 export { BusinessScreen, JobCompose, ShopCompose } from "./mobile/business.tsx";

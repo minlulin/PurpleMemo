@@ -11,8 +11,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useLocale, useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Budget: wallets + append-only entries -----------------------------------
-
 /**
  * The Budget tab: every wallet with its recorded balance, and the entries of
  * the wallet that was tapped.

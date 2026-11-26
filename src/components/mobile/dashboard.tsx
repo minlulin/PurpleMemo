@@ -22,8 +22,6 @@ import { useLocale, useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 import { MobileSearch } from "./search.tsx";
 
-// -- Dashboard: money, due tasks, pinned notes, habit check-ins ----------------
-
 export function DashboardScreen({
   onOpenNote,
 }: {

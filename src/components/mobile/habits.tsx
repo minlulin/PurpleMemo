@@ -8,8 +8,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Habits: 1-tap check-ins, no creation -------------------------------------
-
 /**
  * The Habits page: every habit with today's check-in and its streak.
  *

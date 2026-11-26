@@ -9,8 +9,6 @@ import { useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 import { RemindersPanel } from "./reminders.tsx";
 
-// -- Tasks -------------------------------------------------------------------
-
 export function TasksScreen({ onCompose }: { onCompose: () => void }) {
   const t = useT();
   const load = useCallback(() => tasksRepo.listTasks(true), []);

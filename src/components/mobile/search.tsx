@@ -1,5 +1,3 @@
-// The phone's search, scoped to the two entities it may see.
-
 import { useEffect, useState } from "react";
 import { searchMobileWorkspace } from "../../data/app.ts";
 import type { SearchGroup } from "../../lib/globalSearch.ts";

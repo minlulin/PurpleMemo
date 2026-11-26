@@ -14,8 +14,6 @@ import {
 import { useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Notes -------------------------------------------------------------------
-
 export function NotesScreen({ onCompose }: { onCompose: () => void }) {
   const t = useT();
   const load = useCallback(() => notesRepo.listNotes({ limit: 100 }), []);

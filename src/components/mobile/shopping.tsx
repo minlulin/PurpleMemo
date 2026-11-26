@@ -7,8 +7,6 @@ import { EmptyState } from "../EmptyState.tsx";
 import { useT } from "../useTranslation.ts";
 import { LoadMessage, useLoad } from "./common.tsx";
 
-// -- Shopping ----------------------------------------------------------------
-
 export function ShoppingScreen({ onCompose }: { onCompose: () => void }) {
   const t = useT();
   const load = useCallback(() => shoppingRepo.listLists(), []);
