@@ -73,39 +73,40 @@ function contrast(a: Rgba, b: Rgba): number {
   return (Math.max(one, two) + 0.05) / (Math.min(one, two) + 0.05);
 }
 
-/** The base `:root` block plus everything `[data-theme="light"]` redeclares. */
+/**
+ * The base `:root` block, then every `[data-theme="<name>"]` block merged over
+ * it. Parsing stops at the first `@media`: the `prefers-contrast` and `print`
+ * blocks are OS/paper overrides, not themes, and letting their declarations
+ * bleed in is exactly how the plain light theme went unverified.
+ */
 function readThemes(): Record<string, Map<string, Rgba>> {
   const css = readFileSync(join(stylesDir, "tokens.css"), "utf8");
   const base = new Map<string, Rgba>();
-  const light = new Map<string, Rgba>();
-  let target: Map<string, Rgba> | null = base;
+  const themes: Record<string, Map<string, Rgba>> = { dark: base };
+  let target: Map<string, Rgba> = base;
 
   for (const rawLine of css.split("\n")) {
     const line = rawLine.trim();
-    if (/^\[data-theme="light"\]\s*\{/.test(line)) {
-      target = light;
+    if (/^@media\s*\(/.test(line)) break;
+    const block = line.match(/^\[data-theme="([a-z-]+)"\]\s*\{$/);
+    if (block?.[1]) {
+      // Each theme only redeclares what differs, so it inherits the rest.
+      target = new Map(base);
+      themes[block[1]] = target;
       continue;
     }
-    if (
-      /^@media\s*\(/.test(line) ||
-      /^\}/.test(line) ||
-      /^:root\s*\{/.test(line)
-    ) {
+    if (/^:root\s*\{/.test(line) || /^\}/.test(line)) {
       continue;
     }
     const decl = line.match(/^(--[a-z0-9-]+)\s*:\s*(.+?);$/);
     const name = decl?.[1];
     const raw = decl?.[2];
-    if (name && raw && target) {
+    if (name && raw) {
       const color = parseColor(raw);
       if (color) target.set(name, color);
     }
   }
-  // The light theme only redeclares what differs, so it inherits the rest.
-  for (const [name, value] of base) {
-    if (!light.has(name)) light.set(name, value);
-  }
-  return { dark: base, light };
+  return themes;
 }
 
 /** Resolves `token`, compositing `*-soft` tints over the surface behind them. */
@@ -123,7 +124,7 @@ function surface(
 
 const AA = 4.5;
 
-test("every text pair clears WCAG AA in both themes", () => {
+test("every text pair clears WCAG AA in every theme", () => {
   const themes = readThemes();
   const pairs: [string, string, string?][] = [
     ["--color-text", "--color-surface"],

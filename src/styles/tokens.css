@@ -4,8 +4,9 @@
  * PurpleShade design tokens — the single source of design values.
  * The token-lint gate allows hex colors and px values ONLY in this file.
  * Brand anchor: #310096 (hue 255°, sampled from public/brand/*.png).
- * Every name here is a contract: the phone share page (src-tauri/share.rs
- * inlines this file) and tokens.test.ts both depend on them.
+ * Every name here is a contract: tokens.test.ts pins the brand anchor and
+ * contrast.test.ts verifies every theme's text pairs, so no token may be
+ * added, renamed or removed without updating both.
  */
 
 :root {
@@ -252,7 +253,9 @@
   --gradient-danger: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
   --color-text: #1b1330;
   --color-text-muted: #5d527c;
-  --color-text-subtle: #8276a3;
+  /* #8276a3 measured 3.67:1 on the raised surface — below AA for placeholder
+     and metadata text. #6f6391 keeps the hue and clears it (5.43 / 4.81). */
+  --color-text-subtle: #6f6391;
   --color-text-inverse: #ffffff;
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235d527c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-scrim: rgba(27, 19, 48, 0.45);
@@ -270,6 +273,294 @@
   --gradient-app-glow: radial-gradient(
     64rem 36rem at 50% -15%,
     rgba(121, 77, 255, 0.09),
+    transparent 70%
+  );
+}
+
+/* OLED Black — true-black base for AMOLED; violet accent inherited. */
+[data-theme="oled"] {
+  color-scheme: dark;
+  --color-base: #000000;
+  --color-surface: #0b0912;
+  --color-surface-subtle: #080610;
+  --color-surface-raised: #14101f;
+  --color-surface-hover: #1c1629;
+  --color-surface-input: #100c1a;
+  --color-border: #2a2145;
+  --color-border-subtle: #1f1836;
+  --color-border-strong: #4a3880;
+  --color-card-border: rgba(255, 255, 255, 0.12);
+  --color-accent-soft: rgba(121, 77, 255, 0.18);
+  --color-accent-ring: rgba(121, 77, 255, 0.38);
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(121, 77, 255, 0.16),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(121, 77, 255, 0.12) 0%,
+    rgba(49, 0, 150, 0.06) 55%,
+    rgba(0, 0, 0, 0.4) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --color-scrim: rgba(0, 0, 0, 0.6);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(0, 0, 0, 0.8) 70%
+  );
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(121, 77, 255, 0.14),
+    transparent 70%
+  );
+}
+
+/* Midnight — blue-tinted dark. */
+[data-theme="midnight"] {
+  color-scheme: dark;
+  --color-base: #090e1a;
+  --color-surface: #0f1626;
+  --color-surface-subtle: #0c1220;
+  --color-surface-raised: #16203a;
+  --color-surface-hover: #1d2a4a;
+  --color-surface-input: #121b30;
+  --color-border: #24335c;
+  --color-border-subtle: #1b2748;
+  --color-border-strong: #3d5596;
+  --color-accent: #82a8ff;
+  --color-accent-hover: #9dbcff;
+  --color-accent-soft: rgba(59, 110, 246, 0.16);
+  --color-accent-ring: rgba(59, 110, 246, 0.36);
+  --color-accent-gradient-start: #3568dd;
+  --color-accent-gradient-end: #2b55c4;
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(59, 110, 246, 0.16),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(59, 110, 246, 0.14) 0%,
+    rgba(20, 40, 110, 0.08) 55%,
+    rgba(15, 22, 38, 0.4) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --color-text: #eef1fb;
+  --color-text-muted: #b3bcd9;
+  --color-text-subtle: #8a94b5;
+  --shadow-button-glow: 0 0 1rem rgba(59, 110, 246, 0.24);
+  --shadow-modal-glow: 0 0 2rem rgba(59, 110, 246, 0.18);
+  --shadow-lock-glow: 0 0 2.5rem rgba(59, 110, 246, 0.15);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393a5cc' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-scrim: rgba(4, 7, 16, 0.55);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(4, 7, 16, 0.78) 70%
+  );
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(59, 110, 246, 0.18),
+    transparent 70%
+  );
+}
+
+/* Forest — green-tinted dark. */
+[data-theme="forest"] {
+  color-scheme: dark;
+  --color-base: #08120d;
+  --color-surface: #0e1d15;
+  --color-surface-subtle: #0b1811;
+  --color-surface-raised: #152a1e;
+  --color-surface-hover: #1c3627;
+  --color-surface-input: #12241a;
+  --color-border: #22402f;
+  --color-border-subtle: #1a3325;
+  --color-border-strong: #356b4d;
+  --color-accent: #5fd68f;
+  --color-accent-hover: #83e3a9;
+  --color-accent-soft: rgba(46, 184, 113, 0.15);
+  --color-accent-ring: rgba(46, 184, 113, 0.34);
+  --color-accent-gradient-start: #127245;
+  --color-accent-gradient-end: #0f6e42;
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(46, 184, 113, 0.16),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(46, 184, 113, 0.14) 0%,
+    rgba(10, 60, 35, 0.08) 55%,
+    rgba(14, 29, 21, 0.4) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --color-text: #ecf5ee;
+  --color-text-muted: #b3ccbc;
+  --color-text-subtle: #8aa896;
+  --shadow-button-glow: 0 0 1rem rgba(46, 184, 113, 0.24);
+  --shadow-modal-glow: 0 0 2rem rgba(46, 184, 113, 0.18);
+  --shadow-lock-glow: 0 0 2.5rem rgba(46, 184, 113, 0.15);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393b8a3' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-scrim: rgba(3, 10, 6, 0.55);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(3, 10, 6, 0.78) 70%
+  );
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(46, 184, 113, 0.18),
+    transparent 70%
+  );
+}
+
+/* Sepia — warm paper light. Status hues are the light theme's darkened set. */
+[data-theme="sepia"] {
+  color-scheme: light;
+  --color-base: #f6efe3;
+  --color-surface: #fffaf0;
+  --color-surface-subtle: #faf3e7;
+  --color-surface-raised: #f1e7d3;
+  --color-surface-hover: #eadfc8;
+  --color-surface-input: #fdf7ec;
+  --color-border: #e0d2b4;
+  --color-border-subtle: #eadfc9;
+  --color-border-strong: #c9b183;
+  --color-card-border: rgba(101, 67, 33, 0.14);
+  --color-accent: #834b0b;
+  --color-accent-hover: #6e3e06;
+  --color-accent-soft: rgba(180, 110, 30, 0.1);
+  --color-accent-ring: rgba(180, 110, 30, 0.3);
+  --color-accent-gradient-start: #834b0b;
+  --color-accent-gradient-end: #6e3e06;
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(180, 110, 30, 0.12),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(180, 110, 30, 0.1) 0%,
+    rgba(120, 70, 20, 0.04) 60%,
+    rgba(255, 250, 240, 0.9) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.35) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --color-success: #0f7033;
+  --color-warn: #915004;
+  --color-danger: #b92020;
+  --color-success-soft: rgba(22, 163, 74, 0.11);
+  --color-warn-soft: rgba(217, 119, 6, 0.13);
+  --color-danger-soft: rgba(220, 38, 38, 0.1);
+  --color-success-border: rgba(22, 163, 74, 0.28);
+  --color-warn-border: rgba(217, 119, 6, 0.3);
+  --color-danger-border: rgba(220, 38, 38, 0.28);
+  --color-text: #2e2115;
+  --color-text-muted: #65503a;
+  --color-text-subtle: #6d5942;
+  --shadow-sm: 0 1px 3px rgba(101, 67, 33, 0.06);
+  --shadow-md: 0 6px 18px rgba(101, 67, 33, 0.08);
+  --shadow-lg: 0 18px 40px rgba(101, 67, 33, 0.12);
+  --shadow-inset: inset 0 1px 2px rgba(101, 67, 33, 0.08);
+  --shadow-button-glow: 0 0 1rem rgba(180, 110, 30, 0.14);
+  --shadow-modal-glow: 0 0 2rem rgba(180, 110, 30, 0.12);
+  --shadow-lock-glow: 0 0 2.5rem rgba(180, 110, 30, 0.12);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2365503a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-scrim: rgba(46, 33, 21, 0.45);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(46, 33, 21, 0.7) 70%
+  );
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(180, 110, 30, 0.09),
+    transparent 70%
+  );
+}
+
+/* Clean White — neutral macOS-style light, no purple tint. */
+[data-theme="clean"] {
+  color-scheme: light;
+  --color-base: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #fafafa;
+  --color-surface-raised: #f5f5f7;
+  --color-surface-hover: #ececef;
+  --color-surface-input: #ffffff;
+  --color-border: #d9d9de;
+  --color-border-subtle: #e6e6ea;
+  --color-border-strong: #b9b9c2;
+  --color-card-border: rgba(0, 0, 0, 0.08);
+  --color-accent: #005bbd;
+  --color-accent-hover: #004fa8;
+  --color-accent-soft: rgba(0, 102, 214, 0.08);
+  --color-accent-ring: rgba(0, 102, 214, 0.28);
+  --color-accent-gradient-start: #0068d1;
+  --color-accent-gradient-end: #0050a3;
+  --gradient-brand-glow: radial-gradient(
+    circle,
+    rgba(0, 113, 227, 0.1),
+    transparent 70%
+  );
+  --gradient-hero: linear-gradient(
+    135deg,
+    rgba(0, 113, 227, 0.07) 0%,
+    rgba(0, 60, 140, 0.03) 60%,
+    rgba(255, 255, 255, 0.9) 100%
+  );
+  --gradient-card-shine: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.4) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --color-success: #0f7033;
+  --color-warn: #915004;
+  --color-danger: #b92020;
+  --color-success-soft: rgba(22, 163, 74, 0.11);
+  --color-warn-soft: rgba(217, 119, 6, 0.13);
+  --color-danger-soft: rgba(220, 38, 38, 0.1);
+  --color-success-border: rgba(22, 163, 74, 0.28);
+  --color-warn-border: rgba(217, 119, 6, 0.3);
+  --color-danger-border: rgba(220, 38, 38, 0.28);
+  --color-text: #1d1d1f;
+  --color-text-muted: #5f5f66;
+  --color-text-subtle: #6f6f76;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.12);
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-button-glow: 0 0 1rem rgba(0, 113, 227, 0.12);
+  --shadow-modal-glow: 0 0 2rem rgba(0, 113, 227, 0.1);
+  --shadow-lock-glow: 0 0 2.5rem rgba(0, 113, 227, 0.1);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235f5f66' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-scrim: rgba(29, 29, 31, 0.4);
+  --gradient-photo-fade: linear-gradient(
+    180deg,
+    transparent,
+    rgba(29, 29, 31, 0.7) 70%
+  );
+  --gradient-app-glow: radial-gradient(
+    64rem 36rem at 50% -15%,
+    rgba(0, 113, 227, 0.06),
     transparent 70%
   );
 }
