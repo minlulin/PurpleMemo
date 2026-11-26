@@ -322,7 +322,7 @@ pub(super) mod tests {
         let mut unpinned = window(false);
         unpinned.peer = None;
         let info = state
-            .start("127.0.0.1", unpinned, desktop_identity(), None)
+            .start("127.0.0.1", 0, unpinned, desktop_identity(), None)
             .expect("a pinless window still opens");
         let port = info.port.expect("port");
         let (status, body) = post(port, &hello_frame(1));
@@ -339,7 +339,7 @@ pub(super) mod tests {
         rekeyed.peer.as_mut().expect("peer").public_key =
             envelope::to_hex(&envelope::public_key(&[0x44u8; KEY_BYTES]));
         let info = state
-            .start("127.0.0.1", rekeyed, desktop_identity(), None)
+            .start("127.0.0.1", 0, rekeyed, desktop_identity(), None)
             .expect("start");
         let (status, body) = post(info.port.expect("port"), &hello_frame(1));
         assert_eq!(status, 403, "{body}");
@@ -409,7 +409,7 @@ pub(super) mod tests {
             revoked: false,
         });
         let info = state
-            .start("127.0.0.1", window, desktop_identity(), None)
+            .start("127.0.0.1", 0, window, desktop_identity(), None)
             .expect("start the pairing window");
         (state, info.port.expect("a bound port"))
     }
@@ -425,7 +425,7 @@ pub(super) mod tests {
             expires_at: now_ms() + 60_000,
         });
         let info = state
-            .start("127.0.0.1", window, desktop_identity(), None)
+            .start("127.0.0.1", 0, window, desktop_identity(), None)
             .expect("start the pairing listener");
         (state, info.port.expect("a bound port"))
     }
@@ -604,7 +604,7 @@ pub(super) mod tests {
             expires_at: now_ms().saturating_sub(1),
         });
         let info = expired
-            .start("127.0.0.1", stale, desktop_identity(), None)
+            .start("127.0.0.1", 0, stale, desktop_identity(), None)
             .expect("start");
         let (status, body) = post_request(info.port.expect("port"), &request_body(|_| {}));
         assert_eq!(status, 403, "{body}");
@@ -621,7 +621,7 @@ pub(super) mod tests {
         let mut pinless = window(false);
         pinless.peer = None;
         let info = state
-            .start("127.0.0.1", pinless, desktop_identity(), None)
+            .start("127.0.0.1", 0, pinless, desktop_identity(), None)
             .expect("start");
         let (status, body) = post_request(info.port.expect("port"), &request_body(|_| {}));
         assert_eq!(status, 403, "{body}");
@@ -633,7 +633,7 @@ pub(super) mod tests {
         // accepted a hello from this pin.
         let pinned = PairingListenerState::default();
         let info = pinned
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("port");
         let (status, body) = post_request(port, &request_body(|_| {}));
@@ -650,7 +650,7 @@ pub(super) mod tests {
         let mut idless = window(false);
         idless.pairing_id = String::new();
         let error = state
-            .start("127.0.0.1", idless, desktop_identity(), None)
+            .start("127.0.0.1", 0, idless, desktop_identity(), None)
             .expect_err("no window may seal under the zero salt (§11.6.1)");
         assert!(error.contains("pairing id"), "{error}");
         assert!(!state.status().expect("status").running);
@@ -664,7 +664,7 @@ pub(super) mod tests {
         peer.device_id = DESKTOP_ID.to_string();
         peer.public_key = envelope::to_hex(&envelope::public_key(&DESKTOP_SECRET));
         let info = state
-            .start("127.0.0.1", selfish, desktop_identity(), None)
+            .start("127.0.0.1", 0, selfish, desktop_identity(), None)
             .expect("start");
         // The pin names this device, so no envelope is even opened (§1.2, N9).
         let (status, body) = post(info.port.expect("port"), &hello_frame(1));
@@ -694,7 +694,7 @@ pub(super) mod tests {
             revoked: true,
         });
         let info = state
-            .start("127.0.0.1", repin, desktop_identity(), None)
+            .start("127.0.0.1", 0, repin, desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("a bound port");
         let (status, body) = post_request(port, &request_body(|_| {}));
@@ -843,7 +843,7 @@ pub(super) mod tests {
         // A previous window admitted counters up to 7 from some peer.
         window.last_counter = 7;
         let info = state
-            .start("127.0.0.1", window, desktop_identity(), None)
+            .start("127.0.0.1", 0, window, desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("a bound port");
         assert_eq!(post_request(port, &request_body(|_| {})).0, 200);

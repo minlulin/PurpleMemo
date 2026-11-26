@@ -1165,6 +1165,7 @@ mod tests {
         let info = state
             .start(
                 "127.0.0.1",
+                0,
                 window,
                 PairingIdentity::from_secret(DESKTOP_SECRET),
                 None,
@@ -1351,6 +1352,7 @@ mod tests {
         let info = state
             .start(
                 "127.0.0.1",
+                0,
                 window,
                 PairingIdentity::from_secret(DESKTOP_SECRET),
                 Some(source),
@@ -1593,6 +1595,7 @@ mod tests {
         let info = state
             .start(
                 "127.0.0.1",
+                0,
                 window,
                 PairingIdentity::from_secret(DESKTOP_SECRET),
                 None,

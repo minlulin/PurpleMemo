@@ -319,6 +319,7 @@ pub(super) mod tests {
         let info = state
             .start(
                 "127.0.0.1",
+                0,
                 window(revoked),
                 desktop_identity(),
                 Some(snapshot_source(conn)),
@@ -500,6 +501,7 @@ pub(super) mod tests {
         let info = state
             .start(
                 "127.0.0.1",
+                0,
                 window(true),
                 desktop_identity(),
                 Some(Arc::new(move || {
@@ -666,7 +668,13 @@ pub(super) mod tests {
         });
         let state = PairingListenerState::default();
         let info = state
-            .start("127.0.0.1", window(false), desktop_identity(), Some(source))
+            .start(
+                "127.0.0.1",
+                0,
+                window(false),
+                desktop_identity(),
+                Some(source),
+            )
             .expect("start");
         let port = info.port.expect("port");
 

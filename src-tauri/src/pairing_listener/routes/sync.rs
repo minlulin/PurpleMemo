@@ -466,7 +466,7 @@ mod tests {
         let state = PairingListenerState::default();
         state.set_sync_source(source);
         let info = state
-            .start("127.0.0.1", window(revoked), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(revoked), desktop_identity(), None)
             .expect("start");
         (state, info.port.expect("port"), reads)
     }
@@ -750,7 +750,7 @@ mod tests {
         let state = PairingListenerState::default();
         state.set_sync_source(source);
         let info = state
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect("start");
         (state, info.port.expect("port"))
     }
@@ -770,7 +770,7 @@ mod tests {
         state.set_sync_source(source);
         state.set_vault_meta_source(Arc::new(|| Ok(Some((2, "sealed-verifier".to_string())))));
         let info = state
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect("start");
         (state, info.port.expect("port"))
     }

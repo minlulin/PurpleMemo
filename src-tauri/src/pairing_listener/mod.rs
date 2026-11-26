@@ -163,7 +163,7 @@ const CLOSE_PROBE_GAP: Duration = Duration::from_millis(5);
 /// closing, a parallel test) the bind falls back to an ephemeral port: the
 /// offer carries whatever was actually bound, so pairing by scan works
 /// either way, and only the remembered address misses for that window.
-const PAIRING_PORT: u16 = 48720;
+pub(crate) const PAIRING_PORT: u16 = 48720;
 
 /// The peer's pin (§11.2), as the shell hands it in when the window opens.
 #[derive(Debug, Clone, Deserialize)]
@@ -722,12 +722,14 @@ impl PairingListenerState {
     pub fn start(
         &self,
         bind: &str,
+        port: u16,
         window: PairingWindow,
         identity: PairingIdentity,
         snapshot: Option<SnapshotSource>,
     ) -> Result<PairingListenerInfo, String> {
         self.start_with_epoch(
             bind,
+            port,
             window,
             identity,
             snapshot,
@@ -746,6 +748,7 @@ impl PairingListenerState {
     fn start_with_epoch(
         &self,
         bind: &str,
+        port: u16,
         window: PairingWindow,
         identity: PairingIdentity,
         snapshot: Option<SnapshotSource>,
@@ -833,7 +836,7 @@ impl PairingListenerState {
             None => None,
         };
 
-        let listener = bind_pairing_listener(bind)
+        let listener = bind_pairing_listener(bind, port)
             .map_err(|e| format!("could not start the pairing listener on {bind}: {e}"))?;
         let bound = listener
             .local_addr()
@@ -1035,9 +1038,10 @@ fn reap(mut running: Running) -> Result<(), String> {
 
 /// Bind the listener: [`PAIRING_PORT`] when it is free, an ephemeral port
 /// when it is not (see the const for why the fixed port matters and why the
-/// fallback is safe).
-fn bind_pairing_listener(bind: &str) -> std::io::Result<TcpListener> {
-    TcpListener::bind((bind, PAIRING_PORT)).or_else(|_| TcpListener::bind((bind, 0)))
+/// fallback is safe). Tests pass `0` so each test gets a unique OS-assigned
+/// port and parallel tests never collide on the fixed port.
+fn bind_pairing_listener(bind: &str, port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind((bind, port)).or_else(|_| TcpListener::bind((bind, 0)))
 }
 
 /// Probe `probe` until a connect is refused, bounded by [`CLOSE_DEADLINE`].
@@ -1157,7 +1161,7 @@ mod tests {
         // F7: the phone's remembered endpoint names this port, so a reopened
         // panel must bind it again. `::1` is an address no other test binds,
         // so the preference is observable without racing them.
-        let listener = bind_pairing_listener("::1").expect("bind");
+        let listener = bind_pairing_listener("::1", PAIRING_PORT).expect("bind");
         assert_eq!(
             listener.local_addr().expect("addr").port(),
             PAIRING_PORT,
@@ -1168,7 +1172,7 @@ mod tests {
         // the bind still succeeds on an ephemeral port — pairing by scan
         // carries whatever was bound, so only the remembered address misses.
         let _occupied = TcpListener::bind(("127.0.0.1", PAIRING_PORT)).ok();
-        let fallback = bind_pairing_listener("127.0.0.1").expect("bind");
+        let fallback = bind_pairing_listener("127.0.0.1", PAIRING_PORT).expect("bind");
         assert_ne!(
             fallback.local_addr().expect("addr").port(),
             PAIRING_PORT,
@@ -1209,7 +1213,7 @@ mod tests {
     pub(super) fn started(revoked: bool) -> (PairingListenerState, u16) {
         let state = PairingListenerState::default();
         let info = state
-            .start("127.0.0.1", window(revoked), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(revoked), desktop_identity(), None)
             .expect("start the pairing listener");
         (state, info.port.expect("a bound port"))
     }
@@ -1366,7 +1370,7 @@ mod tests {
 
         // Opening again after a stop is a fresh window, not a reused socket.
         let reopened = locked
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect("reopen");
         assert!(reopened.port.is_some());
         assert_eq!(reopened.port, locked.status().expect("status").port);
@@ -1377,10 +1381,10 @@ mod tests {
     fn one_window_one_socket() {
         let state = PairingListenerState::default();
         let first = state
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect("start");
         let second = state
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect("start again");
         // One window, one socket — and the window that is up is the NEW one
         // (N4): the old port is reaped before the replacement binds, so there
@@ -1419,7 +1423,7 @@ mod tests {
         let state = PairingListenerState::default();
         state.lifecycle.raise_reset();
         let error = state
-            .start("127.0.0.1", window(false), desktop_identity(), None)
+            .start("127.0.0.1", 0, window(false), desktop_identity(), None)
             .expect_err("no listener may come up after the barrier");
         // The refusal is a message key (D7). `start` still answers with one
         // string — the panel's note channel — so the key is what it carries,
@@ -1445,7 +1449,13 @@ mod tests {
     pub(super) fn started_with_offer(revoked: bool) -> (PairingListenerState, u16) {
         let state = PairingListenerState::default();
         let info = state
-            .start("127.0.0.1", offer_window(revoked), desktop_identity(), None)
+            .start(
+                "127.0.0.1",
+                0,
+                offer_window(revoked),
+                desktop_identity(),
+                None,
+            )
             .expect("start the pairing window");
         (state, info.port.expect("a bound port"))
     }
@@ -1486,6 +1496,7 @@ mod tests {
         state.stop_for_lock().expect("lock stop");
         let refused = state.start_with_epoch(
             "127.0.0.1",
+            0,
             offer_window(false),
             desktop_identity(),
             None,
@@ -1510,7 +1521,7 @@ mod tests {
             expires_at: now_ms() + 60_000,
         });
         let second = state
-            .start("127.0.0.1", window, desktop_identity(), None)
+            .start("127.0.0.1", 0, window, desktop_identity(), None)
             .expect("replace the window");
         let port = second.port.expect("a bound port");
         assert_ne!(port, first, "the old window was reaped, not reused");

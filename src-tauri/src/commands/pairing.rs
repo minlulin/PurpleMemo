@@ -12,7 +12,7 @@ use crate::messages::Refusal;
 use crate::pairing_key::{self, PairingHistory, PairingIdentity};
 use crate::pairing_listener::{
     PairingListenerInfo, PairingListenerState, PairingOffer, PairingOpenInput, PairingWindow,
-    PROTOCOL_VERSION,
+    PAIRING_PORT, PROTOCOL_VERSION,
 };
 
 /// This device's own pairing facts: what the offer carries (§11.1) and what the
@@ -228,7 +228,7 @@ pub fn pairing_open(
         });
     listener.set_vault_meta_source(vault_meta_source);
     listener
-        .start("0.0.0.0", window, identity, Some(snapshot))
+        .start("0.0.0.0", PAIRING_PORT, window, identity, Some(snapshot))
         .map_err(Refusal::from)
 }
 
