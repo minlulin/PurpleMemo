@@ -454,7 +454,7 @@ const GUARDS: {
   // concurrently. Its stage guard (the phone's equivalent of the desktop's
   // acknowledgement checkbox) is pinned in `src/reset-gate.test.ts`.
   {
-    page: "../components/MobileScreens.tsx",
+    page: "../components/mobile/settings.tsx",
     handler: "runPhoneReset",
     busy: "resettingRef.current",
     cleared: "setResetting(false)",
@@ -466,7 +466,7 @@ const GUARDS: {
   // Continue used to be able to start two of them before React re-rendered —
   // and both would then advance the stage.
   {
-    page: "../components/MobileScreens.tsx",
+    page: "../components/mobile/settings.tsx",
     handler: "advancePastPin",
     busy: "checkingPinRef.current",
     cleared: "setCheckingPin(false)",

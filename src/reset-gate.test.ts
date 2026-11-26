@@ -94,7 +94,7 @@ test("factoryReset() is invoked from exactly two places in the app", () => {
   }
   assert.deepEqual(
     [...callSites].sort(),
-    ["components/MobileScreens.tsx", "pages/SettingsPage.tsx"],
+    ["components/mobile/settings.tsx", "pages/SettingsPage.tsx"],
     "the reset engine must be reachable only through the two confirmed handlers",
   );
 });
@@ -166,7 +166,7 @@ test("the engine is reached only through the two-step ConfirmButton", () => {
 });
 
 test("the phone's reset act runs the engine only behind its own two-step flow", () => {
-  const mobile = read("components/MobileScreens.tsx");
+  const mobile = read("components/mobile/settings.tsx");
   // Two dialogs in order: the consequence disclosure (which also holds the
   // PIN gate), then the explicit "Erase everything" confirmation. The stage
   // machine is what separates them, so both are located by it.
@@ -265,7 +265,7 @@ test("the phone's finished attempt reaches the shell's one terminal screen", () 
     (shell.match(/onResetFinished=\{onResetFinished\}/g) ?? []).length >= 3,
     "both SectionBody branches and Settings must forward the handler",
   );
-  const mobile = read("components/MobileScreens.tsx");
+  const mobile = read("components/mobile/settings.tsx");
   assert.match(mobile, /onResetFinished: \(attempt: ResetAttempt\) => void/);
 });
 
