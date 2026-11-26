@@ -248,6 +248,8 @@ export const enMobile = {
     "The desktop did not confirm in time. Your changes stay on this phone — sync again on the same network.",
   "mobile.settings.syncFailed": "The sync stopped:",
   "mobile.settings.syncNeedsCode": "Scan the desktop's pairing code to sync.",
+  "mobile.settings.syncEndpointHint":
+    "The desktop may be closed, or its address may have changed since the last sync. Open the desktop app's Settings → Pairing (or scan its code again) and sync once more.",
   "mobile.settings.permissionsHeading": "Permissions",
   "mobile.settings.notifications": "Notifications",
   "mobile.settings.notificationsOn":
@@ -556,6 +558,8 @@ export const myMobile: Record<keyof typeof enMobile, string> = {
     "ကွန်ပျူတာက အချိန်မီ အတည်မပြုနိုင်ပါ။ သင့်ပြောင်းချက်များ ဤဖုန်းတွင် ကျန်ရှိပါသည် — တူညီသော ကွန်ရက်တွင် ထပ်မံ ထပ်တူပြုပါ။",
   "mobile.settings.syncFailed": "ထပ်တူပြုခြင်း ရပ်တန့်ခဲ့သည်:",
   "mobile.settings.syncNeedsCode": "ထပ်တူပြုရန် ကွန်ပျူတာ၏ တွဲချိတ်ကုဒ်ကို စကင်ဖတ်ပါ။",
+  "mobile.settings.syncEndpointHint":
+    "ကွန်ပျူတာကို ပိတ်ထားနိုင်သည် သို့မဟုတ် နောက်ဆုံး ထပ်တူပြုချိန်နောက်ပိုင်း ၎င်း၏ လိပ်စာ ပြောင်းသွားနိုင်သည်။ ကွန်ပျူတာအက်ပ်၏ ဆက်တင်များ → တွဲချိတ်ခြင်း ကို ဖွင့်ပါ (သို့မဟုတ် ၎င်း၏ ကုဒ်ကို ထပ်စကန်ဖတ်ပါ) ပြီး နောက်တစ်ကြိမ် ထပ်တူပြုပါ။",
   "mobile.settings.permissionsHeading": "ခွင့်ပြုချက်များ",
   "mobile.settings.notifications": "အသိပေးချက်များ",
   "mobile.settings.notificationsOn": "ခွင့်ပြုထားသည်။ သတိပေးချက်များ အသိပေး၍ ရပါသည်။",

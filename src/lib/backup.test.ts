@@ -1965,6 +1965,8 @@ test("a payload carries the theme and the vault verifier, never the app PIN", as
       "security_answer_hash",
       "last_backup_at",
       "biometric_unlock",
+      // F7's remembered sync addresses: this phone's network, not the library's.
+      "sync_endpoints",
     ],
   );
 });

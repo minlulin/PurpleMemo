@@ -196,6 +196,11 @@ export const BACKUP_TABLES = [
  * switched on, and another machine's choice is not evidence about this one's
  * hardware.
  *
+ * `sync_endpoints` (F7's remembered addresses) is the same fact once more: it
+ * names where THIS phone reached a desktop on ITS network. Restoring it would
+ * point this device at an address that belongs to another household, and a
+ * backup has no business carrying one.
+ *
  * A new device- or mobile-local key belongs in this list, not in a call site:
  * both borders read it.
  */
@@ -205,6 +210,7 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
   SETTING_KEYS.securityAnswerHash,
   SETTING_KEYS.lastBackupAt,
   SETTING_KEYS.biometricUnlock,
+  SETTING_KEYS.syncEndpoints,
 ] as const;
 
 /**

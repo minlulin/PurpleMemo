@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   mobilePairingRepo,
   phoneHoldsLocalData,
+  settingsRepo,
   syncRepo,
 } from "../data/app.ts";
 import type { PhonePairResult } from "../data/driver.ts";
@@ -29,6 +30,12 @@ import {
   parseOffer,
 } from "../lib/sync/pairing.ts";
 import { warnBeforeTrust } from "../lib/sync/pairingWarning.ts";
+import {
+  type RememberedEndpoints,
+  rememberedEndpointFor,
+  resolveSyncEndpoint,
+  withRememberedEndpoint,
+} from "../lib/sync/rememberedEndpoint.ts";
 import type { PeerRow, SnapshotOp } from "../lib/sync/store.ts";
 import type { SyncOutcome } from "../lib/sync/syncSession.ts";
 import { useT } from "./useTranslation.ts";
@@ -94,6 +101,14 @@ export function MobilePairingCard() {
   const [syncing, setSyncing] = useState(false);
   const [synced, setSynced] = useState<SyncOutcome | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  /**
+   * F7: the last address that reached each pinned desktop. Read once with the
+   * pins and updated in place on every success, so a sync on the same network
+   * needs no fresh scan.
+   */
+  const [remembered, setRemembered] = useState<RememberedEndpoints>({});
+  /** True when the press that just ran dialled a remembered address. */
+  const [syncUsedRemembered, setSyncUsedRemembered] = useState(false);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -135,6 +150,36 @@ export function MobilePairingCard() {
     };
   }, []);
 
+  // F7: the remembered addresses, read the same way the pins are — once, on
+  // mount. A failure answers "nothing remembered", which is the card's older
+  // behaviour, never a broken one.
+  useEffect(() => {
+    let live = true;
+    void settingsRepo
+      .getSyncEndpoints()
+      .then((endpoints) => {
+        if (live) setRemembered(endpoints);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  /**
+   * Write an address that just worked (F7). Best-effort on purpose: a failed
+   * settings write must never turn a completed sync into an error, and the
+   * only cost of losing it is one extra scan next time.
+   */
+  const remember = useCallback((deviceId: string, endpoint: string) => {
+    setRemembered((current) =>
+      withRememberedEndpoint(current, deviceId, endpoint),
+    );
+    void settingsRepo
+      .rememberSyncEndpoint(deviceId, endpoint)
+      .catch(() => undefined);
+  }, []);
+
   const offerDesktopId = offer?.deviceId ?? null;
   const alreadyPaired =
     offerDesktopId !== null &&
@@ -151,6 +196,27 @@ export function MobilePairingCard() {
     offerDeviceId: offerDesktopId,
     pinnedDeviceIds: pins.map((row) => row.device_id),
     holdsLocalData,
+  });
+
+  /**
+   * F7: the desktop a sync press talks to — the one just paired, else the
+   * first pin — and the endpoint that press may dial for it.
+   *
+   * The pin decides the peer, so an offer for a DIFFERENT desktop is not this
+   * peer's offer: dialling it would sync with a device nobody selected. That
+   * peer's remembered address is the only endpoint worth using then.
+   */
+  const syncPin =
+    pins.find((row) => row.device_id === paired?.desktopDeviceId) ?? pins[0];
+  const syncEndpoint = resolveSyncEndpoint({
+    offerEndpoint:
+      offer !== null && offer.deviceId === syncPin?.device_id
+        ? offer.endpoint
+        : null,
+    rememberedEndpoint:
+      syncPin === undefined
+        ? null
+        : rememberedEndpointFor(remembered, syncPin.device_id),
   });
 
   // A re-pair starts a new pairing with this phone's own unsent changes still
@@ -305,6 +371,11 @@ export function MobilePairingCard() {
       setSession(result.session);
       if (result.paired) {
         setPaired(result.desktop);
+        // F7: the code proved this address reaches that desktop, so remember
+        // it — the next sync can skip the scan.
+        if (result.desktop !== null) {
+          remember(result.desktop.desktopDeviceId, session.offer.endpoint);
+        }
         // A pairing that just landed writes the pin, so the §6 surface appears
         // without waiting for a remount.
         void mobilePairingRepo
@@ -341,6 +412,7 @@ export function MobilePairingCard() {
         (next) => setProgress(next),
       );
       if (outcome.applied) {
+        remember(paired.desktopDeviceId, offer.endpoint);
         setPulled({
           rows: outcome.rows,
           tombstones: outcome.tombstones,
@@ -388,6 +460,7 @@ export function MobilePairingCard() {
         (next) => setUploadProgress(next),
       );
       if (outcome.uploaded) {
+        remember(paired.desktopDeviceId, offer.endpoint);
         setUploaded({
           offered: outcome.offered,
           inserted: outcome.inserted,
@@ -406,30 +479,47 @@ export function MobilePairingCard() {
   };
 
   /**
-   * One §6 session with the pinned desktop. The address comes from the code
-   * this session scanned; the key, the pairing id and the data line are the
-   * pin, read in Rust — the card never names a key.
+   * One §6 session with the pinned desktop. The address is the code scanned
+   * this session or, with none, the one remembered for this pin (F7); the key,
+   * the pairing id and the data line are the pin, read in Rust — the card never
+   * names a key, and the address it dialled decides nothing about trust.
    */
   const syncNow = async () => {
-    const endpoint = offer?.endpoint;
-    const pin =
-      pins.find((row) => row.device_id === paired?.desktopDeviceId) ?? pins[0];
-    if (endpoint === undefined || pin === undefined || syncing) return;
+    if (syncEndpoint === null || syncPin === undefined || syncing) return;
+    const { endpoint } = syncEndpoint;
     setSyncing(true);
     setSyncError(null);
     setSynced(null);
+    setSyncUsedRemembered(syncEndpoint.remembered);
     try {
       const outcome = await syncRepo.run({
         endpoint,
-        desktopDeviceId: pin.device_id,
+        desktopDeviceId: syncPin.device_id,
       });
       setSynced(outcome);
+      // Only a session that actually landed proves this address reaches the
+      // desktop; a refusal or a missed verdict leaves the remembered one alone.
+      if (outcome.state === "applied") {
+        remember(syncPin.device_id, endpoint);
+      }
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : String(error));
     } finally {
       setSyncing(false);
     }
   };
+
+  /**
+   * F7: a failed sync that dialled a remembered address also names the two
+   * reasons an address stops working — the desktop is closed, or it moved —
+   * and points at the panel that shows the current one, so the person is never
+   * left at a dead end. A failure with a freshly scanned code gets no such
+   * sentence: they are already looking at that desktop's screen.
+   */
+  const endpointHint = (text: string) =>
+    syncUsedRemembered
+      ? `${text} ${t("mobile.settings.syncEndpointHint")}`
+      : text;
 
   return (
     <div className="mobile-card">
@@ -627,10 +717,17 @@ export function MobilePairingCard() {
             {t("mobile.settings.syncHeading")}
           </h3>
           <p className="mobile-note">{t("mobile.settings.syncBody")}</p>
-          {offer === null ? (
+          {syncEndpoint === null ? (
             <p className="mobile-note">{t("mobile.settings.syncNeedsCode")}</p>
           ) : (
             <>
+              {/* F7: the address this press will dial, so a remembered one is
+                  shown rather than guessed at. */}
+              <p className="mobile-row-text">
+                {t("mobile.settings.pairEndpoint", {
+                  endpoint: syncEndpoint.endpoint,
+                })}
+              </p>
               <button
                 type="button"
                 className="btn"
@@ -661,13 +758,15 @@ export function MobilePairingCard() {
               {synced !== null && !synced.confirmed ? (
                 <p className="mobile-error" role="alert">
                   {synced.state === "pending"
-                    ? t("mobile.settings.syncUnconfirmed")
-                    : `${t("mobile.settings.syncFailed")} ${synced.refusal?.message ?? ""}`}
+                    ? endpointHint(t("mobile.settings.syncUnconfirmed"))
+                    : endpointHint(
+                        `${t("mobile.settings.syncFailed")} ${synced.refusal?.message ?? ""}`,
+                      )}
                 </p>
               ) : null}
               {syncError !== null ? (
                 <p className="mobile-error" role="alert">
-                  {syncError}
+                  {endpointHint(syncError)}
                 </p>
               ) : null}
             </>

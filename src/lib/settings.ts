@@ -10,6 +10,11 @@ import {
   parseCollectionsCollapsed,
   parseViewMode,
 } from "./notesView.ts";
+import {
+  parseRememberedEndpoints,
+  type RememberedEndpoints,
+  withRememberedEndpoint,
+} from "./sync/rememberedEndpoint.ts";
 import type { SettingRow } from "./types.ts";
 
 export const SETTING_KEYS = {
@@ -57,6 +62,13 @@ export const SETTING_KEYS = {
    * turn it on.
    */
   biometricUnlock: "biometric_unlock",
+  /**
+   * The address each pinned desktop was last reached at (F7), as one JSON map
+   * `{ [desktopDeviceId]: endpoint }`. DEVICE-LOCAL in `backup.ts`: it names a
+   * place on THIS phone's network, so neither a backup nor a restore may carry
+   * another machine's address.
+   */
+  syncEndpoints: "sync_endpoints",
 } as const;
 
 export type Theme = "dark" | "light";
@@ -310,6 +322,36 @@ export function createSettingsRepo(driver: DataDriver) {
 
     async setBiometricUnlock(enabled: boolean): Promise<void> {
       await this.setJSON(SETTING_KEYS.biometricUnlock, enabled);
+    },
+
+    /**
+     * Every remembered sync address (F7). A missing, corrupt or hand-edited row
+     * reads as an empty map — the card then asks for a pairing code, which is
+     * exactly the behaviour before this setting existed.
+     */
+    async getSyncEndpoints(): Promise<RememberedEndpoints> {
+      return parseRememberedEndpoints(
+        await this.getJSON<unknown>(SETTING_KEYS.syncEndpoints),
+      );
+    },
+
+    /**
+     * Remember one peer's address after a flow reached it.
+     *
+     * Called only on success: a desktop that is closed must not erase the
+     * address that worked last time, or the next sync would need a fresh scan
+     * for no reason at all.
+     */
+    async rememberSyncEndpoint(
+      desktopDeviceId: string,
+      endpoint: string,
+    ): Promise<void> {
+      const endpoints = withRememberedEndpoint(
+        await this.getSyncEndpoints(),
+        desktopDeviceId,
+        endpoint,
+      );
+      await this.setJSON(SETTING_KEYS.syncEndpoints, endpoints);
     },
 
     /**
