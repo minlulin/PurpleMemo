@@ -1,0 +1,61 @@
+export const enMemories = {
+  // Memories — dated entries, their birthday sections and the month feed. Its
+  // month arrows are the shared `month.previous`/`month.next` chrome; the feed
+  // itself is a list, so there is no weekday grid here.
+  "memories.title": "Memories & Milestones",
+  "memories.subtitle":
+    "Important dates, anniversaries, on-this-day flashbacks & contact birthdays",
+  "memories.viewsAria": "Memory views",
+  "memories.view.upcoming": "Upcoming",
+  "memories.view.onthisday": "On this day",
+  "memories.view.month": "Month",
+  "memories.view.all": "All",
+  "memories.newTitle": "New memory",
+  "memories.editTitle": "Edit memory",
+  "memories.titleLabel": "Title",
+  "memories.titlePlaceholder": "What happened?",
+  "memories.dateLabel": "Date",
+  "memories.noteLabel": "Note",
+  "memories.notePlaceholder": "Optional reflection or story…",
+  "memories.add": "Add memory",
+  "memories.empty": "Nothing here.",
+  "memories.deleteWhat": "memory to Trash",
+  "memories.next14": "Next 14 days",
+  "memories.birthdaysNext14": "Birthdays in the next 14 days",
+  "memories.noUpcomingBirthdays": "No upcoming birthdays.",
+  "memories.onThisDay": "On this day (any year)",
+  "memories.birthdaysToday": "Birthdays today",
+  "memories.noBirthdaysToday": "No birthdays today.",
+  "memories.all": "All memories",
+  "memories.missing":
+    "That memory no longer exists — it may have been deleted.",
+} as const;
+
+export const myMemories: Record<keyof typeof enMemories, string> = {
+  "memories.title": "အမှတ်တရများနှင့် မှတ်တိုင်များ",
+  "memories.subtitle":
+    "အရေးကြီးသော ရက်များ၊ နှစ်ပတ်လည်များ၊ ဒီနေ့ ပြန်လည်အမှတ်ရမှုများနှင့် ဆက်သွယ်ရန် မွေးနေ့များ",
+  "memories.viewsAria": "အမှတ်တရ ကြည့်ရှုမှုများ",
+  "memories.view.upcoming": "လာမည့်",
+  "memories.view.onthisday": "ဒီနေ့ ပြန်ကြည့်",
+  "memories.view.month": "လ",
+  "memories.view.all": "အားလုံး",
+  "memories.newTitle": "အမှတ်တရ အသစ်",
+  "memories.editTitle": "အမှတ်တရ ပြင်မည်",
+  "memories.titleLabel": "ခေါင်းစဉ်",
+  "memories.titlePlaceholder": "ဘာဖြစ်ခဲ့သလဲ။",
+  "memories.dateLabel": "ရက်စွဲ",
+  "memories.noteLabel": "မှတ်စု",
+  "memories.notePlaceholder": "ဆင်ခြင်မှတ်စု သို့မဟုတ် အဖြစ်အပျက် (ဖြည့်လိုပါက)…",
+  "memories.add": "အမှတ်တရ ထည့်မည်",
+  "memories.empty": "ဤနေရာတွင် မရှိပါ။",
+  "memories.deleteWhat": "အမှိုက်ပုံးသို့ ပို့မည့် အမှတ်တရ",
+  "memories.next14": "လာမည့် 14 ရက်",
+  "memories.birthdaysNext14": "လာမည့် 14 ရက်အတွင်း မွေးနေ့များ",
+  "memories.noUpcomingBirthdays": "လာမည့် မွေးနေ့ မရှိပါ။",
+  "memories.onThisDay": "ဒီနေ့ ပြန်ကြည့် (မည်သည့်နှစ်မဆို)",
+  "memories.birthdaysToday": "ယနေ့ မွေးနေ့များ",
+  "memories.noBirthdaysToday": "ယနေ့ မွေးနေ့ မရှိပါ။",
+  "memories.all": "အမှတ်တရ အားလုံး",
+  "memories.missing": "ထို အမှတ်တရ မရှိတော့ပါ — ဖျက်လိုက်ခြင်း ဖြစ်နိုင်သည်။",
+};
