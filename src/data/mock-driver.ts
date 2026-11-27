@@ -536,6 +536,11 @@ export function createMockDriver(script: MockScript = {}): MockDriver {
       pairing = stoppedPairing();
       return { ...pairing };
     },
+    async pairingCloseForLock(): Promise<PairingListenerInfo> {
+      record("pairingCloseForLock", []);
+      pairing = stoppedPairing();
+      return { ...pairing };
+    },
     async pairingStatus(): Promise<PairingListenerInfo> {
       record("pairingStatus", []);
       return { ...pairing };

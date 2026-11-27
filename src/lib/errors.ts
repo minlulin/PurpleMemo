@@ -8,6 +8,7 @@
 
 import {
   getLocale,
+  isKeyedRefusal,
   isMessageKeyError,
   refusalText,
   translate,
@@ -57,4 +58,23 @@ function describe(e: unknown): string {
   // Primitives (numbers, booleans, null, undefined, bigint): String() is
   // the honest rendering and is never "".
   return String(e);
+}
+
+/**
+ * The text `splitRefusal` callers need: the failing layer's own words, with
+ * the protocol code still at the front (`"replayed: …"`), so the code can
+ * be split back off and the message shown as-is. `errText` would render a
+ * keyed refusal as a translated sentence whose leading words no longer
+ * parse as a code; a bare `String(e)` renders the refusal object as
+ * "[object Object]". Prefer the refusal's `detail` param, then an Error's
+ * message or a string as-is, then `errText` for everything else.
+ */
+export function refusalDetailText(e: unknown): string {
+  if (isKeyedRefusal(e)) {
+    const detail = e.params?.detail;
+    if (typeof detail === "string" && detail.trim() !== "") return detail;
+  }
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  return errText(e);
 }

@@ -29,6 +29,7 @@ import type {
   SnapshotPullInput,
   UploadStatusResult,
 } from "../../data/driver.ts";
+import { refusalDetailText } from "../errors.ts";
 import {
   type AdoptionCheckpoint,
   batchSnapshot,
@@ -202,10 +203,6 @@ export function splitRefusal(text: string): { code: string; message: string } {
     : { code: text.slice(0, at), message: text.slice(at + 2) };
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * Pair with the desktop in the scanned offer (§11.1, §11.6.1).
  *
@@ -255,7 +252,7 @@ export async function pairWithDesktop(
       paired: false,
       desktop: null,
       statements: [],
-      refusal: splitRefusal(errorText(error)),
+      refusal: splitRefusal(refusalDetailText(error)),
     };
   }
 
@@ -287,7 +284,7 @@ export async function pairWithDesktop(
       statements: [],
       refusal: {
         code: "pin-failed",
-        message: `the desktop accepted this phone, but the pin could not be stored: ${errorText(error)}`,
+        message: `the desktop accepted this phone, but the pin could not be stored: ${refusalDetailText(error)}`,
       },
     };
   }
@@ -629,7 +626,7 @@ export async function pullSnapshot(
     try {
       raw = await transport.request(input, batch);
     } catch (error) {
-      return stalled(splitRefusal(errorText(error)), total);
+      return stalled(splitRefusal(refusalDetailText(error)), total);
     }
     const read = readSnapshotBatch(raw, {
       batch,
@@ -644,7 +641,7 @@ export async function pullSnapshot(
     try {
       await transport.applied(input, batch);
     } catch (error) {
-      return stalled(splitRefusal(errorText(error)), total);
+      return stalled(splitRefusal(refusalDetailText(error)), total);
     }
     batch += 1;
     if (batch >= total) break;
@@ -668,13 +665,13 @@ export async function pullSnapshot(
     statements = applyStatements(input.desktopDeviceId, 0, applied.statements);
     replaced = applied.replaced;
   } catch (error) {
-    return stalled(splitRefusal(errorText(error)), total);
+    return stalled(splitRefusal(refusalDetailText(error)), total);
   }
   try {
     await transport.batch(statements);
   } catch (error) {
     // The batch is one transaction, so a failure here left nothing adopted.
-    return stalled(splitRefusal(errorText(error)), total);
+    return stalled(splitRefusal(refusalDetailText(error)), total);
   }
 
   const rows = staged.length;
@@ -698,7 +695,7 @@ export async function pullSnapshot(
       replaced,
       stagedOps: staged,
       checkpoint,
-      refusal: splitRefusal(errorText(error)),
+      refusal: splitRefusal(refusalDetailText(error)),
       summary: snapshotSummary(rows, tombstones),
     };
   }
@@ -943,7 +940,7 @@ export async function pushUpload(
   try {
     local = await transport.localRows();
   } catch (error) {
-    return failed(splitRefusal(errorText(error)));
+    return failed(splitRefusal(refusalDetailText(error)));
   }
   const plan = planBootstrap(desktopRows, local);
   const offered = plan.upload.length;
@@ -973,14 +970,14 @@ export async function pushUpload(
         batches[batch] ?? [],
       );
     } catch (error) {
-      return failed(splitRefusal(errorText(error)), offered);
+      return failed(splitRefusal(refusalDetailText(error)), offered);
     }
     options.onProgress?.({ batch: batch + 1, total: batches.length });
   }
   try {
     await transport.uploadCommit(input);
   } catch (error) {
-    return failed(splitRefusal(errorText(error)), offered);
+    return failed(splitRefusal(refusalDetailText(error)), offered);
   }
   const sleep =
     options.sleep ??
@@ -990,7 +987,7 @@ export async function pushUpload(
     try {
       status = await transport.uploadStatus(input);
     } catch (error) {
-      return failed(splitRefusal(errorText(error)), offered);
+      return failed(splitRefusal(refusalDetailText(error)), offered);
     }
     if (status.state === "uploaded") {
       return {

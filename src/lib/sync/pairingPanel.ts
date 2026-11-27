@@ -40,7 +40,7 @@ import type {
   UploadOutcomeInput,
   UploadTakeResult,
 } from "../../data/driver.ts";
-import { durablePin } from "./durablePairing.ts";
+import { errText } from "../errors.ts";
 import { applyOps, type PeerOp } from "./engine.ts";
 import { readUploadOps } from "./mobilePairing.ts";
 import {
@@ -145,11 +145,13 @@ export async function openPairingPanel(
   now: number = Date.now(),
 ): Promise<PairingPanelState> {
   const local = await transport.pairingLocal();
-  // Durable pairing: reuse the pin's pairing id when one exists. Minting a
-  // fresh id per open was the bug that forced the phone to re-scan a code for
-  // every sync — the pin on the phone names the OLD id, so every new window
-  // looked like a different, unknown pairing.
-  const durable = durablePin(await transport.peers().catch(() => []));
+  // Every panel open mints a FRESH pairing id. The resting window serves
+  // the pinned phone under the pin's own id (ensurePairedPhoneReachable),
+  // so the panel's offer window never needs it: closing the panel without
+  // re-pairing changes nothing for the phone, and a re-pair writes this
+  // fresh id to the pin at Trust (the ack carries it). Reusing the pin's
+  // id here is what let a re-pair rewrite that id's replay floor
+  // downwards; a fresh id starts with no floor row at all.
   const session = createPairingSession({
     deviceId: local.deviceId,
     // The real endpoint only exists once the listener binds; the offer is
@@ -159,7 +161,6 @@ export async function openPairingPanel(
     generation: local.generation,
     schemaVersion: local.schemaVersion,
     protocolVersion: local.protocolVersion,
-    ...(durable?.pairing_id ? { pairingId: durable.pairing_id } : {}),
     now,
   });
   const listener = await transport.pairingOpen({
@@ -509,7 +510,7 @@ export function projectSession(
 }
 
 function uploadErrorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errText(error);
 }
 
 /** What one staged-upload apply did — a value, so the order can be tested. */
@@ -884,6 +885,10 @@ export function createPairingRepo(
   return {
     open: (now?: number) => openPairingPanel(transport, now),
     close: () => closePairingPanel(transport),
+    // The lock path's close (D2a): raises the lock epoch in Rust before
+    // stopping, so a pairing_open already in flight cannot bind behind
+    // the lock screen. Only the shell's lock teardown calls this.
+    closeForLock: () => driver.pairingCloseForLock(),
     settle: (state: PairingPanelState, now?: number) =>
       settlePairingPanel(transport, state, now, {
         afterClose: hooks.onWindowClosed,

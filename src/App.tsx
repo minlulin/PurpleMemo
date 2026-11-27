@@ -753,7 +753,9 @@ function AppShell() {
       stopListeners: () =>
         pairedPhoneReachabilityEnabled().then((reachable) => {
           if (reachable) return undefined;
-          return pairingRepo.close();
+          // The lock-scoped close (D2a): raises the epoch first, so a
+          // pairing_open in flight cannot bind behind the lock screen.
+          return pairingRepo.closeForLock();
         }),
       onLocked: () => {
         unlockedRef.current = false;

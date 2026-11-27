@@ -108,6 +108,10 @@ export const enSettings = {
   "settings.pairedPhoneReachable": "Let my paired phone stay connected",
   "settings.pairedPhoneReachableHint":
     "While this app is running, your paired phone can sync without a new code — like a phone and notebook that have already met. Turn this off and the notebook is reachable only while pairing is on screen.",
+  "settings.pairedPhoneStatusReachable":
+    "Your phone can reach this notebook right now.",
+  "settings.pairedPhoneStatusUnreachable":
+    "Your phone cannot reach this notebook right now. Turning the switch off and on again usually fixes it.",
   "settings.pairedPhoneNoneBody":
     "No phone is paired yet. Pair one from the Sync panel above — after that it stays remembered until you forget it here.",
   "settings.pairedPhoneName": "Trusted phone",
@@ -270,6 +274,9 @@ export const mySettings: Record<keyof typeof enSettings, string> = {
   "settings.pairedPhoneReachable": "တွဲချိတ်ထားသော ဖုန်းကို ချိတ်ဆက်ထားခွင့်ပြုမည်",
   "settings.pairedPhoneReachableHint":
     "ဤအက်ပ် အလုပ်လုပ်နေစဉ် တွဲချိတ်ထားသော ဖုန်းသည် ကုဒ်အသစ် မလိုဘဲ sync လုပ်နိုင်ပါသည် — တစ်ကြိမ်တွေ့ပြီးသော ဖုန်းနှင့် နိုတ်ဘွတ်ကဲ့သို့ ဖြစ်သည်။ ပိတ်လိုက်ပါက pairing စခရင် ဖွင့်ထားမှသာ ချိတ်ဆက်၍ ရပါမည်။",
+  "settings.pairedPhoneStatusReachable": "သင့်ဖုန်းသည် ဤနိုတ်ဘွတ်ကို ယခုချိတ်ဆက်၍ ရနေပါသည်။",
+  "settings.pairedPhoneStatusUnreachable":
+    "သင့်ဖုန်းသည် ဤနိုတ်ဘွတ်ကို ယခုချိတ်ဆက်၍ မရသေးပါ။ ခလုတ်ကို ပိတ်ပြီး ပြန်ဖွင့်လိုက်ပါက အများအားဖြင့် ပြန်ရပါသည်။",
   "settings.pairedPhoneNoneBody":
     "ဖုန်း မတွဲချိတ်ရသေးပါ။ အထက်ပါ pairing စခရင်မှ တစ်ခု တွဲချိတ်ပါ — ထို့နောက် ဤနေရာတွင် မေ့ပစ်မှသာ မေ့သွားပါမည်။",
   "settings.pairedPhoneName": "ယုံကြည်ထားသော ဖုန်း",

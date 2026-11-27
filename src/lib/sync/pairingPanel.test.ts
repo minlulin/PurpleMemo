@@ -932,11 +932,13 @@ test("a filtered-away pairing section unmounts the panel", () => {
 test("the lock teardown closes the pairing port through the retried stop", () => {
   const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
   // Durable pairing: with the toggle on, the port stays up across a lock;
-  // with it off, the §11.5 stop runs — and a failed close is still retried
-  // and reported by the retried stop, not swallowed.
+  // with it off, the lock-scoped close runs (D2a: the epoch rises first, so
+  // a pairing_open in flight cannot bind behind the lock screen) — and a
+  // failed close is still retried and reported by the retried stop, not
+  // swallowed.
   assert.match(
     app,
-    /stopListeners: \(\) =>[\s\S]{0,400}?pairedPhoneReachabilityEnabled\(\)[\s\S]{0,200}?pairingRepo\.close\(\)/,
+    /stopListeners: \(\) =>[\s\S]{0,400}?pairedPhoneReachabilityEnabled\(\)[\s\S]{0,300}?pairingRepo\.closeForLock\(\)/,
     "the toggle decides whether the port stays up; the off path closes it through the retried stop",
   );
 });

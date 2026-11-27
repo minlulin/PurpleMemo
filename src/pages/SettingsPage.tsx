@@ -28,6 +28,7 @@ import {
   backupRepo,
   ensurePairedPhoneReachableNow,
   forgetPinnedPeer,
+  lastPairedPhoneOutcome,
   pairingRepo,
   publishUiLocale,
   settingsRepo,
@@ -209,6 +210,13 @@ export default function SettingsPage(p: SettingsPageProps) {
    */
   const [reachable, setReachable] = useState(true);
   /**
+   * The last reachability attempt's outcome, so the toggle never says ON
+   * over a dead port without the row saying so too. `null` until the first
+   * attempt this session (unlock usually makes it before Settings opens).
+   */
+  const [reachableOutcome, setReachableOutcome] =
+    useState<ReturnType<typeof lastPairedPhoneOutcome>>(null);
+  /**
    * Durable pairing: the pin the phone is remembered by, if any. `undefined`
    * is "not read yet", `null` is "nothing pinned" — the section renders
    * nothing decisive until one of the two is known.
@@ -249,7 +257,10 @@ export default function SettingsPage(p: SettingsPageProps) {
     void settingsRepo
       .getPairedPhoneReachable()
       .then((enabled) => {
-        if (!cancelled) setReachable(enabled);
+        if (!cancelled) {
+          setReachable(enabled);
+          setReachableOutcome(lastPairedPhoneOutcome());
+        }
       })
       // A failed read leaves the toggle at the default (ON).
       .catch(() => undefined);
@@ -369,8 +380,11 @@ export default function SettingsPage(p: SettingsPageProps) {
       await settingsRepo.setPairedPhoneReachable(enabled);
       setReachable(enabled);
       if (enabled) {
-        void ensurePairedPhoneReachableNow().catch(() => undefined);
+        void ensurePairedPhoneReachableNow()
+          .then(() => setReachableOutcome(lastPairedPhoneOutcome()))
+          .catch(() => undefined);
       } else {
+        setReachableOutcome(null);
         await pairingRepo.close().catch(() => undefined);
       }
     } catch (e) {
@@ -1363,6 +1377,12 @@ export default function SettingsPage(p: SettingsPageProps) {
             {t("settings.pairedPhoneReachableHint")}
           </span>
         </label>
+        {reachable && reachableOutcome === "opened" ? (
+          <p className="muted">{t("settings.pairedPhoneStatusReachable")}</p>
+        ) : null}
+        {reachable && reachableOutcome === "failed" ? (
+          <p className="muted">{t("settings.pairedPhoneStatusUnreachable")}</p>
+        ) : null}
         {pairedPhone === null ? (
           <p className="muted">{t("settings.pairedPhoneNoneBody")}</p>
         ) : null}

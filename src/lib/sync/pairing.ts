@@ -127,8 +127,9 @@ export function createPairingSession(
   return {
     offer: {
       version: PAIRING_OFFER_VERSION,
-      // §7.2 durable pairing: reuse the pin's pairing id when one exists,
-      // mint only for a first pairing.
+      // The caller may name the id (tests, and the resting window's pin);
+      // a panel open passes none and mints fresh, so a re-pair never
+      // inherits an old pairing's replay floor.
       pairingId,
       deviceId: input.deviceId,
       endpoint: input.endpoint,

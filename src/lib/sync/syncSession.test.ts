@@ -484,6 +484,42 @@ test("a failed final ack is a refusal with the session's result, not an exceptio
   assert.equal((await readOutbox(phone.driver)).length, 1);
 });
 
+test("a keyed Rust refusal reaches the outcome as readable text with its code", async () => {
+  const { phone, desktop } = await pair();
+  await createNotesRepo(phone.driver).createNote({
+    title: "Send me",
+    content: "",
+  });
+
+  const wire = ferry(phone, desktop);
+  const transport = {
+    ...wire.phone,
+    // Tauri rejects with the refusal OBJECT, not an Error — the shape that
+    // used to render as "[object Object]" in the sync banner.
+    syncPush: async () => {
+      throw {
+        key: "rust.error.generic",
+        params: {
+          detail:
+            "replayed: that envelope was already accepted; envelopes are single-use (§7.2)",
+        },
+      };
+    },
+  };
+  const outcome = await runSync(phone.driver, transport, input, {
+    sleep: async () => undefined,
+  });
+
+  assert.equal(outcome.confirmed, false);
+  assert.equal(outcome.state, "refused");
+  assert.equal(outcome.refusal?.code, "replayed");
+  assert.match(outcome.refusal?.message ?? "", /already accepted/);
+  assert.ok(
+    !(outcome.refusal?.message ?? "").includes("[object Object]"),
+    "the banner must never show the raw object",
+  );
+});
+
 /**
  * The exit gate's one proof that was not written yet: **counters reconcile over
  * a full cycle**.

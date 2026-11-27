@@ -28,6 +28,7 @@ import type {
   SnapshotPullInput,
   SyncStatusResult,
 } from "../../data/driver.ts";
+import { refusalDetailText } from "../errors.ts";
 import { MAX_PAIRING_SNAPSHOT_BYTES } from "./bootstrap.ts";
 import { applyOps, type PeerOp, UNLOCKED_TABLES } from "./engine.ts";
 import { isSyncTable, MAX_BATCH_OPS } from "./protocol.ts";
@@ -111,10 +112,6 @@ const refuse = (code: string, message: string, pushed = 0): SyncOutcome => ({
   state: "refused",
   refusal: { code, message },
 });
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** The desktop's words carry the code (`upload-busy: …`); split it back off. */
 function splitRefusal(message: string): SyncRefusal {
@@ -352,8 +349,8 @@ export async function runSync(
         );
       } catch (error) {
         return {
-          ...refuse("push-refused", errorText(error), pushing.length),
-          refusal: splitRefusal(errorText(error)),
+          ...refuse("push-refused", refusalDetailText(error), pushing.length),
+          refusal: splitRefusal(refusalDetailText(error)),
         };
       }
     }
@@ -361,8 +358,8 @@ export async function runSync(
       await transport.syncCommit(input);
     } catch (error) {
       return {
-        ...refuse("push-refused", errorText(error), pushing.length),
-        refusal: splitRefusal(errorText(error)),
+        ...refuse("push-refused", refusalDetailText(error), pushing.length),
+        refusal: splitRefusal(refusalDetailText(error)),
       };
     }
   }
@@ -382,11 +379,11 @@ export async function runSync(
       raw = await transport.syncPull(input, batch, afterSeq);
     } catch (error) {
       return {
-        ...refuse("pull-refused", errorText(error), pushing.length),
+        ...refuse("pull-refused", refusalDetailText(error), pushing.length),
         pulled,
         replaced,
         appliedThrough,
-        refusal: splitRefusal(errorText(error)),
+        refusal: splitRefusal(refusalDetailText(error)),
       };
     }
     const read = readSyncBatch(raw, { pairingId, batch });
@@ -417,20 +414,20 @@ export async function runSync(
         });
       } catch (error) {
         return {
-          ...refuse("apply-refused", errorText(error), pushing.length),
+          ...refuse("apply-refused", refusalDetailText(error), pushing.length),
           pulled,
           appliedThrough,
-          refusal: splitRefusal(errorText(error)),
+          refusal: splitRefusal(refusalDetailText(error)),
         };
       }
       try {
         await transport.batch(statements);
       } catch (error) {
         return {
-          ...refuse("apply-refused", errorText(error), pushing.length),
+          ...refuse("apply-refused", refusalDetailText(error), pushing.length),
           pulled,
           appliedThrough,
-          refusal: splitRefusal(errorText(error)),
+          refusal: splitRefusal(refusalDetailText(error)),
         };
       }
       replaced += committing.count;
@@ -453,11 +450,11 @@ export async function runSync(
       );
     } catch (error) {
       return {
-        ...refuse("apply-refused", errorText(error), pushing.length),
+        ...refuse("apply-refused", refusalDetailText(error), pushing.length),
         pulled,
         replaced,
         appliedThrough,
-        refusal: splitRefusal(errorText(error)),
+        refusal: splitRefusal(refusalDetailText(error)),
       };
     }
   }
@@ -468,10 +465,10 @@ export async function runSync(
     await transport.syncApplied(input, appliedThrough);
   } catch (error) {
     return {
-      ...refuse("applied-refused", errorText(error), pushing.length),
+      ...refuse("applied-refused", refusalDetailText(error), pushing.length),
       pulled,
       appliedThrough,
-      refusal: splitRefusal(errorText(error)),
+      refusal: splitRefusal(refusalDetailText(error)),
     };
   }
 
@@ -500,11 +497,11 @@ export async function runSync(
       status = await transport.syncStatus(input);
     } catch (error) {
       return {
-        ...refuse("status-refused", errorText(error), pushing.length),
+        ...refuse("status-refused", refusalDetailText(error), pushing.length),
         pulled,
         replaced,
         appliedThrough,
-        refusal: splitRefusal(errorText(error)),
+        refusal: splitRefusal(refusalDetailText(error)),
       };
     }
     if (status.state === "applied") {
@@ -519,11 +516,11 @@ export async function runSync(
         );
       } catch (error) {
         return {
-          ...refuse("ack-refused", errorText(error), pushing.length),
+          ...refuse("ack-refused", refusalDetailText(error), pushing.length),
           pulled,
           appliedThrough,
           ackThrough: peer.cursor_out,
-          refusal: splitRefusal(errorText(error)),
+          refusal: splitRefusal(refusalDetailText(error)),
         };
       }
       return {

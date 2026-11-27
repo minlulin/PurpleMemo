@@ -29,6 +29,10 @@ test("each pairing command is one invoke site with the documented argument", () 
     /pairingOpen: \(input\) => invoke\("pairing_open", \{ input \}\)/,
   );
   assert.match(driver, /pairingClose: \(\) => invoke\("pairing_close"\)/);
+  assert.match(
+    driver,
+    /pairingCloseForLock: \(\) => invoke\("pairing_close_for_lock"\)/,
+  );
   assert.match(driver, /pairingStatus: \(\) => invoke\("pairing_status"\)/);
   assert.match(
     driver,

@@ -224,7 +224,20 @@ export function ensurePairedPhoneReachableNow(): Promise<DurableOutcome> {
         toggle,
         isAndroidPlatform(),
       ),
-    );
+    )
+    .then((outcome) => {
+      // The Settings row reads this back: "ON" over a dead port must be
+      // visible as such, not swallowed by the fire-and-forget call sites.
+      lastDurableOutcome = outcome;
+      return outcome;
+    });
+}
+
+let lastDurableOutcome: DurableOutcome | null = null;
+
+/** The last reachability attempt's outcome, for the Settings status line. */
+export function lastPairedPhoneOutcome(): DurableOutcome | null {
+  return lastDurableOutcome;
 }
 
 /**

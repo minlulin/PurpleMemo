@@ -579,6 +579,13 @@ export interface PairingDriver {
    * the panel closing, on lock and on app background.
    */
   pairingClose(): Promise<PairingListenerInfo>;
+  /**
+   * The lock path's close (D2a): raises the lock epoch in Rust before
+   * stopping, so a pairing_open already in flight cannot bind behind the
+   * lock screen. Only the shell's lock teardown calls this; the panel's
+   * ordinary close stays `pairingClose`.
+   */
+  pairingCloseForLock(): Promise<PairingListenerInfo>;
   /** Current window state, including the peer a code-confirmed rendezvous pinned. */
   pairingStatus(): Promise<PairingListenerInfo>;
   /**
@@ -770,6 +777,7 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     pairingLocal: () => invoke("pairing_local"),
     pairingOpen: (input) => invoke("pairing_open", { input }),
     pairingClose: () => invoke("pairing_close"),
+    pairingCloseForLock: () => invoke("pairing_close_for_lock"),
     pairingStatus: () => invoke("pairing_status"),
     pairingIdentityStatus: () => invoke("pairing_identity_status"),
     pairingIdentityReplace: (confirm) =>
