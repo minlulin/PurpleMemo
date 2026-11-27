@@ -5318,6 +5318,240 @@ mod tests {
             println!("wrote {} ({tag}, schema {version})", path.display());
         }
     }
+
+    /// Table names that belong to the schema itself: SQLite internals and the
+    /// FTS5 shadow tables are excluded, `notes_fts` itself is included.
+    fn schema_table_names(conn: &Connection) -> Vec<String> {
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name NOT LIKE 'sqlite_%'
+                   AND name NOT GLOB '*_data'
+                   AND name NOT GLOB '*_idx'
+                   AND name NOT GLOB '*_docsize'
+                   AND name NOT GLOB '*_config'
+                   AND name NOT GLOB '*_content'
+                 ORDER BY name",
+            )
+            .expect("prepare the table list");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query the table list")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read the table list")
+    }
+
+    /// Each table with its columns as an unordered set of
+    /// `name|type|NOT NULL|default|primary-key position`, sorted by table name.
+    ///
+    /// A SET, not a sequence, because SQLite appends an `ALTER TABLE ADD
+    /// COLUMN` definition to the stored CREATE text: the v7 migration adds
+    /// `uid` at the end of each synced table, while a fresh baseline declares
+    /// it after `id`. The schema a migrated database ends up with is the same
+    /// either way, and the column list — not its order — is the part the
+    /// migration promises.
+    fn schema_columns(conn: &Connection) -> Vec<(String, Vec<String>)> {
+        schema_table_names(conn)
+            .into_iter()
+            .map(|table| {
+                let mut statement = conn
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .expect("prepare table_info");
+                let mut columns: Vec<String> = statement
+                    .query_map([], |row| {
+                        let default: Option<String> = row.get(4)?;
+                        Ok(format!(
+                            "{}|{}|{}|{}|{}",
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            default.unwrap_or_default(),
+                            row.get::<_, i64>(5)?
+                        ))
+                    })
+                    .expect("query table_info")
+                    .collect::<Result<_, _>>()
+                    .expect("read table_info");
+                columns.sort();
+                (table, columns)
+            })
+            .collect()
+    }
+
+    /// Every index (or trigger) name in the schema, SQLite auto-indexes aside.
+    fn schema_object_names(conn: &Connection, kind: &str) -> Vec<String> {
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = ?1 AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .expect("prepare the object list");
+        statement
+            .query_map([kind], |row| row.get::<_, String>(0))
+            .expect("query the object list")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read the object list")
+    }
+
+    /// The migrated fixture must end up with the schema a fresh install gets:
+    /// the same tables, the same columns on each, and the same index and
+    /// trigger names.
+    ///
+    /// This is the existing baseline-versus-migrated agreement pinned against
+    /// a real old database instead of a shape built by subtraction. It compares
+    /// structure, not the stored DDL text: the `uid` columns the v7 step adds
+    /// are appended to each table's CREATE statement, so the text necessarily
+    /// differs from a fresh baseline's while the schema does not.
+    fn assert_migrated_structure_matches_baseline(migrated: &Connection) {
+        let (_fresh_dir, fresh) = open_baseline("frozen-structure");
+        assert_eq!(
+            schema_table_names(migrated),
+            schema_table_names(&fresh),
+            "the migrated fixture's table set differs from a fresh baseline"
+        );
+        assert_eq!(
+            schema_columns(migrated),
+            schema_columns(&fresh),
+            "a migrated table's columns differ from a fresh baseline"
+        );
+        assert_eq!(
+            schema_object_names(migrated, "index"),
+            schema_object_names(&fresh, "index"),
+            "the migrated fixture's index set differs from a fresh baseline"
+        );
+        assert_eq!(
+            schema_object_names(migrated, "trigger"),
+            schema_object_names(&fresh, "trigger"),
+            "the migrated fixture's trigger set differs from a fresh baseline"
+        );
+    }
+
+    /// Copy a committed fixture to a temp file and migrate the copy.
+    ///
+    /// The copy is the point: `init_schema` writes, and the committed fixture
+    /// must stay the database an old release wrote.
+    fn migrate_frozen_fixture(file: &str, version: i64) -> (TempDir, Connection) {
+        let fixture = frozen_fixture_path(file);
+        assert!(
+            fixture.is_file(),
+            "{file} is missing — regenerate it: cargo test --manifest-path src-tauri/Cargo.toml \
+             regenerate_frozen_migration_fixtures -- --ignored"
+        );
+        let dir = TempDir::new(&format!("frozen-v{version}"));
+        let copy = dir.db_path();
+        std::fs::copy(&fixture, &copy).expect("copy the fixture to a temp file");
+        let conn = open_encrypted_db(&copy, FROZEN_FIXTURE_KEY)
+            .expect("open the fixture with the documented test key");
+        let stamped: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(
+            stamped, version,
+            "{file} must be a schema-{version} database"
+        );
+        init_schema(&conn).expect("migrate the frozen fixture");
+        (dir, conn)
+    }
+
+    /// What a migrated fixture must still hold, row by row.
+    fn assert_frozen_fixture_survives(conn: &Connection, file: &str, version: i64) {
+        let current: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(
+            current,
+            schema::SCHEMA_VERSION,
+            "{file} did not reach the current schema version"
+        );
+        assert_eq!(table_count(conn), 41);
+
+        let note: (String, String, String, i64) = conn
+            .query_row(
+                "SELECT title, content, tags, collection_id FROM notes WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("the seeded note must survive the migration");
+        assert_eq!(note.0, format!("fixture-v{version} note"));
+        assert_eq!(note.1, format!("fixture-v{version} body"));
+        assert_eq!(note.2, "fixture,sentinel");
+        assert_eq!(
+            note.3, 1,
+            "the note must still point at the seeded collection"
+        );
+
+        let task: String = conn
+            .query_row("SELECT title FROM tasks WHERE id = 1", [], |row| row.get(0))
+            .expect("the seeded task must survive the migration");
+        assert_eq!(task, format!("fixture-v{version} task"));
+
+        let income: (i64, String) = conn
+            .query_row(
+                "SELECT amount_cents, note FROM income_entries WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the seeded money row must survive the migration");
+        assert_eq!(income.0, 1_234_567, "the amount must survive unchanged");
+        assert_eq!(income.1, format!("fixture-v{version} income"));
+
+        // Row counts per seeded table: a duplicated row would survive the
+        // exact-title checks above and still be a migration bug.
+        for table in ["collections", "notes", "tasks", "income_entries"] {
+            assert_eq!(
+                scalar_i64(conn, &format!("SELECT count(*) FROM {table}")),
+                1,
+                "{table}: the fixture seeded one row and it must stay one"
+            );
+        }
+        assert_eq!(
+            scalar_i64(conn, "SELECT count(*) FROM wallets"),
+            5,
+            "the old baseline's seeded wallets must still be there"
+        );
+        assert_eq!(
+            scalar_i64(
+                conn,
+                "SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'fixture'"
+            ),
+            1,
+            "the FTS index must still answer for the migrated note"
+        );
+
+        assert_migrated_structure_matches_baseline(conn);
+
+        // And the committed fixture was not migrated: it is still the old
+        // version, which is what makes it usable as a witness next run.
+        let original = open_encrypted_db_existing(&frozen_fixture_path(file), FROZEN_FIXTURE_KEY)
+            .expect("reopen the committed fixture");
+        let still: i64 = original
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read the committed fixture's version");
+        assert_eq!(
+            still, version,
+            "{file} was migrated in place — a test must copy it first"
+        );
+    }
+
+    #[test]
+    fn frozen_schema5_from_v0_1_0_migrates_to_current_and_keeps_its_rows() {
+        let (_dir, conn) = migrate_frozen_fixture("schema5_v0.1.0.db", 5);
+        assert_frozen_fixture_survives(&conn, "schema5_v0.1.0.db", 5);
+    }
+
+    #[test]
+    fn frozen_schema6_from_v0_1_1_migrates_to_current_and_keeps_its_rows() {
+        let (_dir, conn) = migrate_frozen_fixture("schema6_v0.1.1.db", 6);
+        assert_frozen_fixture_survives(&conn, "schema6_v0.1.1.db", 6);
+    }
+
+    #[test]
+    fn frozen_schema12_from_v0_2_0_migrates_to_current_and_keeps_its_rows() {
+        let (_dir, conn) = migrate_frozen_fixture("schema12_v0.2.0.db", 12);
+        assert_frozen_fixture_survives(&conn, "schema12_v0.2.0.db", 12);
+    }
 }
 
 #[cfg(test)]
