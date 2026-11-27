@@ -4252,3 +4252,21 @@ tbody .week-row {
   display: flex;
   gap: var(--space-2);
 }
+
+/* One job at a time (pairing UI simplification): the pastable offer and the
+ * connection's technical facts open on request instead of competing with the
+ * code. The toggle is the panel's own button; the body holds what it reveals. */
+.pairing-disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.pairing-disclosure-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  inline-size: 100%;
+}

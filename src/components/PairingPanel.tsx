@@ -100,6 +100,9 @@ export function PairingPanel() {
   const [identity, setIdentity] = useState<PairingIdentityStatus | null>(null);
   // §11.1: the offer is a string a person can carry to a phone with no camera.
   const [copied, setCopied] = useState(false);
+  // Technical rows and the pastable offer are disclosure, not the main job.
+  const [showOffer, setShowOffer] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   /**
    * §11.4: this desktop's own operations the staged phone has not received.
    * Read before Trust is offered, because a re-pair would strand them.
@@ -153,6 +156,8 @@ export function PairingPanel() {
       }
       stateRef.current = opened;
       setState(opened);
+      setShowOffer(false);
+      setShowDetails(false);
       // A staged candidate is compared against the rows already pinned, so a
       // re-pair can say whose key it replaces (§11.4).
       setPeers(await pairingRepo.peers().catch(() => []));
@@ -178,6 +183,8 @@ export function PairingPanel() {
       stateRef.current = null;
       setState(null);
       setPin(null);
+      setShowOffer(false);
+      setShowDetails(false);
       setBusy(false);
     }
   }, []);
@@ -287,6 +294,18 @@ export function PairingPanel() {
   const view = state === null ? null : panelView(state);
   const pending = state === null ? null : pendingConfirmation(state, peers);
   const recovery = identityRecovery(identity);
+  /**
+   * The one screen this panel is showing. A lost key, a staged phone, a live
+   * window and nothing-yet are four different jobs, so they never stack: the
+   * person sees the next action and nothing else.
+   */
+  const screen: "recovery" | "confirm" | "session" | "idle" = recovery.needed
+    ? "recovery"
+    : pending !== null && pin === null
+      ? "confirm"
+      : view !== null
+        ? "session"
+        : "idle";
   const rePairingPeer = pending?.existing?.deviceId ?? null;
   const phaseLabel = (phase: PanelPhase): string =>
     phase === "active" ? "" : t(PHASE_LABEL_KEYS[phase]);
@@ -374,7 +393,7 @@ export function PairingPanel() {
         </p>
       ) : null}
 
-      {state === null || view === null ? (
+      {screen === "idle" ? (
         <button
           type="button"
           className="btn btn-primary"
@@ -383,29 +402,108 @@ export function PairingPanel() {
         >
           {busy ? t("pairing.opening") : t("pairing.open")}
         </button>
-      ) : (
+      ) : screen === "confirm" && pending !== null ? (
+        <>
+          <p className="muted">{t("pairing.compare")}</p>
+          {/* Nothing is pinned until this block is confirmed (§11.1, N1). */}
+          <section aria-label={t("pairing.confirmSectionAria")}>
+            <p>
+              <strong>{t("pairing.confirmTitle")}</strong>
+            </p>
+            <dl className="pairing-facts">
+              <div>
+                <dt>{t("pairing.localFingerprint")}</dt>
+                <dd className="pairing-fingerprint">
+                  {pending.localFingerprint}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("pairing.peerFingerprint")}</dt>
+                <dd className="pairing-fingerprint">
+                  {pending.peer.fingerprint ?? pending.peer.deviceId}
+                </dd>
+              </div>
+              {pending.existing !== null ? (
+                <div>
+                  <dt>{t("pairing.alreadyPaired")}</dt>
+                  <dd>
+                    {t("pairing.rePairing", {
+                      name:
+                        pending.existing.displayName ||
+                        pending.existing.deviceId,
+                      current:
+                        pending.existing.fingerprint !== null
+                          ? t("pairing.currently", {
+                              fingerprint: pending.existing.fingerprint,
+                            })
+                          : "",
+                    })}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            {pending.helloReceived ? null : (
+              <p className="muted" role="status">
+                {t("pairing.waitingPhone")}
+              </p>
+            )}
+            {/* §11.4: a re-pair zeroes the cursors, so anything this
+                desktop still owes the phone would be stranded. Trust is
+                disabled until it is synced or deliberately discarded, and
+                the count is named rather than left to the person to guess. */}
+            {pendingChanges !== null && pendingChanges > 0 ? (
+              <div className="pairing-guard" role="alert">
+                <p className="pairing-error">
+                  {t("pairing.pendingChanges", { count: pendingChanges })}
+                </p>
+                <ConfirmButton
+                  what={t("pairing.discardPendingWhat", {
+                    count: pendingChanges,
+                  })}
+                  className="btn btn-danger"
+                  disabled={busy}
+                  onConfirm={discardPending}
+                >
+                  {t("pairing.discardPending")}
+                </ConfirmButton>
+              </div>
+            ) : null}
+            {discardNote !== null ? (
+              <p className="muted" role="status">
+                {discardNote}
+              </p>
+            ) : null}
+            <div className="pairing-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={
+                  busy || !pending.helloReceived || (pendingChanges ?? 0) > 0
+                }
+                onClick={() => void trust()}
+              >
+                {t("pairing.trust")}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={() => void close()}
+              >
+                {t("pairing.reject")}
+              </button>
+            </div>
+          </section>
+        </>
+      ) : view !== null ? (
         <>
           <div className="pairing-panel-body">
-            {/* No QR without a live code and a bound port (§11.5). The same
-                string is printed beside it: a phone with no camera can only
-                pair by pasting it, and nothing else on this screen carries
-                the endpoint and the pinned key. */}
+            {/* No QR without a live code and a bound port (§11.5). The
+                pastable copy of the same string sits behind the disclosure
+                below, so the code keeps the screen. */}
             {view.payload !== null ? (
               <figure className="pairing-offer">
                 <QrCode payload={view.payload} />
-                <figcaption>
-                  <p className="muted">{t("pairing.noCamera")}</p>
-                  <code className="pairing-offer-text" ref={offerTextRef}>
-                    {view.payload}
-                  </code>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => void copyOffer(view.payload ?? "")}
-                  >
-                    {copied ? t("pairing.copied") : t("pairing.copy")}
-                  </button>
-                </figcaption>
               </figure>
             ) : null}
             <dl className="pairing-facts">
@@ -427,23 +525,6 @@ export function PairingPanel() {
                     : phaseReason(view.phase)}
                 </dd>
               </div>
-              <div>
-                <dt>{t("pairing.listeningOn")}</dt>
-                <dd>
-                  {view.listenerRunning
-                    ? (view.endpoint ?? t("pairing.localPort"))
-                    : t("pairing.closed")}
-                </dd>
-              </div>
-              {pin !== null ? (
-                <div>
-                  <dt>{t("pairing.pairedPhone")}</dt>
-                  <dd className="pairing-fingerprint">
-                    {pin.peer.fingerprint ?? pin.peer.deviceId}
-                    {pin.repinned ? ` ${t("pairing.rePaired")}` : ""}
-                  </dd>
-                </div>
-              ) : null}
               {/* §9.1: the phone's upload is staged by the listener and
                   applied by this panel — its state is the person's receipt. */}
               {view.upload !== null ? (
@@ -516,99 +597,75 @@ export function PairingPanel() {
             </dl>
           </div>
 
-          {/* Nothing is pinned until this block is confirmed (§11.1, N1). */}
-          {pending !== null && pin === null ? (
-            <section aria-label={t("pairing.confirmSectionAria")}>
-              <p>
-                <strong>{t("pairing.confirmTitle")}</strong>
-              </p>
-              <dl className="pairing-facts">
-                <div>
-                  <dt>{t("pairing.localFingerprint")}</dt>
-                  <dd className="pairing-fingerprint">
-                    {pending.localFingerprint}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{t("pairing.peerFingerprint")}</dt>
-                  <dd className="pairing-fingerprint">
-                    {pending.peer.fingerprint ?? pending.peer.deviceId}
-                  </dd>
-                </div>
-                {pending.existing !== null ? (
-                  <div>
-                    <dt>{t("pairing.alreadyPaired")}</dt>
-                    <dd>
-                      {t("pairing.rePairing", {
-                        name:
-                          pending.existing.displayName ||
-                          pending.existing.deviceId,
-                        current:
-                          pending.existing.fingerprint !== null
-                            ? t("pairing.currently", {
-                                fingerprint: pending.existing.fingerprint,
-                              })
-                            : "",
-                      })}
-                    </dd>
-                  </div>
-                ) : null}
-              </dl>
-              {pending.helloReceived ? null : (
-                <p className="muted" role="status">
-                  {t("pairing.waitingPhone")}
-                </p>
-              )}
-              {/* §11.4: a re-pair zeroes the cursors, so anything this
-                  desktop still owes the phone would be stranded. Trust is
-                  disabled until it is synced or deliberately discarded, and
-                  the count is named rather than left to the person to guess. */}
-              {pendingChanges !== null && pendingChanges > 0 ? (
-                <div className="pairing-guard" role="alert">
-                  <p className="pairing-error">
-                    {t("pairing.pendingChanges", { count: pendingChanges })}
-                  </p>
-                  <ConfirmButton
-                    what={t("pairing.discardPendingWhat", {
-                      count: pendingChanges,
-                    })}
-                    className="btn btn-danger"
-                    disabled={busy}
-                    onConfirm={discardPending}
+          {/* §11.1 manual entry: the same string the QR carries, for a phone
+              with no camera. It is one disclosure, not a second screen. */}
+          {view.payload !== null ? (
+            <div className="pairing-disclosure">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                aria-expanded={showOffer}
+                onClick={() => setShowOffer((previous) => !previous)}
+              >
+                {t("pairing.noCamera")}
+              </button>
+              {showOffer ? (
+                <div className="pairing-disclosure-body">
+                  <code className="pairing-offer-text" ref={offerTextRef}>
+                    {view.payload}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void copyOffer(view.payload ?? "")}
                   >
-                    {t("pairing.discardPending")}
-                  </ConfirmButton>
+                    {copied ? t("pairing.copied") : t("pairing.copy")}
+                  </button>
                 </div>
               ) : null}
-              {discardNote !== null ? (
-                <p className="muted" role="status">
-                  {discardNote}
-                </p>
-              ) : null}
-              <div className="pairing-actions">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={
-                    busy || !pending.helloReceived || (pendingChanges ?? 0) > 0
-                  }
-                  onClick={() => void trust()}
-                >
-                  {t("pairing.trust")}
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={busy}
-                  onClick={() => void close()}
-                >
-                  {t("pairing.reject")}
-                </button>
-              </div>
-            </section>
+            </div>
           ) : null}
 
-          <p className="muted">{t("pairing.compare")}</p>
+          {/* Plumbing sits behind its own disclosure: the address, this
+              device's fingerprint and the phone already paired are facts to
+              look up, not the next action. */}
+          <div className="pairing-disclosure">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              aria-expanded={showDetails}
+              onClick={() => setShowDetails((previous) => !previous)}
+            >
+              {t("pairing.connectionDetails")}
+            </button>
+            {showDetails ? (
+              <div className="pairing-disclosure-body">
+                <dl className="pairing-facts">
+                  <div>
+                    <dt>{t("pairing.listeningOn")}</dt>
+                    <dd>
+                      {view.listenerRunning
+                        ? (view.endpoint ?? t("pairing.localPort"))
+                        : t("pairing.closed")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("pairing.localFingerprint")}</dt>
+                    <dd className="pairing-fingerprint">{view.fingerprint}</dd>
+                  </div>
+                  {pin !== null ? (
+                    <div>
+                      <dt>{t("pairing.pairedPhone")}</dt>
+                      <dd className="pairing-fingerprint">
+                        {pin.peer.fingerprint ?? pin.peer.deviceId}
+                        {pin.repinned ? ` ${t("pairing.rePaired")}` : ""}
+                      </dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </div>
+            ) : null}
+          </div>
           {phaseNote !== null ? (
             <p className="pairing-error" role="alert">
               {phaseNote}
@@ -639,7 +696,7 @@ export function PairingPanel() {
             </div>
           ) : null}
         </>
-      )}
+      ) : null}
     </div>
   );
 }
