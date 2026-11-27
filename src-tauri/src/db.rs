@@ -5161,6 +5161,163 @@ mod tests {
             "no statement fragment may leak: {exec}"
         );
     }
+
+    // -- Frozen migration fixtures (src-tauri/tests/fixtures) -----------------
+
+    /// The key every committed fixture is encrypted with — a TEST constant.
+    ///
+    /// Never a user key, and never a key any real database was created with:
+    /// these files exist to be migrated by a test, not to open anything.
+    /// Raw-key form, exactly as the app opens a database
+    /// (`PRAGMA key = "x'<hex>'"`). The same value is written down in
+    /// `src-tauri/tests/fixtures/README.md`.
+    const FROZEN_FIXTURE_KEY: &str =
+        "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed";
+
+    /// The committed fixture databases: file name, the release tag whose
+    /// schema code wrote it, and the version that tag's own `schema.rs`
+    /// stamps.
+    ///
+    /// `v0.2.0` is listed at 12, not the 10 the task brief expected: the tag
+    /// really ships `SCHEMA_VERSION = 12`, and a frozen fixture has to be the
+    /// database an old release produced rather than the version a prompt
+    /// assumed. The 10 → 11 and 11 → 12 steps still run, because the v5 and v6
+    /// fixtures walk through them on their way to 14.
+    const FROZEN_FIXTURES: [(&str, &str, i64); 3] = [
+        ("schema5_v0.1.0.db", "v0.1.0", 5),
+        ("schema6_v0.1.1.db", "v0.1.1", 6),
+        ("schema12_v0.2.0.db", "v0.2.0", 12),
+    ];
+
+    fn frozen_fixture_path(file: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(file)
+    }
+
+    /// The tag's own `BASELINE_SQL`, byte for byte.
+    ///
+    /// The DDL has to come from the released code, never be retyped or
+    /// approximated: a fixture built from a hand-written guess proves nothing
+    /// about what an old install looks like. This is the brief's generation
+    /// method 2 — extract the tag's `BASELINE_SQL` and execute it with the
+    /// current SQLCipher, then stamp `user_version` — rather than method 1
+    /// (check the tag out and let its own runner create the file), which would
+    /// mean building each tag's whole Tauri app to get one schema.
+    fn tagged_baseline_sql(tag: &str) -> String {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri has a parent directory");
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["show", &format!("{tag}:src-tauri/src/schema.rs")])
+            .output()
+            .expect("run git show for the tag's schema.rs");
+        assert!(
+            output.status.success(),
+            "git show {tag}:src-tauri/src/schema.rs failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let source = String::from_utf8(output.stdout).expect("schema.rs is UTF-8");
+        const OPEN: &str = "pub const BASELINE_SQL: &str = r#\"";
+        let start = source
+            .find(OPEN)
+            .unwrap_or_else(|| panic!("{tag}'s schema.rs declares no BASELINE_SQL"))
+            + OPEN.len();
+        let end = source[start..]
+            .find("\"#;")
+            .unwrap_or_else(|| panic!("{tag}'s BASELINE_SQL literal is never closed"))
+            + start;
+        let sql = &source[start..end];
+        assert!(
+            sql.contains("CREATE TABLE notes"),
+            "{tag}'s BASELINE_SQL does not look like the schema DDL"
+        );
+        sql.to_string()
+    }
+
+    /// The sentinel rows every fixture carries: a collection, a note, a task
+    /// and one money entry, each title naming the fixture version so a test
+    /// can assert exact survival rather than a row count.
+    ///
+    /// Column shapes follow the version: no `uid` before v7 (the column does
+    /// not exist yet), fixed v4 uids from v7 on. Every value is a literal, so
+    /// the same rows come back on every regeneration.
+    fn frozen_seed_sql(version: i64) -> String {
+        if version < 7 {
+            format!(
+                "INSERT INTO collections (id, name, created_at)
+                   VALUES (1, 'fixture-v{version} shelf', '2026-03-01');
+                 INSERT INTO notes (id, title, content, tags, collection_id, pinned, archived, created_at, updated_at)
+                   VALUES (1, 'fixture-v{version} note', 'fixture-v{version} body', 'fixture,sentinel', 1, 0, 0, '2026-03-01', '2026-03-02');
+                 INSERT INTO tasks (id, title, due_date, done, repeat, note, created_at)
+                   VALUES (1, 'fixture-v{version} task', '2026-03-05', 0, 'none', '', '2026-03-01');
+                 INSERT INTO income_entries (id, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+                   VALUES (1, 1234567, 1, 1, '2026-03-03', 'fixture-v{version} income', '2026-03-03');"
+            )
+        } else {
+            format!(
+                "INSERT INTO collections (id, uid, name, created_at)
+                   VALUES (1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01', 'fixture-v{version} shelf', '2026-03-01');
+                 INSERT INTO notes (id, uid, title, content, tags, collection_id, pinned, archived, created_at, updated_at)
+                   VALUES (1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02', 'fixture-v{version} note', 'fixture-v{version} body', 'fixture,sentinel', 1, 0, 0, '2026-03-01', '2026-03-02');
+                 INSERT INTO tasks (id, uid, title, due_date, done, repeat, note, created_at)
+                   VALUES (1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03', 'fixture-v{version} task', '2026-03-05', 0, 'none', '', '2026-03-01');
+                 INSERT INTO income_entries (id, uid, amount_cents, category_id, wallet_id, entry_date, note, created_at)
+                   VALUES (1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04', 1234567, 1, 1, '2026-03-03', 'fixture-v{version} income', '2026-03-03');"
+            )
+        }
+    }
+
+    /// Write the committed fixtures again from the release tags.
+    ///
+    /// Ignored on purpose: a fixture is a committed artefact, not a build
+    /// output, and `npm run verify` must never need the tags to exist. Run it
+    /// deliberately when a release tag needs a fixture:
+    ///
+    /// ```text
+    /// cargo test --manifest-path src-tauri/Cargo.toml regenerate_frozen_migration_fixtures -- --ignored
+    /// ```
+    ///
+    /// `src-tauri/tests/fixtures/README.md` is the reproduction record: source
+    /// tag and commit per file, the key, the seed rows, and this command.
+    #[test]
+    #[ignore = "writes src-tauri/tests/fixtures — run explicitly; see the fixtures README"]
+    fn regenerate_frozen_migration_fixtures() {
+        for (file, tag, version) in FROZEN_FIXTURES {
+            let path = frozen_fixture_path(file);
+            std::fs::create_dir_all(path.parent().expect("fixtures directory"))
+                .expect("create the fixtures directory");
+            // A stale sidecar must not survive into a "fresh" fixture: the
+            // committed artefact is one file.
+            for sibling in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{sibling}", path.display()));
+            }
+            let conn = Connection::open(&path).expect("create the fixture file");
+            set_key_and_verify(&conn, FROZEN_FIXTURE_KEY).expect("key the fixture");
+            conn.execute_batch(&tagged_baseline_sql(tag))
+                .unwrap_or_else(|e| panic!("{tag}'s BASELINE_SQL failed: {e}"));
+            conn.execute_batch(&frozen_seed_sql(version))
+                .expect("seed the fixture");
+            conn.pragma_update(None, "user_version", version)
+                .expect("stamp the fixture's schema version");
+            let journal_mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("read journal mode");
+            assert_eq!(
+                journal_mode, "delete",
+                "{file} must not leave a WAL next to it"
+            );
+            drop(conn);
+            assert!(
+                path.metadata().expect("the fixture file exists").len() > 0,
+                "{file} was written empty"
+            );
+            println!("wrote {} ({tag}, schema {version})", path.display());
+        }
+    }
 }
 
 #[cfg(test)]
