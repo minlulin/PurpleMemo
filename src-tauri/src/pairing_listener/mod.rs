@@ -1557,6 +1557,11 @@ mod tests {
         assert!(!state.status().expect("status").running);
     }
 
+    /// Serializes the tests that install the global counter sink: the sink
+    /// is process-wide, so two such tests running in parallel would
+    /// replace (or clear) each other's writer mid-flight.
+    static SINK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     /// §7.2 across restarts, with the real sink installed: an admitted
     /// counter raises the durable floor, and a window reopened from that
     /// floor (what `pairing_open` seeds after a restart) refuses the same
@@ -1565,6 +1570,7 @@ mod tests {
     /// it reads back.
     #[test]
     pub(super) fn an_admitted_counter_survives_a_window_restart_through_the_floor() {
+        let _serial = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use std::collections::HashMap;
         let floors: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
         let sink_floors = floors.clone();
@@ -1643,6 +1649,81 @@ mod tests {
         assert_eq!(refusal_reason(&body), "replayed", "{body}");
         let (status, body) = post(port, &seal(6));
         assert_eq!(status, 200, "{body}");
+        state.stop().expect("stop");
+
+        clear_counter_sink();
+    }
+
+    /// The blocking floor write (the mint/admit sinks take the connection
+    /// lock) cannot deadlock a sync: an admit whose floor write is parked
+    /// behind a held connection completes as soon as the holder releases.
+    /// The longest real holds are an import's transaction and the backup
+    /// safety copy's checkpoint — a sync that lands during one waits for
+    /// it, which is the correct order, and then proceeds. The sink here
+    /// only parks this test's own pairing id, so parallel tests are
+    /// unaffected.
+    #[test]
+    pub(super) fn an_admit_waits_for_a_held_floor_write_and_then_completes() {
+        use std::sync::mpsc;
+        let _serial = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        install_counter_sink(Arc::new(move |pairing_id: &str, _floor: u64| {
+            if pairing_id == "pair-heldlock" {
+                // Park until the test releases us — the held connection.
+                let _ = release_rx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .recv();
+            }
+            Ok(())
+        }));
+
+        let mut window = window(false);
+        window.pairing_id = "pair-heldlock".to_string();
+        let state = PairingListenerState::default();
+        let info = state
+            .start("127.0.0.1", 0, window, desktop_identity(), None)
+            .expect("start");
+        let port = info.port.expect("a bound port");
+
+        let mut message = hello_body();
+        message
+            .as_object_mut()
+            .expect("hello object")
+            .insert("pairingId".to_string(), json!("pair-heldlock"));
+        let wire = envelope::seal(SealInput {
+            secret: &PHONE_SECRET,
+            peer_public: &envelope::public_key(&DESKTOP_SECRET),
+            from: PHONE_ID,
+            to: DESKTOP_ID,
+            message_id: "hello-1",
+            counter: 1,
+            message: &message,
+            pairing_id: Some("pair-heldlock"),
+            nonce: None,
+            ephemeral_secret: None,
+        })
+        .expect("seal the hello");
+        let frame = encode_frame(&wire).expect("frame the hello");
+
+        let (done_tx, done_rx) = mpsc::channel::<(u16, String)>();
+        let sender = std::thread::spawn(move || {
+            let _ = done_tx.send(post(port, &frame));
+        });
+        // While the floor write is parked, no reply may arrive.
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the admit must wait for the held floor write"
+        );
+        release_tx.send(()).expect("release the floor write");
+        let (status, body) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the admit completes once released");
+        assert_eq!(status, 200, "{body}");
+        sender.join().expect("sender thread");
         state.stop().expect("stop");
 
         clear_counter_sink();
