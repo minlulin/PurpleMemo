@@ -340,6 +340,37 @@ export function panelView(
 }
 
 /**
+ * The code as a person reads it: six digits grouped in threes (`123 456`).
+ *
+ * Anything else passes through unchanged, because the panel also shows the
+ * phase's own word for a dead code (`expired`, `used`, `locked`) and that word
+ * must not be reformatted into something that looks live (N3). A missing code
+ * is a dash, never a blank cell.
+ */
+export function formatPairingCode(code: string | null | undefined): string {
+  if (code === null || code === undefined) return "—";
+  const trimmed = code.trim();
+  const digits = trimmed.replace(/[^0-9]/g, "");
+  if (digits.length === 6) return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+  return trimmed.length === 0 ? "—" : trimmed;
+}
+
+/**
+ * A fingerprint's first 12 alphanumeric characters, uppercased and grouped in
+ * fours (`AB12 · CD34 · EF56`): enough to compare across two screens by eye,
+ * short enough not to wrap beside its label. No key yet is a dash.
+ */
+export function formatShortFp(fp: string | null | undefined): string {
+  if (fp === null || fp === undefined) return "—";
+  const short = fp
+    .replace(/[^0-9a-zA-Z]/g, "")
+    .toUpperCase()
+    .slice(0, 12);
+  if (short.length === 0) return "—";
+  return (short.match(/.{1,4}/g) ?? []).join(" · ");
+}
+
+/**
  * What the panel shows about this device's pairing identity (wave 1, N2).
  *
  * `needed` is deliberately narrower than `rePairRequired`: a key that is

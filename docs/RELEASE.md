@@ -436,3 +436,7 @@ that as "the dialog is where it comes from"; this section is the real guarantee.
 The pre-import safety copy is deliberately *not* on this list in the same way: it
 composes its own destination under app-data from a sanitized label, so there is
 no caller-supplied path in it at all.
+
+Biometric unlock is a UI gate beside the PIN: it decides who may show the
+unlocked screen, it does not unwrap the database key, and the PIN remains the
+root unlock.

@@ -24,11 +24,11 @@ import {
   scannedSession,
 } from "../lib/sync/mobilePairing.ts";
 import {
-  keyFingerprint,
   type PairingOffer,
   type PairingSession,
   parseOffer,
 } from "../lib/sync/pairing.ts";
+import { formatShortFp } from "../lib/sync/pairingPanel.ts";
 import { warnBeforeTrust } from "../lib/sync/pairingWarning.ts";
 import {
   type RememberedEndpoints,
@@ -592,7 +592,7 @@ export function MobilePairingCard() {
           </p>
           <p className="mobile-row-text">
             {t("mobile.settings.pairDesktopKey", {
-              fingerprint: keyFingerprint(offer.publicKey),
+              fingerprint: formatShortFp(offer.publicKey),
             })}
           </p>
           <label className="mobile-field">

@@ -33,6 +33,8 @@ import {
   clockStillMatters,
   closePairingPanel,
   discardPendingOutbox,
+  formatPairingCode,
+  formatShortFp,
   identityRecovery,
   openPairingPanel,
   type PairingPanelState,
@@ -1158,4 +1160,50 @@ test("the settle tick applies a staged upload and the view reports it", async ()
     .get(PHONE_WALLET) as { name: string } | undefined;
   assert.equal(landed?.name, "Settled cash");
   assert.equal(panelView(settled, now).upload?.inserted, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Session 3 reading shapes: the code and the fingerprints as a person sees
+// them, with their edges stated rather than implied.
+// ---------------------------------------------------------------------------
+
+test("a six-digit code is grouped for reading, and everything else passes through", () => {
+  assert.equal(formatPairingCode("123456"), "123 456");
+  assert.equal(
+    formatPairingCode("123 456"),
+    "123 456",
+    "an already spaced code is not double-spaced",
+  );
+  assert.equal(formatPairingCode(" 123456 "), "123 456");
+  assert.equal(formatPairingCode("123-456"), "123 456");
+  assert.equal(
+    formatPairingCode("12345"),
+    "12345",
+    "a code that is not six digits is shown as it is, never padded",
+  );
+  assert.equal(
+    formatPairingCode("expired"),
+    "expired",
+    "the phase's own word is not reformatted into something live-looking",
+  );
+  assert.equal(formatPairingCode(null), "—");
+  assert.equal(formatPairingCode(""), "—");
+});
+
+test("a fingerprint shows its first 12 characters in fours, or a dash", () => {
+  assert.equal(
+    formatShortFp("7B4E 909B BE7F FE44 C465 A220"),
+    "7B4E · 909B · BE7F",
+  );
+  assert.equal(
+    formatShortFp(
+      "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    ),
+    "7B4E · 909B · BE7F",
+    "a raw key is cut and uppercased the same way",
+  );
+  assert.equal(formatShortFp("ab12cd34ef56aa77"), "AB12 · CD34 · EF56");
+  assert.equal(formatShortFp(null), "—");
+  assert.equal(formatShortFp(""), "—");
+  assert.equal(formatShortFp(" · - "), "—", "punctuation alone is no key");
 });

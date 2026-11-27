@@ -21,6 +21,8 @@ import { errText } from "../lib/errors.ts";
 import type { MessageKey } from "../lib/i18n.ts";
 import {
   clockStillMatters,
+  formatPairingCode,
+  formatShortFp,
   identityRecovery,
   type PairingPanelState,
   type PanelPhase,
@@ -414,13 +416,15 @@ export function PairingPanel() {
               <div>
                 <dt>{t("pairing.localFingerprint")}</dt>
                 <dd className="pairing-fingerprint">
-                  {pending.localFingerprint}
+                  {formatShortFp(pending.localFingerprint)}
                 </dd>
               </div>
               <div>
                 <dt>{t("pairing.peerFingerprint")}</dt>
                 <dd className="pairing-fingerprint">
-                  {pending.peer.fingerprint ?? pending.peer.deviceId}
+                  {pending.peer.fingerprint !== null
+                    ? formatShortFp(pending.peer.fingerprint)
+                    : pending.peer.deviceId}
                 </dd>
               </div>
               {pending.existing !== null ? (
@@ -434,7 +438,9 @@ export function PairingPanel() {
                       current:
                         pending.existing.fingerprint !== null
                           ? t("pairing.currently", {
-                              fingerprint: pending.existing.fingerprint,
+                              fingerprint: formatShortFp(
+                                pending.existing.fingerprint,
+                              ),
                             })
                           : "",
                     })}
@@ -512,7 +518,7 @@ export function PairingPanel() {
                 <dd className="pairing-code">
                   {/* The phase's own word, never a hardcoded "expired": a
                       locked, used or unreachable code says what it is (N3). */}
-                  {view.code ?? phaseLabel(view.phase)}
+                  {formatPairingCode(view.code ?? phaseLabel(view.phase))}
                 </dd>
               </div>
               <div>
@@ -651,13 +657,17 @@ export function PairingPanel() {
                   </div>
                   <div>
                     <dt>{t("pairing.localFingerprint")}</dt>
-                    <dd className="pairing-fingerprint">{view.fingerprint}</dd>
+                    <dd className="pairing-fingerprint">
+                      {formatShortFp(view.fingerprint)}
+                    </dd>
                   </div>
                   {pin !== null ? (
                     <div>
                       <dt>{t("pairing.pairedPhone")}</dt>
                       <dd className="pairing-fingerprint">
-                        {pin.peer.fingerprint ?? pin.peer.deviceId}
+                        {pin.peer.fingerprint !== null
+                          ? formatShortFp(pin.peer.fingerprint)
+                          : pin.peer.deviceId}
                         {pin.repinned ? ` ${t("pairing.rePaired")}` : ""}
                       </dd>
                     </div>
