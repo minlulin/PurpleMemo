@@ -137,15 +137,21 @@ pub(crate) fn stage_sync_push(gate: &Gate, message: &JsonValue) -> Result<JsonVa
     }))
 }
 
-/// Every batch is staged: the panel may take the push. A second commit is a
-/// `replayed` refusal (§7.2) and one before the last batch is `malformed`.
+/// Every batch is staged: the panel may take the push. A second commit
+/// answers `sync-committed` again — idempotent, like the push path's
+/// re-ack of an identical batch — because a lost commit reply must not
+/// turn a committed push into a session failure. A commit before the last
+/// batch is `malformed`.
 pub(crate) fn commit_sync_push(gate: &Gate) -> Result<JsonValue, RefusalReply> {
     let mut sync = gate.sync.lock().unwrap_or_else(|e| e.into_inner());
     if sync.push_committed {
-        return Err(RefusalReply::refused(
-            "replayed",
-            "this push was already committed in this window (§7.2).",
-        ));
+        return Ok(json!({
+            "ok": true,
+            "reason": "sync-committed",
+            "total": sync.push_total.unwrap_or(0),
+            "ops": sync.push_count(),
+            "highestSeq": sync.highest_pushed_seq(),
+        }));
     }
     let Some(total) = sync.push_total else {
         return Err(RefusalReply::malformed(
@@ -575,10 +581,12 @@ mod tests {
         assert_eq!(ops[1]["seq"], json!(2));
         assert!(state.take_sync_push().is_none(), "taken once");
 
-        // And a second commit is a replay.
+        // And a second commit answers the same success again: a lost commit
+        // reply must not turn a committed push into a session failure.
         let (status, reply) = post_sync(port, &seal_sync(8, &json!({ "kind": "sync-commit" })));
-        assert_eq!(status, 403, "{reply}");
-        assert_eq!(refusal_reason(&reply), "replayed");
+        assert_eq!(status, 200, "{reply}");
+        let document: JsonValue = serde_json::from_str(&reply).expect("commit json");
+        assert_eq!(document["reason"], json!("sync-committed"), "{reply}");
         state.stop().expect("stop");
     }
 

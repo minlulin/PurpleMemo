@@ -106,7 +106,7 @@ pub(crate) fn admit(
     let Some(pin) = active_pin(gate) else {
         return Err(RefusalReply::refused(
             "unpaired",
-            "this device has never paired; show a pairing code on the desktop first (§11.2).",
+            "this desktop is not serving a pairing right now; if it is showing a pairing code, try again in a moment (§11.2).",
         ));
     };
     // §1.2: a device cannot pair with itself. A pin naming this device is not a

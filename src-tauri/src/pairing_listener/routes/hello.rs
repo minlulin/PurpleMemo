@@ -181,10 +181,13 @@ pub(crate) fn rendezvous(gate: &Gate, body: &[u8]) -> Result<JsonValue, RefusalR
         fingerprint,
         hello_received: false,
     });
-    // A window re-opened after a previous one carries that window's counter; the
-    // newly staged peer has sent nothing, so its first hello is counter 1 and
-    // must not be refused as a replay (N5).
-    *gate.last_counter.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+    // The window's counter is NOT reset here. It was seeded from this
+    // pairing id's durable floor at open, and a panel open mints a fresh
+    // pairing id (see `openPairingPanel`), so a newly staged peer's first
+    // hello is admitted against a floor of zero for *its* id — while a
+    // reused id keeps its floor and old envelopes stay refused. Zeroing
+    // here used to re-open the replay window for every envelope already
+    // admitted under a reused id.
     Ok(json!({ "ok": true, "reason": "paired", "envelope": wire }))
 }
 
@@ -837,19 +840,25 @@ pub(super) mod tests {
     // -- the socket is ours: bounded reads, validation first (wave 1, N5) ----
 
     #[test]
-    fn a_window_opened_on_an_old_counter_accepts_the_staged_peer_first_hello() {
+    fn a_window_opened_on_an_old_counter_refuses_the_staged_peer_first_hello() {
         let state = PairingListenerState::default();
         let mut window = offer_window(false);
-        // A previous window admitted counters up to 7 from some peer.
+        // A previous window admitted counters up to 7 under this pairing id,
+        // and the durable floor seeded this window at 7.
         window.last_counter = 7;
         let info = state
             .start("127.0.0.1", 0, window, desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("a bound port");
         assert_eq!(post_request(port, &request_body(|_| {})).0, 200);
-        // The staged peer has sent nothing, so counter 1 is not a replay.
+        // The rendezvous no longer zeroes the counter: a counter-1 hello
+        // under an id whose floor is 7 is a replay, exactly like any other
+        // already-admitted envelope. A fresh pairing id (what a panel open
+        // mints now) seeds at 0 and admits it — that path is every other
+        // offer test in this module.
         let (status, body) = post(port, &hello_frame(1));
-        assert_eq!(status, 200, "{body}");
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "replayed", "{body}");
         state.stop().expect("stop");
     }
 

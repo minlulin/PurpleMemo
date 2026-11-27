@@ -23,9 +23,11 @@
 //!   would refuse every one of them — a permanent lockout disguised as
 //!   replay protection.
 //!
-//! Pairing ids are minted as UUIDs by the app; anything that does not look
-//! like one (hand-edited IPC input) is refused a key rather than becoming a
-//! settings row that code elsewhere cannot tell apart from its neighbours.
+//! Pairing ids are minted as UUIDs by the app. The key check below is wider
+//! than a UUID (ASCII alphanumerics and `-`, at most 64 bytes) so test ids
+//! like `pair-1` work; anything outside that set (hand-edited IPC input) is
+//! refused a key rather than becoming a settings row that code elsewhere
+//! cannot tell apart from its neighbours.
 
 use rusqlite::Connection;
 
@@ -48,32 +50,54 @@ pub(crate) fn peer_floor_key(pairing_id: &str) -> Option<String> {
     plausible.then(|| format!("{PREFIX}{pairing_id}"))
 }
 
-/// The stored floor, or `None` when the row is absent or unreadable. An
-/// unreadable row is *not* zero: silently accepting a corrupted floor would
-/// re-open the replay window it exists to close, and the caller that seeds a
-/// window treats `None` as "no floor" — which is why a corrupt floor is
-/// reported on stderr here instead of passed off as a number.
-pub(crate) fn read_floor(conn: &Connection, key: &str) -> Option<u64> {
-    let raw: String = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-            row.get(0)
-        })
-        .ok()?;
+/// What a floor row holds. Absent and unreadable are different answers: an
+/// absent row means this pairing has admitted nothing yet, while an
+/// unreadable row means the record exists but cannot be trusted — and the
+/// caller that seeds a window must refuse rather than treat "I don't know"
+/// as zero, which would silently re-open the replay window the row exists
+/// to close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FloorRead {
+    Absent,
+    Value(u64),
+    Unreadable,
+}
+
+/// The stored floor. An unreadable row is reported on stderr here (the row
+/// key and the parse error) so the refusal the caller raises has a cause on
+/// record.
+pub(crate) fn read_floor(conn: &Connection, key: &str) -> FloorRead {
+    let raw: String = match conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+        row.get(0)
+    }) {
+        Ok(raw) => raw,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return FloorRead::Absent,
+        Err(error) => {
+            eprintln!("purple-memo: could not read {key} floor row: {error}");
+            return FloorRead::Unreadable;
+        }
+    };
     match serde_json::from_str::<u64>(&raw) {
-        Ok(value) => Some(value),
+        Ok(value) => FloorRead::Value(value),
         Err(error) => {
             eprintln!("purple-memo: ignoring unreadable {key} floor row: {error}");
-            None
+            FloorRead::Unreadable
         }
     }
 }
 
-/// Upsert a floor. The value is stored as a bare JSON number so the row is
-/// indistinguishable from every other numeric settings row.
+/// Raise a floor, monotonically: the stored value never decreases. A lower
+/// write (a re-pair under a reused id, a window seeded stale) must not be
+/// able to re-open the replay window for envelopes already admitted under
+/// this key. Values are stored as bare JSON numbers (decimal text), so the
+/// `MAX` casts both sides to integers. A corrupt existing value casts to 0
+/// in SQLite, so the next write self-heals the row — the read side is what
+/// refuses on corruption, before any window opens.
 pub(crate) fn write_floor(conn: &Connection, key: &str, value: u64) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+         ON CONFLICT(key) DO UPDATE SET value = \
+         CAST(MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER)) AS TEXT)",
         rusqlite::params![key, value.to_string()],
     )?;
     Ok(())
@@ -112,15 +136,18 @@ mod tests {
     fn a_floor_round_trips_and_never_goes_backwards_through_the_api() {
         let conn = counter_db();
         let key = peer_floor_key("pair-1").expect("key");
-        assert_eq!(read_floor(&conn, &key), None);
+        assert_eq!(read_floor(&conn, &key), FloorRead::Absent);
         write_floor(&conn, &key, 7).expect("write");
-        assert_eq!(read_floor(&conn, &key), Some(7));
+        assert_eq!(read_floor(&conn, &key), FloorRead::Value(7));
         write_floor(&conn, &key, 42).expect("raise");
-        assert_eq!(read_floor(&conn, &key), Some(42));
+        assert_eq!(read_floor(&conn, &key), FloorRead::Value(42));
+        // The monotonicity the name claims: a lower write changes nothing.
+        write_floor(&conn, &key, 1).expect("lower write is accepted");
+        assert_eq!(read_floor(&conn, &key), FloorRead::Value(42));
     }
 
     #[test]
-    fn an_unreadable_floor_is_none_not_zero() {
+    fn an_unreadable_floor_is_not_absent_and_not_zero() {
         let conn = counter_db();
         let key = peer_floor_key("pair-2").expect("key");
         conn.execute(
@@ -128,6 +155,6 @@ mod tests {
             [&key],
         )
         .expect("corrupt row");
-        assert_eq!(read_floor(&conn, &key), None);
+        assert_eq!(read_floor(&conn, &key), FloorRead::Unreadable);
     }
 }

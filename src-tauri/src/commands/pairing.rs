@@ -145,11 +145,22 @@ pub fn pairing_open(
     let identity = load_pairing_identity(&db_state)?;
     // §7.2 across restarts: the device-local floor row is the authority for
     // how far this pairing id's envelopes have advanced. The webview may seed
-    // a window that never saw the floor; it may never lower one.
+    // a window that never saw the floor; it may never lower one. An id this
+    // app cannot key a floor by is refused here, at the boundary, instead of
+    // failing every envelope later; an unreadable floor row refuses the open
+    // outright — "I don't know" must not mean zero for the one record that
+    // keeps old envelopes refused.
+    let floor_key = crate::pairing_counter::peer_floor_key(&input.pairing_id)
+        .ok_or_else(|| Refusal::new("rust.error.pairingIdUnusable"))?;
     let floor = {
         let conn = lock_conn(&db_state)?;
-        crate::pairing_counter::peer_floor_key(&input.pairing_id)
-            .and_then(|key| crate::pairing_counter::read_floor(&conn, &key))
+        match crate::pairing_counter::read_floor(&conn, &floor_key) {
+            crate::pairing_counter::FloorRead::Value(value) => Some(value),
+            crate::pairing_counter::FloorRead::Absent => None,
+            crate::pairing_counter::FloorRead::Unreadable => {
+                return Err(Refusal::new("rust.error.floorUnreadable"));
+            }
+        }
     };
     let offer = match (input.offer_code, input.offer_expires_at) {
         (Some(code), Some(expires_at)) => Some(PairingOffer { code, expires_at }),
@@ -246,6 +257,19 @@ pub fn pairing_open(
 pub fn pairing_close(state: State<'_, PairingListenerState>) -> CmdResult<PairingListenerInfo> {
     refuse_mobile_role()?;
     state.stop().map_err(Refusal::from)
+}
+
+/// The lock path's close (D2a): raises the lock epoch before stopping, so a
+/// `pairing_open` already in flight is superseded instead of binding behind
+/// the lock screen. The panel's ordinary close stays `pairing_close` — only
+/// a lock (or the close-to-tray handler, which calls `stop_for_lock`
+/// directly) may raise the epoch.
+#[tauri::command]
+pub fn pairing_close_for_lock(
+    state: State<'_, PairingListenerState>,
+) -> CmdResult<PairingListenerInfo> {
+    refuse_mobile_role()?;
+    state.stop_for_lock().map_err(Refusal::from)
 }
 
 /// Current pairing state — including the peer a code-confirmed rendezvous
@@ -459,9 +483,7 @@ fn pinned_pull(db_state: &AppState, device_id: &str) -> CmdResult<PinnedPull> {
     let generation = u64::try_from(generation).unwrap_or(0);
     let pairing_id = pairing_id
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "that pin carries no pairing id, so it cannot be pulled from (§11.4).".to_string()
-        })?;
+        .ok_or_else(|| Refusal::new("rust.error.pinPredatesPairing"))?;
     let public_key = public_key
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {

@@ -46,6 +46,12 @@ export const enRust = {
     "A pairing code needs both its six digits and its expiry.",
   "rust.error.notPinned":
     "This phone has not pinned that desktop, or the pairing was revoked, so there is nothing to pull.",
+  "rust.error.pinPredatesPairing":
+    "This phone was paired by an older version of Purple Memo. Forget this pairing and pair the phone again.",
+  "rust.error.pairingIdUnusable":
+    "This pairing's record cannot be used. Forget the phone and pair it again.",
+  "rust.error.floorUnreadable":
+    "This pairing's record is damaged, so syncing is paused to keep your data safe. Forget the phone and pair it again.",
   "rust.error.uploadOutcome":
     "An upload result is either its counts or its failure, never both or neither.",
   "rust.error.syncOutcome":
@@ -117,6 +123,12 @@ export const myRust: Record<keyof typeof enRust, string> = {
     "တွဲချိတ်ကုဒ်တွင် ဂဏန်းခြောက်လုံးနှင့် ၎င်း၏ သက်တမ်းကုန်ချိန် နှစ်ခုစလုံး လိုအပ်သည်။",
   "rust.error.notPinned":
     "ဤဖုန်းသည် ထိုကွန်ပျူတာကို တွဲချိတ်မထားပါ၊ သို့မဟုတ် တွဲချိတ်မှုကို ပယ်ဖျက်ထားသဖြင့် ရယူရန် မည်သည့်အရာမျှ မရှိပါ။",
+  "rust.error.pinPredatesPairing":
+    "ဤဖုန်းကို Purple Memo ဗားရှင်းအဟောင်းဖြင့် တွဲချိတ်ထားခဲ့သည်။ ဤတွဲချိတ်မှုကို မေ့ပစ်ပြီး ဖုန်းကို ပြန်တွဲပါ။",
+  "rust.error.pairingIdUnusable":
+    "ဤတွဲချိတ်မှု၏ မှတ်တမ်းကို အသုံးပြု၍ မရပါ။ ဖုန်းကို မေ့ပစ်ပြီး ပြန်တွဲပါ။",
+  "rust.error.floorUnreadable":
+    "ဤတွဲချိတ်မှု၏ မှတ်တမ်း ပျက်စီးနေသဖြင့် သင့်ဒေတာ လုံခြုံစေရန် sync ကို ခဏရပ်ထားသည်။ ဖုန်းကို မေ့ပစ်ပြီး ပြန်တွဲပါ။",
   "rust.error.uploadOutcome":
     "တင်သွင်းမှု ရလဒ်သည် ၎င်း၏ အရေအတွက် သို့မဟုတ် မအောင်မြင်မှု တစ်ခုသာ ဖြစ်ရမည်။",
   "rust.error.syncOutcome":

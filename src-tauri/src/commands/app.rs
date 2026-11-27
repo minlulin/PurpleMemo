@@ -43,11 +43,22 @@ pub(super) fn refresh_close_to_tray_from(app: &tauri::AppHandle) {
 /// database) is reported on stderr and retried by the next mint.
 pub(crate) fn install_counter_persistence(app: &tauri::AppHandle) {
     // Seed the outbound allocator BEFORE any command can mint a counter.
+    // An unreadable local row seeds 0 (and the next mint's write self-heals
+    // the row): the phone cannot refuse to boot, and the repair for a lost
+    // outbound floor is a re-pair under a fresh pairing id, whose desktop
+    // floor starts absent. The desktop side is stricter — `pairing_open`
+    // refuses on an unreadable peer floor, because there "unknown" would
+    // re-open replay for envelopes already admitted.
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(conn) = lock_conn(&state) {
-            let floor =
-                crate::pairing_counter::read_floor(&conn, crate::pairing_counter::LOCAL_KEY)
-                    .unwrap_or(0);
+            let floor = match crate::pairing_counter::read_floor(
+                &conn,
+                crate::pairing_counter::LOCAL_KEY,
+            ) {
+                crate::pairing_counter::FloorRead::Value(value) => value,
+                crate::pairing_counter::FloorRead::Absent
+                | crate::pairing_counter::FloorRead::Unreadable => 0,
+            };
             crate::pairing_client::seed_counter(floor);
         }
     }

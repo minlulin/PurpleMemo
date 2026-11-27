@@ -206,6 +206,7 @@ pub fn run() {
             commands::pairing_local,
             commands::pairing_open,
             commands::pairing_close,
+            commands::pairing_close_for_lock,
             commands::pairing_status,
             commands::pairing_identity_status,
             commands::pairing_identity_replace,

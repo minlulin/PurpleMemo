@@ -9,8 +9,12 @@
 //! [`PairingListenerState::start`] and a stop. Nothing binds at launch, and
 //! [`PairingListenerState::stop`] joins the accept thread before returning, so
 //! "the pairing window is closed" means the port no longer accepts connections
-//! — not that a flag was set somewhere. The lock path, app background and
-//! factory reset all call it (`stop_for_lock`, `stop_for_reset`).
+//! — not that a flag was set somewhere. The panel closes with ordinary
+//! `stop`; the lock path raises the D2a epoch first (`stop_for_lock`, via
+//! the `pairing_close_for_lock` command or the close-to-tray handler), and
+//! factory reset uses `stop_for_reset`. With durable pairing the resting
+//! window is re-opened on unlock and stays up across lock while the
+//! paired-phone-reachable setting is on.
 //!
 //! **Admission (§7.1 order, §11.2, §11.3).** Every hello is checked against the
 //! pin before it has any effect:
@@ -182,6 +186,13 @@ static COUNTER_SINK: Mutex<Option<CounterSink>> = Mutex::new(None);
 /// per process.
 pub(crate) fn install_counter_sink(sink: CounterSink) {
     *COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+}
+
+/// Remove the floor writer (tests that install their own sink clean up so
+/// parallel tests keep the no-sink behaviour they were written against).
+#[cfg(test)]
+pub(crate) fn clear_counter_sink() {
+    *COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Raise the device-local floor for `pairing_id` to at least `floor`.
@@ -1544,6 +1555,97 @@ mod tests {
             "the refusal says why"
         );
         assert!(!state.status().expect("status").running);
+    }
+
+    /// §7.2 across restarts, with the real sink installed: an admitted
+    /// counter raises the durable floor, and a window reopened from that
+    /// floor (what `pairing_open` seeds after a restart) refuses the same
+    /// counter and admits the next. The pairing id is unique to this test
+    /// so parallel tests writing the shared sink cannot pollute the floor
+    /// it reads back.
+    #[test]
+    pub(super) fn an_admitted_counter_survives_a_window_restart_through_the_floor() {
+        use std::collections::HashMap;
+        let floors: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let sink_floors = floors.clone();
+        install_counter_sink(Arc::new(move |pairing_id: &str, floor: u64| {
+            let mut map = sink_floors.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = map.entry(pairing_id.to_string()).or_insert(0);
+            *entry = (*entry).max(floor);
+            Ok(())
+        }));
+
+        let seal = |counter: u64| -> Vec<u8> {
+            let mut message = hello_body();
+            message
+                .as_object_mut()
+                .expect("hello object")
+                .insert("pairingId".to_string(), json!("pair-restart"));
+            let wire = envelope::seal(SealInput {
+                secret: &PHONE_SECRET,
+                peer_public: &envelope::public_key(&DESKTOP_SECRET),
+                from: PHONE_ID,
+                to: DESKTOP_ID,
+                message_id: &format!("hello-{counter}"),
+                counter,
+                message: &message,
+                pairing_id: Some("pair-restart"),
+                nonce: None,
+                ephemeral_secret: None,
+            })
+            .expect("seal the hello");
+            encode_frame(&wire).expect("frame the hello")
+        };
+        let restart_window = |last_counter: u64| {
+            let mut window = window(false);
+            window.pairing_id = "pair-restart".to_string();
+            window.last_counter = last_counter;
+            window
+        };
+
+        // First window: counter 5 is admitted and the floor records it.
+        let state = PairingListenerState::default();
+        let info = state
+            .start(
+                "127.0.0.1",
+                0,
+                restart_window(0),
+                desktop_identity(),
+                None,
+            )
+            .expect("start");
+        let port = info.port.expect("a bound port");
+        let (status, body) = post(port, &seal(5));
+        assert_eq!(status, 200, "{body}");
+        state.stop().expect("stop");
+        let stored = *floors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get("pair-restart")
+            .expect("the floor was recorded");
+        assert_eq!(stored, 5);
+
+        // The restart: a window seeded from the stored floor refuses 5
+        // again and admits 6.
+        let state = PairingListenerState::default();
+        let info = state
+            .start(
+                "127.0.0.1",
+                0,
+                restart_window(stored),
+                desktop_identity(),
+                None,
+            )
+            .expect("restart");
+        let port = info.port.expect("a bound port");
+        let (status, body) = post(port, &seal(5));
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(refusal_reason(&body), "replayed", "{body}");
+        let (status, body) = post(port, &seal(6));
+        assert_eq!(status, 200, "{body}");
+        state.stop().expect("stop");
+
+        clear_counter_sink();
     }
 
     /// N4: a second open replaces the running window — the code the panel now
