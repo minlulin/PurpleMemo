@@ -31,13 +31,16 @@ pub(super) fn refresh_close_to_tray_from(app: &tauri::AppHandle) {
 /// retried boot, which is safe because seeding is `max` and the sinks may be
 /// replaced.
 ///
-/// The mint sink is best-effort and never blocks: a mint must succeed even if
-/// the database is busy with an import (a busy connection simply skips that
-/// flush; the next mint flushes a higher floor). The listener sink is the
-/// opposite on purpose — admission refuses when it cannot raise the floor,
-/// because acting on an envelope the floor cannot record re-opens the replay
-/// window the row exists to close. No code path holds the connection across a
-/// call into the listener, so blocking on it terminates.
+/// The mint sink blocks on the connection, like the listener sink: the
+/// desktop raises its floor fail-closed on every admitted envelope, so a
+/// phone floor that merely *usually* keeps up re-opens the exact lockout
+/// the row exists to prevent — one skipped flush at the end of a session
+/// and, after a restart, the phone mints at or below the desktop's floor
+/// and every sync is refused as a replay. No code path holds the
+/// connection across a mint, so blocking terminates; a mint that lands
+/// during an import waits for the import's transaction, which is the
+/// correct order anyway. A write that still fails (disk error, closed
+/// database) is reported on stderr and retried by the next mint.
 pub(crate) fn install_counter_persistence(app: &tauri::AppHandle) {
     // Seed the outbound allocator BEFORE any command can mint a counter.
     if let Some(state) = app.try_state::<AppState>() {
@@ -53,16 +56,13 @@ pub(crate) fn install_counter_persistence(app: &tauri::AppHandle) {
         let Some(state) = mint_app.try_state::<AppState>() else {
             return;
         };
-        let Ok(mut guard) = state.conn.try_lock() else {
-            // Busy — the in-memory counter is already ahead, and the next
-            // mint retries with a higher value.
-            return;
-        };
-        let Some(conn) = guard.as_mut() else {
+        // Blocking, not try_lock: a skipped flush here is a replay lockout
+        // after the next restart (see the doc comment above).
+        let Ok(conn) = lock_conn(&state) else {
             return;
         };
         if let Err(error) =
-            crate::pairing_counter::write_floor(conn, crate::pairing_counter::LOCAL_KEY, floor)
+            crate::pairing_counter::write_floor(&conn, crate::pairing_counter::LOCAL_KEY, floor)
         {
             eprintln!("purple-memo: could not persist the pairing counter floor: {error}");
         }

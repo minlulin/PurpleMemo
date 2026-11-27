@@ -59,15 +59,18 @@ const MAX_REPLY_BYTES: usize = MAX_FRAME_BYTES + 8 * 1024;
 /// the floor it keeps is device-local, this allocator must be too: a phone
 /// that re-minted 1 after every launch would be refused by the very floor
 /// that makes a remembered pairing safe. Seeded at boot from the device-local
-/// `pairing_counter.local` row ([`seed_counter`]); flushed best-effort on
-/// every mint ([`install_counter_sink`]).
+/// `pairing_counter.local` row ([`seed_counter`]); persisted on every mint
+/// ([`install_counter_sink`]) before the envelope it numbers is sent.
 static HELLO_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Best-effort persistence for the outbound floor. Called with the freshly
-/// minted value; an implementation that cannot write (the connection is
-/// busy, the row is unreadable) skips the flush — the in-memory counter is
-/// already ahead, and the next successful flush records a floor at least as
-/// high. Never blocks, never fails the mint.
+/// Persistence for the outbound floor. Called with the freshly minted
+/// value, before the envelope carrying it is sent. The production sink
+/// blocks on the connection (see `install_counter_persistence`): the
+/// desktop's floor is raised fail-closed, so a skipped flush here is a
+/// replay lockout after the next restart. A sink that still cannot write
+/// (disk error, closed database) reports and returns — the in-memory
+/// counter is already ahead, and the next mint retries with a higher
+/// value. Never fails the mint.
 type CounterSink = std::sync::Arc<dyn Fn(u64) + Send + Sync>;
 
 static COUNTER_SINK: Mutex<Option<CounterSink>> = Mutex::new(None);

@@ -550,7 +550,7 @@ export function MobilePairingCard() {
         remember(syncPin.device_id, endpoint);
       }
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : String(error));
+      setSyncError(errText(error));
     } finally {
       setSyncing(false);
     }
