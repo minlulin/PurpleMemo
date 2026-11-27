@@ -31,6 +31,7 @@ import {
   buildBackupZip,
   createBackupRepo,
   DEVICE_LOCAL_SETTING_KEYS,
+  DEVICE_LOCAL_SETTING_PREFIXES,
   exceedsEncryptedBackupCap,
   exportBudget,
   MAX_BACKUP_ARCHIVE_BYTES,
@@ -973,11 +974,14 @@ test("applyBackup writes photo files first, then replaces all data in one batch"
     [
       ...BACKUP_TABLES.map((t) =>
         // §10.3: `settings` is the one table whose replacement spares this
-        // device's device-local rows — the app PIN survives a restore.
+        // device's device-local rows — the app PIN and the §7.2 counter
+        // floors survive a restore.
         t === "settings"
           ? `DELETE FROM settings WHERE key NOT IN (${DEVICE_LOCAL_SETTING_KEYS.map(
               () => "?",
-            ).join(", ")})`
+            ).join(", ")})${DEVICE_LOCAL_SETTING_PREFIXES.map(
+              () => " AND key NOT GLOB ?",
+            ).join("")}`
           : `DELETE FROM ${t}`,
       ),
       "DELETE FROM sync_outbox_delivery",
@@ -2022,6 +2026,50 @@ test("an older backup's PIN rows are skipped, and the rest of its settings apply
     settingValue(driver, "vault_verify"),
     '{"salt":"restored"}',
     "the vault's own line travels (§12.3)",
+  );
+});
+
+test("a restore spares the §7.2 counter floors and replaces ordinary settings", async () => {
+  const driver = importDriver();
+  driver.db.exec(`INSERT INTO settings (key, value) VALUES
+    ('pairing_counter.local', '1200'),
+    ('pairing_counter.9c3df3b7-3f31-4c9c-9f4a-3b0d0f5a1a91', '900'),
+    ('pairingXcounter.local', 'not-a-floor'),
+    ('theme', '"dark"')`);
+
+  const payload: BackupPayload = {
+    app: BACKUP_APP,
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: "2026-11-27T00:00:00.000Z",
+    data: {
+      ...emptyTables(),
+      settings: [{ key: "theme", value: '"light"' }],
+    },
+  };
+  await applyBackup(driver, { payload, photos: [] });
+
+  assert.equal(
+    settingValue(driver, "pairing_counter.local"),
+    "1200",
+    "the phone's outbound floor survives a restore — deleting it locked every later sync out as a replay",
+  );
+  assert.equal(
+    settingValue(
+      driver,
+      "pairing_counter.9c3df3b7-3f31-4c9c-9f4a-3b0d0f5a1a91",
+    ),
+    "900",
+    "the desktop's per-pairing floor survives — deleting it silently re-opened replay",
+  );
+  assert.equal(
+    settingValue(driver, "pairingXcounter.local"),
+    undefined,
+    "the GLOB spares only the real prefix, not a lookalike",
+  );
+  assert.equal(
+    settingValue(driver, "theme"),
+    '"light"',
+    "ordinary settings are still replaced",
   );
 });
 

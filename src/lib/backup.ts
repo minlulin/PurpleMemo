@@ -1024,6 +1024,18 @@ export async function applyBackup(
 
     await driver.execute("PRAGMA foreign_keys = OFF", undefined, lease);
     try {
+      // The spare list for the settings replacement below: the exact
+      // device-local keys AND every device-local prefix (the §7.2 counter
+      // floors), built from the same constants `isDeviceLocalSetting`
+      // reads so the two borders cannot drift apart. Sparing only the
+      // exact keys deleted every `pairing_counter.*` row on restore —
+      // a restored phone then minted counters its desktop refused as
+      // replays forever, and a restored desktop lost its replay floor.
+      // GLOB, not LIKE: `_` is literal in GLOB (a LIKE wildcard), so no
+      // ESCAPE clause is needed and the SQL stays punctuation-free.
+      const sparePrefixes = DEVICE_LOCAL_SETTING_PREFIXES.map(
+        (prefix) => `${prefix}*`,
+      );
       const statements: BatchStatement[] = BACKUP_TABLES.map((table) =>
         table === "settings"
           ? {
@@ -1033,8 +1045,10 @@ export async function applyBackup(
               // is not allowed to bring a replacement.
               sql: `DELETE FROM settings WHERE key NOT IN (${DEVICE_LOCAL_SETTING_KEYS.map(
                 () => "?",
-              ).join(", ")})`,
-              params: [...DEVICE_LOCAL_SETTING_KEYS],
+              ).join(", ")})${sparePrefixes
+                .map(() => " AND key NOT GLOB ?")
+                .join("")}`,
+              params: [...DEVICE_LOCAL_SETTING_KEYS, ...sparePrefixes],
             }
           : { sql: `DELETE FROM ${table}` },
       );
