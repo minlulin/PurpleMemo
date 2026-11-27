@@ -109,6 +109,8 @@ export function MobilePairingCard() {
   const [remembered, setRemembered] = useState<RememberedEndpoints>({});
   /** True when the press that just ran dialled a remembered address. */
   const [syncUsedRemembered, setSyncUsedRemembered] = useState(false);
+  /** Whether the folded setup block is open while sync owns the card. */
+  const [showSetup, setShowSetup] = useState(false);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -521,8 +523,16 @@ export function MobilePairingCard() {
       ? `${text} ${t("mobile.settings.syncEndpointHint")}`
       : text;
 
-  return (
-    <div className="mobile-card">
+  /**
+   * The daily-sync home: once a desktop is pinned and no pairing flow is in
+   * progress, the sync press is the only job. Pairing, copying and sending are
+   * still here, folded behind one disclosure instead of stacked above it.
+   */
+  const syncHome =
+    pins.length > 0 && offer === null && session === null && paired === null;
+
+  const pairSection = (
+    <>
       <p className="mobile-note">{t("mobile.settings.pairBody")}</p>
       <video
         ref={videoRef}
@@ -531,7 +541,7 @@ export function MobilePairingCard() {
         playsInline
         hidden={scanning !== "scanning"}
       />
-      <div className="mobile-pair-actions">
+      <div className="mobile-pair-actions mobile-action-stack">
         <button
           type="button"
           className="btn btn-primary"
@@ -564,14 +574,16 @@ export function MobilePairingCard() {
               onChange={(e) => setPasted(e.target.value)}
             />
           </label>
-          <button
-            type="button"
-            className="btn"
-            disabled={pasted.trim().length === 0}
-            onClick={usePastedOffer}
-          >
-            {t("mobile.settings.pairPasteAction")}
-          </button>
+          <div className="mobile-action-stack">
+            <button
+              type="button"
+              className="btn"
+              disabled={pasted.trim().length === 0}
+              onClick={usePastedOffer}
+            >
+              {t("mobile.settings.pairPasteAction")}
+            </button>
+          </div>
         </>
       ) : (
         <>
@@ -610,14 +622,16 @@ export function MobilePairingCard() {
               {t("mobile.settings.pairMergeWarning")}
             </p>
           ) : null}
-          <button
-            type="button"
-            className="btn"
-            disabled={!isCompleteCode(typed) || busy || spent}
-            onClick={() => void confirm()}
-          >
-            {t("mobile.settings.pairConfirm")}
-          </button>
+          <div className="mobile-action-stack">
+            <button
+              type="button"
+              className="btn"
+              disabled={!isCompleteCode(typed) || busy || spent}
+              onClick={() => void confirm()}
+            >
+              {t("mobile.settings.pairConfirm")}
+            </button>
+          </div>
         </>
       )}
       {error !== null ? (
@@ -630,148 +644,182 @@ export function MobilePairingCard() {
           {notice}
         </p>
       ) : null}
-      {paired === null ? null : (
-        <section className="mobile-section">
-          <h3 className="mobile-section-heading">
-            {t("mobile.settings.pullHeading")}
-          </h3>
-          <p className="mobile-note">{t("mobile.settings.pullBody")}</p>
-          <p className="mobile-note">{t("mobile.settings.pullMissing")}</p>
-          <button
-            type="button"
-            className="btn"
-            disabled={progress !== null}
-            onClick={() => void copyFromDesktop()}
-          >
-            {progress === null
-              ? t("mobile.settings.pullStart")
-              : t("mobile.settings.pullProgress", {
-                  batch: progress.batch,
-                  total: progress.total,
-                })}
-          </button>
-          {pulled !== null ? (
-            <p className="alert alert-note" role="status">
-              {t("mobile.settings.pullDone", {
-                rows: pulled.rows,
-                tombstones: pulled.tombstones,
+    </>
+  );
+
+  const pullSection =
+    paired === null ? null : (
+      <section className="mobile-section">
+        <h3 className="mobile-section-heading">
+          {t("mobile.settings.pullHeading")}
+        </h3>
+        <p className="mobile-note">{t("mobile.settings.pullBody")}</p>
+        <p className="mobile-note">{t("mobile.settings.pullMissing")}</p>
+        <button
+          type="button"
+          className="btn"
+          disabled={progress !== null}
+          onClick={() => void copyFromDesktop()}
+        >
+          {progress === null
+            ? t("mobile.settings.pullStart")
+            : t("mobile.settings.pullProgress", {
+                batch: progress.batch,
+                total: progress.total,
               })}
-            </p>
-          ) : null}
-          {pulled !== null && pulled.replaced > 0 ? (
-            <p className="alert alert-warn" role="status">
-              {t("mobile.settings.pullReplaced", {
-                count: pulled.replaced,
-              })}
-            </p>
-          ) : null}
-          {pullError !== null ? (
-            <p className="mobile-error" role="alert">
-              {pullError}
-            </p>
-          ) : null}
-          {pulled !== null ? (
-            <>
-              <h3 className="mobile-section-heading">
-                {t("mobile.settings.uploadHeading")}
-              </h3>
-              <p className="mobile-note">{t("mobile.settings.uploadBody")}</p>
-              <button
-                type="button"
-                className="btn"
-                disabled={uploadProgress !== null || progress !== null}
-                onClick={() => void sendToDesktop()}
-              >
-                {uploadProgress === null
-                  ? t("mobile.settings.uploadStart")
-                  : t("mobile.settings.uploadProgress", {
-                      batch: uploadProgress.batch,
-                      total: uploadProgress.total,
+        </button>
+        {pulled !== null ? (
+          <p className="alert alert-note" role="status">
+            {t("mobile.settings.pullDone", {
+              rows: pulled.rows,
+              tombstones: pulled.tombstones,
+            })}
+          </p>
+        ) : null}
+        {pulled !== null && pulled.replaced > 0 ? (
+          <p className="alert alert-warn" role="status">
+            {t("mobile.settings.pullReplaced", {
+              count: pulled.replaced,
+            })}
+          </p>
+        ) : null}
+        {pullError !== null ? (
+          <p className="mobile-error" role="alert">
+            {pullError}
+          </p>
+        ) : null}
+        {pulled !== null ? (
+          <>
+            <h3 className="mobile-section-heading">
+              {t("mobile.settings.uploadHeading")}
+            </h3>
+            <p className="mobile-note">{t("mobile.settings.uploadBody")}</p>
+            <button
+              type="button"
+              className="btn"
+              disabled={uploadProgress !== null || progress !== null}
+              onClick={() => void sendToDesktop()}
+            >
+              {uploadProgress === null
+                ? t("mobile.settings.uploadStart")
+                : t("mobile.settings.uploadProgress", {
+                    batch: uploadProgress.batch,
+                    total: uploadProgress.total,
+                  })}
+            </button>
+            {uploaded !== null ? (
+              <p className="alert alert-note" role="status">
+                {uploaded.offered === 0
+                  ? t("mobile.settings.uploadNothing")
+                  : t("mobile.settings.uploadDone", {
+                      inserted: uploaded.inserted,
+                      alreadyKnown: uploaded.alreadyKnown,
                     })}
-              </button>
-              {uploaded !== null ? (
-                <p className="alert alert-note" role="status">
-                  {uploaded.offered === 0
-                    ? t("mobile.settings.uploadNothing")
-                    : t("mobile.settings.uploadDone", {
-                        inserted: uploaded.inserted,
-                        alreadyKnown: uploaded.alreadyKnown,
-                      })}
-                </p>
-              ) : null}
-              {uploadError !== null ? (
-                <p className="mobile-error" role="alert">
-                  {uploadError}
-                </p>
-              ) : null}
-            </>
-          ) : null}
-        </section>
-      )}
-      {/* §6: the ongoing exchange. Offered on the pin, not on this session's
-          pairing — a phone that was paired last week can still sync, and one
-          that has never paired has nothing to sync with. */}
-      {pins.length === 0 ? null : (
-        <section className="mobile-section">
-          <h3 className="mobile-section-heading">
-            {t("mobile.settings.syncHeading")}
-          </h3>
-          <p className="mobile-note">{t("mobile.settings.syncBody")}</p>
-          {syncEndpoint === null ? (
-            <p className="mobile-note">{t("mobile.settings.syncNeedsCode")}</p>
-          ) : (
-            <>
-              {/* F7: the address this press will dial, so a remembered one is
+              </p>
+            ) : null}
+            {uploadError !== null ? (
+              <p className="mobile-error" role="alert">
+                {uploadError}
+              </p>
+            ) : null}
+          </>
+        ) : null}
+      </section>
+    );
+
+  /* §6: the ongoing exchange. Offered on the pin, not on this session's
+     pairing — a phone that was paired last week can still sync, and one
+     that has never paired has nothing to sync with. */
+  const syncSection =
+    pins.length === 0 ? null : (
+      <section className="mobile-section">
+        <h3 className="mobile-section-heading">
+          {t("mobile.settings.syncHeading")}
+        </h3>
+        <p className="mobile-note">{t("mobile.settings.syncBody")}</p>
+        {syncEndpoint === null ? (
+          <p className="mobile-note">{t("mobile.settings.syncNeedsCode")}</p>
+        ) : (
+          <>
+            {/* F7: the address this press will dial, so a remembered one is
                   shown rather than guessed at. */}
-              <p className="mobile-row-text">
-                {t("mobile.settings.pairEndpoint", {
-                  endpoint: syncEndpoint.endpoint,
+            <p className="mobile-row-text">
+              {t("mobile.settings.pairEndpoint", {
+                endpoint: syncEndpoint.endpoint,
+              })}
+            </p>
+            <button
+              type="button"
+              className="btn"
+              disabled={syncing}
+              onClick={() => void syncNow()}
+            >
+              {syncing
+                ? t("mobile.settings.syncProgress")
+                : t("mobile.settings.syncStart")}
+            </button>
+            {synced?.confirmed ? (
+              <p className="alert alert-note" role="status">
+                {synced.pushed === 0 && synced.pulled === 0
+                  ? t("mobile.settings.syncNothing")
+                  : t("mobile.settings.syncDone", {
+                      pushed: synced.pushed,
+                      pulled: synced.pulled,
+                    })}
+              </p>
+            ) : null}
+            {synced !== null && synced.replaced > 0 ? (
+              <p className="alert alert-warn" role="status">
+                {t("mobile.settings.syncReplaced", {
+                  count: synced.replaced,
                 })}
               </p>
-              <button
-                type="button"
-                className="btn"
-                disabled={syncing}
-                onClick={() => void syncNow()}
-              >
-                {syncing
-                  ? t("mobile.settings.syncProgress")
-                  : t("mobile.settings.syncStart")}
-              </button>
-              {synced?.confirmed ? (
-                <p className="alert alert-note" role="status">
-                  {synced.pushed === 0 && synced.pulled === 0
-                    ? t("mobile.settings.syncNothing")
-                    : t("mobile.settings.syncDone", {
-                        pushed: synced.pushed,
-                        pulled: synced.pulled,
-                      })}
-                </p>
-              ) : null}
-              {synced !== null && synced.replaced > 0 ? (
-                <p className="alert alert-warn" role="status">
-                  {t("mobile.settings.syncReplaced", {
-                    count: synced.replaced,
-                  })}
-                </p>
-              ) : null}
-              {synced !== null && !synced.confirmed ? (
-                <p className="mobile-error" role="alert">
-                  {synced.state === "pending"
-                    ? endpointHint(t("mobile.settings.syncUnconfirmed"))
-                    : endpointHint(
-                        `${t("mobile.settings.syncFailed")} ${synced.refusal?.message ?? ""}`,
-                      )}
-                </p>
-              ) : null}
-              {syncError !== null ? (
-                <p className="mobile-error" role="alert">
-                  {endpointHint(syncError)}
-                </p>
-              ) : null}
+            ) : null}
+            {synced !== null && !synced.confirmed ? (
+              <p className="mobile-error" role="alert">
+                {synced.state === "pending"
+                  ? endpointHint(t("mobile.settings.syncUnconfirmed"))
+                  : endpointHint(
+                      `${t("mobile.settings.syncFailed")} ${synced.refusal?.message ?? ""}`,
+                    )}
+              </p>
+            ) : null}
+            {syncError !== null ? (
+              <p className="mobile-error" role="alert">
+                {endpointHint(syncError)}
+              </p>
+            ) : null}
+          </>
+        )}
+      </section>
+    );
+
+  return (
+    <div className="mobile-card">
+      {syncHome ? (
+        <>
+          {syncSection}
+          <button
+            type="button"
+            className="btn btn-ghost"
+            aria-expanded={showSetup}
+            onClick={() => setShowSetup((previous) => !previous)}
+          >
+            {t("mobile.settings.pairHeading")}
+          </button>
+          {showSetup ? (
+            <>
+              {pairSection}
+              {pullSection}
             </>
-          )}
-        </section>
+          ) : null}
+        </>
+      ) : (
+        <>
+          {pairSection}
+          {pullSection}
+          {syncSection}
+        </>
       )}
     </div>
   );
