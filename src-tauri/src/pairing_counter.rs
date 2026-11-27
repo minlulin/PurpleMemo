@@ -55,11 +55,9 @@ pub(crate) fn peer_floor_key(pairing_id: &str) -> Option<String> {
 /// reported on stderr here instead of passed off as a number.
 pub(crate) fn read_floor(conn: &Connection, key: &str) -> Option<u64> {
     let raw: String = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [key],
-            |row| row.get(0),
-        )
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
         .ok()?;
     match serde_json::from_str::<u64>(&raw) {
         Ok(value) => Some(value),

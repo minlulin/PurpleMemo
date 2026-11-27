@@ -952,7 +952,8 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
                 // as well (the lock path raises the epoch for the same reason,
                 // so a window still opening cannot bind behind the hidden app).
                 if !paired_reachable_enabled() {
-                    if let Some(pairing) = handle.try_state::<pairing_listener::PairingListenerState>()
+                    if let Some(pairing) =
+                        handle.try_state::<pairing_listener::PairingListenerState>()
                     {
                         let _ = pairing.stop_for_lock();
                     }

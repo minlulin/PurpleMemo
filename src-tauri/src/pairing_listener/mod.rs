@@ -173,14 +173,14 @@ pub(crate) const PAIRING_PORT: u16 = 48720;
 /// advance either — because acting on an envelope the floor cannot record
 /// would re-open the replay window across the next restart. Tests leave this
 /// unset (in-memory floors only, exactly as before).
-static COUNTER_SINK: Mutex<Option<Arc<dyn Fn(&str, u64) -> Result<(), String> + Send + Sync>>> =
-    Mutex::new(None);
+/// The floor writer's shape: pairing id + accepted counter in, refusal out.
+type CounterSink = Arc<dyn Fn(&str, u64) -> Result<(), String> + Send + Sync>;
+
+static COUNTER_SINK: Mutex<Option<CounterSink>> = Mutex::new(None);
 
 /// Install the floor writer. Replaces any previous sink; boot installs once
 /// per process.
-pub(crate) fn install_counter_sink(
-    sink: Arc<dyn Fn(&str, u64) -> Result<(), String> + Send + Sync>,
-) {
+pub(crate) fn install_counter_sink(sink: CounterSink) {
     *COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
 }
 

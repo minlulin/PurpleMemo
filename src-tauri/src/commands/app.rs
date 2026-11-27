@@ -42,11 +42,9 @@ pub(crate) fn install_counter_persistence(app: &tauri::AppHandle) {
     // Seed the outbound allocator BEFORE any command can mint a counter.
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(conn) = lock_conn(&state) {
-            let floor = crate::pairing_counter::read_floor(
-                &conn,
-                crate::pairing_counter::LOCAL_KEY,
-            )
-            .unwrap_or(0);
+            let floor =
+                crate::pairing_counter::read_floor(&conn, crate::pairing_counter::LOCAL_KEY)
+                    .unwrap_or(0);
             crate::pairing_client::seed_counter(floor);
         }
     }
@@ -63,11 +61,9 @@ pub(crate) fn install_counter_persistence(app: &tauri::AppHandle) {
         let Some(conn) = guard.as_mut() else {
             return;
         };
-        if let Err(error) = crate::pairing_counter::write_floor(
-            conn,
-            crate::pairing_counter::LOCAL_KEY,
-            floor,
-        ) {
+        if let Err(error) =
+            crate::pairing_counter::write_floor(conn, crate::pairing_counter::LOCAL_KEY, floor)
+        {
             eprintln!("purple-memo: could not persist the pairing counter floor: {error}");
         }
     }));

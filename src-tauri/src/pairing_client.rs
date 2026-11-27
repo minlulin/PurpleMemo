@@ -88,7 +88,11 @@ pub(crate) fn install_counter_sink(sink: CounterSink) {
 /// boot seed has run, across restarts.
 pub fn next_hello_counter() -> u64 {
     let next = HELLO_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
-    if let Some(sink) = COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+    if let Some(sink) = COUNTER_SINK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
         sink(next);
     }
     next
