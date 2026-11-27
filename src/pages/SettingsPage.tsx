@@ -24,7 +24,14 @@ import {
 import { PairingPanel } from "../components/PairingPanel.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useLocale, usePlural, useT } from "../components/useTranslation.ts";
-import { backupRepo, publishUiLocale, settingsRepo } from "../data/app.ts";
+import {
+  backupRepo,
+  ensurePairedPhoneReachableNow,
+  forgetPinnedPeer,
+  pairingRepo,
+  publishUiLocale,
+  settingsRepo,
+} from "../data/app.ts";
 import { factoryReset } from "../data/driver.ts";
 import {
   AUTO_LOCK_CHOICES,
@@ -66,6 +73,8 @@ import {
   resetAttemptFromOutcome,
 } from "../lib/reset.ts";
 import { SETTING_KEYS, THEMES, type Theme } from "../lib/settings.ts";
+import { durablePin } from "../lib/sync/durablePairing.ts";
+import type { PeerRow } from "../lib/sync/store.ts";
 import {
   checkForUpdate,
   installUpdate,
@@ -104,6 +113,7 @@ const SETTINGS_SECTIONS: readonly { id: string; labelKey: MessageKey }[] = [
   { id: "key-export", labelKey: "settings.section.keyExport" },
   { id: "backup", labelKey: "settings.section.backup" },
   { id: "pairing", labelKey: "settings.section.pairing" },
+  { id: "paired-phone", labelKey: "settings.section.pairedPhone" },
   { id: "updates", labelKey: "settings.section.updates" },
   { id: "about", labelKey: "settings.section.about" },
   { id: "danger", labelKey: "reset.dangerZone" },
@@ -148,6 +158,16 @@ const SETTINGS_ALIASES: Record<string, string[]> = {
   "key-export": ["key", "backup key", "encryption", "master"],
   backup: ["restore", "import", "export", "zip", "archive", "recovery"],
   pairing: ["qr", "code", "phone", "sync", "pair", "fingerprint"],
+  "paired-phone": [
+    "paired phone",
+    "reachability",
+    "stay connected",
+    "always on",
+    "bluetooth",
+    "forget phone",
+    "remove phone",
+    "paired device",
+  ],
   updates: ["update", "version", "release", "download", "upgrade"],
   about: ["version", "info", "offline", "open source"],
   danger: ["factory", "reset", "erase", "wipe", "delete everything"],
@@ -183,6 +203,25 @@ export default function SettingsPage(p: SettingsPageProps) {
    */
   const [closeToTray, setCloseToTray] = useState(true);
   /**
+   * Durable pairing: whether the pinned phone may stay connected while this
+   * app runs (default ON). Read on mount, like `closeToTray` — the Rust
+   * mirror seeds from the same row at boot.
+   */
+  const [reachable, setReachable] = useState(true);
+  /**
+   * Durable pairing: the pin the phone is remembered by, if any. `undefined`
+   * is "not read yet", `null` is "nothing pinned" — the section renders
+   * nothing decisive until one of the two is known.
+   */
+  const [pairedPhone, setPairedPhone] = useState<PeerRow | null | undefined>(
+    undefined,
+  );
+  /** §11.4: undelivered outbox ops addressed to the pinned phone — read so
+   * the Forget confirmation can name the number it would drop, never
+   * silently. */
+  const [pairedPhonePending, setPairedPhonePending] = useState(0);
+  const [forgetNote, setForgetNote] = useState<string | null>(null);
+  /**
    * The last successful export this device recorded. `null` is "never backed
    * up"; `undefined` is "not read yet", so a backup having happened is never
    * contradicted by a warning that merely rendered first.
@@ -207,6 +246,31 @@ export default function SettingsPage(p: SettingsPageProps) {
       })
       // A failed read leaves the toggle at the default (ON).
       .catch(() => undefined);
+    void settingsRepo
+      .getPairedPhoneReachable()
+      .then((enabled) => {
+        if (!cancelled) setReachable(enabled);
+      })
+      // A failed read leaves the toggle at the default (ON).
+      .catch(() => undefined);
+    void (async () => {
+      try {
+        const pin = durablePin(await pairingRepo.peers());
+        if (cancelled) return;
+        setPairedPhone(pin);
+        if (pin !== null) {
+          const pending = await pairingRepo
+            .pendingFor(pin.device_id)
+            .catch(() => 0);
+          if (!cancelled) setPairedPhonePending(pending);
+        }
+      } catch {
+        if (!cancelled) {
+          setPairedPhone(null);
+          setPairedPhonePending(0);
+        }
+      }
+    })();
     void settingsRepo
       .getLastBackup()
       .then((record) => {
@@ -289,6 +353,52 @@ export default function SettingsPage(p: SettingsPageProps) {
       // The repo publishes the new value to Rust's in-memory mirror after
       // writing the row, so the very next close obeys it: no restart, and no
       // database read on the close path.
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  /**
+   * Durable pairing: the reachability toggle. Applies at the very next lock,
+   * unlock, background or close — and on this switch it applies now: an
+   * unlocked workspace binds on enable, and disabling closes the port the
+   * phone had been talking through.
+   */
+  const changePairedReachable = async (enabled: boolean) => {
+    try {
+      await settingsRepo.setPairedPhoneReachable(enabled);
+      setReachable(enabled);
+      if (enabled) {
+        void ensurePairedPhoneReachableNow().catch(() => undefined);
+      } else {
+        await pairingRepo.close().catch(() => undefined);
+      }
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  /**
+   * Durable pairing: forget the pinned phone entirely — the peer row and
+   * this device's §7.2 floor rows in one batch. The staged window keeps its
+   * own pin clone, so it is closed explicitly; a forgotten phone must not
+   * keep syncing until the next lock screen. Undelivered outbox ops
+   * addressed to the phone are dropped as one act, with the count named in
+   * the confirmation rather than hidden.
+   */
+  const forgetPairedPhone = async () => {
+    const pin = pairedPhone;
+    if (pin === undefined || pin === null) return;
+    setForgetNote(null);
+    try {
+      const dropped =
+        pairedPhonePending > 0 ? await pairingRepo.discard(pin.device_id) : 0;
+      await forgetPinnedPeer(pin.device_id);
+      await pairingRepo.close().catch(() => undefined);
+      setPairedPhone(null);
+      setPairedPhonePending(0);
+      setForgetNote(t("settings.pairedPhoneForgotten", { count: dropped }));
+      p.onChanged();
     } catch (e) {
       setError(errText(e));
     }
@@ -1219,6 +1329,90 @@ export default function SettingsPage(p: SettingsPageProps) {
             the panel mounted and its listener serving a code nobody can see
             (§11.5, N4). */}
         {shows("pairing") ? <PairingPanel /> : null}
+      </section>
+
+      <section
+        className="settings-section settings-section-compact"
+        id="settings-paired-phone"
+        hidden={!shows("paired-phone")}
+      >
+        <div className="dash-card-head">
+          <h3 className="settings-heading">{t("settings.pairedPhoneTitle")}</h3>
+          <span
+            className={
+              pairedPhone === undefined || pairedPhone === null
+                ? "badge"
+                : "badge badge-accent"
+            }
+          >
+            {pairedPhone === undefined
+              ? "…"
+              : pairedPhone === null
+                ? t("settings.pairedPhoneNoneBadge")
+                : t("settings.pairedPhoneTrustedBadge")}
+          </span>
+        </div>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={reachable}
+            onChange={(e) => void changePairedReachable(e.target.checked)}
+          />
+          <span>
+            <b>{t("settings.pairedPhoneReachable")}</b> —{" "}
+            {t("settings.pairedPhoneReachableHint")}
+          </span>
+        </label>
+        {pairedPhone === null ? (
+          <p className="muted">{t("settings.pairedPhoneNoneBody")}</p>
+        ) : null}
+        {pairedPhone !== undefined && pairedPhone !== null ? (
+          <div className="paired-phone">
+            <dl className="pairing-facts">
+              <div>
+                <dt>{t("settings.pairedPhoneName")}</dt>
+                <dd>
+                  {pairedPhone.display_name ||
+                    t("settings.pairedPhoneNameFallback")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("settings.pairedPhoneDeviceId")}</dt>
+                <dd className="pairing-fingerprint">
+                  {pairedPhone.device_id.slice(0, 13)}…
+                </dd>
+              </div>
+            </dl>
+            {pairedPhonePending > 0 ? (
+              <p className="muted" role="status">
+                {t("settings.pairedPhonePending", {
+                  count: pairedPhonePending,
+                })}
+              </p>
+            ) : null}
+            <div className="editor-row">
+              <ConfirmButton
+                what={
+                  pairedPhonePending > 0
+                    ? t("settings.pairedPhoneForgetWhatPending", {
+                        count: pairedPhonePending,
+                      })
+                    : t("settings.pairedPhoneForgetWhat")
+                }
+                className="btn btn-danger"
+                disabled={busy}
+                onConfirm={() => void forgetPairedPhone()}
+              >
+                {t("settings.pairedPhoneForget")}
+              </ConfirmButton>
+            </div>
+          </div>
+        ) : null}
+        {forgetNote !== null ? (
+          <p className="muted" role="status">
+            {forgetNote}
+          </p>
+        ) : null}
       </section>
 
       <section

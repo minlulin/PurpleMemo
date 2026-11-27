@@ -13,6 +13,7 @@ import {
 import {
   parseRememberedEndpoints,
   type RememberedEndpoints,
+  withoutRememberedEndpoint,
   withRememberedEndpoint,
 } from "./sync/rememberedEndpoint.ts";
 import type { SettingRow } from "./types.ts";
@@ -46,6 +47,10 @@ export const SETTING_KEYS = {
   autoLockMinutes: "auto_lock_minutes",
   notificationPreview: "notification_preview",
   closeToTray: "close_to_tray",
+  /** Whether the paired phone may stay connected while this app runs
+   * (durable pairing). DEVICE-LOCAL in `backup.ts`: it grants the network
+   * reachability of THIS machine, so a restore must not switch it on. */
+  pairedPhoneReachable: "paired_phone_reachable",
   notesViewMode: "notes_view_mode",
   notesCollectionsCollapsed: "notes_collections_collapsed",
   /**
@@ -290,6 +295,30 @@ export function createSettingsRepo(driver: DataDriver) {
     },
 
     /**
+     * Whether the paired phone may stay connected while this app runs
+     * (durable pairing). Default ON — a missing row, a corrupt row and every
+     * install that predates the key all keep the durable default; only an
+     * explicit JSON `false` turns it off. Rust's window-close handler reads
+     * this decision from memory (the `paired_reachable_set` mirror, same
+     * contract as `close_to_tray_set`), and the lock and background paths
+     * read it through this repo when deciding whether to close the pairing
+     * port at all.
+     */
+    async getPairedPhoneReachable(): Promise<boolean> {
+      return (
+        (await this.getJSON<boolean>(SETTING_KEYS.pairedPhoneReachable)) !==
+        false
+      );
+    },
+
+    async setPairedPhoneReachable(enabled: boolean): Promise<void> {
+      await this.setJSON(SETTING_KEYS.pairedPhoneReachable, enabled);
+      // D1-style mirror: the row is written first, so a delivery failure is
+      // reported but cannot lose the setting — the next boot reads it back.
+      await driver.syncPairedReachable?.(enabled);
+    },
+
+    /**
      * The Notes editor view mode (Edit | Split | Read). Default SPLIT —
      * the side-by-side layout the app shipped with, so an absent row, a
      * corrupt row and a pre-view-mode install all land on today's behaviour.
@@ -378,6 +407,20 @@ export function createSettingsRepo(driver: DataDriver) {
         await this.getSyncEndpoints(),
         desktopDeviceId,
         endpoint,
+      );
+      await this.setJSON(SETTING_KEYS.syncEndpoints, endpoints);
+    },
+
+    /**
+     * Forget the remembered address for one desktop (durable pairing) — the
+     * “Forget this desktop” act on the phone. A stale address that is never
+     * dialed is worse than a missing one: it fails for a reason the person
+     * cannot see, after they deliberately unpaired.
+     */
+    async forgetSyncEndpoint(desktopDeviceId: string): Promise<void> {
+      const endpoints = withoutRememberedEndpoint(
+        await this.getSyncEndpoints(),
+        desktopDeviceId,
       );
       await this.setJSON(SETTING_KEYS.syncEndpoints, endpoints);
     },

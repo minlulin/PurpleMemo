@@ -15,7 +15,7 @@
  * nothing — the six-digit code never grants trust on its own.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { pairingRepo } from "../data/app.ts";
+import { ensurePairedPhoneReachableNow, pairingRepo } from "../data/app.ts";
 import type { PairingIdentityStatus } from "../data/driver.ts";
 import { errText } from "../lib/errors.ts";
 import type { MessageKey } from "../lib/i18n.ts";
@@ -41,6 +41,20 @@ import { useT } from "./useTranslation.ts";
  * `panelPhaseMessage` stay English for the protocol and its tests; this is
  * the screen's translation of exactly the same states.
  */
+/**
+ * Durable pairing at rest: after the offer window goes down, the resting
+ * state is the pinned-only window — otherwise the remembered phone is
+ * unreachable until the next unlock (§11.5). Only the pin-gated window is
+ * re-opened here, never another offer.
+ */
+function closePaneToRestingState(): void {
+  void pairingRepo
+    .close()
+    .catch(() => {})
+    .then(() => ensurePairedPhoneReachableNow())
+    .catch(() => {});
+}
+
 const PHASE_LABEL_KEYS: Record<Exclude<PanelPhase, "active">, MessageKey> = {
   expired: "pairing.phase.expired",
   used: "pairing.phase.used",
@@ -128,7 +142,9 @@ export function PairingPanel() {
     unmountedRef.current = false;
     return () => {
       unmountedRef.current = true;
-      void pairingRepo.close().catch(() => {});
+      // The offer window is closed before anything else (N4); the resting
+      // state behind it is the pinned-only window (durable pairing).
+      closePaneToRestingState();
     };
   }, []);
 
@@ -152,8 +168,10 @@ export function PairingPanel() {
       const opened = await pairingRepo.open();
       if (unmountedRef.current) {
         // The panel went away while the listener was binding. Nothing may be
-        // set after unmount, and nothing may keep serving: close it now (N4).
-        void pairingRepo.close().catch(() => {});
+        // set after unmount, and the offer window must not keep serving a code
+        // nobody can see (N4); the resting state behind it is the durable
+        // pinned-only window.
+        closePaneToRestingState();
         return;
       }
       stateRef.current = opened;
@@ -179,6 +197,10 @@ export function PairingPanel() {
     setBusy(true);
     try {
       await pairingRepo.close();
+      // The user closed the pairing panel — the resting state behind it is
+      // the durable pinned-only window, so the remembered phone stays
+      // reachable while the app runs (toggle permitting).
+      void ensurePairedPhoneReachableNow().catch(() => undefined);
     } catch (e) {
       setError(errText(e));
     } finally {

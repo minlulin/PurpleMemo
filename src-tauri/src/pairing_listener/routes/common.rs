@@ -199,7 +199,24 @@ pub(crate) fn admit(
 
     // Accepted. The counter advance is the one effect an admitted message has,
     // and it is what makes a second copy of the same envelope a replay.
-    *last_counter = opened.header.counter;
+    //
+    // §7.2 across restarts: raise the device-local floor FIRST, while still
+    // under the same lock that derives `last_counter`. Acting on an envelope
+    // the floor cannot record would leave the disk below this envelope after
+    // a restart, and the next window would honour it again. A floor that
+    // cannot be written refuses the admission outright; the window's
+    // in-memory counter does not move either.
+    let floor = opened.header.counter;
+    if let Err(reason) = crate::pairing_listener::raise_counter_floor(&gate.pairing_id, floor) {
+        return Err(RefusalReply::refused(
+            "replay-floor",
+            format!(
+                "the envelope was not accepted because the anti-replay record \
+                 could not be saved ({reason}); try again once the disk frees up"
+            ),
+        ));
+    }
+    *last_counter = floor;
     drop(last_counter);
 
     // §11.1 (wave 1, N1): opening a hello under the staged candidate's key is

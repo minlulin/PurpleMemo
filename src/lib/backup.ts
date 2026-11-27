@@ -201,6 +201,15 @@ export const BACKUP_TABLES = [
  * point this device at an address that belongs to another household, and a
  * backup has no business carrying one.
  *
+ * `paired_phone_reachable` is the durable-pairing reachability toggle: it
+ * grants the network reachability of THIS machine, and an archive has no
+ * claim on it either.
+ *
+ * Every `pairing_counter.` row (§7.2's durable floors) is the same kind of
+ * fact once more — this device's envelope history — so the prefix is
+ * device-local too (see `DEVICE_LOCAL_SETTING_PREFIXES`), not just the exact
+ * keys below.
+ *
  * A new device- or mobile-local key belongs in this list, not in a call site:
  * both borders read it.
  */
@@ -211,7 +220,17 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
   SETTING_KEYS.lastBackupAt,
   SETTING_KEYS.biometricUnlock,
   SETTING_KEYS.syncEndpoints,
+  SETTING_KEYS.pairedPhoneReachable,
 ] as const;
+
+/**
+ * The `pairing_counter.` prefix (§7.2's durable floors): every row under it
+ * is a fact about THIS device's envelope history — which is exactly what a
+ * restored archive must not inherit. A floor from another machine only
+ * means this one gets everything it says was already spent refused as a
+ * replay, forever.
+ */
+export const DEVICE_LOCAL_SETTING_PREFIXES = ["pairing_counter."] as const;
 
 /**
  * Is this settings row device-local? Applied on BOTH sides (decision 1): the
@@ -219,9 +238,12 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
  * carries it — an old archive must never overwrite this device's app PIN.
  */
 export function isDeviceLocalSetting(row: Row): boolean {
-  return (
-    typeof row.key === "string" &&
-    (DEVICE_LOCAL_SETTING_KEYS as readonly string[]).includes(row.key)
+  if (typeof row.key !== "string") return false;
+  if ((DEVICE_LOCAL_SETTING_KEYS as readonly string[]).includes(row.key)) {
+    return true;
+  }
+  return DEVICE_LOCAL_SETTING_PREFIXES.some((prefix) =>
+    (row.key as string).startsWith(prefix),
   );
 }
 

@@ -22,6 +22,7 @@ mod navigation;
 // the user to open the window, because an openable LAN port with no consent
 // step would be worse than no port at all.
 mod pairing_client;
+mod pairing_counter;
 pub mod pairing_key;
 pub mod pairing_listener;
 pub mod pairing_snapshot;
@@ -197,6 +198,7 @@ pub fn run() {
             commands::backup_import_begin,
             commands::backup_import_end,
             commands::close_to_tray_set,
+            commands::paired_reachable_set,
             commands::ui_locale_set,
             commands::boot_status,
             commands::boot_retry,
@@ -377,6 +379,9 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
     // lock on the window-event thread). This is the first value; the Settings
     // toggle and the end of an import republish it.
     refresh_close_to_tray(&conn);
+    // And the paired-phone reachability toggle, same contract — the close
+    // handler consults it on every hide.
+    refresh_paired_reachable(&conn);
     app.manage(db::AppState {
         // `Some` until factory reset takes it; every DB command fails closed
         // with the `rust.error.dbClosed` refusal once it is `None`.
@@ -385,6 +390,11 @@ fn boot(app: &tauri::AppHandle) -> Result<(), db::KeyLoadError> {
         reset_terminal: AtomicBool::new(false),
         data_dir,
     });
+    // §7.2 across restarts: seed the outbound counter allocator from the
+    // device-local row and install both persistence sinks, before any command
+    // can mint a counter or admit an envelope. Re-run by a retried boot; the
+    // seed is `max`, so a re-install is monotonic.
+    commands::install_counter_persistence(app);
     // One lifecycle barrier for the whole process (E1/E2/E5): managed as a
     // shared Arc so the pairing state consults the same instance the DB/photo
     // commands admit through and `factory_reset` raises. Re-managed together
@@ -935,14 +945,17 @@ fn watch_close_to_tray(app: &tauri::AppHandle) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             if close_to_tray_enabled(&handle) {
                 api.prevent_close();
-                // §11.5: hiding may not fire `visibilitychange` on every desktop
-                // WebView, so closing the window is the pairing port's stop as
-                // well. The lock path (not an ordinary stop) raises the epoch,
-                // so a window that was still opening cannot bind behind the
-                // hidden app either (N4).
-                if let Some(pairing) = handle.try_state::<pairing_listener::PairingListenerState>()
-                {
-                    let _ = pairing.stop_for_lock();
+                // §11.5 / durable pairing: with paired-phone reachability ON
+                // (the default), hiding the window keeps the paired phone
+                // connected — the dock icon is the app, the window is a view.
+                // With it OFF, closing the window is the pairing port's stop
+                // as well (the lock path raises the epoch for the same reason,
+                // so a window still opening cannot bind behind the hidden app).
+                if !paired_reachable_enabled() {
+                    if let Some(pairing) = handle.try_state::<pairing_listener::PairingListenerState>()
+                    {
+                        let _ = pairing.stop_for_lock();
+                    }
                 }
                 if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = window.hide();
@@ -988,6 +1001,59 @@ fn parse_close_to_tray(raw: Option<&str>) -> bool {
         None => true,
         Some(text) => serde_json::from_str::<bool>(text).unwrap_or(true),
     }
+}
+
+/// Settings key behind the paired-phone reachability toggle (durable
+/// pairing). The frontend writes it (`SETTING_KEYS.pairedPhoneReachable` in
+/// `src/lib/settings.ts`) and republishes through
+/// `commands::paired_reachable_set`; Rust seeds the mirror at boot, so the
+/// close path never touches the connection for it (same contract as the
+/// close-to-tray mirror above).
+const PAIRED_REACHABLE_KEY: &str = "paired_phone_reachable";
+
+/// Whether the paired phone may stay connected while the app runs.
+///
+/// Default ON: a missing row (every install that predates the key) and an
+/// unreadable row both keep the durable-pairing default — only an explicit
+/// JSON `false` turns it off, which makes the hidden window the §11.5 stop
+/// again (lock, close and background all close the port).
+static PAIRED_REACHABLE: AtomicBool = AtomicBool::new(true);
+
+/// Publish `enabled` as the reachability decision. One writer shape, so every
+/// publisher goes through the same store rather than open-coding one.
+pub(crate) fn publish_paired_reachable(enabled: bool) {
+    PAIRED_REACHABLE.store(enabled, Ordering::SeqCst);
+}
+
+/// Read the stored toggle from `conn` and publish it. Mirror of
+/// [`refresh_close_to_tray`]; runs at boot and at the end of a backup import.
+pub(crate) fn refresh_paired_reachable(conn: &rusqlite::Connection) {
+    let raw = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [PAIRED_REACHABLE_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    publish_paired_reachable(parse_paired_reachable(raw.as_deref()));
+}
+
+/// The stored reachability value. Only an explicit JSON `false` turns it off —
+/// the same missing-row and corrupt-row rule as [`parse_close_to_tray`], for
+/// the same reason.
+fn parse_paired_reachable(raw: Option<&str>) -> bool {
+    match raw {
+        None => true,
+        Some(text) => serde_json::from_str::<bool>(text).unwrap_or(true),
+    }
+}
+
+/// The reachability decision, as the window-close handler sees it. Memory
+/// only — the handler runs on the event loop. Desktop-only: there is no
+/// close-to-tray on mobile, and Android owns the app's lifetime.
+#[cfg(desktop)]
+fn paired_reachable_enabled() -> bool {
+    PAIRED_REACHABLE.load(Ordering::SeqCst)
 }
 
 /// Raise and un-minimise the main window, so the copy that is already running

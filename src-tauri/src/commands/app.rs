@@ -25,6 +25,96 @@ pub(super) fn refresh_close_to_tray_from(app: &tauri::AppHandle) {
     crate::refresh_close_to_tray(&conn);
 }
 
+/// §7.2 across restarts: seed the outbound counter allocator from the
+/// device-local `pairing_counter.local` row and install both persistence
+/// sinks. Called once at boot, after the database is managed — and again by a
+/// retried boot, which is safe because seeding is `max` and the sinks may be
+/// replaced.
+///
+/// The mint sink is best-effort and never blocks: a mint must succeed even if
+/// the database is busy with an import (a busy connection simply skips that
+/// flush; the next mint flushes a higher floor). The listener sink is the
+/// opposite on purpose — admission refuses when it cannot raise the floor,
+/// because acting on an envelope the floor cannot record re-opens the replay
+/// window the row exists to close. No code path holds the connection across a
+/// call into the listener, so blocking on it terminates.
+pub(crate) fn install_counter_persistence(app: &tauri::AppHandle) {
+    // Seed the outbound allocator BEFORE any command can mint a counter.
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(conn) = lock_conn(&state) {
+            let floor = crate::pairing_counter::read_floor(
+                &conn,
+                crate::pairing_counter::LOCAL_KEY,
+            )
+            .unwrap_or(0);
+            crate::pairing_client::seed_counter(floor);
+        }
+    }
+    let mint_app = app.clone();
+    crate::pairing_client::install_counter_sink(std::sync::Arc::new(move |floor: u64| {
+        let Some(state) = mint_app.try_state::<AppState>() else {
+            return;
+        };
+        let Ok(mut guard) = state.conn.try_lock() else {
+            // Busy — the in-memory counter is already ahead, and the next
+            // mint retries with a higher value.
+            return;
+        };
+        let Some(conn) = guard.as_mut() else {
+            return;
+        };
+        if let Err(error) = crate::pairing_counter::write_floor(
+            conn,
+            crate::pairing_counter::LOCAL_KEY,
+            floor,
+        ) {
+            eprintln!("purple-memo: could not persist the pairing counter floor: {error}");
+        }
+    }));
+    let listener_app = app.clone();
+    crate::pairing_listener::install_counter_sink(std::sync::Arc::new(
+        move |pairing_id: &str, floor: u64| -> Result<(), String> {
+            let key = crate::pairing_counter::peer_floor_key(pairing_id).ok_or_else(|| {
+                "the pairing id is not one this app can key a floor by".to_string()
+            })?;
+            let state = listener_app
+                .try_state::<AppState>()
+                .ok_or_else(|| "the database is not available".to_string())?;
+            let conn = lock_conn(&state).map_err(|e| e.diagnostic())?;
+            crate::pairing_counter::write_floor(&conn, &key, floor).map_err(|e| e.to_string())
+        },
+    ));
+}
+
+/// Republish the paired-phone reachability toggle from the live connection,
+/// mirror of [`refresh_close_to_tray_from`]. A closed connection leaves the
+/// mirror as it was, and its default is the same "on" the absent-row rule
+/// gives.
+pub(super) fn refresh_paired_reachable_from(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(conn) = lock_conn(&state) else {
+        return;
+    };
+    crate::refresh_paired_reachable(&conn);
+}
+
+/// Publish the paired-phone reachability toggle the Settings page just wrote
+/// (durable pairing).
+///
+/// The window-close handler runs on the event loop where the connection must
+/// not be touched, so the renderer tells Rust the new value here, after the
+/// row is written, and the handler keeps reading memory only.
+///
+/// The row is already persisted by the caller, so a failure to deliver this
+/// in-process copy cannot lose the setting — the next boot reads it back.
+#[tauri::command]
+pub fn paired_reachable_set(enabled: bool) -> CmdResult<()> {
+    crate::publish_paired_reachable(enabled);
+    Ok(())
+}
+
 /// Publish the close-to-tray toggle the Settings page just wrote.
 ///
 /// The window-close handler runs on the event loop, where the database

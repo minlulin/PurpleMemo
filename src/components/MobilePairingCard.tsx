@@ -11,12 +11,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  forgetPinnedPeer,
   mobilePairingRepo,
   phoneHoldsLocalData,
   settingsRepo,
   syncRepo,
 } from "../data/app.ts";
 import type { PhonePairResult } from "../data/driver.ts";
+import { errText } from "../lib/errors.ts";
 import {
   isBareCode,
   isCompleteCode,
@@ -34,10 +36,12 @@ import {
   type RememberedEndpoints,
   rememberedEndpointFor,
   resolveSyncEndpoint,
+  withoutRememberedEndpoint,
   withRememberedEndpoint,
 } from "../lib/sync/rememberedEndpoint.ts";
 import type { PeerRow, SnapshotOp } from "../lib/sync/store.ts";
 import type { SyncOutcome } from "../lib/sync/syncSession.ts";
+import { ConfirmButton } from "./ConfirmButton.tsx";
 import { useT } from "./useTranslation.ts";
 
 type Scanning = "idle" | "scanning" | "unavailable";
@@ -111,6 +115,10 @@ export function MobilePairingCard() {
   const [syncUsedRemembered, setSyncUsedRemembered] = useState(false);
   /** Whether the folded setup block is open while sync owns the card. */
   const [showSetup, setShowSetup] = useState(false);
+  /** Durable pairing: the "Forget this desktop" confirm is in flight. */
+  const [forgettingDesktop, setForgettingDesktop] = useState(false);
+  /** Durable pairing: the desktop was forgotten, so the card can say so. */
+  const [forgotDesktop, setForgotDesktop] = useState(false);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -181,6 +189,43 @@ export function MobilePairingCard() {
       .rememberSyncEndpoint(deviceId, endpoint)
       .catch(() => undefined);
   }, []);
+
+  /**
+   * Durable pairing: forget the desktop this phone is pinned to — the
+   * "remove this Bluetooth device" act. The peer row and every device-local
+   * §7.2 floor row die together (one batch), and the remembered address
+   * dies with them, so nothing is dialed after the pairing is gone.
+   * Undelivered ops this phone still owes that desktop are NOT touched:
+   * they may be what a re-pair later syncs, and silently dropping unsent
+   * work is the one thing a Forget must not do.
+   */
+  const forgetDesktop = useCallback(async () => {
+    const pin =
+      pins.find((row) => row.device_id === paired?.desktopDeviceId) ?? pins[0];
+    if (pin === undefined) return;
+    setForgettingDesktop(true);
+    setError(null);
+    try {
+      await forgetPinnedPeer(pin.device_id);
+      await settingsRepo
+        .forgetSyncEndpoint(pin.device_id)
+        .catch(() => undefined);
+      setRemembered((current) =>
+        withoutRememberedEndpoint(current, pin.device_id),
+      );
+      setPins((current) =>
+        current.filter((row) => row.device_id !== pin.device_id),
+      );
+      setPaired((current) =>
+        current?.desktopDeviceId === pin.device_id ? null : current,
+      );
+      setForgotDesktop(true);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setForgettingDesktop(false);
+    }
+  }, [pins, paired]);
 
   const offerDesktopId = offer?.deviceId ?? null;
   const alreadyPaired =
@@ -727,6 +772,32 @@ export function MobilePairingCard() {
       </section>
     );
 
+  /* Durable pairing: the destructive sibling of the sync button above. The
+     two belong in the same scroll position — this is where a person who is
+     done with a notebook erases the pairing on their own side. */
+  const forgetSection =
+    pins.length === 0 ? null : (
+      <section className="mobile-section">
+        <h3 className="mobile-section-heading">
+          {t("mobile.settings.forgetDesktopHeading")}
+        </h3>
+        <p className="mobile-note">{t("mobile.settings.forgetDesktopBody")}</p>
+        {forgotDesktop ? (
+          <p className="alert alert-note" role="status">
+            {t("mobile.settings.forgotDesktop")}
+          </p>
+        ) : null}
+        <ConfirmButton
+          what={t("mobile.settings.forgetDesktopWhat")}
+          className="btn btn-danger"
+          disabled={forgettingDesktop}
+          onConfirm={() => void forgetDesktop()}
+        >
+          {t("mobile.settings.forgetDesktop")}
+        </ConfirmButton>
+      </section>
+    );
+
   /* §6: the ongoing exchange. Offered on the pin, not on this session's
      pairing — a phone that was paired last week can still sync, and one
      that has never paired has nothing to sync with. */
@@ -799,6 +870,7 @@ export function MobilePairingCard() {
       {syncHome ? (
         <>
           {syncSection}
+          {forgetSection}
           <button
             type="button"
             className="btn btn-ghost"
@@ -819,6 +891,7 @@ export function MobilePairingCard() {
           {pairSection}
           {pullSection}
           {syncSection}
+          {forgetSection}
         </>
       )}
     </div>

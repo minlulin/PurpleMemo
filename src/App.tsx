@@ -49,8 +49,10 @@ import { Skeleton } from "./components/Skeleton.tsx";
 import { ToastProvider, useToast } from "./components/Toast.tsx";
 import { usePlural, useT } from "./components/useTranslation.ts";
 import {
+  ensurePairedPhoneReachableNow,
   inboxRepo,
   localDeviceId,
+  pairedPhoneReachabilityEnabled,
   pairingRepo,
   publishUiLocale,
   readBootStatus,
@@ -744,7 +746,15 @@ function AppShell() {
       // raised over a socket that still accepts a phone. A close that fails
       // is retried and reported by the teardown instead of being swallowed
       // (N4).
-      stopListeners: () => pairingRepo.close(),
+      // Durable pairing: when the toggle says the paired phone may stay
+      // connected, the port STAYS UP across a lock — the lock screen is a
+      // locked notebook, not a sleeping radio (the approved design). With
+      // the toggle off, this is the §11.5 stop as before.
+      stopListeners: () =>
+        pairedPhoneReachabilityEnabled().then((reachable) => {
+          if (reachable) return undefined;
+          return pairingRepo.close();
+        }),
       onLocked: () => {
         unlockedRef.current = false;
         setUnlocked(false);
@@ -770,14 +780,19 @@ function AppShell() {
     });
   }, [listenerStopFailed, toast]);
 
-  // §11.5: app background ends the pairing window, exactly like the lock. The
-  // webview reports a hidden document when the window is minimised or the phone
-  // app leaves the foreground; closing is idempotent.
+  // §11.5: app background ends the pairing window, exactly like the lock —
+  // unless durable pairing says the phone may stay connected. The webview
+  // reports a hidden document when the window is minimised or the phone app
+  // leaves the foreground; closing is idempotent.
   useEffect(() => {
     const onHidden = () => {
-      if (document.visibilityState === "hidden") {
-        void pairingRepo.close().catch(() => {});
-      }
+      if (document.visibilityState !== "hidden") return;
+      void pairedPhoneReachabilityEnabled()
+        .then((reachable) => {
+          if (!reachable) return pairingRepo.close();
+          return undefined;
+        })
+        .catch(() => {});
     };
     document.addEventListener("visibilitychange", onHidden);
     return () => document.removeEventListener("visibilitychange", onHidden);
@@ -816,6 +831,11 @@ function AppShell() {
     lastActivity.current = performance.now();
     unlockedRef.current = true;
     setUnlocked(true);
+    // Durable pairing: the remembered phone's window comes back up on
+    // unlock (and on every unlock — a laptop that slept mid-sync rebinds it
+    // here). Best-effort: an unreachable phone is a retry away, never a
+    // workspace that fails to open.
+    void ensurePairedPhoneReachableNow().catch(() => undefined);
     void trashRepo.purge().catch((e) => {
       toast.error(errText(e));
     });

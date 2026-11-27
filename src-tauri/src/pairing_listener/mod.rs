@@ -165,6 +165,41 @@ const CLOSE_PROBE_GAP: Duration = Duration::from_millis(5);
 /// either way, and only the remembered address misses for that window.
 pub(crate) const PAIRING_PORT: u16 = 48720;
 
+/// The device-local §7.2 floor writer, installed at boot (`install_counter_sink`).
+///
+/// Called by [`routes::common::admit`](routes::common) with the pairing id and
+/// the counter of the envelope about to be acted on. A sink that returns
+/// `Err` refuses the admission — the window's in-memory counter does not
+/// advance either — because acting on an envelope the floor cannot record
+/// would re-open the replay window across the next restart. Tests leave this
+/// unset (in-memory floors only, exactly as before).
+static COUNTER_SINK: Mutex<Option<Arc<dyn Fn(&str, u64) -> Result<(), String> + Send + Sync>>> =
+    Mutex::new(None);
+
+/// Install the floor writer. Replaces any previous sink; boot installs once
+/// per process.
+pub(crate) fn install_counter_sink(
+    sink: Arc<dyn Fn(&str, u64) -> Result<(), String> + Send + Sync>,
+) {
+    *COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+}
+
+/// Raise the device-local floor for `pairing_id` to at least `floor`.
+///
+/// With no sink installed (tests, or a boot path that could not read the
+/// row) this is a no-op: the window keeps its in-memory floor, which is
+/// exactly this build's behaviour before durable floors existed.
+pub(crate) fn raise_counter_floor(pairing_id: &str, floor: u64) -> Result<(), String> {
+    let Some(sink) = COUNTER_SINK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    else {
+        return Ok(());
+    };
+    sink(pairing_id, floor)
+}
+
 /// The peer's pin (§11.2), as the shell hands it in when the window opens.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,8 +240,9 @@ pub struct PairingOpenInput {
     /// rendezvous pins one.
     #[serde(default)]
     pub peer: Option<PinnedPeer>,
-    /// The highest counter already accepted from this peer, when a window
-    /// re-opens after a previous one.
+    /// The highest counter already accepted from this peer. Ignored whenever a
+    /// device-local floor row exists for this pairing id (§7.2): the webview
+    /// may seed a window that never saw the floor, it may never lower one.
     #[serde(default)]
     pub last_counter: Option<u64>,
 }

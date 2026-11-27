@@ -143,6 +143,14 @@ pub fn pairing_open(
         .ok_or_else(|| Refusal::new("rust.error.stateUnavailable"))?;
     let (device_id, generation, schema_version) = local_sync_facts(&db_state)?;
     let identity = load_pairing_identity(&db_state)?;
+    // §7.2 across restarts: the device-local floor row is the authority for
+    // how far this pairing id's envelopes have advanced. The webview may seed
+    // a window that never saw the floor; it may never lower one.
+    let floor = {
+        let conn = lock_conn(&db_state)?;
+        crate::pairing_counter::peer_floor_key(&input.pairing_id)
+            .and_then(|key| crate::pairing_counter::read_floor(&conn, &key))
+    };
     let offer = match (input.offer_code, input.offer_expires_at) {
         (Some(code), Some(expires_at)) => Some(PairingOffer { code, expires_at }),
         (None, None) => None,
@@ -156,7 +164,7 @@ pub fn pairing_open(
         pairing_id: input.pairing_id,
         offer,
         peer: input.peer,
-        last_counter: input.last_counter.unwrap_or(0),
+        last_counter: floor.unwrap_or(input.last_counter.unwrap_or(0)),
     };
     // §8.4: the snapshot is read in Rust, under the same connection lock every
     // other reader takes, because §8.4 requires one transaction across the whole

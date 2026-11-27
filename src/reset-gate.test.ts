@@ -137,9 +137,13 @@ test("a thrown reset is forwarded as an incomplete attempt, never swallowed", ()
 
 test("the engine is reached only through the two-step ConfirmButton", () => {
   // 1. The ConfirmButton renders it via onConfirm — the sanctioned entry...
+  // (The page now hosts more than one ConfirmButton — durable pairing's
+  // "forget this phone" is another — so anchor the slice on the factory
+  // reset's own copy, not on the first button in the file.)
+  const resetCopy = SETTINGS.indexOf('t("reset.confirmWhat")');
   const button = SETTINGS.slice(
-    SETTINGS.indexOf("<ConfirmButton"),
-    SETTINGS.indexOf("</ConfirmButton>"),
+    SETTINGS.lastIndexOf("<ConfirmButton", resetCopy),
+    SETTINGS.indexOf("</ConfirmButton>", resetCopy),
   );
   assert.ok(button.length > 0, "the danger zone must render a ConfirmButton");
   assert.match(button, /onConfirm=\{runFactoryReset\}/);

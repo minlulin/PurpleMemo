@@ -61,6 +61,21 @@ export function withRememberedEndpoint(
   return { ...map, [desktopDeviceId]: cleaned };
 }
 
+/**
+ * Forget one peer's address, keeping every other peer's. Used by the durable
+ * pairing "Forget this desktop" act, so a stale address cannot be dialed
+ * after the pin is gone either.
+ */
+export function withoutRememberedEndpoint(
+  map: RememberedEndpoints,
+  desktopDeviceId: string,
+): RememberedEndpoints {
+  if (!(desktopDeviceId in map)) return map;
+  const next = { ...map };
+  delete next[desktopDeviceId];
+  return next;
+}
+
 /** The endpoint one press will use, and where it came from. */
 export interface SyncEndpoint {
   endpoint: string;

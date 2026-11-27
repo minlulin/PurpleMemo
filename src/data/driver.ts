@@ -490,6 +490,19 @@ export interface DataDriver {
    */
   syncCloseToTray?(enabled: boolean): Promise<void>;
   /**
+   * Publish the paired-phone reachability toggle to the window-close
+   * handler (durable pairing).
+   *
+   * Hiding the window to tray must know whether the paired phone may stay
+   * connected while the app runs, and the handler runs on the event loop —
+   * so Rust keeps this decision in memory exactly like the close-to-tray
+   * one: seeded at boot, republished at the end of an import, and
+   * republished by this call whenever the toggle is written.
+   *
+   * Optional like the import lease: only the settings path needs it.
+   */
+  syncPairedReachable?(enabled: boolean): Promise<void>;
+  /**
    * Publish the interface language to Rust (D7).
    *
    * The tray menu and the boot-failure dialogs are built before this renderer
@@ -743,6 +756,10 @@ export function createTauriDriver(): DataDriver & PairingDriver {
     // D1: the close handler reads a mirror, so the write that changes the row
     // is also the write that publishes it.
     syncCloseToTray: (enabled) => invoke("close_to_tray_set", { enabled }),
+    // Durable pairing: the same mirror rule, for the reachability toggle —
+    // the close handler must know it before the next hide, without a database.
+    syncPairedReachable: (enabled) =>
+      invoke("paired_reachable_set", { enabled }),
     // D7: the tray and the boot dialogs learn the language the same way.
     uiLocaleSet: (locale) => invoke("ui_locale_set", { locale }),
     // F13: the boot status and retry, for the shell's boot path.

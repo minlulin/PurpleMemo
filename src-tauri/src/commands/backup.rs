@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tauri::ipc::Request;
 use tauri::{Manager, State};
 
-use super::app::refresh_close_to_tray_from;
+use super::app::{refresh_close_to_tray_from, refresh_paired_reachable_from};
 use super::{header_str, lock_conn, raw_body, CmdResult};
 use crate::db::AppState;
 use crate::file_write;
@@ -186,6 +186,7 @@ pub fn backup_import_end(
     // mirror that could not be refreshed must not turn a finished import into
     // a reported failure; the next boot seeds it again.
     refresh_close_to_tray_from(&app);
+    refresh_paired_reachable_from(&app);
     Ok(())
 }
 

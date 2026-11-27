@@ -916,7 +916,7 @@ test("an open that lands after unmount leaves no port behind", () => {
   assert.match(panel, /unmountedRef\.current = true/);
   assert.match(
     panel,
-    /if \(unmountedRef\.current\) \{[\s\S]{0,200}?pairingRepo\.close\(\)/,
+    /if \(unmountedRef\.current\) \{[\s\S]{0,600}?closePaneToRestingState\(\)/,
     "a late open closes the listener instead of setting state",
   );
 });
@@ -931,10 +931,13 @@ test("a filtered-away pairing section unmounts the panel", () => {
 
 test("the lock teardown closes the pairing port through the retried stop", () => {
   const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
+  // Durable pairing: with the toggle on, the port stays up across a lock;
+  // with it off, the §11.5 stop runs — and a failed close is still retried
+  // and reported by the retried stop, not swallowed.
   assert.match(
     app,
-    /stopListeners: \(\) =>\s*pairingRepo\.close\(\)/,
-    "a failed pairing close is retried and reported, not swallowed",
+    /stopListeners: \(\) =>[\s\S]{0,400}?pairedPhoneReachabilityEnabled\(\)[\s\S]{0,200}?pairingRepo\.close\(\)/,
+    "the toggle decides whether the port stays up; the off path closes it through the retried stop",
   );
 });
 

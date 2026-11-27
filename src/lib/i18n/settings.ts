@@ -12,6 +12,7 @@ export const enSettings = {
   "settings.section.keyExport": "Key export",
   "settings.section.backup": "Backup",
   "settings.section.pairing": "Pairing",
+  "settings.section.pairedPhone": "Paired phone",
   "settings.section.updates": "Updates",
   "settings.section.about": "About",
   "settings.theme": "Theme",
@@ -101,6 +102,27 @@ export const enSettings = {
   "settings.closeToTrayHint":
     "Closing the window keeps Purple Memo running in the system tray, so reminders keep firing while it looks closed. Turn this off to make closing quit the app instead.",
 
+  "settings.pairedPhoneTitle": "Paired phone",
+  "settings.pairedPhoneNoneBadge": "No phone paired",
+  "settings.pairedPhoneTrustedBadge": "Remembered",
+  "settings.pairedPhoneReachable": "Let my paired phone stay connected",
+  "settings.pairedPhoneReachableHint":
+    "While this app is running, your paired phone can sync without a new code — like a phone and notebook that have already met. Turn this off and the notebook is reachable only while pairing is on screen.",
+  "settings.pairedPhoneNoneBody":
+    "No phone is paired yet. Pair one from the Sync panel above — after that it stays remembered until you forget it here.",
+  "settings.pairedPhoneName": "Trusted phone",
+  "settings.pairedPhoneNameFallback": "Phone",
+  "settings.pairedPhoneDeviceId": "Device id",
+  "settings.pairedPhonePending":
+    "{count} change(s) are still waiting to be sent to this phone.",
+  "settings.pairedPhoneForgetWhat":
+    "Forget this phone — it will never sync with this notebook again until you pair it with a fresh code",
+  "settings.pairedPhoneForgetWhatPending":
+    "Forget this phone and drop the {count} undelivered change(s) addressed to it",
+  "settings.pairedPhoneForget": "Forget this phone",
+  "settings.pairedPhoneForgotten":
+    "Phone forgotten — it will not sync again until you pair it with a fresh code. ({count} undelivered change(s) dropped.)",
+
   "settings.backupTitle": "Backup & restore",
   "settings.backupBadge": ".zip or password-protected",
   "settings.lastBackupNever":
@@ -153,6 +175,7 @@ export const mySettings: Record<keyof typeof enSettings, string> = {
   "settings.section.keyExport": "သော့ ထုတ်ယူမှု",
   "settings.section.backup": "အရန်သိမ်းဆည်းမှု",
   "settings.section.pairing": "တွဲချိတ်ခြင်း",
+  "settings.section.pairedPhone": "တွဲချိတ်ထားသော ဖုန်း",
   "settings.section.updates": "အပ်ဒိတ်များ",
   "settings.section.about": "အကြောင်း",
   "settings.theme": "အရောင် အပြင်အဆင်",
@@ -240,6 +263,27 @@ export const mySettings: Record<keyof typeof enSettings, string> = {
   "settings.closeToTray": "ပိတ်လိုက်ပါက Tray တွင် ချုံ့ထားမည်",
   "settings.closeToTrayHint":
     "စာမျက်နှာ ပိတ်လိုက်ပါက Purple Memo သည် စနစ် tray တွင် ဆက်လက်အလုပ်လုပ်နေဆဲဖြစ်၍ ပိတ်ထားသည့်အတိုင်းပင် သတိပေးချက်များ ဆက်လက်ပေါ်လာနိုင်ပါသည်။ ဤခလုတ်ကို ပိတ်လိုက်ပါက စာမျက်နှာ ပိတ်လိုက်တိုင်း အက်ပ်လည်း ပိတ်သွားပါမည်။",
+
+  "settings.pairedPhoneTitle": "တွဲချိတ်ထားသော ဖုန်း",
+  "settings.pairedPhoneNoneBadge": "ဖုန်း မတွဲချိတ်ရသေးပါ",
+  "settings.pairedPhoneTrustedBadge": "မှတ်ထားသည်",
+  "settings.pairedPhoneReachable": "တွဲချိတ်ထားသော ဖုန်းကို ချိတ်ဆက်ထားခွင့်ပြုမည်",
+  "settings.pairedPhoneReachableHint":
+    "ဤအက်ပ် အလုပ်လုပ်နေစဉ် တွဲချိတ်ထားသော ဖုန်းသည် ကုဒ်အသစ် မလိုဘဲ sync လုပ်နိုင်ပါသည် — တစ်ကြိမ်တွေ့ပြီးသော ဖုန်းနှင့် နိုတ်ဘွတ်ကဲ့သို့ ဖြစ်သည်။ ပိတ်လိုက်ပါက pairing စခရင် ဖွင့်ထားမှသာ ချိတ်ဆက်၍ ရပါမည်။",
+  "settings.pairedPhoneNoneBody":
+    "ဖုန်း မတွဲချိတ်ရသေးပါ။ အထက်ပါ pairing စခရင်မှ တစ်ခု တွဲချိတ်ပါ — ထို့နောက် ဤနေရာတွင် မေ့ပစ်မှသာ မေ့သွားပါမည်။",
+  "settings.pairedPhoneName": "ယုံကြည်ထားသော ဖုန်း",
+  "settings.pairedPhoneNameFallback": "ဖုန်း",
+  "settings.pairedPhoneDeviceId": "စက် ID",
+  "settings.pairedPhonePending":
+    "ဤဖုန်းသို့ ပို့ရန် မပြီးသေးသော ပြောင်းလဲမှု {count} ခု ရှိနေပါသည်။",
+  "settings.pairedPhoneForgetWhat":
+    "ဤဖုန်းကို မေ့မည် — ကုဒ်အသစ်ဖြင့် ပြန်တွဲချိတ်မှသာ ဤနိုတ်ဘွတ်နှင့် ပြန် sync လုပ်နိုင်ပါမည်",
+  "settings.pairedPhoneForgetWhatPending":
+    "ဤဖုန်းကို မေ့ပြီး ဤဖုန်းသို့ ပို့ရန် မပြီးသေးသော ပြောင်းလဲမှု {count} ခုကိုလည်း ဖျက်ပစ်မည်",
+  "settings.pairedPhoneForget": "ဤဖုန်းကို မေ့မည်",
+  "settings.pairedPhoneForgotten":
+    "ဖုန်းကို မေ့ပြီးပါပြီ — ကုဒ်အသစ်ဖြင့် ပြန်တွဲချိတ်မှသာ ပြန် sync လုပ်နိုင်ပါမည်။ (ပို့ရန် မပြီးသေးသော ပြောင်းလဲမှု {count} ခု ဖျက်ပစ်ခဲ့သည်။)",
 
   "settings.backupTitle": "အရန်သိမ်းဆည်းမှုနှင့် ပြန်လည်ရယူမှု",
   "settings.backupBadge": ".zip သို့မဟုတ် စကားဝှက်ကာကွယ်ထားသည်",

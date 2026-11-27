@@ -1967,6 +1967,9 @@ test("a payload carries the theme and the vault verifier, never the app PIN", as
       "biometric_unlock",
       // F7's remembered sync addresses: this phone's network, not the library's.
       "sync_endpoints",
+      // Durable pairing's reachability toggle: whether THIS device keeps a
+      // sync window open — a fact about this machine, not the library's.
+      "paired_phone_reachable",
     ],
   );
 });

@@ -247,6 +247,14 @@ export const enMobile = {
     "Synced: {pushed} change(s) sent, {pulled} received.",
   "mobile.settings.syncNothing":
     "Already up to date — nothing was sent or received.",
+  "mobile.settings.forgetDesktopHeading": "Forget this desktop",
+  "mobile.settings.forgetDesktopBody":
+    "Stop remembering this desktop. Sync will not work until you pair again with a fresh code, and this phone forgets where the desktop was seen.",
+  "mobile.settings.forgetDesktopWhat":
+    "Forget this desktop — sync stops until you pair again with a fresh code",
+  "mobile.settings.forgetDesktop": "Forget this desktop",
+  "mobile.settings.forgotDesktop":
+    "Desktop forgotten. Scan a fresh code to pair with it again.",
   "mobile.settings.syncReplaced":
     "Sync replaced {count} of this phone's edits with the desktop's newer version. The replaced copies are in this phone's Trash, and this phone has no Trash screen yet.",
   "mobile.settings.syncUnconfirmed":
@@ -562,6 +570,14 @@ export const myMobile: Record<keyof typeof enMobile, string> = {
     "ထပ်တူပြုပြီးပါပြီ — ပြောင်းချက် {pushed} ခု ပို့ပြီး၊ {pulled} ခု လက်ခံရရှိပါသည်။",
   "mobile.settings.syncNothing":
     "အပ်ဒိတ်ဖြစ်ပြီးသားပါ — ပို့စရာလည်း မရှိ၊ လက်ခံစရာလည်း မရှိပါ။",
+  "mobile.settings.forgetDesktopHeading": "ဤကွန်ပျူတာကို မေ့မည်",
+  "mobile.settings.forgetDesktopBody":
+    "ဤကွန်ပျူတာကို မှတ်ထားခြင်း ရပ်လိုက်ပါမည်။ ကုဒ်အသစ်ဖြင့် ပြန်တွဲချိတ်မှသာ ပြန် sync လုပ်နိုင်ပြီး ဤဖုန်းသည် ကွန်ပျူတာကို တွေ့ဖူးသော လိပ်စာကိုပါ မေ့သွားပါမည်။",
+  "mobile.settings.forgetDesktopWhat":
+    "ဤကွန်ပျူတာကို မေ့မည် — ကုဒ်အသစ်ဖြင့် ပြန်တွဲချိတ်မှသာ ပြန် sync လုပ်နိုင်ပါမည်",
+  "mobile.settings.forgetDesktop": "ဤကွန်ပျူတာကို မေ့မည်",
+  "mobile.settings.forgotDesktop":
+    "ကွန်ပျူတာကို မေ့ပြီးပါပြီ။ ပြန်တွဲချိတ်ရန် ကုဒ်အသစ်ကို စကန်ဖတ်ပါ။",
   "mobile.settings.syncReplaced":
     "ထပ်တူပြုမှုက ဤဖုန်း၏ တည်းဖြတ်ချက် {count} ခုကို ကွန်ပျူတာ၏ ပိုသစ်သော ဗားရှင်းဖြင့် အစားထိုးခဲ့သည်။ အစားထိုးခံရသော မိတ္တူများသည် ဤဖုန်း၏ အမှိုက်ပုံးထဲတွင် ရှိပြီး ဤဖုန်းတွင် အမှိုက်ပုံး မျက်နှာပြင် မရှိသေးပါ။",
   "mobile.settings.syncUnconfirmed":

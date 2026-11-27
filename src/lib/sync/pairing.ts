@@ -42,8 +42,10 @@ export const PAIRING_OFFER_VERSION = 1;
 
 export interface PairingOffer {
   version: number;
-  /** §11.4: a re-pair mints a NEW pairing id — this is how the two sides tell
-   * a fresh pairing from a resumed one. */
+  /** §11.4 + durable pairing: the pairing id is the §7.2 envelope-counter
+   * scope. A pin reuses its existing id (minting only for a first pairing),
+   * so a re-pair resumes the same envelope lineage; the replay floor
+   * (`pairing_counter.<pairing_id>`) survives it. */
   pairingId: string;
   /** The desktop's device id (§1.2). Never rendered in the UI. */
   deviceId: string;
@@ -76,6 +78,13 @@ export interface CreatePairingInput {
   generation: number;
   schemaVersion: number;
   protocolVersion?: number;
+  /**
+   * Durable pairing: a pin's pairing id to reuse. Opening a window for an
+   * already-pinned phone must keep the phone's existing pairing valid —
+   * minting a fresh id here would make every re-opened panel a re-pair the
+   * phone refuses. Absent → a fresh id is minted (first pairing).
+   */
+  pairingId?: string;
   now?: number;
   /** Injected so a test can pin a code it can actually type; the default is
    * the OS CSPRNG. */
@@ -111,10 +120,16 @@ export function createPairingSession(
 ): PairingSession {
   const now = input.now ?? Date.now();
   const random = input.random ?? defaultRandom;
+  const pairingId =
+    typeof input.pairingId === "string" && input.pairingId.trim() !== ""
+      ? input.pairingId.trim()
+      : crypto.randomUUID();
   return {
     offer: {
       version: PAIRING_OFFER_VERSION,
-      pairingId: crypto.randomUUID(),
+      // §7.2 durable pairing: reuse the pin's pairing id when one exists,
+      // mint only for a first pairing.
+      pairingId,
       deviceId: input.deviceId,
       endpoint: input.endpoint,
       publicKey: input.publicKey,
@@ -612,8 +627,10 @@ export function pinFromDesktop(
 /**
  * The statements that store a desktop's pin, made only after the sealed hello
  * has been acknowledged (N1). A desktop already in `sync_peers` is re-paired
- * through `rePairStatements` (§11.4) — new pairing id, both cursors zeroed, the
- * old pairing's acks dropped — and keeps the name the person gave it.
+ * through `rePairStatements` (§11.4) — both cursors zeroed, the old pairing's
+ * acks dropped, and the pairing id the caller passes (durable pairing: the
+ * existing pin's id is reused, so the replay floor survives the re-pair) —
+ * and keeps the name the person gave it.
  */
 export function desktopPinStatements(
   ack: DesktopAck,

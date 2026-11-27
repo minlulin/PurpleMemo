@@ -24,11 +24,17 @@ import { databaseBytes } from "../lib/mobileSettings.ts";
 import { createNotesRepo } from "../lib/notes.ts";
 import { createSettingsRepo } from "../lib/settings.ts";
 import { createShoppingRepo } from "../lib/shopping.ts";
+import {
+  type DurableOutcome,
+  ensurePairedPhoneReachable,
+} from "../lib/sync/durablePairing.ts";
+import { forgetPairingStatements } from "../lib/sync/forget.ts";
 import { createMobilePairingRepo } from "../lib/sync/mobilePairing.ts";
 import { createPairingRepo } from "../lib/sync/pairingPanel.ts";
 import { holdsLocalData } from "../lib/sync/pairingWarning.ts";
 import type { Origin } from "../lib/sync/protocol.ts";
 import { readOwnDeviceId } from "../lib/sync/reminderDelivery.ts";
+import { readPeers } from "../lib/sync/store.ts";
 import { createSyncRepo } from "../lib/sync/syncSession.ts";
 import { insertTasks, type TaskInsert } from "../lib/taskImport.ts";
 import { createTasksRepo } from "../lib/tasks.ts";
@@ -185,11 +191,61 @@ export const backupRepo = createBackupRepo(driver, {
  * The pairing panel's repo: the real listener plus the store's own pin
  * statements, over the one driver. The panel never touches IPC itself.
  */
-export const pairingRepo = createPairingRepo(driver);
+export const pairingRepo = createPairingRepo(driver, {
+  // Durable pairing: when the offer window closes itself (the code
+  // expired), the resting state is the pinned-only window — the
+  // remembered phone must not go dark until the next unlock.
+  onWindowClosed: () => {
+    void ensurePairedPhoneReachableNow().catch(() => undefined);
+  },
+});
 
 /** The phone's side of pairing: redeem, wire, then pin (§11.6.1, Session 7 T2). */
 export const mobilePairingRepo = createMobilePairingRepo(driver);
 export const syncRepo = createSyncRepo(driver);
+
+/**
+ * Durable pairing: open (or re-open) the pinned-only window for the pinned
+ * phone, when the reachability toggle says the phone may stay connected.
+ * Best-effort for the caller's purposes — the outcome says what happened,
+ * and an unreachable phone is a retry away, not an app error.
+ */
+export function ensurePairedPhoneReachableNow(): Promise<DurableOutcome> {
+  return settingsRepo
+    .getPairedPhoneReachable()
+    .catch(() => true) // absent row = the durable default (ON)
+    .then((toggle) =>
+      ensurePairedPhoneReachable(
+        {
+          pairingOpen: (input) => driver.pairingOpen(input),
+          peers: () => readPeers(driver),
+          batch: (statements) => driver.batch(statements),
+        },
+        toggle,
+        isAndroidPlatform(),
+      ),
+    );
+}
+
+/**
+ * Durable pairing: whether the reachability toggle currently says the paired
+ * phone may stay connected. Read fresh everywhere it gates a listener
+ * decision (lock, background, close), so flipping the toggle in Settings
+ * applies at the very next one of those — no restart, no cache.
+ */
+export function pairedPhoneReachabilityEnabled(): Promise<boolean> {
+  return settingsRepo.getPairedPhoneReachable().catch(() => true);
+}
+
+/**
+ * Durable pairing: forget a pinned peer entirely — the `sync_peers` row and
+ * every device-local §7.2 floor row, in one batch. The caller is expected to
+ * republish the decision surface it needs (close the listener, discard the
+ * phone's pending outbox, refresh its lists) after this resolves.
+ */
+export function forgetPinnedPeer(deviceId: string): Promise<void> {
+  return driver.batch(forgetPairingStatements(deviceId));
+}
 
 /**
  * This device's own id from `sync_state` — what §13.1's delivery rule compares

@@ -18,6 +18,10 @@
  * - a peer the listener's code-confirmed rendezvous pinned is written to
  *   `sync_peers` with the store's own statements, so the pin is a row (§11.2)
  *   and a re-pair is a re-pair (§11.4), never a silent overwrite.
+ * - durable pairing: when an un-revoked pin exists, its pairing id is reused
+ *   for the window (minting only for a first pairing), so the phone's pin
+ *   stays valid every time the panel reopens, and a re-pair never resets the
+ *   §7.2 replay floor.
  *
  * No socket and no SQL live here: the panel drives the `PairingTransport` the
  * composition root binds to the one driver, which is what lets the suite run
@@ -36,6 +40,7 @@ import type {
   UploadOutcomeInput,
   UploadTakeResult,
 } from "../../data/driver.ts";
+import { durablePin } from "./durablePairing.ts";
 import { applyOps, type PeerOp } from "./engine.ts";
 import { readUploadOps } from "./mobilePairing.ts";
 import {
@@ -140,6 +145,11 @@ export async function openPairingPanel(
   now: number = Date.now(),
 ): Promise<PairingPanelState> {
   const local = await transport.pairingLocal();
+  // Durable pairing: reuse the pin's pairing id when one exists. Minting a
+  // fresh id per open was the bug that forced the phone to re-scan a code for
+  // every sync — the pin on the phone names the OLD id, so every new window
+  // looked like a different, unknown pairing.
+  const durable = durablePin(await transport.peers().catch(() => []));
   const session = createPairingSession({
     deviceId: local.deviceId,
     // The real endpoint only exists once the listener binds; the offer is
@@ -149,6 +159,7 @@ export async function openPairingPanel(
     generation: local.generation,
     schemaVersion: local.schemaVersion,
     protocolVersion: local.protocolVersion,
+    ...(durable?.pairing_id ? { pairingId: durable.pairing_id } : {}),
     now,
   });
   const listener = await transport.pairingOpen({
@@ -650,6 +661,7 @@ export async function settlePairingPanel(
   transport: PairingTransport,
   state: PairingPanelState,
   now: number = Date.now(),
+  options: { afterClose?: () => void } = {},
 ): Promise<PairingPanelState> {
   let current = await transport.pairingStatus();
   // §9.1: a committed upload is this panel's to apply, and the phone polls
@@ -706,7 +718,11 @@ export async function settlePairingPanel(
     current.peerDeviceId !== null &&
     now < session.offer.expiresAt;
   if (phase !== "active" && !servingThePhone && current.running) {
-    return { ...next, listener: await transport.pairingClose() };
+    const listener = await transport.pairingClose();
+    // Durable pairing: the offer window just died of its own expiry — the
+    // resting state is the pin-gated window, not silence.
+    options.afterClose?.();
+    return { ...next, listener };
   }
   return next;
 }
@@ -755,9 +771,22 @@ export async function pinAdmittedPeer(
       "waiting for the phone's hello — key possession is not proven yet, so nothing is pinned.",
     );
   }
-  const existing = (await transport.peers()).find(
-    (row) => row.device_id === deviceId,
+  const pins = await transport.peers();
+  // One phone at a time (durable pairing): a DIFFERENT phone may never be
+  // pinned while one is already trusted. This is the gate that cannot be
+  // bypassed by the panel's flow — refusing with a name the person
+  // recognises, and pointing at the one act that frees the slot.
+  const otherTrusted = pins.filter(
+    (row) => row.revoked_at === null && row.device_id !== deviceId,
   );
+  if (otherTrusted.length > 0) {
+    const other = otherTrusted[0];
+    const who = other?.display_name || other?.device_id || "another phone";
+    throw new Error(
+      `this notebook already trusts ${who} — forget it in Settings → Paired phone first, then pair this one.`,
+    );
+  }
+  const existing = pins.find((row) => row.device_id === deviceId);
   // §11.4: a re-pair zeroes the cursors and drops the old pairing's acks, so
   // any operation this desktop has not delivered to that phone would be
   // stranded by it. Trust refuses while that is true — the discard act, and
@@ -800,7 +829,10 @@ export async function discardPendingOutbox(
 }
 
 /** Bind the panel to the one production driver (`data/app.ts`). */
-export function createPairingRepo(driver: DataDriver & PairingDriver) {
+export function createPairingRepo(
+  driver: DataDriver & PairingDriver,
+  hooks: { onWindowClosed?: () => void } = {},
+) {
   const transport: PairingTransport = {
     pairingLocal: () => driver.pairingLocal(),
     pairingOpen: (input) => driver.pairingOpen(input),
@@ -853,7 +885,9 @@ export function createPairingRepo(driver: DataDriver & PairingDriver) {
     open: (now?: number) => openPairingPanel(transport, now),
     close: () => closePairingPanel(transport),
     settle: (state: PairingPanelState, now?: number) =>
-      settlePairingPanel(transport, state, now),
+      settlePairingPanel(transport, state, now, {
+        afterClose: hooks.onWindowClosed,
+      }),
     applyUpload: async () =>
       applyStagedUpload(
         transport,

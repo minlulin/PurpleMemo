@@ -54,14 +54,44 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// An HTTP head plus one frame. Anything larger is not a pairing reply.
 const MAX_REPLY_BYTES: usize = MAX_FRAME_BYTES + 8 * 1024;
 
-/// A hello counter that never repeats inside this process. The desktop refuses
-/// a counter it has already accepted (§7.2), and it resets its counter whenever
-/// it stages a peer, so a monotonic value is accepted across windows too.
+/// A hello counter that never repeats, across windows AND across restarts.
+/// The desktop refuses a counter it has already accepted (§7.2), and since
+/// the floor it keeps is device-local, this allocator must be too: a phone
+/// that re-minted 1 after every launch would be refused by the very floor
+/// that makes a remembered pairing safe. Seeded at boot from the device-local
+/// `pairing_counter.local` row ([`seed_counter`]); flushed best-effort on
+/// every mint ([`install_counter_sink`]).
 static HELLO_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The next hello counter to use.
+/// Best-effort persistence for the outbound floor. Called with the freshly
+/// minted value; an implementation that cannot write (the connection is
+/// busy, the row is unreadable) skips the flush — the in-memory counter is
+/// already ahead, and the next successful flush records a floor at least as
+/// high. Never blocks, never fails the mint.
+type CounterSink = std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+
+static COUNTER_SINK: Mutex<Option<CounterSink>> = Mutex::new(None);
+
+/// Seed the allocator from the stored floor. Idempotent and monotonic —
+/// `max`, never a decrease — so a retry of boot can re-seed freely.
+pub(crate) fn seed_counter(floor: u64) {
+    HELLO_COUNTER.fetch_max(floor, Ordering::SeqCst);
+}
+
+/// Install the persistence sink. Replaces any previous sink (boot installs
+/// once per process; a retry of boot re-installs the same one).
+pub(crate) fn install_counter_sink(sink: CounterSink) {
+    *COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+}
+
+/// The next counter to use. Strictly monotonic across windows and, once the
+/// boot seed has run, across restarts.
 pub fn next_hello_counter() -> u64 {
-    HELLO_COUNTER.fetch_add(1, Ordering::SeqCst) + 1
+    let next = HELLO_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Some(sink) = COUNTER_SINK.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        sink(next);
+    }
+    next
 }
 
 /// Why a pairing step failed.

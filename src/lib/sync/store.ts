@@ -519,7 +519,9 @@ export function registerPeerStatements(
  * §11.4: a re-pair is a NEW pairing, never a resumed one. The pin is replaced,
  * both cursors go back to 0, and a previous revocation is cleared (that is what
  * "re-pair" means). The row itself stays: its `created_at` is the history of
- * when this device was first paired.
+ * when this device was first paired. The pairing id is whatever the caller
+ * hands in — durable pairing reuses the existing pin's id, so the §7.2 replay
+ * floor survives the re-pair instead of resetting to zero.
  */
 export function rePairStatements(
   peer: {
@@ -571,6 +573,26 @@ export function revokePeerStatements(
     {
       sql: "UPDATE sync_peers SET revoked_at = ? WHERE device_id = ?",
       params: [nowIso(now), deviceId],
+    },
+  ];
+}
+
+/**
+ * Durable pairing: forget a peer entirely — the row goes, and the pairing id
+ * and envelope history die with it.
+ *
+ * A revoke (§11.3) keeps the row on purpose, for diagnostics. Forgetting is
+ * the "remove this Bluetooth device" act: pairing a different phone must be
+ * possible afterwards, so nothing may pretend the old pairing still exists.
+ * The device-local §7.2 floor rows are deleted by the caller's batch too —
+ * see `forgetPairingStatements` in `forget.ts`, which is how both roles
+ * forget.
+ */
+export function forgetPeerStatements(deviceId: string): BatchStatement[] {
+  return [
+    {
+      sql: "DELETE FROM sync_peers WHERE device_id = ?",
+      params: [deviceId],
     },
   ];
 }

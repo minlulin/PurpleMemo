@@ -286,7 +286,7 @@ rendered as the first Diagnostics row, and `mobile.settings.appVersion` in both
 catalogues (`App version` / `အက်ပ် ဗားရှင်း`). `npm run verify` green. The
 review trimmed both new comments to one line each.
 
-## F7 — sync needs a fresh scan and an open panel every time · **decision needed**
+## F7 — sync needs a fresh scan and an open panel every time · **in progress (owner-approved 2026-11-27, uncommitted)**
 
 `syncNow` in `src/components/MobilePairingCard.tsx` reads `offer?.endpoint`;
 without a newly scanned/pasted pairing string the card shows
@@ -297,6 +297,32 @@ Settings → Pairing is open and the app is unlocked. That is a coherent design
 Options: disclose plainly (cheap), or remember the last endpoint per peer
 locally — device-local, no wire change, and the pinned key is still what
 authenticates a peer, so a wrong address can only fail, not impersonate.
+
+Owner approved the second option on 2026-11-27, Bluetooth-style: the remembered
+endpoint is kept per peer (device-local, `settings` under
+`sync_endpoints`-style keys), and the desktop keeps a pinned-only listener
+window alive while the app runs — so a remembered phone syncs without a fresh
+scan. Both are now in the tree, uncommitted, with no version bump; the Rust
+half (envelope counter floors, `pairing_counter.rs`) is written but NOT
+compiled — no Rust toolchain on the working machine — so this cannot ship
+until `npm run verify` (including the Rust suite) is green elsewhere.
+
+Known gaps to close before this can be called done:
+
+- The phone's INBOUND acceptance floor (`ReplyCounter` in
+  `pairing_client.rs`, §7.2 for desktop→phone envelopes) is in-memory only,
+  reset on phone restart and per pull. The desktop→phone direction therefore
+  has no durable anti-replay guarantee across phone restarts, unlike the
+  phone→desktop floors this work adds. The desktop cannot raise its
+  `send_counter` floor across windows either — it restarts at 1 per window
+  by design (§11.4) — so a durable floor here needs a protocol decision, not
+  just a settings row.
+- `gallery.pendingPhotoFile.*` cleanup records (see F14) also travel in
+  backups today; decide that before the release notes describe what a restore
+  carries.
+- Burmese (my) copy for every new paired-phone string is in place but has had
+  no native-speaker read-through.
+
 
 ## F8 — the phone has no backup or export of its own · **done 2026-11-23**
 
@@ -419,6 +445,26 @@ the upload it concerned shipped and was proved on hardware on 2026-11-12.
 
 ---
 
+## F14 — `gallery.pendingPhotoFile.*` cleanup records travel in backups · **open**
+
+Pending photo-file cleanup lives in `settings` under
+`gallery.pendingPhotoFile.<id>.<rel_path>` (the row is deleted, the unlink is
+still owed — see `src/lib/gallery.ts`). Per the module's own comment these
+rows are "exported with every backup". Two consequences on a restore onto a
+different machine or into a different gallery folder:
+
+- the sweeper can try to delete `rel_path` there — a path that may now belong
+  to a live photo or another app's data;
+- nothing restores the bytes the record was owed for, so the record is stale
+  by construction (the pending file is not in the zip).
+
+Smallest fix I would accept: treat `gallery.pendingPhotoFile.` as a
+device-local prefix in `backup.ts` (same border as `sync_endpoints` and
+`paired_phone_reachable`) — one entry in `DEVICE_LOCAL_SETTING_PREFIXES` plus
+a test pinning the exclusion, exactly the `pairing_counter.` treatment — or,
+if byte-portable cleanup is wanted, carry the photo bytes in the archive.
+Either is a decision, not a default.
+
 # Working order
 
 - [x] F1 — release runbook: Android step, ordering, assets, gotcha — `9f8ab3a`
@@ -429,6 +475,7 @@ the upload it concerned shipped and was proved on hardware on 2026-11-12.
 - [ ] F11 — hardware run of reset → re-pair → re-adoption
 - [x] F10 — dependency decision (notification plugin), then patches
 - [x] F9 — gate: `check:android` + manifest permissions
-- [ ] F7 — copy decision for sync-without-code
+- [ ] F7 — remember endpoint + durable resting window (owner-approved 2026-11-27, uncommitted, uncompiled Rust)
+- [ ] F14 — decide backup travel of `gallery.pendingPhotoFile.*`
 - [x] F8 — no-phone-backup sentence in the release notes — 2026-11-23
 - [x] F12 — hygiene — 2026-11-23
