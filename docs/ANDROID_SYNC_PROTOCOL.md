@@ -891,9 +891,26 @@ prevent.
 
 #### §11.5 Listener lifetime
 
-A writable listener lives only for a manual sync, and stops on lock, on reset
-and on app background. There is no always-on port, no hosted relay and no
-auto-sync (design: manual only).
+Two lifetimes, and the setting decides which one is live.
+
+**The code window** — the one carrying the six-digit rendezvous code — lives
+only while pairing is on screen, and stops on lock, on reset and on app
+background.
+
+**The resting window** (durable pairing, 0.4.0) carries no code. It is bound to
+a pin, answers only envelopes sealed under that pin, and is opened on unlock —
+and re-bound whenever a code window closes — while **Let my paired phone stay
+connected** is on, the default including for an install that predates the
+setting. While it is on, the port stays bound on every interface for as long as
+the app runs: across a lock, across the app going to the background, and while
+the window is hidden in the tray. Turning the setting off closes the port and
+the code window's lifetime is the only one left; a factory reset stops either.
+
+So there is **no hosted relay** and no automatic sync — every exchange still
+starts with a person pressing Sync on the phone — but there *is* a pinned,
+always-listening port while that setting is on. What bounds it is the pin, not
+the socket's age: a window with no pin refuses every hello, one with no code
+refuses the rendezvous, and a revoked peer is refused before its key is read.
 
 #### §11.6 Security requirements, not a crypto design
 
@@ -952,10 +969,11 @@ It does not protect the receiver. The receiver's long-term secret plus the
 public `eph` reproduce both agreements — `X25519(receiver_secret, eph)` and
 `X25519(receiver_secret, sender_public)` — so a later compromise of the
 **receiver's** long-term key opens every envelope that was sent to it. True
-ephemeral–ephemeral forward secrecy is **deferred**, not claimed; what bounds
-the exposure today is §11.5's short-lived LAN window together with the
-per-message nonce and counter (a replayed envelope is undecryptable or a
-no-op). No wire change is implied by this paragraph (decision D2).
+ephemeral–ephemeral forward secrecy is **deferred**, not claimed. Durable
+pairing can hold the port open for a whole session (§11.5), so the pin rather
+than the socket's age bounds what reaches the receiver: only envelopes sealed
+under the pinned key are opened at all, and a replayed one is undecryptable or
+a no-op. No wire change is implied by this paragraph (decision D2).
 
 **Endpoints, kinds and refusals (as built).** `POST /pair/request` (plaintext,
 code-gated), `POST /pair/hello` (sealed, `hello`), and `POST /pair/snapshot`
@@ -991,7 +1009,8 @@ any primitive is built.
 
 **First pairing: the two endpoints, as built (wave 1).** A window that was
 opened with an offer serves two paths, both framed as above and both alive only
-while pairing is on screen (§11.5):
+while that code window is open (§11.5). The resting window serves every sealed
+route and no rendezvous — it carries no code to redeem.
 
 - `POST /pair/hello` — every message after a pin exists. Framed, sealed under
 the pinned key, with the fields and check order of §9; a pairing window accepts
@@ -1065,8 +1084,9 @@ still includes `generation` parses and is ignored.
 **Implementation status (wave 1, as built).** The offer and its QR are
 implemented and tested (`src/lib/sync/qr.ts`, `pairing.ts`: render → decode →
 `parseOffer`), and so is the listener (`src-tauri/src/pairing_listener.rs`):
-both endpoints above, on a window that exists only while pairing is on screen
-(§11.5), with read/write timeouts, no CORS grant, and validation before effect.
+both endpoints above, on a window whose lifetime is §11.5's — a code window
+while pairing is on screen, and the pinned resting window while durable pairing
+is on — with read/write timeouts, no CORS grant, and validation before effect.
 The envelope has both halves, proved against each other's bytes
 (`envelope.rs`, `envelope.ts`, `src/lib/sync/__fixtures__/`). The long-term key
 lives in the platform key store, never in the database or a backup

@@ -6,7 +6,7 @@ export const enPairing = {
   "pairing.discarded":
     "Discarded {count} undelivered change(s). Trust can proceed.",
   "pairing.listenNotice":
-    "Listens on your local network only while this panel is open.",
+    "Listens on your local network while this panel is open. With “Let my paired phone stay connected” on, it also listens for as long as the app runs — including across a lock.",
   "pairing.qrAria": "Pairing QR code",
   "pairing.keyGoneTitle": "This device's pairing key is gone or unreadable.",
   "pairing.replaceSectionAria": "Replace this device's pairing key",
@@ -78,7 +78,8 @@ export const myPairing: Record<keyof typeof enPairing, string> = {
   "pairing.discardPendingWhat": "မပို့ရသေးသော ပြောင်းလဲမှု {count} ခု",
   "pairing.discarded":
     "မပို့ရသေးသော ပြောင်းလဲမှု {count} ခုကို ဖျက်လိုက်ပါပြီ။ Trust ဆက်လုပ်နိုင်ပါပြီ။",
-  "pairing.listenNotice": "ဤအကန့် ဖွင့်ထားစဉ်တွင်သာ သင့်ဒေသခံ ကွန်ရက်ပေါ်တွင် နားထောင်ပါသည်။",
+  "pairing.listenNotice":
+    "ဤအကန့် ဖွင့်ထားစဉ် သင့်ဒေသခံ ကွန်ရက်ပေါ်တွင် နားထောင်ပါသည်။ “တွဲချိတ်ထားသော ဖုန်းကို ချိတ်ဆက်ထားခွင့်ပြုမည်” ဖွင့်ထားပါက အက်ပ် လည်ပတ်နေသမျှ၊ လော့ခ်ချထားချိန်ပါ ဆက်လက် နားထောင်ပါသည်။",
   "pairing.qrAria": "တွဲချိတ်ရန် QR ကုဒ်",
   "pairing.keyGoneTitle": "ဤစက်၏ တွဲချိတ်သော့ ပျောက်နေသည် သို့မဟုတ် ဖတ်၍ မရပါ။",
   "pairing.replaceSectionAria": "ဤစက်၏ တွဲချိတ်သော့ကို အစားထိုးရန်",

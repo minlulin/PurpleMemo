@@ -669,10 +669,11 @@ export const IDLE_LISTENER: ListenerState = {
 };
 
 /**
- * §11.5: the port exists only while pairing is on screen. `stop` is what the
- * pairing UI calls on lock, on reset and when the screen closes, so "no
- * always-on port" is a property of this value rather than of a promise in a
- * comment.
+ * §11.5: a code window exists only while pairing is on screen; `stop` is what
+ * the pairing UI calls on lock, on reset and when the screen closes. Durable
+ * pairing's resting window is not modelled here — it shows no code and outlives
+ * the panel while the reachability setting is on, so the Rust listener owns its
+ * lifetime.
  */
 export function startPairingListener(now: number = Date.now()): ListenerState {
   return { active: true, purpose: "pairing", startedAt: now };

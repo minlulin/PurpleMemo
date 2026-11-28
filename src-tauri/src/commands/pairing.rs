@@ -126,9 +126,11 @@ pub fn pairing_local(app: tauri::AppHandle) -> CmdResult<PairingLocalInfo> {
     })
 }
 
-/// Open the pairing window (§11.5): one LAN listener, alive only while the
-/// panel is on screen. The local identity, device id, generation and schema are
-/// read here rather than trusted from the webview.
+/// Open the pairing window (§11.5): one LAN listener, whose lifetime is the
+/// window's — a code window while the panel is on screen, or the pinned resting
+/// window durable pairing keeps up while the app runs. The local identity,
+/// device id, generation and schema are read here rather than trusted from the
+/// webview.
 #[tauri::command]
 pub fn pairing_open(
     app: tauri::AppHandle,
@@ -191,8 +193,10 @@ pub fn pairing_open(
         let conn = lock_conn(&db_state).map_err(|e| e.diagnostic())?;
         crate::pairing_snapshot::read_snapshot(&conn)
     });
-    // §11.5: the window is on the LAN only while pairing is on screen; the
-    // panel closes it on expiry, on close, on lock and on app background.
+    // §11.5: the socket lives as long as the window it serves. The panel closes
+    // a code window on expiry and on close, and closes it on lock and on app
+    // background unless durable pairing keeps a pinned window up; reset stops
+    // either kind.
     // §6: this window's own operations, read in Rust for the snapshot's reason
     // — the read is the app's connection, taken under the one lock every other
     // reader takes, and the listener holds it for the window's life.

@@ -949,7 +949,12 @@ impl PairingListenerState {
         Ok(PairingListenerInfo::stopped(None))
     }
 
-    /// The lock path (§11.5): locking the app ends the pairing window.
+    /// The lock path (§11.5): locking the app ends a *code* window.
+    ///
+    /// A resting window is exempt by design — the shell's lock path and the
+    /// close-to-tray handler skip this call while `paired_phone_reachable` is
+    /// on. When the port really is closing, the epoch rises first (D2a), which
+    /// is why this is not just [`Self::stop`].
     ///
     /// The lock epoch is raised BEFORE the socket is reaped (D2a), so a
     /// `start` preparing right now is

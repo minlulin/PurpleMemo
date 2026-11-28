@@ -174,8 +174,8 @@ The position, decided by the owner on 2026-11-16:
 
    ```bash
    node scripts/make-latest-json.mjs \
-     --version 0.2.0 \
-     --asset "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe" \
+     --version 0.4.0 \
+     --asset "src-tauri/target/release/bundle/nsis/Purple Memo_0.4.0_x64-setup.exe" \
      --notes-file RELEASE_NOTES.md
    ```
 
@@ -196,11 +196,11 @@ The position, decided by the owner on 2026-11-16:
 8. **Publish** — with the GitHub CLI, or the web UI:
 
    ```bash
-   gh release create v0.2.0 \
-     --title "Purple Memo 0.2.0" \
+   gh release create v0.4.0 \
+     --title "Purple Memo 0.4.0" \
      --notes-file RELEASE_NOTES.md \
-     "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe" \
-     "src-tauri/target/release/bundle/nsis/Purple Memo_0.2.0_x64-setup.exe.sig" \
+     "src-tauri/target/release/bundle/nsis/Purple Memo_0.4.0_x64-setup.exe" \
+     "src-tauri/target/release/bundle/nsis/Purple Memo_0.4.0_x64-setup.exe.sig" \
      "src-tauri/target/release/bundle/nsis/latest.json" \
      "src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
    ```
@@ -271,14 +271,15 @@ The position, decided by the owner on 2026-11-16:
 - The `pubkey` in `tauri.conf.json` is the public half only; there is no
   signing secret in this repository and no hosted secret store.
 - **Schema migrations are forward-only, and downgrading is unsupported.** The
-  current schema is **v12**: 40 regular tables plus the `notes_fts` FTS5 table
+  current schema is **v14**: 40 regular tables plus the `notes_fts` FTS5 table
   (its `_data`/`_idx`/`_docsize`/`_config` shadow tables are FTS internals and
   do not count), as `schema.rs`'s module header and `BASELINE_SQL` state. Nine
   of the 40 are device-local sync storage — `sync_state`, `sync_outbox`,
   `sync_outbox_delivery`, `sync_tombstones`, `sync_tombstone_acks`,
   `sync_peers`, `sync_row_stamps`, `sync_uid_aliases`,
-  `sync_tombstone_gc_log`. The v9–v12 steps, all device-local except v10:
-  v9 adds `sync_row_stamps` (the §4.2 stamp of the value each row currently
+  `sync_tombstone_gc_log`. The v9–v14 steps, all device-local except v10, v13
+  and v14. v9 adds `sync_row_stamps` (the §4.2 stamp of the value each row
+  currently
   holds, backfilled at `migration-8-9` with whatever counter the database has,
   since before v9 there is no per-row history); v10 **rebuilds** `trash_items`
   to widen its `entity_type` CHECK with `shopping_list`/`shopping_item`, so a
@@ -287,7 +288,10 @@ The position, decided by the owner on 2026-11-16:
   ids or timestamps changes); v11 adds `sync_uid_aliases` (the uid a same-name
   fold retired, so an op queued under it still resolves to the winner); v12
   adds `sync_tombstone_gc_log` (the delete a GC pruned, so a stale create at or
-  below that counter cannot resurrect a row the user deleted). Earlier steps:
+  below that counter cannot resurrect a row the user deleted); v13 adds the
+  wallet-side ledger indexes both tables were missing, so the per-wallet
+  figures stop scanning (`MIGRATION_12_13`); v14 adds the month-day index the
+  Memories "On this day" list filters on (`MIGRATION_13_14`). Earlier steps:
   v8 the six original `sync_*` tables of docs/ANDROID_SYNC_PROTOCOL.md —
   outbox, tombstones, peers, cursors/device identity — plus a nullable
   `reminders.created_by_device_id`; v7 the cross-device `uid` columns; v6 the
