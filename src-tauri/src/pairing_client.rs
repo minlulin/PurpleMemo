@@ -704,7 +704,12 @@ pub fn send_sync_commit(
 
 /// Ask for one batch of the desktop's own operations after `afterSeq` (§6.3).
 /// The reply is sealed and carries a process-wide counter, so a replayed
-/// `sync-ops` cannot pass as a fresh batch.
+/// `sync-ops` cannot pass as a fresh batch. Batch 0 retires the pairing's
+/// reply counters for the push's reason: a window's `send_counter` begins
+/// again at 1, so the counters a previous window left behind would refuse
+/// this window's first sealed `sync-ops` reply. The push cannot be relied
+/// on to have retired them first — a session with nothing to push never
+/// sends one — so the pull retires them itself.
 pub fn pull_sync_ops(
     pull: &SnapshotPull<'_>,
     facts: &PhoneFacts<'_>,
@@ -713,6 +718,9 @@ pub fn pull_sync_ops(
     batch: u64,
     after_seq: u64,
 ) -> Result<JsonValue, PairingClientError> {
+    if batch == 0 {
+        counters.restart(pull.pairing_id);
+    }
     let reply = exchange_on(
         pull,
         facts,
@@ -1698,6 +1706,44 @@ mod tests {
         let info = state.status().expect("status");
         assert_eq!(info.sync_applied, Some(4));
         assert_eq!(info.sync_state.as_deref(), Some("applied"));
+        state.stop().expect("stop");
+    }
+
+    /// A session with nothing to push never sends a push batch 0, so the
+    /// pull must retire the previous window's reply counters itself: the
+    /// desktop binds a fresh window whose `send_counter` begins again at 1
+    /// while this process — and its process-wide ReplyCounter — lives on,
+    /// and without the retirement the first sealed reply is refused as
+    /// already accepted (§7.2).
+    #[test]
+    fn a_pull_only_session_survives_a_window_restart() {
+        let (state, port) = serving_with_sync(vec![sync_op(1)]);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let counters = ReplyCounter::default();
+
+        let batch =
+            pull_sync_ops(&pull, &facts(), &identity, &counters, 0, 0).expect("a sealed batch");
+        assert_eq!(batch["kind"], json!("sync-ops"));
+        assert!(
+            counters.last(PAIRING_ID) > 0,
+            "the first window's replies advanced the counter"
+        );
+        state.stop().expect("stop");
+
+        // A fresh window, the same phone process: the pull-only session
+        // must still land.
+        let (state, port) = serving_with_sync(vec![sync_op(2)]);
+        let endpoint = format!("127.0.0.1:{port}");
+        let identity = paired(&endpoint);
+        let pull = pulling(&endpoint);
+        let batch = pull_sync_ops(&pull, &facts(), &identity, &counters, 0, 1)
+            .expect("a pull-only session against a fresh window");
+        assert_eq!(batch["kind"], json!("sync-ops"));
+        let ops = batch["ops"].as_array().expect("ops");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0]["seq"], json!(2));
         state.stop().expect("stop");
     }
 
