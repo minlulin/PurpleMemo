@@ -1612,13 +1612,7 @@ mod tests {
         // First window: counter 5 is admitted and the floor records it.
         let state = PairingListenerState::default();
         let info = state
-            .start(
-                "127.0.0.1",
-                0,
-                restart_window(0),
-                desktop_identity(),
-                None,
-            )
+            .start("127.0.0.1", 0, restart_window(0), desktop_identity(), None)
             .expect("start");
         let port = info.port.expect("a bound port");
         let (status, body) = post(port, &seal(5));
@@ -1671,10 +1665,7 @@ mod tests {
         install_counter_sink(Arc::new(move |pairing_id: &str, _floor: u64| {
             if pairing_id == "pair-heldlock" {
                 // Park until the test releases us — the held connection.
-                let _ = release_rx
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .recv();
+                let _ = release_rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
             }
             Ok(())
         }));

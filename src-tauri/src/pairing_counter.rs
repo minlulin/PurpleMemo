@@ -67,16 +67,17 @@ pub(crate) enum FloorRead {
 /// key and the parse error) so the refusal the caller raises has a cause on
 /// record.
 pub(crate) fn read_floor(conn: &Connection, key: &str) -> FloorRead {
-    let raw: String = match conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-        row.get(0)
-    }) {
-        Ok(raw) => raw,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return FloorRead::Absent,
-        Err(error) => {
-            eprintln!("purple-memo: could not read {key} floor row: {error}");
-            return FloorRead::Unreadable;
-        }
-    };
+    let raw: String =
+        match conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        }) {
+            Ok(raw) => raw,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return FloorRead::Absent,
+            Err(error) => {
+                eprintln!("purple-memo: could not read {key} floor row: {error}");
+                return FloorRead::Unreadable;
+            }
+        };
     match serde_json::from_str::<u64>(&raw) {
         Ok(value) => FloorRead::Value(value),
         Err(error) => {

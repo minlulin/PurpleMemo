@@ -27,6 +27,7 @@
     "check:jni-keeps": "node scripts/check-jni-keeps.mjs",
     "check:capabilities": "node scripts/check-capabilities.mjs",
     "setup:android-make-shim": "node scripts/android-make-shim/setup.mjs",
+    "setup:android-toolchain": "node scripts/android-toolchain.mjs",
     "clippy": "cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"
   },

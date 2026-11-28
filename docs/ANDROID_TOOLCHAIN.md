@@ -118,12 +118,16 @@ ships only `npm.cmd`, so the frontend step fails inside Gradle unless an
 (seen 2026-11-16: `EXCEPTION_ACCESS_VIOLATION` in `jvm.dll`, JDK 17, Gradle
 9.6.1). It is gitignored and harmless — delete it; the build is unaffected.
 
-These three shims live outside the repo (in `%TEMP%`), so a fresh machine needs
-them recreated. The `make.exe` one is now built from `scripts/android-make-shim/`
-by `npm run setup:android-make-shim`; the `npm.bat` and the `PERL5LIB` tree are
-still assembled by hand. If the SQLCipher/OpenSSL step keeps costing time, MSYS2 is the
-cleaner substitute: its perl has the modules and Unix paths, and it provides
-`make` — items 1 and 2 stop being local hacks, and only item 3 remains.
+The `make.exe` shim and the `PERL5LIB` tree are installed by
+`npm run setup:android-toolchain`, into a repo-local `.android-toolchain/`
+directory (gitignored). They used to live in `%TEMP%`, which Windows clears; when
+it did, `npm run check:android` began *skipping* instead of compiling, so the
+Android-only Rust went unverified without anything saying so (0.4.0 pre-release
+audit, R2). The gate discovers them here, so `npm run verify` needs no shell
+setup. Only the `npm.bat` forwarder is still made by hand. If the
+SQLCipher/OpenSSL step keeps costing time, MSYS2 is the cleaner substitute: its
+perl has the modules and Unix paths, and it provides `make` — items 1 and 2 stop
+being local hacks, and only item 3 remains.
 
 ### The release-profile ICU stanza — confirmed (2026-11-15)
 
@@ -151,27 +155,37 @@ the build log. If a future rustc does ICE through it, the fallback is the
 other lead recorded in the Cargo.toml comment — rust-lang/rust #157148 — and
 the re-run uses `--message-format short` to get a readable error.
 
-### Rebuilding the shims after a `%TEMP%` cleanup
+### Rebuilding the toolchain pieces
 
-Windows clears `%TEMP%`, which deletes the shims and with them the recipe above
-(Session 4 hit exactly that). Recreate them before building:
+Windows clears `%TEMP%`, which used to delete the shims and with them the recipe
+above (Session 4 hit exactly that; 2026-11-28 hit it again and lost the Android
+target check to a skip). They now live in the repo instead, so one command
+recreates both pieces:
 
-1. `make.exe` — no longer hand-made: `npm run setup:android-make-shim` rebuilds
-   it from `scripts/android-make-shim/`. It locates Strawberry's `gmake.exe`
-   (`C:\Strawberry\c\bin\gmake.exe`, not under `perl\bin`), Git Bash's `sh.exe`
-   and `rustc`, compiles the launcher, and then runs the result to prove it can
-   start gmake — a shell-script `make` would die with OS error 216 instead.
+1. `make.exe` + the perl tree — `npm run setup:android-toolchain` writes both
+   into `.android-toolchain/` (`shim/` and `perl/lib/`). The shim half is built
+   by `scripts/android-make-shim/setup.mjs`, which locates Strawberry's
+   `gmake.exe` (`C:\Strawberry\c\bin\gmake.exe`, not under `perl\bin`), Git
+   Bash's `sh.exe` and `rustc`, compiles the launcher, and then runs the result
+   to prove it can start gmake — a shell-script `make` would die with OS error
+   216 instead. The perl half copies the four module trees and prunes every
+   loadable artefact, then loads them under Git-Bash's perl to prove the copy
+   works. `npm run setup:android-make-shim` still installs the shim alone (to
+   `%TEMP%\android-shim` by default), for a machine that only wants that.
 2. `npm.bat` — write it from a heredoc (`@echo off`, then
    `call "C:\Program Files\nodejs\npm.cmd" %*`). Do not build it with `printf`
    and escaped backslashes: a half-eaten `\n` splits the path across lines and
    Gradle then fails with `'"C:\Program Files' is not recognized`.
-3. The `PERL5LIB` module tree — copy each module OpenSSL's `Configure` reports
-   missing from Strawberry's `perl/lib`, `perl/site/lib` and `perl/vendor/lib`
-   into the `PERL5LIB` directory, then re-run `./Configure` until it passes.
-   Nineteen modules were needed: `ExtUtils::MakeMaker` with its `MM_*` family,
-   `Pod::Usage`, `Pod::Text`, `Pod::Simple` and `Locale::Maketext::Simple`.
-   Strawberry's perl cannot be used directly — `Configure` rejects it with
-   *“does not produce Unix like paths”* (MSWin32).
+3. The `PERL5LIB` module tree — `npm run setup:android-toolchain` does this too:
+   it copies the `ExtUtils`, `Pod`, `Locale` and `I18N` trees from Strawberry's
+   `perl/lib`, `perl/site/lib` and `perl/vendor/lib` into
+   `.android-toolchain/perl/lib`, deletes every `*.so`/`*.dll`/`*.xs`/`*.bs`
+   from the copy (a loadable library cannot cross a perl ABI), and then proves
+   `ExtUtils::MakeMaker`, `Pod::Usage` and `Locale::Maketext::Simple` load.
+   Nineteen modules were needed in all: `ExtUtils::MakeMaker` with its `MM_*`
+   family, `Pod::Usage`, `Pod::Text`, `Pod::Simple` and
+   `Locale::Maketext::Simple`. Strawberry's perl cannot be used directly —
+   `Configure` rejects it with *“does not produce Unix like paths”* (MSWin32).
 
 `cc` also reports `Compiler family detection failed … "aarch64-linux-android24-clang":
 program not found` on every build. That warning is expected here: the NDK ships

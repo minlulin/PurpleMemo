@@ -14,26 +14,45 @@
  * missing piece when it cannot — the same rule check-android-apk.mjs applies to
  * a checkout with no APK in it.
  *
- * Two of those pieces live outside the repo in `%TEMP%`, where the toolchain doc
- * puts them: the `make` shim (`npm run setup:android-make-shim`) and the perl
- * module tree copied from Strawberry. They are discovered and added to this
- * step's environment rather than required as exports, so a machine set up for
- * the APK build compiles the target under a plain `npm run verify`; the exports
- * only matter for `npx tauri android build` itself.
+ * Two of those pieces are installed by `npm run setup:android-toolchain`: the
+ * `make` shim and the perl module tree copied from Strawberry. They live in a
+ * repo-local `.android-toolchain/` directory rather than `%TEMP%`, because
+ * Windows clears `%TEMP%` and the step then skipped instead of compiling — the
+ * silent loss of Android coverage the 0.4.0 pre-release audit found (R2). The
+ * old `%TEMP%` locations stay discovered so a machine already set up either way
+ * still compiles; nothing here is required as an export, so a plain
+ * `npm run verify` covers the Android target.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const TARGET = "aarch64-linux-android";
 const TOOLCHAIN = "aarch64-linux-android24-clang";
 const DOC = "docs/ANDROID_TOOLCHAIN.md";
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Where the two installed pieces are looked for, newest first: the repo-local
+ * directory `npm run setup:android-toolchain` writes, then the `%TEMP%` paths
+ * the toolchain doc used before that (kept so an existing setup keeps working).
+ */
+const SHIM_DIRS = [
+  join(REPO, ".android-toolchain", "shim"),
+  join(tmpdir(), "android-shim"),
+];
+const PERL_LIB_DIRS = [
+  join(REPO, ".android-toolchain", "perl", "lib"),
+  join(tmpdir(), "android-perl", "lib"),
+];
 
 const REMEDY =
-  `  The setup is "Building the debug APK on Windows" in ${DOC}; the check runs as\n` +
-  "  soon as the pieces below are on this machine, so `npm run verify` covers the\n" +
-  "  Android target too.";
+  "  Run `npm run setup:android-toolchain` once — it installs the make shim and\n" +
+  "  the perl module tree under .android-toolchain/, where this step finds them,\n" +
+  `  so \`npm run verify\` covers the Android target with no shell setup.\n` +
+  `  The recipe is "Building the debug APK on Windows" in ${DOC}.`;
 
 function fail(reason, remedy) {
   console.error(
@@ -164,14 +183,15 @@ function perlCanConfigure(env) {
 function buildEnvironment(bin) {
   const env = { ...process.env };
   if (bin) addToPath(env, bin);
-  const shim = join(tmpdir(), "android-shim");
-  if (existsSync(shim)) addToPath(env, shim);
+  const shim = SHIM_DIRS.find((directory) => existsSync(directory));
+  if (shim) addToPath(env, shim);
   if (!perlCanConfigure(env)) {
-    const perlLib = join(tmpdir(), "android-perl", "lib");
-    if (
-      existsSync(perlLib) &&
-      perlCanConfigure({ ...env, PERL5LIB: posixPath(perlLib) })
-    ) {
+    const perlLib = PERL_LIB_DIRS.find(
+      (directory) =>
+        existsSync(directory) &&
+        perlCanConfigure({ ...env, PERL5LIB: posixPath(directory) }),
+    );
+    if (perlLib) {
       env.PERL5LIB = posixPath(perlLib);
       // MSYS turns a POSIX value into a Windows path when it launches gmake,
       // and perl then splits "C:\\Users\u2026" on the colon into "C" and
@@ -209,12 +229,13 @@ if (!bin) {
 }
 if (!onPath("make", env)) {
   reasons.push(
-    "no make on PATH (the shim from npm run setup:android-make-shim)",
+    "no make on PATH and no installed shim (npm run setup:android-toolchain)",
   );
 }
 if (!perlCanConfigure(env)) {
   reasons.push(
-    "perl cannot load ExtUtils::MakeMaker/Pod::Usage/Locale::Maketext::Simple (see PERL5LIB in the toolchain doc)",
+    "perl cannot load ExtUtils::MakeMaker/Pod::Usage/Locale::Maketext::Simple " +
+      "(no installed module tree — npm run setup:android-toolchain)",
   );
 }
 if (reasons.length > 0) skip(reasons);

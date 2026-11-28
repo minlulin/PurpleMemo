@@ -3,6 +3,11 @@ node_modules/
 dist/
 target/
 
+# The Windows Android cross-compile pieces `npm run setup:android-toolchain`
+# installs — the make shim and the pruned perl module tree. Built artefacts,
+# not source; the gate discovers them here so they survive a %TEMP% cleanup.
+.android-toolchain/
+
 # Generated Tauri ACL schemas (rebuilt on every build) — never committed
 src-tauri/gen/schemas/
 
