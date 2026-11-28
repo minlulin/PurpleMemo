@@ -218,6 +218,7 @@ export function ensurePairedPhoneReachableNow(): Promise<DurableOutcome> {
       ensurePairedPhoneReachable(
         {
           pairingOpen: (input) => driver.pairingOpen(input),
+          pairingStatus: () => driver.pairingStatus(),
           peers: () => readPeers(driver),
           batch: (statements) => driver.batch(statements),
         },

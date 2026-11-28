@@ -55,6 +55,14 @@ const RUNNING: PairingListenerInfo = {
   note: null,
 };
 
+/** Nothing bound: the state every caller but the panel is in. */
+const STOPPED: PairingListenerInfo = {
+  ...RUNNING,
+  running: false,
+  port: null,
+  endpoint: null,
+};
+
 interface Fake extends DurablePairingTransport {
   opened: PairingOpenInput[];
   batches: BatchStatement[][];
@@ -63,6 +71,7 @@ interface Fake extends DurablePairingTransport {
 function fakeTransport(
   pins: PeerRow[],
   listener: PairingListenerInfo = RUNNING,
+  current: PairingListenerInfo = STOPPED,
 ): Fake {
   const fake: Fake = {
     opened: [],
@@ -70,6 +79,9 @@ function fakeTransport(
     async pairingOpen(input: PairingOpenInput) {
       fake.opened.push(input);
       return listener;
+    },
+    async pairingStatus() {
+      return current;
     },
     async peers() {
       return pins;
@@ -132,6 +144,28 @@ test("a listener that does not bind is a failure, not a silent success", async (
   assert.equal(await ensurePairedPhoneReachable(fake, true, false), "failed");
 });
 
+// R6 (0.4.0 audit): the Settings toggle sits one screen from an open pairing
+// panel, and `pairing_open` REPLACES a running window. Binding the resting
+// window there reaped a live code the person could still see.
+test("a window already up is left alone, never replaced", async () => {
+  const running = fakeTransport([pin()], RUNNING, RUNNING);
+  assert.equal(await ensurePairedPhoneReachable(running, true, false), "busy");
+  assert.equal(
+    running.opened.length,
+    0,
+    "pairing_open reaps the running window, so a live code window must survive",
+  );
+
+  // A status read that fails must not be read as "nothing is running": the
+  // safe direction is to leave whatever is bound alone and try again later.
+  const unknown = fakeTransport([pin()]);
+  unknown.pairingStatus = async () => {
+    throw new Error("ipc");
+  };
+  assert.equal(await ensurePairedPhoneReachable(unknown, true, false), "busy");
+  assert.equal(unknown.opened.length, 0);
+});
+
 test("a legacy pin without a pairing id adopts one and binds under it", async () => {
   const legacy = pin({ pairing_id: null });
   const adopted: { value: string | null } = { value: null };
@@ -141,6 +175,9 @@ test("a legacy pin without a pairing id adopts one and binds under it", async ()
     async pairingOpen(input: PairingOpenInput) {
       fake.opened.push(input);
       return RUNNING;
+    },
+    async pairingStatus() {
+      return STOPPED;
     },
     async peers() {
       return [{ ...legacy, pairing_id: adopted.value }];

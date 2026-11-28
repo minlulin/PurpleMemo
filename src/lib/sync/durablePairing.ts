@@ -26,6 +26,8 @@ import type { PeerRow } from "./store.ts";
 /** What the durable window needs — the driver, narrowed so tests stay tiny. */
 export interface DurablePairingTransport {
   pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo>;
+  /** The listener as it stands, so a live window can be left alone. */
+  pairingStatus(): Promise<PairingListenerInfo>;
   peers(): Promise<PeerRow[]>;
   batch(statements: BatchStatement[]): Promise<void>;
 }
@@ -39,6 +41,13 @@ export type DurableOutcome =
   | "no-pin"
   /** The phone role: reachability is the desktop's business, not the phone's. */
   | "mobile"
+  /**
+   * A window is already bound, or could not be ruled out. `pairing_open`
+   * replaces a running window, so binding here would reap whatever the person
+   * is looking at — a live pairing code included. Nothing was bound; the
+   * panel's close path or the next unlock binds the resting window instead.
+   */
+  | "busy"
   /** An attempt was made and did not bind open. */
   | "failed";
 
@@ -102,6 +111,22 @@ export async function ensurePairedPhoneReachable(
       return "failed";
     }
   }
+  // N4's other half: `pairing_open` REPLACES a running window, and the panel's
+  // offer window can be on screen when this runs (Settings' toggle is one
+  // screen away from the open panel). Binding now would reap the live code and
+  // leave the person with a QR the listener no longer honours. So a window
+  // that is already up is left alone — it is either that code window, which
+  // the panel's close path replaces with this one, or the resting window this
+  // call would have produced anyway. A status read that fails is treated the
+  // same way: never bind over a window we cannot see.
+  let current: PairingListenerInfo;
+  try {
+    current = await transport.pairingStatus();
+  } catch {
+    return "busy";
+  }
+  if (current.running) return "busy";
+
   let listener: PairingListenerInfo;
   try {
     listener = await transport.pairingOpen({
