@@ -16,6 +16,10 @@ export default defineConfig({
         codeSplitting: {
           groups: [
             {
+              name: "i18n",
+              test: /[\\/]src[\\/]lib[\\/]i18n(\.ts|[\\/])/,
+            },
+            {
               name: "vendor-react",
               test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
             },
