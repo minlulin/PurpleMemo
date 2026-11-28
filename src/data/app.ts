@@ -211,27 +211,32 @@ export const syncRepo = createSyncRepo(driver);
  * and an unreachable phone is a retry away, not an app error.
  */
 export function ensurePairedPhoneReachableNow(): Promise<DurableOutcome> {
-  return settingsRepo
-    .getPairedPhoneReachable()
-    .catch(() => true) // absent row = the durable default (ON)
-    .then((toggle) =>
-      ensurePairedPhoneReachable(
-        {
-          pairingOpen: (input) => driver.pairingOpen(input),
-          pairingStatus: () => driver.pairingStatus(),
-          peers: () => readPeers(driver),
-          batch: (statements) => driver.batch(statements),
-        },
-        toggle,
-        isAndroidPlatform(),
-      ),
-    )
-    .then((outcome) => {
-      // The Settings row reads this back: "ON" over a dead port must be
-      // visible as such, not swallowed by the fire-and-forget call sites.
-      lastDurableOutcome = outcome;
-      return outcome;
-    });
+  return (
+    settingsRepo
+      .getPairedPhoneReachable()
+      // A read that fails is not an absent row: a missing row is the durable
+      // default (ON), a failed read is a value we never saw — and guessing ON
+      // from it would bind a port nobody could confirm was asked for.
+      .catch(() => false)
+      .then((toggle) =>
+        ensurePairedPhoneReachable(
+          {
+            pairingOpen: (input) => driver.pairingOpen(input),
+            pairingStatus: () => driver.pairingStatus(),
+            peers: () => readPeers(driver),
+            batch: (statements) => driver.batch(statements),
+          },
+          toggle,
+          isAndroidPlatform(),
+        ),
+      )
+      .then((outcome) => {
+        // The Settings row reads this back: "ON" over a dead port must be
+        // visible as such, not swallowed by the fire-and-forget call sites.
+        lastDurableOutcome = outcome;
+        return outcome;
+      })
+  );
 }
 
 let lastDurableOutcome: DurableOutcome | null = null;
@@ -248,7 +253,9 @@ export function lastPairedPhoneOutcome(): DurableOutcome | null {
  * applies at the very next one of those — no restart, no cache.
  */
 export function pairedPhoneReachabilityEnabled(): Promise<boolean> {
-  return settingsRepo.getPairedPhoneReachable().catch(() => true);
+  // Fail dark: an unreadable row is OFF (audit R7), and a read that fails is
+  // still an unreadable row from here.
+  return settingsRepo.getPairedPhoneReachable().catch(() => false);
 }
 
 /**

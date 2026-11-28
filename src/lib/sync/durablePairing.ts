@@ -24,6 +24,29 @@ import { isAndroidPlatform } from "../android-reminders.ts";
 import type { PeerRow } from "./store.ts";
 
 /** What the durable window needs — the driver, narrowed so tests stay tiny. */
+/**
+ * The reachability toggle as stored. An absent row is the durable default
+ * (ON); a row that exists but is not JSON `true`/`false` is OFF.
+ *
+ * The asymmetry is the cost of guessing wrong. `None` is a fact about the
+ * install — every upgrade since 0.4.0 has no row, and they must inherit the
+ * default without a migration. An unreadable row is a fact we cannot
+ * establish, and publishing ON from it would bind a port on the local network
+ * on the strength of a value nobody could read (audit R7). `close_to_tray`
+ * resolves the same shape the other way, because a tray process is local.
+ *
+ * Rust's `parse_paired_reachable` mirrors this exactly; the two must never
+ * disagree about which rows count as on.
+ */
+export function parseReachableSetting(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  try {
+    return JSON.parse(raw) === true;
+  } catch {
+    return false;
+  }
+}
+
 export interface DurablePairingTransport {
   pairingOpen(input: PairingOpenInput): Promise<PairingListenerInfo>;
   /** The listener as it stands, so a live window can be left alone. */

@@ -1934,7 +1934,9 @@ test("a payload carries the theme and the vault verifier, never the app PIN", as
     ('security_answer_hash', 'poison-answer-hash'),
     ('theme', '"light"'),
     ('vault_verify', '{"salt":"AAAAAAAAAAAAAAAAAAAAAA==","iv":"AAAAAAAAAAAAAAAA","ciphertext":"AAAAAAAAAAAAAAAAAAAAAA=="}'),
-    ('vault_generation', '1')`);
+    ('vault_generation', '1'),
+    ('gallery.pendingPhotoFile.5f1c', 'stage-local-photo'),
+    ('gallery.pendingPhotoFileX5f1c', 'lookalike')`);
 
   const { bytes } = await createBackupRepo(driver).exportBackup();
   const { payload } = parseBackupZip(bytes);
@@ -1959,6 +1961,18 @@ test("a payload carries the theme and the vault verifier, never the app PIN", as
   ]) {
     assert.ok(!serialized.includes(poison), `${poison} reached the payload`);
   }
+  // R8: a staged photo is a `File` handle for a frame still in memory, not
+  // library content. Its cleanup records restore nothing elsewhere and can
+  // point at a file the importing machine never staged.
+  assert.ok(
+    !keys.some((key) => key.startsWith("gallery.pendingPhotoFile.")),
+    "the staged-photo cleanup records must not travel",
+  );
+  assert.ok(!serialized.includes("stage-local-photo"), "nor their values");
+  assert.ok(
+    keys.includes("gallery.pendingPhotoFileX5f1c"),
+    "the prefix is exact — a lookalike key still travels",
+  );
   // The vault's keys are deliberately NOT device-local (§12.3): a restored
   // vault must still unlock.
   assert.deepEqual(
@@ -2035,6 +2049,7 @@ test("a restore spares the §7.2 counter floors and replaces ordinary settings",
     ('pairing_counter.local', '1200'),
     ('pairing_counter.9c3df3b7-3f31-4c9c-9f4a-3b0d0f5a1a91', '900'),
     ('pairingXcounter.local', 'not-a-floor'),
+    ('gallery.pendingPhotoFile.local-stage', 'stage-local'),
     ('theme', '"dark"')`);
 
   const payload: BackupPayload = {
@@ -2043,7 +2058,13 @@ test("a restore spares the §7.2 counter floors and replaces ordinary settings",
     exportedAt: "2026-11-27T00:00:00.000Z",
     data: {
       ...emptyTables(),
-      settings: [{ key: "theme", value: '"light"' }],
+      settings: [
+        { key: "theme", value: '"light"' },
+        {
+          key: "gallery.pendingPhotoFile.payload-stage",
+          value: "stage-payload",
+        },
+      ],
     },
   };
   await applyBackup(driver, { payload, photos: [] });
@@ -2065,6 +2086,16 @@ test("a restore spares the §7.2 counter floors and replaces ordinary settings",
     settingValue(driver, "pairingXcounter.local"),
     undefined,
     "the GLOB spares only the real prefix, not a lookalike",
+  );
+  assert.equal(
+    settingValue(driver, "gallery.pendingPhotoFile.local-stage"),
+    "stage-local",
+    "R8: this machine's staged-photo records survive a restore",
+  );
+  assert.equal(
+    settingValue(driver, "gallery.pendingPhotoFile.payload-stage"),
+    undefined,
+    "and the payload cannot plant one",
   );
   assert.equal(
     settingValue(driver, "theme"),

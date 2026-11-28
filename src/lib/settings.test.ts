@@ -247,3 +247,32 @@ test("getTheme: only dark and light pass through; every other JSON value is null
   assert.equal(await themeOf('"DARK"'), null, "no case-insensitive leniency");
   assert.equal(await themeOf("42"), null, "a number falls back too");
 });
+
+// -- Durable pairing ----------------------------------------------------------
+
+test("getPairedPhoneReachable: an absent row is on, an unreadable one is off", async () => {
+  // Audit R7: the toggle used to fail open. `getJSON(...) !== false` (and
+  // Rust's `unwrap_or(true)`) read a row nobody could parse as ON, which then
+  // bound a port on the local network. Absent is still ON — the default every
+  // upgrade inherits — and only `undefined` counts as absent.
+  const reachableOf = async (value: string | undefined) => {
+    const rows = value === undefined ? [] : [{ value }];
+    const driver = createMockDriver({ results: [rows] });
+    return createSettingsRepo(driver).getPairedPhoneReachable();
+  };
+
+  assert.equal(
+    await reachableOf(undefined),
+    true,
+    "a missing row is the durable default",
+  );
+  assert.equal(await reachableOf("true"), true);
+  assert.equal(await reachableOf("false"), false, "explicitly off");
+  for (const corrupt of ["not json", '"false"', "1", "", "null", "{}"]) {
+    assert.equal(
+      await reachableOf(corrupt),
+      false,
+      `${corrupt} must not open a port`,
+    );
+  }
+});

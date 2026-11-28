@@ -1030,23 +1030,39 @@ pub(crate) fn publish_paired_reachable(enabled: bool) {
 /// Read the stored toggle from `conn` and publish it. Mirror of
 /// [`refresh_close_to_tray`]; runs at boot and at the end of a backup import.
 pub(crate) fn refresh_paired_reachable(conn: &rusqlite::Connection) {
-    let raw = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [PAIRED_REACHABLE_KEY],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    publish_paired_reachable(parse_paired_reachable(raw.as_deref()));
+    match conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        [PAIRED_REACHABLE_KEY],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(raw) => publish_paired_reachable(parse_paired_reachable(Some(&raw))),
+        // No row at all: the install never turned it off, so the durable
+        // default stands.
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            publish_paired_reachable(parse_paired_reachable(None));
+        }
+        // A read that failed is not an absent row. Publishing ON here would
+        // open a port on the strength of a value nobody managed to see.
+        Err(error) => {
+            eprintln!(
+                "purple-memo: could not read {PAIRED_REACHABLE_KEY}, keeping the pairing port closed: {error}"
+            );
+            publish_paired_reachable(false);
+        }
+    }
 }
 
-/// The stored reachability value. Only an explicit JSON `false` turns it off —
-/// the same missing-row and corrupt-row rule as [`parse_close_to_tray`], for
-/// the same reason.
+/// The stored reachability value. An absent row is the durable default (ON);
+/// a row that exists but is not JSON `true`/`false` is OFF.
+///
+/// Deliberately the opposite of [`parse_close_to_tray`]'s corrupt-row rule
+/// (audit R7). Both exist so a value nobody can read is never mistaken for
+/// permission: a tray process is local and reversible, whereas this one binds
+/// a port on the local network until someone notices.
 fn parse_paired_reachable(raw: Option<&str>) -> bool {
     match raw {
         None => true,
-        Some(text) => serde_json::from_str::<bool>(text).unwrap_or(true),
+        Some(text) => serde_json::from_str::<bool>(text).unwrap_or(false),
     }
 }
 
@@ -1552,6 +1568,24 @@ mod tray_tests {
             parse_close_to_tray(Some("\"false\"")),
             "only a JSON false turns it off"
         );
+    }
+
+    #[test]
+    fn paired_reachability_defaults_on_but_an_unreadable_row_stays_dark() {
+        use super::parse_paired_reachable;
+        // Absent row: every install that predates the key inherits the durable
+        // default without a migration.
+        assert!(parse_paired_reachable(None), "missing row defaults to ON");
+        assert!(parse_paired_reachable(Some("true")));
+        assert!(!parse_paired_reachable(Some("false")), "explicitly off");
+        // Everything else is not permission to bind a port on the local
+        // network — unlike close-to-tray, which stays on when it cannot tell.
+        for corrupt in ["not json", "\"false\"", "1", "", "null"] {
+            assert!(
+                !parse_paired_reachable(Some(corrupt)),
+                "{corrupt:?} must keep the pairing port closed"
+            );
+        }
     }
 
     #[test]

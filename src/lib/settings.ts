@@ -10,6 +10,7 @@ import {
   parseCollectionsCollapsed,
   parseViewMode,
 } from "./notesView.ts";
+import { parseReachableSetting } from "./sync/durablePairing.ts";
 import {
   parseRememberedEndpoints,
   type RememberedEndpoints,
@@ -296,18 +297,20 @@ export function createSettingsRepo(driver: DataDriver) {
 
     /**
      * Whether the paired phone may stay connected while this app runs
-     * (durable pairing). Default ON — a missing row, a corrupt row and every
-     * install that predates the key all keep the durable default; only an
-     * explicit JSON `false` turns it off. Rust's window-close handler reads
-     * this decision from memory (the `paired_reachable_set` mirror, same
-     * contract as `close_to_tray_set`), and the lock and background paths
-     * read it through this repo when deciding whether to close the pairing
-     * port at all.
+     * (durable pairing). A missing row is ON — every install that predates the
+     * key inherits the durable default without a migration — but a row that
+     * exists and cannot be read as `true`/`false` is OFF: an unreadable
+     * setting must not be what opens a port on the local network (audit R7).
+     * Rust's window-close handler reads this decision from memory (the
+     * `paired_reachable_set` mirror, same contract as `close_to_tray_set`), and
+     * the lock and background paths read it through this repo when deciding
+     * whether to close the pairing port at all.
      */
     async getPairedPhoneReachable(): Promise<boolean> {
-      return (
-        (await this.getJSON<boolean>(SETTING_KEYS.pairedPhoneReachable)) !==
-        false
+      // `getRaw`, not `getJSON`: the latter collapses "no row" and "corrupt
+      // row" into one null, and only the first of those means ON.
+      return parseReachableSetting(
+        await this.getRaw(SETTING_KEYS.pairedPhoneReachable),
       );
     },
 

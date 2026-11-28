@@ -230,7 +230,15 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
  * means this one gets everything it says was already spent refused as a
  * replay, forever.
  */
-export const DEVICE_LOCAL_SETTING_PREFIXES = ["pairing_counter."] as const;
+export const DEVICE_LOCAL_SETTING_PREFIXES = [
+  // §7.2 replay floors (durable pairing): how far this device has counted.
+  "pairing_counter.",
+  // A staged photo is a `File` handle for a frame that is still in memory —
+  // the library's copy arrives in the archive's `photos/`, so exporting these
+  // restores nothing on another machine, and importing them can leave a
+  // cleanup record for a file that machine never staged (audit R8).
+  "gallery.pendingPhotoFile.",
+] as const;
 
 /**
  * Is this settings row device-local? Applied on BOTH sides (decision 1): the
