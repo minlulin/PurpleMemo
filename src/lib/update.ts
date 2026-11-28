@@ -6,7 +6,12 @@
 //
 // The plugin itself is imported dynamically: the pure parts below stay
 // testable under `node --test`, and the Tauri runtime only loads when a
-// check actually runs.
+// check actually runs. The platform check that comes before it is a plain
+// import — `android-reminders.ts` is in the shell's eager graph already, so
+// importing it dynamically bought nothing and made the bundler name the
+// shared chunk after it (0.4.0 audit, R11).
+
+import { isAndroidPlatform } from "./android-reminders.ts";
 
 /** The narrow slice of the plugin's `Update` this module needs. */
 export interface UpdateHandle {
@@ -59,7 +64,6 @@ export async function checkForUpdate(): Promise<UpdateHandle | null> {
   // The updater is a desktop-only surface: it is not registered in the Android
   // build at all. Say that plainly instead of letting the settings screen
   // report a raw "plugin not found".
-  const { isAndroidPlatform } = await import("./android-reminders.ts");
   if (isAndroidPlatform()) {
     throw new Error(
       "updates are installed from the desktop build; this phone is updated by installing a new APK",

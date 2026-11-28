@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { copySensitive, isAndroidPlatform } from "../lib/android-reminders.ts";
 import { formatDate } from "../lib/format.ts";
 import { countWords } from "../lib/noteReader.ts";
 import { parseTags } from "../lib/notes.ts";
@@ -112,9 +113,6 @@ export function NoteReaderDialog({
       // Android: note text is sensitive, so the copy goes through the marked,
       // auto-clearing path instead of the plain web clipboard. Desktop keeps
       // `navigator.clipboard` exactly as it was.
-      const { copySensitive, isAndroidPlatform } = await import(
-        "../lib/android-reminders.ts"
-      );
       if (isAndroidPlatform()) {
         const delay = await copySensitive(note.content);
         setCopied(true);
